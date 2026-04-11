@@ -1,0 +1,17 @@
+# AI agent / IDE config (local only)
+.cursor/
+.cursorignore
+.cursorindexingignore
+.roo/
+.rooignore
+AGENTS.md
+CLAUDE.md
+.specstory/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Temp / scratch
+**/ignore*/**
+**/tmp/**
