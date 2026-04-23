@@ -1,0 +1,46 @@
+{
+  "_doc": "Keyword -> tool-signature knowledge base. generate_when_detection.py uses this + CLAUDE.md to produce when_detection.json.",
+  "mcp_servers": {},
+  "signatures": [
+    {
+      "keywords": ["python"],
+      "entries": [
+        {"tools": ["Bash"], "field": "command", "pattern": "\\bpython3?\\b|\\buv\\s+run\\b|\\buv\\s+pip\\b|\\bpytest\\b|\\bpip\\s+install\\b"}
+      ]
+    },
+    {
+      "keywords": ["git commit"],
+      "entries": [
+        {"tools": ["Bash"], "field": "command", "pattern": "\\bgit\\s+commit\\b"}
+      ]
+    },
+    {
+      "keywords": ["programming", "source code"],
+      "entries": [
+        {"tools": ["Write", "Edit"], "field": "file_path", "pattern": "\\.(py|js|ts|jsx|tsx|sql|sh|bash|rb|go|java|cpp|c|h|rs|cs|r|php|swift|kt|scala)$"}
+      ]
+    },
+    {
+      "keywords": ["SQL", "DB/DWH", "table data", "database"],
+      "entries": [
+        {"tools": ["Bash"], "field": "command", "pattern": "\\bduckdb\\b|\\bbq\\s+(query|load|mk|rm|ls)\\b|\\bsnowsql\\b|\\bpsql\\b|\\bmysql\\b|\\bsqlite3\\b"},
+        {"tools": ["Write", "Edit"], "field": "file_path", "pattern": "\\.sql$"},
+        {"tools": ["$mcp:database"], "field": "*", "pattern": ".*"}
+      ]
+    },
+    {
+      "keywords": ["data analysis", "statistical", "fact-checking", "financial analysis", "research synthesis", "audit", "compliance", "validation", "verification"],
+      "entries": [
+        {"tools": ["Bash"], "field": "command", "pattern": "\\bduckdb\\b|\\bbq\\s+(query|load)\\b"},
+        {"tools": ["$mcp:database"], "field": "*", "pattern": ".*"}
+      ]
+    },
+    {
+      "keywords": ["analyze data", "LLM analyze"],
+      "entries": [
+        {"tools": ["Bash"], "field": "command", "pattern": "\\bduckdb\\b|\\bbq\\s+(query|load)\\b"},
+        {"tools": ["$mcp:database"], "field": "*", "pattern": ".*"}
+      ]
+    }
+  ]
+}

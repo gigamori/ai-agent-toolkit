@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python ${CLAUDE_PLUGIN_ROOT}/hooks/notes_index_reminder.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python ${CLAUDE_PLUGIN_ROOT}/hooks/session_init.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python ${CLAUDE_PLUGIN_ROOT}/hooks/session_sync.py"
+          }
+        ]
+      }
+    ]
+  }
+}

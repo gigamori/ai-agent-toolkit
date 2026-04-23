@@ -1,0 +1,31 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ai-agent-toolkit",
+  "description": "AI agent toolkit - Claude Code plugins by gigamori",
+  "owner": {
+    "name": "gigamori",
+    "url": "https://github.com/gigamori"
+  },
+  "plugins": [
+    {
+      "name": "taskflow",
+      "description": "Concurrent task progress and context management across Claude Code sessions",
+      "author": {
+        "name": "gigamori"
+      },
+      "source": "./plugins/taskflow",
+      "category": "productivity",
+      "homepage": "https://github.com/gigamori/ai-agent-toolkit/tree/main/plugins/taskflow"
+    },
+    {
+      "name": "rule-inject",
+      "description": "Enforce external rule file reading via PreToolUse deny, driven by CLAUDE.md <rules when=\"...\" src=\"...\"/> tags. Runs on Claude Code and Cursor.",
+      "author": {
+        "name": "gigamori"
+      },
+      "source": "./plugins/rule-inject",
+      "category": "workflow",
+      "homepage": "https://github.com/gigamori/ai-agent-toolkit/tree/main/plugins/rule-inject"
+    }
+  ]
+}

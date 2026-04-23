@@ -1,23 +1,49 @@
 # ai-agent-toolkit
 
-Reusable skills, hooks, and harness components for AI coding agents (Claude Code, Cursor, etc.).
+Claude Code plugins and reusable skills for AI coding agents (Claude Code, Cursor, etc.).
 
 [日本語版 README はこちら](README_ja.md)
 
-## Overview
+## Plugins
 
-A collection of portable building blocks that extend AI coding agents with specialized capabilities. Each component is designed to work across multiple agent platforms.
+Distributed via the Claude Code plugin marketplace.
+
+| Plugin | Description |
+|---|---|
+| [taskflow](plugins/taskflow/) | Concurrent task progress and context management across Claude Code sessions |
+| [rule-inject](plugins/rule-inject/) | Enforce external rule file reading via `PreToolUse` deny, driven by `CLAUDE.md <rules when="..." src="..."/>` tags. Runs on both Claude Code and Cursor. |
+
+### Installation
+
+Register this repository as a marketplace once:
+
+```
+/plugin marketplace add gigamori/ai-agent-toolkit
+```
+
+Then install the plugins you want:
+
+```
+/plugin install taskflow@ai-agent-toolkit
+/plugin install rule-inject@ai-agent-toolkit
+```
+
+Each plugin has its own `README.md` with setup, usage, and Cursor compatibility notes.
+
+### Cursor users
+
+Both plugins support Cursor through a manual `.claude/` symlink plus `/…:init` workflow. See the per-plugin README for details.
 
 ## Skills
 
+Standalone Agent Skills that can be dropped into any agent without a plugin.
+
 | Skill | Description |
-|-------|-------------|
+|---|---|
 | [create-skill](skills/create-skill/) | Guides through creating effective Agent Skills with best practices, structure templates, and validation checklists |
 | [compact-document](skills/compact-document/) | Multi-mode document compaction framework — condenses articles, specs, transcripts, and more with minimal information loss |
 
-## Installation
-
-Copy skill directories into your agent's skill folder:
+Copy a skill into your agent's skill folder:
 
 ```bash
 # Claude Code
@@ -27,7 +53,7 @@ cp -r skills/create-skill ~/.claude/skills/
 cp -r skills/create-skill ~/.cursor/skills/
 ```
 
-Or clone the repository and symlink:
+Or clone and symlink:
 
 ```bash
 git clone https://github.com/gigamori/ai-agent-toolkit.git
@@ -38,9 +64,14 @@ ln -s "$(pwd)/ai-agent-toolkit/skills/create-skill" ~/.claude/skills/create-skil
 
 ```
 ai-agent-toolkit/
+├── .claude-plugin/
+│   └── marketplace.json       Marketplace manifest
+├── plugins/
+│   ├── taskflow/              Plugin: task progress / context management
+│   └── rule-inject/             Plugin: CLAUDE.md rule enforcement
 ├── skills/
-│   ├── create-skill/       # Skill authoring guide
-│   └── compact-document/   # Document compaction
+│   ├── create-skill/          Skill: author new skills
+│   └── compact-document/      Skill: document compaction
 ├── LICENSE
 ├── README.md
 └── README_ja.md
