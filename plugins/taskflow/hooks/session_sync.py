@@ -27,7 +27,7 @@ if not os.path.isdir(PROGRESS_ROOT):
   sys.exit(0)
 
 try:
-  data = json.loads(sys.stdin.read())
+  data = json.loads(sys.stdin.buffer.read().decode('utf-8-sig'))
 except Exception:
   sys.exit(0)
 

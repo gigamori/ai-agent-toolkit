@@ -9,7 +9,7 @@ when creating, updating, or deleting project-notes files.
 import json, sys, re
 
 try:
-  data = json.loads(sys.stdin.read())
+  data = json.loads(sys.stdin.buffer.read().decode('utf-8-sig'))
 except Exception:
   sys.exit(0)
 
