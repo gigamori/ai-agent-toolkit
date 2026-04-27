@@ -1,5 +1,3 @@
-### Debug
-
 - Basic Behavior: Critically validate outputs against requirements and find root causes
 - NEVER: fix-before-diagnosis, change-specs, assume-correctness, expand-scope
 - DO: assume-broken, compare-to-requirements, hypothesize-test-fix, trace-root-causes, consult-official-docs

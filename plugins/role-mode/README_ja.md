@@ -1,6 +1,6 @@
 # role-mode
 
-ユーザーが各ターンで `mode:<name>` slug をプロンプトに含めると、対応する **認知モード定義**（`NEVER` / `DO` ルールの最小セット）と全モード共通ルールが `UserPromptSubmit` hook で会話に注入される Claude Code プラグイン。slug が無いときは **何も注入されず**、プラグインを入れていない素の LLM 挙動と完全一致する。
+ユーザーが各ターンで `mode:<name>` および/または `role:<value>` slug をプロンプトに含めると、framework meta（Two response axes / Mode > Role / answer-prefix 規約）+ 現在の Role/Mode 宣言 + 該当 mode ルール + 共通ルールが `UserPromptSubmit` hook で会話に注入される Claude Code プラグイン。どの slug も無いときは **何も注入されず**、プラグインを入れていない素の LLM 挙動と完全一致する。
 
 **Claude Code 専用**。Cursor は **非対応**：Cursor の `beforeSubmitPrompt` hook は continue/block しか返せず context 注入機構を持たない。注入可能な hook は `sessionStart` のみで、これは会話開始時 1 回だけ発火するためターンごとの slug-based 注入と原理的に両立しない。
 
@@ -41,50 +41,76 @@ claude --plugin-dir ./plugins/role-mode
 
 ```
 mode:<name>
+role:<value>
+role:"<value>"
 ```
 
-- ユーザープロンプト内の **最初の出現** を採用、それ以降は無視
-- 位置は自由（行頭 / 空白の直後）。taskflow の `pj:` と同方式
-- 名前は小文字 ASCII（`[a-z][a-z0-9_-]*`）
+`mode:` と `role:` は両方とも optional。少なくとも片方が存在すれば hook が発火。各 prefix とも入力中の **最初の出現** を採用、それ以降は無視。位置は自由（行頭 / 空白の直後）。taskflow の `pj:` と同方式。prefix のマッチは case-insensitive。
+
+#### `mode:<name>`
+
+- `<name>` は `[A-Za-z][A-Za-z0-9_-]*`。captured 値は lowercase 正規化
 - 未知の mode 名は黙って無視（失敗・警告なし）
+- mode alias：`verify` は `debug` に解決、`implement` は `execute` に解決。**ユーザーが選んだ alias は表示 `mode:` 行にそのまま保持**され、ルールファイル lookup のみ正規名を使う
+
+#### `role:<value>`
+
+- `<value>` は free-form（マルチバイト・スペース可）。verbatim 保持（case folding なし）
+- 終端ルール 3 種、優先順：
+  - **引用形** `role:"<value>"` → ダブルクォート内をそのまま捕捉。値内に literal `mode:` / `pj:` 等を含めたいときに使用
+  - **非引用、次 slug** → ` mode:` または ` pj:` で停止
+  - **非引用、行末 / EOF** → 改行または入力終端で停止
+- 空 quote（`role:""`）は role なし扱い
 
 例：
 
 ```
 mode:plan auth リファクタの移行手順を設計して
 pj:harness-modes mode:execute 設計ノート通りに scaffold を実装して
+mode:debug role:厳格なコードレビュアー、セキュリティ重視で挙動を批判的に検証する
+このコードを見て
+role:"senior backend engineer" mode:debug この race condition を調査して
 まずリポジトリ調査をして、その後 mode:survey で API 契約を一覧化して
 ```
 
 ### 利用可能な mode
 
-| Mode | こんなときに |
-|---|---|
-| `mode:ask` | 単一質問への直接的・根拠付きの回答が欲しい |
-| `mode:discuss` | 専門家としての意見、結論に向けた議論が欲しい |
-| `mode:brainstorm` | 評価・根拠抜きで多様なアイデアが欲しい |
-| `mode:organize` | 散らかった考えを構造化したい |
-| `mode:survey` | 事実収集のみ、解決策・提案は不要 |
-| `mode:plan` | 明確な基準のあるアクション手順、最終成果物は不要 |
-| `mode:execute` | 計画を厳密に適用、scope 拡張禁止 |
-| `mode:debug` | 根本原因分析、早すぎる修正は禁止 |
-| `mode:review` | プロセス評価と教訓抽出 |
+| Mode | Aliases | こんなときに |
+|---|---|---|
+| `mode:ask` | | 単一質問への直接的・根拠付きの回答が欲しい |
+| `mode:discuss` | | 専門家としての意見、結論に向けた議論が欲しい |
+| `mode:brainstorm` | | 評価・根拠抜きで多様なアイデアが欲しい |
+| `mode:organize` | | 散らかった考えを構造化したい |
+| `mode:survey` | | 事実収集のみ、解決策・提案は不要 |
+| `mode:plan` | | 明確な基準のあるアクション手順、最終成果物は不要 |
+| `mode:execute` | `implement` | 計画を厳密に適用、scope 拡張禁止 |
+| `mode:debug` | `verify` | 根本原因分析、早すぎる修正は禁止 |
+| `mode:review` | | プロセス評価と教訓抽出 |
 
 各 mode の `NEVER` / `DO` ルール全文は [`prompts/modes/`](prompts/modes/) を参照。
 
-### 共通ルール（任意の mode と一緒に必ず注入）
+### 注入される内容
+
+| 入力 slug | 注入されるブロック |
+|---|---|
+| `mode:` のみ | `_meta.md` + `mode: <name>` + mode rules + `_common.md` |
+| `role:` のみ | `_meta.md` + `role: <value>` |
+| 両方 | `_meta.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` |
+| どちらも無し | 何も注入しない（hook は silent exit） |
+
+`_common.md`（mode 専用ルール）：
 
 ```markdown
 ## ALL MODES
 - NEVER: overstep(mode boundary), change-mode-silently
 - DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming)
-
-On rule violation, stop and self-report with the marker `[BLOCKED: mode-rule <name>]` before proceeding.
 ```
+
+`_meta.md`（framework ヘッダ。任意の active slug と必ず一緒に注入される。`[BLOCKED: mode-rule <name>]` 自己宣言ルールと `[Mode: current_mode]` answer-prefix 指示を含む）。
 
 ### slug 無しのときの挙動
 
-`mode:<name>` がプロンプトに無い場合、hook は何も出力せず exit する。LLM はプラグインを入れていないときと完全に同じプロンプトを受け取る。**設計上、挙動の変化はゼロ**。
+`mode:` / `role:` のどちらもプロンプトに無い場合、hook は何も出力せず exit する。LLM はプラグインを入れていないときと完全に同じプロンプトを受け取る。**設計上、挙動の変化はゼロ**。
 
 ## 仕組み
 
@@ -93,12 +119,13 @@ On rule violation, stop and self-report with the marker `[BLOCKED: mode-rule <na
   │
   ├─ [UserPromptSubmit hook: mode_inject.py]
   │     ├─ stdin を読む（UTF-8 BOM 対応）
-  │     ├─ regex 検索: (?:^|\s)mode:([a-z][a-z0-9_-]*)
-  │     ├─ 不一致 → exit 0、無出力
-  │     ├─ 一致するが対応ファイルが無い → exit 0、無出力
-  │     └─ それ以外 → JSON additionalContext = mode ファイル + _common.md を出力
+  │     ├─ MODE_RE: (?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*)         (case-insensitive, lowercase 正規化)
+  │     ├─ ROLE_RE: (?:^|\s)role:(?:"([^"]*)"|(.+?)(?=...))       (case-insensitive prefix、値は verbatim)
+  │     ├─ mode alias 解決（verify→debug, implement→execute）
+  │     ├─ どの slug も無し → exit 0、無出力
+  │     └─ それ以外 → JSON additionalContext = _meta.md + active block + (mode 設定時のみ mode rules + _common.md) を出力
   │
-  └─ LLM はプロンプト＋注入された mode ルールを受け取る
+  └─ LLM はプロンプト＋注入された framework + active 宣言を受け取る
 ```
 
 ### ファイル構成
@@ -110,7 +137,8 @@ plugins/role-mode/
     hooks.json
     mode_inject.py            # UserPromptSubmit hook
   prompts/modes/
-    _common.md                # ALL MODES ルール
+    _meta.md                  # framework header（軸 / conflict / BLOCKED / answer prefix）
+    _common.md                # ALL MODES ルール（mode 専用）
     ask.md
     discuss.md
     brainstorm.md
@@ -121,6 +149,8 @@ plugins/role-mode/
     debug.md
     review.md
 ```
+
+各 `<mode>.md` は `Basic Behavior` / `NEVER` / `DO` の 3 行のみ。`mode: <name>` ヘッダは hook が動的生成し、ファイルには持たない。
 
 ## 他プラグインとの併用
 

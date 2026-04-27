@@ -1,6 +1,6 @@
 # role-mode
 
-A Claude Code plugin that lets the user declare a **cognitive mode** for each turn via a `mode:<name>` slug in the prompt. When the slug is present, the matching mode definition (a tight set of `NEVER` / `DO` rules) plus a small set of common rules are injected into the conversation through a `UserPromptSubmit` hook. When the slug is absent, **nothing is injected** and the LLM behaves exactly as it would without the plugin.
+A Claude Code plugin that lets the user declare a **cognitive mode** and/or a **role** for each turn via `mode:<name>` and `role:<value>` slugs in the prompt. When at least one slug is present, the framework meta (Two response axes / Mode > Role / answer-prefix rule) plus the active Role/Mode declaration plus the matching mode rules and common rules are injected through a `UserPromptSubmit` hook. When no slug is present, **nothing is injected** and the LLM behaves exactly as it would without the plugin.
 
 Claude Code only. Cursor is **not supported** because Cursor's `beforeSubmitPrompt` hook can only continue/block submissions and cannot inject context (only `sessionStart` can inject context, and it fires once per conversation rather than per turn — incompatible with slug-based per-turn injection).
 
@@ -41,50 +41,76 @@ There is no separate `init` step — once the plugin is enabled, the `UserPrompt
 
 ```
 mode:<name>
+role:<value>
+role:"<value>"
 ```
 
-- The first occurrence in the user prompt is consumed; subsequent occurrences are ignored.
-- The slug can appear at any position (start of input or after whitespace), mirroring `pj:` from the taskflow plugin.
-- Names are lowercase ASCII (`[a-z][a-z0-9_-]*`).
-- Unknown mode names are silently ignored — the plugin does not fail or warn.
+Both `mode:` and `role:` are optional. The hook fires when at least one is present. The first occurrence per kind is consumed; subsequent occurrences are ignored. Both slugs can appear at any position (start of input or after whitespace), mirroring `pj:` from the taskflow plugin. Prefix matching is case-insensitive.
+
+#### `mode:<name>`
+
+- `<name>` matches `[A-Za-z][A-Za-z0-9_-]*`. Captured value is normalized to lowercase.
+- Unknown mode names are silently ignored — no failure, no warning.
+- Mode aliases: `verify` resolves to `debug`, `implement` resolves to `execute`. Your chosen alias is preserved in the displayed `mode:` line; only the underlying rules file is shared.
+
+#### `role:<value>`
+
+- `<value>` is free-form (multibyte and spaces allowed). The value is preserved verbatim — no case folding.
+- Three terminator rules, in precedence order:
+  - **Quoted** `role:"<value>"` — captures everything between the double quotes verbatim. Use this when the value contains literal `mode:` / `pj:` or other tokens that would otherwise terminate the unquoted form.
+  - **Unquoted, next slug** — capture stops at the next ` mode:` or ` pj:` slug.
+  - **Unquoted, end of line / input** — capture stops at the next newline or end of input.
+- Empty quoted value (`role:""`) is treated as no role.
 
 Example prompts:
 
 ```
 mode:plan design the migration steps for the auth refactor
 pj:harness-modes mode:execute apply the scaffold from the design note
+mode:debug role:厳格なコードレビュアー、セキュリティ重視で挙動を批判的に検証する
+このコードを見て
+role:"senior backend engineer" mode:debug investigate this race condition
 explore the repo first, then mode:survey list the open API contracts
 ```
 
 ### Available modes
 
-| Mode | Use it when... |
-|---|---|
-| `mode:ask` | You want a direct, grounded answer to a single question |
-| `mode:discuss` | You want an expert opinion or a decision-driving conversation |
-| `mode:brainstorm` | You want diverse ideas without judgment or evidence pressure |
-| `mode:organize` | You want help structuring fragmented thoughts |
-| `mode:survey` | You want fact collection — no solutions, no proposals |
-| `mode:plan` | You want actionable steps with clear criteria, no final deliverables |
-| `mode:execute` | You want the plan applied strictly, no scope expansion |
-| `mode:debug` | You want root-cause analysis, no premature fixes |
-| `mode:review` | You want process evaluation and lessons learned |
+| Mode | Aliases | Use it when... |
+|---|---|---|
+| `mode:ask` | | You want a direct, grounded answer to a single question |
+| `mode:discuss` | | You want an expert opinion or a decision-driving conversation |
+| `mode:brainstorm` | | You want diverse ideas without judgment or evidence pressure |
+| `mode:organize` | | You want help structuring fragmented thoughts |
+| `mode:survey` | | You want fact collection — no solutions, no proposals |
+| `mode:plan` | | You want actionable steps with clear criteria, no final deliverables |
+| `mode:execute` | `implement` | You want the plan applied strictly, no scope expansion |
+| `mode:debug` | `verify` | You want root-cause analysis, no premature fixes |
+| `mode:review` | | You want process evaluation and lessons learned |
 
 The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/modes/).
 
-### Common rules (always injected with any mode)
+### What gets injected
+
+| Slugs present | Injected blocks |
+|---|---|
+| `mode:` only | `_meta.md` + `mode: <name>` + mode rules + `_common.md` |
+| `role:` only | `_meta.md` + `role: <value>` |
+| Both | `_meta.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` |
+| Neither | nothing (hook exits silently) |
+
+`_common.md` (mode-only rules):
 
 ```markdown
 ## ALL MODES
 - NEVER: overstep(mode boundary), change-mode-silently
 - DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming)
-
-On rule violation, stop and self-report with the marker `[BLOCKED: mode-rule <name>]` before proceeding.
 ```
+
+`_meta.md` framework header (always paired with any active slug; includes the `[BLOCKED: mode-rule <name>]` self-report rule and the `[Mode: current_mode]` answer-prefix instruction).
 
 ### Behavior without a slug
 
-If no `mode:<name>` appears in the prompt, the hook exits without emitting any context. The LLM sees exactly the same input it would see without the plugin installed. **Zero behavioral change is guaranteed by design.**
+If neither `mode:` nor `role:` appears in the prompt, the hook exits without emitting any context. The LLM sees exactly the same input it would see without the plugin installed. **Zero behavioral change is guaranteed by design.**
 
 ## How it works
 
@@ -93,12 +119,13 @@ User prompt
   │
   ├─ [UserPromptSubmit hook: mode_inject.py]
   │     ├─ reads stdin (UTF-8 BOM tolerant)
-  │     ├─ regex search: (?:^|\s)mode:([a-z][a-z0-9_-]*)
-  │     ├─ if no match → exit 0, no output
-  │     ├─ if match but file missing → exit 0, no output
-  │     └─ else emit JSON additionalContext = mode file + _common.md
+  │     ├─ MODE_RE: (?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*)         (case-insensitive, lowercased)
+  │     ├─ ROLE_RE: (?:^|\s)role:(?:"([^"]*)"|(.+?)(?=...))       (case-insensitive prefix, verbatim value)
+  │     ├─ resolve mode alias (verify→debug, implement→execute)
+  │     ├─ if neither slug → exit 0, no output
+  │     └─ else emit JSON additionalContext = _meta.md + active block + (mode rules + _common.md when mode set)
   │
-  └─ LLM receives the prompt plus the injected mode rules
+  └─ LLM receives the prompt plus the injected framework + active declaration
 ```
 
 ### File layout
@@ -110,7 +137,8 @@ plugins/role-mode/
     hooks.json
     mode_inject.py            # UserPromptSubmit hook
   prompts/modes/
-    _common.md                # ALL MODES rules
+    _meta.md                  # framework header (axes / conflict rule / BLOCKED / answer prefix)
+    _common.md                # ALL MODES rules (mode-only)
     ask.md
     discuss.md
     brainstorm.md
@@ -121,6 +149,8 @@ plugins/role-mode/
     debug.md
     review.md
 ```
+
+Each `<mode>.md` contains exactly three lines: `Basic Behavior`, `NEVER`, `DO`. The `mode: <name>` header is generated dynamically by the hook and is not stored in the file.
 
 ## Interop
 
