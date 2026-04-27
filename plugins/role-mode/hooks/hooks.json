@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python ${CLAUDE_PLUGIN_ROOT}/hooks/mode_inject.py"
+          }
+        ]
+      }
+    ]
+  }
+}

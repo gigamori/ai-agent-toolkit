@@ -26,6 +26,16 @@
       "source": "./plugins/rule-inject",
       "category": "workflow",
       "homepage": "https://github.com/gigamori/ai-agent-toolkit/tree/main/plugins/rule-inject"
+    },
+    {
+      "name": "role-mode",
+      "description": "Cognitive-mode harness: declares Role and Mode for each turn via slug-based prompt injection (mode:<name>), with strict NEVER/DO rules.",
+      "author": {
+        "name": "gigamori"
+      },
+      "source": "./plugins/role-mode",
+      "category": "productivity",
+      "homepage": "https://github.com/gigamori/ai-agent-toolkit/tree/main/plugins/role-mode"
     }
   ]
 }

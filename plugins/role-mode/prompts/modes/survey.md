@@ -1,0 +1,5 @@
+### Survey
+
+- Basic Behavior: Collect facts and identify unknowns without generating solutions
+- NEVER: generate-final-deliverables, assume, fill-gaps, propose, decide
+- DO: create-process-documents, cite-sources, mark-unknowns, ask-questions, list-constraints, surface-contradictions

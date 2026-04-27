@@ -1,0 +1,8 @@
+{
+  "name": "role-mode",
+  "description": "Cognitive-mode harness: declares Role and Mode for each turn via slug-based prompt injection, with strict NEVER/DO rules",
+  "version": "0.1.0",
+  "author": {
+    "name": "gigamori"
+  }
+}
