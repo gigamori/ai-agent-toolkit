@@ -29,68 +29,7 @@ Once the plugin is enabled, initialize it in the working directory:
 
 This creates the `_projects/` directory and writes hook settings into `.claude/settings.json`.
 
-### Using with Cursor (manual setup)
-
-Cursor does not recognize the Claude Code plugin structure, but it does auto-load `.claude/agents/`, `.claude/skills/`, and `.claude/settings.json`. Perform the following one-time setup:
-
-#### Prerequisites
-
-- `uv` must be on the `PATH`
-- Cursor's Third Party Hooks must be enabled
-- On Windows, administrator rights or Developer Mode ON (required for creating symlinks)
-
-#### Steps
-
-1. **Create symlinks**
-
-   `<plugin>` is the plugin's absolute path (e.g. `C:\Users\<user>\.claude\plugins\taskflow`). From the workspace CWD:
-
-   bash (WSL / Git Bash):
-
-   ```bash
-   mkdir -p .claude/agents .claude/skills
-   ln -s <plugin>/agents/project-router.md .claude/agents/project-router.md
-   ln -s <plugin>/skills/init              .claude/skills/init
-   ```
-
-   PowerShell (administrator):
-
-   ```powershell
-   New-Item -ItemType Directory -Force .claude\agents,.claude\skills | Out-Null
-   New-Item -ItemType SymbolicLink -Path .claude\agents\project-router.md -Target <plugin>\agents\project-router.md
-   New-Item -ItemType SymbolicLink -Path .claude\skills\init              -Target <plugin>\skills\init
-   ```
-
-   cmd (administrator):
-
-   ```cmd
-   mkdir .claude\agents 2>nul
-   mkdir .claude\skills 2>nul
-   mklink     .claude\agents\project-router.md <plugin>\agents\project-router.md
-   mklink /D  .claude\skills\init              <plugin>\skills\init
-   ```
-
-2. **Emit the hook settings**
-
-   From a Cursor session:
-
-   ```
-   initialize taskflow
-   ```
-
-   The skill is auto-detected and writes hook settings — with the plugin's absolute path expanded — into `.claude/settings.json`.
-
-3. **Verify**
-
-   - `.claude/agents/project-router.md` is a symlink (check with `ls -la .claude/agents/`)
-   - `.claude/skills/init/SKILL.md` is reachable via the symlink
-   - `.claude/settings.json` contains a `hooks` section and each `command` uses the plugin's absolute path
-
-#### Cursor constraints
-
-- If the plugin is reinstalled at a different path, re-run `/taskflow:init` to refresh the absolute paths
-- Because symlinks are used, updates to plugin-side files propagate automatically
-- Hooks not invoked by Cursor: because `~/.claude/plans/` and `~/.claude/projects/.../memory/` do not exist in Cursor, `session_sync.py` exits as a no-op (no harm)
+> **Claude Code only.** taskflow's per-turn project routing depends on `UserPromptSubmit`'s `additionalContext` injection. Cursor's `beforeSubmitPrompt` (the third-party auto-mapped equivalent) cannot inject context into the LLM, so taskflow does not work on Cursor. See `_projects/harness-taskflow/project-notes/claude-plugin-to-cursor-compat.md` for background.
 
 ## Usage
 

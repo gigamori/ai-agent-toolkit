@@ -1,3 +1,38 @@
+## Response prefix
+
+Every LLM response MUST start with a `[pj:<project>]` marker on its own line, before any other content (including tool-call narration).
+
+- Project determined → `[pj:<project>]` (e.g. `[pj:harness-taskflow]`)
+- Project undetermined → `[pj:(none)]`
+
+The marker itself and the similarity labels below are fixed English tokens. The body of the response follows the user's input language as usual.
+
+### When prefix is `[pj:(none)]`
+
+Immediately after the marker line, list up to 5 nearest existing projects from `_projects/index.md`, ranked by relevance to the user's input. If `_projects/index.md` has 5 or fewer projects, list all of them.
+
+Format:
+
+```
+[pj:(none)]
+Nearest existing projects:
+- <project> — <label>: <one-line reason>
+- ...
+
+Specify with `pj:<name>` to select, or `pj:none` to proceed without a project.
+```
+
+Similarity labels (qualitative, not numeric):
+
+| Label | Meaning |
+|---|---|
+| `strong` | Direct keyword / scope overlap; almost certainly the right project |
+| `related` | Same domain or adjacent area |
+| `weak` | Some shared vocabulary but different focus |
+| `far` | Different domain (include only when the project list is short) |
+
+If the project-router subagent supplied a `nearest_projects` block, use it as-is. Otherwise the main agent computes the labels itself by reading `_projects/index.md`.
+
 ## Skip condition
 
 If the user input contains `noprogress`, skip project management (progress / project-notes / subsequent file reads). Always run project determination and state writing regardless.
@@ -20,10 +55,7 @@ When a session has a `state_file` path injected via `[Progress Session]`, invoke
      "noprogress": true | false
    }
    ```
-3. Invoke the subagent:
-   - Claude Code: Agent tool, `subagent_type: project-router`, `prompt: <JSON context block + template body>`
-   - Cursor: Task tool, or run `/project-router <JSON context block + template body>`
-   - Environments without a subagent capability: the main agent runs the same procedure itself.
+3. Invoke the subagent via the Agent tool: `subagent_type: project-router`, `prompt: <JSON context block + template body>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself.
 4. Handling the result:
    - `action: apply` → use the returned context (progress, handoff, etc.) as the premise for task execution.
    - `action: skip` → skip project management and proceed to the task.

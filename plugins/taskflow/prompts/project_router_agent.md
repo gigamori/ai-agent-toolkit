@@ -16,7 +16,13 @@ The main agent prepends the following JSON context block:
 2. If `current_project` is empty, determine it in this order of priority:
    a. If `first_line` contains `pj:<name>`, use it (`pj:none` is treated as an empty string).
    b. Read `_projects/index.md` and match the project list against `prompt_summary` / `first_line`. If a repo name, package name, or keyword matches a project, use it.
-   c. If none apply, proceed with an empty value (the main agent will fill it from conversation context in a later turn).
+   c. If none apply, proceed with an empty value (the main agent will fill it from conversation context in a later turn). **Additionally**, compute `nearest_projects` (up to 5 entries) by ranking every row in `_projects/index.md` against `prompt_summary` / `first_line` and assigning one of these qualitative labels:
+      - `strong` — direct keyword / scope overlap
+      - `related` — same domain or adjacent area
+      - `weak` — some shared vocabulary but different focus
+      - `far` — different domain (only include when the project list is short)
+
+      If `_projects/index.md` has 5 or fewer projects, list all of them.
 3. Write the finalized project name into state_file:
    ```bash
    echo '{"project": "<project_name>"}' > <state_file>
@@ -127,6 +133,9 @@ action: skip
 project: <project_name>
 project_notes_autosave: true | false
 reason: <brief reason>
+
+--- nearest_projects ---
+<only when project is empty. Up to 5 entries, format: "- <name> — <label>: <reason>". "none" otherwise.>
 ---END---
 ```
 
@@ -174,5 +183,8 @@ progress_exists: true | false
 
 --- drift_warnings ---
 <consistency warnings for progress/handoff/project-notes. "none" if no issues.>
+
+--- nearest_projects ---
+<only when project is empty. Up to 5 entries, format: "- <name> — <label>: <reason>". "none" otherwise.>
 ---END---
 ```

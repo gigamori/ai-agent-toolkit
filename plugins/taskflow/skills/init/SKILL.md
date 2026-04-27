@@ -71,28 +71,3 @@ Create `_projects/<name>/` with:
 6. `handoff/2_done/` directory
 
 Also add the project to the `_projects/index.md` table.
-
-## Cursor-compat hooks wiring (always run after base structure)
-
-Cursor does not recognize the plugin structure, so we expand the plugin's `hooks/hooks.json` with absolute plugin paths and write the result into the CWD's `.claude/settings.json`. This is redundant for Claude Code users, but having the same settings in both places is harmless.
-
-Steps:
-
-1. Resolve the plugin's absolute path, in this order:
-   - If the environment variable `$CLAUDE_PLUGIN_ROOT` is available, use it.
-   - Otherwise, compute two levels up from this `SKILL.md` file (`.../taskflow/`).
-   - If neither works, ask the user.
-
-2. Read the plugin's `hooks/hooks.json` and substitute `${CLAUDE_PLUGIN_ROOT}` with the absolute path from step 1 to obtain the expanded JSON.
-
-3. Read the CWD's `.claude/settings.json` (start from `{}` if it does not exist).
-
-4. Merge into the `hooks` key:
-   - If an array for the same event name already exists → append each entry from the plugin side to the end of the array. Skip entries whose `command` is already present (deduplication).
-   - If the event name does not yet exist → add it.
-
-5. Write `.claude/settings.json` back with 2-space indentation.
-
-6. Tell the user:
-   - When opening this workspace in Cursor, the user still needs to create the `.claude/agents/` and `.claude/skills/` symlinks by following the README.
-   - If they are already present, this step is unnecessary.

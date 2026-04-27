@@ -30,72 +30,7 @@ claude --plugin-dir ./plugins/taskflow
 これにより `_projects/` ディレクトリが作成され、`.claude/settings.json` に
 hooks 設定が書き込まれる。
 
-### Cursor で使う場合（手動セットアップ）
-
-Cursor は Claude Code plugin 構造を認識しないが、`.claude/agents/` `.claude/skills/`
-`.claude/settings.json` は自動読み込みする。以下の手動セットアップを1度だけ行う:
-
-#### 前提
-
-- `uv` コマンドが PATH に通っていること
-- Cursor の Third Party Hooks が有効であること
-- Windows は管理者権限または開発者モード ON（symlink 作成のため）
-
-#### 手順
-
-1. **symlink 作成**
-
-   `<plugin>` は plugin 絶対パス（例: `C:\Users\<user>\.claude\plugins\taskflow`）。
-   ワークスペース CWD で:
-
-   bash（WSL / Git Bash）:
-
-   ```bash
-   mkdir -p .claude/agents .claude/skills
-   ln -s <plugin>/agents/project-router.md .claude/agents/project-router.md
-   ln -s <plugin>/skills/init              .claude/skills/init
-   ```
-
-   PowerShell（管理者）:
-
-   ```powershell
-   New-Item -ItemType Directory -Force .claude\agents,.claude\skills | Out-Null
-   New-Item -ItemType SymbolicLink -Path .claude\agents\project-router.md -Target <plugin>\agents\project-router.md
-   New-Item -ItemType SymbolicLink -Path .claude\skills\init              -Target <plugin>\skills\init
-   ```
-
-   cmd（管理者）:
-
-   ```cmd
-   mkdir .claude\agents 2>nul
-   mkdir .claude\skills 2>nul
-   mklink     .claude\agents\project-router.md <plugin>\agents\project-router.md
-   mklink /D  .claude\skills\init              <plugin>\skills\init
-   ```
-
-2. **フック設定書き出し**
-
-   Cursor セッション内で:
-
-   ```
-   taskflow を初期化して
-   ```
-
-   skill が自動検出され、`.claude/settings.json` に plugin 絶対パス展開済みの
-   hooks 設定が書き込まれる。
-
-3. **確認**
-
-   - `.claude/agents/project-router.md` が symlink（`ls -la .claude/agents/`）
-   - `.claude/skills/init/SKILL.md` が symlink 先から参照可能
-   - `.claude/settings.json` に `hooks` セクションがあり、`command` が plugin 絶対パス
-
-#### Cursor 側の制約
-
-- plugin を別パスに再インストールしたら `/taskflow:init` を再実行して絶対パスを更新
-- symlink 経由なので plugin 側ファイルの更新は自動反映される
-- Cursor 側で呼ばれない hook: `~/.claude/plans/` や `~/.claude/projects/.../memory/` が
-  存在しないため、`session_sync.py` は no-op で正常終了する（実害なし）
+> **Claude Code 専用。** taskflow の毎ターン project routing は `UserPromptSubmit` の `additionalContext` 注入に依存している。Cursor の third-party 互換で auto-map される `beforeSubmitPrompt` は LLM コンテキスト注入を持たない（block 専用）ため、taskflow は Cursor 上では動作しない。背景は `_projects/harness-taskflow/project-notes/claude-plugin-to-cursor-compat.md` を参照。
 
 ## 使い方
 
