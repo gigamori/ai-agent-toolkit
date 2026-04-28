@@ -71,6 +71,7 @@ Each mode defines: output structure (numbered sections), priority order (same se
 9. Current state and immediate next step
 
 **Detail rules:** Include decision-changing instructions, final decisions, files touched, important commands/config/short code signatures. Include failed approaches only when they explain the final direction. Do not dump all messages verbatim; quote only decision-critical phrasing.
+A claim enters 4 only with explicit affirmative tokens from the deciding speaker. Mere absence of objection keeps the claim in 3 or 8, not 4.
 **Current state:** Describe work state immediately before compaction. Keep concrete and operational.
 
 ---
