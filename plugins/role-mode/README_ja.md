@@ -1,6 +1,6 @@
 # role-mode
 
-ユーザーが各ターンで `mode:<name>` および/または `role:<value>` slug をプロンプトに含めると、framework meta（Two response axes / Mode > Role / answer-prefix 規約）+ 現在の Role/Mode 宣言 + 該当 mode ルール + 共通ルールが `UserPromptSubmit` hook で会話に注入される Claude Code プラグイン。どの slug も無いときは **何も注入されず**、プラグインを入れていない素の LLM 挙動と完全一致する。
+ユーザーが各ターンで `mode:<name>` および/または `role:<value>` slug をプロンプトに含めると、framework meta（Two response axes / Mode > Role）+ 現在の Role/Mode 宣言 + 該当 mode ルール + 共通ルールが `UserPromptSubmit` hook で会話に注入される Claude Code プラグイン。どの slug も無いときは **何も注入されず**、プラグインを入れていない素の LLM 挙動と完全一致する。
 
 **Claude Code 専用**。Cursor は **非対応**：Cursor の `beforeSubmitPrompt` hook は continue/block しか返せず context 注入機構を持たない。注入可能な hook は `sessionStart` のみで、これは会話開始時 1 回だけ発火するためターンごとの slug-based 注入と原理的に両立しない。
 
@@ -101,12 +101,13 @@ role:"senior backend engineer" mode:debug この race condition を調査して
 `_common.md`（mode 専用ルール）：
 
 ```markdown
-## ALL MODES
 - NEVER: overstep(mode boundary), change-mode-silently
 - DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming)
+
+Answer starting with `[Mode: current_mode]`
 ```
 
-`_meta.md`（framework ヘッダ。任意の active slug と必ず一緒に注入される。`[BLOCKED: mode-rule <name>]` 自己宣言ルールと `[Mode: current_mode]` answer-prefix 指示を含む）。
+`_meta.md`（framework ヘッダ。任意の active slug と必ず一緒に注入される。`[BLOCKED: mode-rule <name>]` 自己宣言ルールを含む）。
 
 ### slug 無しのときの挙動
 
@@ -137,8 +138,8 @@ plugins/role-mode/
     hooks.json
     mode_inject.py            # UserPromptSubmit hook
   prompts/modes/
-    _meta.md                  # framework header（軸 / conflict / BLOCKED / answer prefix）
-    _common.md                # ALL MODES ルール（mode 専用）
+    _meta.md                  # framework header（軸 / conflict / BLOCKED）
+    _common.md                # ALL MODES ルール + answer-prefix 指示（mode 専用）
     ask.md
     discuss.md
     brainstorm.md

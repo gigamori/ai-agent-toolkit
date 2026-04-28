@@ -1,6 +1,6 @@
 # role-mode
 
-A Claude Code plugin that lets the user declare a **cognitive mode** and/or a **role** for each turn via `mode:<name>` and `role:<value>` slugs in the prompt. When at least one slug is present, the framework meta (Two response axes / Mode > Role / answer-prefix rule) plus the active Role/Mode declaration plus the matching mode rules and common rules are injected through a `UserPromptSubmit` hook. When no slug is present, **nothing is injected** and the LLM behaves exactly as it would without the plugin.
+A Claude Code plugin that lets the user declare a **cognitive mode** and/or a **role** for each turn via `mode:<name>` and `role:<value>` slugs in the prompt. When at least one slug is present, the framework meta (Two response axes / Mode > Role) plus the active Role/Mode declaration plus the matching mode rules and common rules are injected through a `UserPromptSubmit` hook. When no slug is present, **nothing is injected** and the LLM behaves exactly as it would without the plugin.
 
 Claude Code only. Cursor is **not supported** because Cursor's `beforeSubmitPrompt` hook can only continue/block submissions and cannot inject context (only `sessionStart` can inject context, and it fires once per conversation rather than per turn — incompatible with slug-based per-turn injection).
 
@@ -101,12 +101,13 @@ The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/m
 `_common.md` (mode-only rules):
 
 ```markdown
-## ALL MODES
 - NEVER: overstep(mode boundary), change-mode-silently
 - DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming)
+
+Answer starting with `[Mode: current_mode]`
 ```
 
-`_meta.md` framework header (always paired with any active slug; includes the `[BLOCKED: mode-rule <name>]` self-report rule and the `[Mode: current_mode]` answer-prefix instruction).
+`_meta.md` framework header (always paired with any active slug; includes the `[BLOCKED: mode-rule <name>]` self-report rule).
 
 ### Behavior without a slug
 
@@ -137,8 +138,8 @@ plugins/role-mode/
     hooks.json
     mode_inject.py            # UserPromptSubmit hook
   prompts/modes/
-    _meta.md                  # framework header (axes / conflict rule / BLOCKED / answer prefix)
-    _common.md                # ALL MODES rules (mode-only)
+    _meta.md                  # framework header (axes / conflict rule / BLOCKED)
+    _common.md                # ALL MODES rules + answer-prefix instruction (mode-only)
     ask.md
     discuss.md
     brainstorm.md
