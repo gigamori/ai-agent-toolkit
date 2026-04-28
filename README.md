@@ -42,6 +42,7 @@ Standalone Agent Skills that can be dropped into any agent without a plugin.
 |---|---|
 | [create-skill](skills/create-skill/) | Guides through creating effective Agent Skills with best practices, structure templates, and validation checklists |
 | [compact-document](skills/compact-document/) | Multi-mode document compaction framework — condenses articles, specs, transcripts, and more with minimal information loss |
+| [register-pi-tools](skills/register-pi-tools/) | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller |
 
 Copy a skill into your agent's skill folder:
 
@@ -71,7 +72,8 @@ ai-agent-toolkit/
 │   └── rule-inject/             Plugin: CLAUDE.md rule enforcement
 ├── skills/
 │   ├── create-skill/          Skill: author new skills
-│   └── compact-document/      Skill: document compaction
+│   ├── compact-document/      Skill: document compaction
+│   └── register-pi-tools/     Skill: migrate Python scripts and build tools.yaml
 ├── LICENSE
 ├── README.md
 └── README_ja.md
