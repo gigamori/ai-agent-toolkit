@@ -68,7 +68,7 @@ Integration (main thread)
 
 ## SubAgent Launch Spec
 
-- Task tool, subagent_type="generalPurpose"
+- Task tool, subagent_type="general-purpose"
 - No model override (inherits parent model)
 - chunk-brief: independent tasks, run in parallel (max 4)
 - render: single invocation after all chunk processing completes
