@@ -12,6 +12,10 @@ _projects/
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Temp / scratch
 **/ignore*/**
 **/tmp/**
