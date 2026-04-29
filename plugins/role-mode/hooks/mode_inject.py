@@ -75,10 +75,13 @@ prompt = data.get('prompt', '')
 if not prompt:
   sys.exit(0)
 
-mode_match = MODE_RE.search(prompt)
+nomode = 'nomode' in prompt
+norole = 'norole' in prompt
+
+mode_match = None if nomode else MODE_RE.search(prompt)
 mode_name = mode_match.group(1).lower() if mode_match else None
 
-role_match = ROLE_RE.search(prompt)
+role_match = None if norole else ROLE_RE.search(prompt)
 if role_match:
   role_name = (role_match.group(1) or role_match.group(2) or '').strip()
   if not role_name:

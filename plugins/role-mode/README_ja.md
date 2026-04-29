@@ -73,6 +73,21 @@ role:"senior backend engineer" mode:debug この race condition を調査して
 まずリポジトリ調査をして、その後 mode:survey で API 契約を一覧化して
 ```
 
+### エスケープトークン
+
+slug をリテラルとして書きたい場合（注入を起動せずに）、対応するエスケープトークンをプロンプトの任意の位置に含める：
+
+| トークン | 効果 |
+|---|---|
+| `nomode` | このターンの `mode:` 検出をスキップ |
+| `norole` | このターンの `role:` 検出をスキップ |
+
+両方を組み合わせることも可能。例：プラグイン自体を話題にしながら mode を発火させない場合：
+
+```
+nomode norole — mode:plan と mode:execute の違いは何ですか？
+```
+
 ### 利用可能な mode
 
 | Mode | Aliases | こんなときに |

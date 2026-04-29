@@ -73,6 +73,21 @@ role:"senior backend engineer" mode:debug investigate this race condition
 explore the repo first, then mode:survey list the open API contracts
 ```
 
+### Escape tokens
+
+To write a slug literally without triggering injection, add the corresponding escape token anywhere in the prompt:
+
+| Token | Effect |
+|---|---|
+| `nomode` | Skip `mode:` detection for this turn |
+| `norole` | Skip `role:` detection for this turn |
+
+Both tokens can be combined. Example: discussing the plugin itself without activating any mode:
+
+```
+nomode norole — how does mode:plan differ from mode:execute?
+```
+
 ### Available modes
 
 | Mode | Aliases | Use it when... |
