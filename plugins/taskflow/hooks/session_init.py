@@ -38,6 +38,16 @@ if not session_id:
 state_path = os.path.join(STATE_DIR, f'{session_id}.json')
 user_prompt = data.get('prompt', '')
 
+# norouter: total bypass of taskflow.
+# When the user input contains the standalone token `norouter`, skip the
+# entire hook — no [Progress Session] header, no project_routing.md, no
+# index.md injection, no pj: parsing, no state_file read/write. The
+# session behaves as if the taskflow plugin were not installed for this
+# turn. `pj:<x>` in the prompt is treated as plain text (no longer a
+# taskflow token) and no response prefix is enforced.
+if re.search(r'(?:^|\s)norouter(?:\s|$)', user_prompt):
+  sys.exit(0)
+
 # Parse first pj:<project> occurrence anywhere in prompt (at string start or after whitespace).
 # VSCode extension prepends IDE attachments (<ide_opened_file> etc.) before user text,
 # so strict line-start match would miss them.

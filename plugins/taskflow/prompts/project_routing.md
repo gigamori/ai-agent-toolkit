@@ -33,10 +33,6 @@ Similarity labels (qualitative, not numeric):
 
 If the project-router subagent supplied a `nearest_projects` block, use it as-is. Otherwise the main agent computes the labels itself by reading `_projects/index.md`.
 
-## Skip condition
-
-If the user input contains `norouter`, skip the router invocation entirely (do not read the router prompt or invoke the subagent). Still add the `[pj:<project>]` response prefix.
-
 ## Running the project router
 
 When a session has a `state_file` path injected via `[Progress Session]`, invoke the project-router subagent using the procedure below **before** starting to answer the user's input. This MUST be the first action of every turn.

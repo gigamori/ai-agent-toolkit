@@ -43,7 +43,7 @@ Prefix the prompt with `pj:<project>`. If omitted, the LLM infers the project.
 | Specify a project + slash command | `pj:my-project /plan design the schema` |
 | No matching project | `pj:none write a README` |
 | Create a new project | `create a new project called xxx` |
-| Skip router invocation | `norouter write a README` |
+| Bypass taskflow entirely (this turn) | `norouter write a README` |
 
 ### progress
 
