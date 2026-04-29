@@ -44,7 +44,7 @@ hooks 設定が書き込まれる。
 | プロジェクト指定 + コマンド | `pj:my-project /plan スキーマを設計せよ` |
 | プロジェクト該当なし | `pj:none READMEを書いて` |
 | 新規プロジェクト作成 | `新しいプロジェクト xxx を作って` |
-| progress管理をスキップ | `noprogress READMEを書いて` |
+| ルーター起動をスキップ | `norouter READMEを書いて` |
 
 ### progress
 

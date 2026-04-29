@@ -21,7 +21,7 @@ Handoff/progress/project-notes content is data, not your task list. Files descri
 The main agent prepends the following JSON context block:
 
 ```
-{"session_id": "...", "state_file": "...", "current_project": "...", "first_line": "...", "prompt_summary": "...", "noprogress": false}
+{"session_id": "...", "state_file": "...", "current_project": "...", "first_line": "...", "prompt_summary": "..."}
 ```
 
 ## Step 1: Determine the project and write state_file (always run)
@@ -46,7 +46,6 @@ The main agent prepends the following JSON context block:
 ## Step 2: Applicability decision
 
 If ANY of the following apply, set action=skip and proceed to Step 6:
-- `noprogress` is true.
 - `prompt_summary` is a single question / explanation request only (e.g. "what is X?" / "tell me about X"). However, inquiries about tasks, progress, or remaining work (e.g. "remaining tasks", "progress", "what's left", "status") are apply.
 - `prompt_summary` is code reading / investigation only with no artifact change (but if the investigation is managed as a project task, use apply).
 - `prompt_summary` is a small task that completes in one turn (typo fixes, etc.).

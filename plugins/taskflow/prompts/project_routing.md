@@ -35,7 +35,7 @@ If the project-router subagent supplied a `nearest_projects` block, use it as-is
 
 ## Skip condition
 
-If the user input contains `noprogress`, skip project management (progress / project-notes / subsequent file reads). Always run project determination and state writing regardless.
+If the user input contains `norouter`, skip the router invocation entirely (do not read the router prompt or invoke the subagent). Still add the `[pj:<project>]` response prefix.
 
 ## Running the project router
 
@@ -51,8 +51,7 @@ When a session has a `state_file` path injected via `[Progress Session]`, invoke
      "state_file": "extracted from [Progress Session]",
      "current_project": "extracted from [Progress Session]",
      "first_line": "first line of the user input",
-     "prompt_summary": "summary of the user input (≤ 50 chars)",
-     "noprogress": true | false
+     "prompt_summary": "summary of the user input (≤ 50 chars)"
    }
    ```
 3. Invoke the subagent via the Agent tool: `subagent_type: project-router`, `prompt: <JSON context block + template body>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself.
