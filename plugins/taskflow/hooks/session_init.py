@@ -22,9 +22,14 @@ STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROUTING_MD = os.path.join(PLUGIN_ROOT, 'prompts', 'project_routing.md')
 
-# Guard: skip if _projects/ does not exist in CWD
+# Bootstrap _projects/ root if missing (replaces taskflow:init skill).
+# Creates _projects/, _projects/_state/, and a template _projects/index.md.
 if not os.path.isdir(PROGRESS_ROOT):
-  sys.exit(0)
+  os.makedirs(STATE_DIR, exist_ok=True)
+  index_md = os.path.join(PROGRESS_ROOT, 'index.md')
+  if not os.path.exists(index_md):
+    with open(index_md, 'w', encoding='utf-8') as f:
+      f.write('| Project | Description | Target |\n|---------|-------------|--------|\n')
 
 try:
   data = json.loads(sys.stdin.buffer.read().decode('utf-8'))

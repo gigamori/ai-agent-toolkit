@@ -21,13 +21,7 @@ claude --plugin-dir ./plugins/taskflow
 
 ## Setup
 
-Once the plugin is enabled, initialize it in the working directory:
-
-```
-/taskflow:init myproject
-```
-
-This creates the `_projects/` directory and writes hook settings into `.claude/settings.json`.
+No manual setup is required. On the first user prompt in a workspace, taskflow's `UserPromptSubmit` hook creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` automatically.
 
 > **Claude Code only.** taskflow's per-turn project routing depends on `UserPromptSubmit`'s `additionalContext` injection. Cursor's `beforeSubmitPrompt` (the third-party auto-mapped equivalent) cannot inject context into the LLM, so taskflow does not work on Cursor. See `_projects/harness-taskflow/project-notes/claude-plugin-to-cursor-compat.md` for background.
 
@@ -148,7 +142,7 @@ Two hooks run automatically when the plugin is enabled.
 
 #### UserPromptSubmit: session_init.py
 
-Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Progress Session]` into the LLM context. If `_projects/` is not present in CWD, it skips harmlessly.
+Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Progress Session]` into the LLM context. Creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` if missing.
 
 #### Stop: session_sync.py
 
