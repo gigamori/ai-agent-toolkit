@@ -1,4 +1,5 @@
 ---
+name: taskflow:init
 description: Initialize _projects/ directory structure in the current working directory for task and context management. Use when setting up a new project workspace.
 ---
 

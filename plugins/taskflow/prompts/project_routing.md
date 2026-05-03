@@ -100,7 +100,8 @@ _projects/
     project-notes/       shared knowledge (the authoritative source)
     handoff/
       0_pending/         handoff to the next session (not yet consumed)
-      1_done/            consumed handoff
+      1_in_progress/     consumed by the next session, awaiting human approval
+      2_done/            done (human-approved)
     plans/               plan copies from the Stop hook (archived history)
     memory/              memory copies from the Stop hook (archived history)
 ```
