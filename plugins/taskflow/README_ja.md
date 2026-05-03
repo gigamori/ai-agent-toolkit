@@ -21,14 +21,7 @@ claude --plugin-dir ./plugins/taskflow
 
 ## セットアップ
 
-プラグインを有効にした後、ワーキングディレクトリで初期化する:
-
-```
-/taskflow:init myproject
-```
-
-これにより `_projects/` ディレクトリが作成され、`.claude/settings.json` に
-hooks 設定が書き込まれる。
+手動セットアップは不要。taskflow を有効化した workspace で最初のユーザプロンプトを送ると、`UserPromptSubmit` フックが `_projects/`、`_projects/_state/`、`_projects/index.md`（テンプレート）を自動生成する。
 
 > **Claude Code 専用。** taskflow の毎ターン project routing は `UserPromptSubmit` の `additionalContext` 注入に依存している。Cursor の third-party 互換で auto-map される `beforeSubmitPrompt` は LLM コンテキスト注入を持たない（block 専用）ため、taskflow は Cursor 上では動作しない。背景は `_projects/harness-taskflow/project-notes/claude-plugin-to-cursor-compat.md` を参照。
 
@@ -149,7 +142,7 @@ _projects/
 
 #### UserPromptSubmit: session_init.py
 
-毎ターン実行。`_projects/_state/{session_id}.json` を管理し、`[Progress Session]` をLLMコンテキストに注入する。`_projects/` がCWDに存在しない場合は無害にスキップ。
+毎ターン実行。`_projects/_state/{session_id}.json` を管理し、`[Progress Session]` をLLMコンテキストに注入する。`_projects/` が存在しない場合は自動生成する（`_state/` とテンプレート `index.md` も同時作成）。
 
 #### Stop: session_sync.py
 
