@@ -1,6 +1,6 @@
 # taskflow
 
-A Claude Code plugin that manages progress and context across concurrent tasks. It binds sessions to projects and provides state transitions plus context injection through `progress.md`, `handoff/`, and `project-notes/`.
+A Claude Code plugin that manages progress and context across concurrent tasks. It binds sessions to projects and provides state transitions plus context injection through `progress.md`, `tasks/`, and `project-notes/`.
 
 [日本語版 README はこちら](README_ja.md)
 
@@ -23,7 +23,7 @@ claude --plugin-dir ./plugins/taskflow
 
 No manual setup is required. On the first user prompt in a workspace, taskflow's `UserPromptSubmit` hook creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` automatically.
 
-> **Claude Code only.** taskflow's per-turn project routing depends on `UserPromptSubmit`'s `additionalContext` injection. Cursor's `beforeSubmitPrompt` (the third-party auto-mapped equivalent) cannot inject context into the LLM, so taskflow does not work on Cursor. See `_projects/harness-taskflow/project-notes/claude-plugin-to-cursor-compat.md` for background.
+> **Claude Code only.** taskflow's per-turn project routing depends on `UserPromptSubmit`'s `additionalContext` injection. Cursor's `beforeSubmitPrompt` (the third-party auto-mapped equivalent) cannot inject context into the LLM, so taskflow does not work on Cursor. See `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md` for background.
 
 ## Usage
 
@@ -41,41 +41,66 @@ Prefix the prompt with `pj:<project>`. If omitted, the LLM infers the project.
 
 ### progress
 
-Task state management: TODO / In Progress / Completed, plus a Session Log.
+`progress.md` is the task index. It has a free-text region (Architecture / Key Decisions / Open Issues / Reference Materials — human-edited) and an auto-generated table region (`<!-- @table:begin -->` ... `<!-- @table:end -->`) listing the TODO / In Progress / Completed tasks.
 
 | Action | Example prompt |
 |---|---|
 | Review progress | `show the progress` |
-| Record a session log | `write the session log` |
+| Rebuild the table | `/progress rebuild` |
+| Detect drift | `/progress check` |
 
-The `Prompt` column in the TODO table contains copy-pasteable prompts you can run directly.
+### tasks
 
-### handoff
+One task per file under `tasks/<status>/<date>_<topic>.md`. Status is the folder.
 
-Detailed context attached to a task; used together with the instruction (`Prompt` column) in `progress.md`.
+```
+tasks/
+  0_todo/             not started
+  1_in_progress/      started; work ongoing
+  2_done/             complete (human-approved)
+```
 
-Three states:
+A task file structure:
 
-| Folder | State | Description |
-|---|---|---|
-| `0_pending/` | Not started | Destination for new handoffs. Auto-consumed at session start. |
-| `1_in_progress/` | In progress | Consumed by the AI. Selectively re-read in follow-up sessions. |
-| `2_done/` | Done | Moved here only after human approval. |
+```markdown
+---
+priority: HIGH
+created: 2026-05-13
+updated: 2026-05-13
+---
 
-Example actions:
+# Task title (becomes the progress.md row summary)
+
+Body (mutable region — replace freely).
+
+<!-- @log:begin -->
+- 2026-05-13: started
+- 2026-05-14: phase A complete
+<!-- @log:end -->
+```
+
+The body region is mutable; the log block is append-only.
+
+Status transitions:
 
 | Action | Example prompt |
 |---|---|
-| Write a handoff | `write a handoff` |
-| Approve completion | `mark this task as done` / `move handoff xxx.md to done` |
-| Send back | `send this task back` |
-| Hold | Append `[HOLD]` to the In Progress entry in `progress.md` |
-
-Changing the status in `progress.md` moves the corresponding handoff folder accordingly.
+| Start a task | `/progress sync` (after `mv` or after editing progress.md) |
+| Approve completion | `/progress approve <id>` |
+| Send back / reopen | `/progress revert <id>` |
 
 ### project-notes
 
-Project-specific persistent knowledge. The AI references it selectively when needed.
+Project-specific persistent knowledge, categorized by folder:
+
+| Category | Purpose |
+|---|---|
+| `specs/` | Designs, decisions, ADRs |
+| `investigations/` | Research, analysis, post-mortems |
+| `checks/` | Verification items, checklists |
+| `procedures/` | Step-by-step instructions for humans |
+| `backlog/` | Candidate items, ideas |
+| `_archive/` | Exhausted; no longer authoritative |
 
 | Action | Example prompt |
 |---|---|
@@ -83,15 +108,15 @@ Project-specific persistent knowledge. The AI references it selectively when nee
 | List | `what's in notes?` |
 | Record codebase structure | `summarize this repo's structure into notes` |
 
-`project-notes/index.md` tracks the file list and is updated automatically when notes are created or edited.
+`project-notes/index.md` is a 4-column table (`File | Description | Tags | Updated`) tracking notes; updated automatically when notes are created or edited.
 
 #### Auto-save for investigation-style tasks
 
-When the user's intent is information gathering / comparison / structuring / investigation, the project-router detects it semantically and returns `project_notes_autosave: true`. The main agent delivers its primary answer, then asks the user whether to save — including a suggested filename. Only on approval are `project-notes/<slug>.md` and `project-notes/index.md` updated. A decline or no reply results in no save.
+When the user's intent is information gathering / comparison / structuring / investigation, the project-router detects it semantically and returns `project_notes_autosave: true`. The main agent delivers its primary answer, then asks the user whether to save — including a suggested category and slug. Only on approval are `project-notes/<category>/<slug>.md` and `project-notes/index.md` updated.
 
 See `taskflow/prompts/project_router_agent.md` `Step 2b` for the detection conditions, and the "auto-save flow" section of `taskflow/prompts/notes_guidelines.md` for the save flow.
 
-- Fires for: "investigate this repo's structure", "compare options A and B", "organize how handoff is used"
+- Fires for: "investigate this repo's structure", "compare options A and B", "organize how X works"
 - Does NOT fire for: "fix a typo in the README", one-shot explanation requests ("what is X?"), or explicit refusal ("don't save")
 
 ## Directory layout
@@ -102,14 +127,20 @@ _projects/
   _state/                     session state (auto-managed)
   <project>/
     index.md                  project overview
-    progress.md               task progress tracking
+    progress.md               task index
+    tasks/
+      0_todo/                 not started
+      1_in_progress/          started; work ongoing
+      2_done/                 complete (human-approved)
     project-notes/
-      index.md                index for project-notes
-      *.md                    individual project-notes
-    handoff/
-      0_pending/              not started
-      1_in_progress/          in progress
-      2_done/                 done (human-approved)
+      index.md                4-column index
+      specs/                  designs, decisions, ADRs
+      investigations/         research, analysis, post-mortems
+      checks/                 verification items, checklists
+      procedures/             step-by-step instructions
+      backlog/                candidate items, ideas
+      _archive/               exhausted
+    _archive/                 project-level archive
     plans/                    plan copies (auto-archived history)
     memory/                   memory copies (auto-archived history)
 ```
@@ -127,7 +158,7 @@ session start
   │
   ├─ [LLM] applicability decision ─→ decides whether progress management is needed
   │     not needed → run the task only
-  │     needed     → read/write progress.md / handoff / project-notes
+  │     needed     → read/write progress.md / tasks / project-notes
   │
   ├─ [LLM] project_notes_autosave judgement ─→ for investigation intents, prompts to save after the main response
   │

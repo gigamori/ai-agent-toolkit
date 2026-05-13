@@ -39,7 +39,7 @@ When a session has a `state_file` path injected via `[Progress Session]`, invoke
 
 ### Steps
 
-1. Read `lib/prompts/project_router_agent.md`.
+1. Read `taskflow/prompts/project_router_agent.md`.
 2. Prepend the following JSON context block to the template:
    ```json
    {
@@ -52,7 +52,7 @@ When a session has a `state_file` path injected via `[Progress Session]`, invoke
    ```
 3. Invoke the subagent via the Agent tool: `subagent_type: project-router`, `prompt: <JSON context block + template body>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself.
 4. Handling the result:
-   - `action: apply` → use the returned context (progress, handoff, etc.) as the premise for task execution.
+   - `action: apply` → use the returned context (progress, tasks, project-notes, etc.) as the premise for task execution.
    - `action: skip` → skip project management and proceed to the task.
 
 ### When the project is not yet determined (empty project returned)
@@ -67,11 +67,11 @@ If inference is not possible, proceed with an empty project and wait for the use
 
 ### When progress.md does not exist
 
-If the subagent returns `progress_exists: false`, ask the user whether to create it. On approval, generate it from the template.
+If the subagent returns `progress_exists: false`, ask the user whether to create it. On approval, generate it from `taskflow/prompts/progress_template.md`.
 
 ## Interaction with Plan mode
 
-Even when Plan mode has injected the constraint "no edits outside the plan file", scaffold creation and updates under `_projects/<project>/` (`index.md`, `progress.md`, `project-notes/`, `handoff/`, and adding the matching row to `_projects/index.md`) are **permitted**. These are metadata-management assets on par with the plan file and do NOT fall under "editing implementation code" that Plan mode forbids. You may perform them without exiting Plan mode.
+Even when Plan mode has injected the constraint "no edits outside the plan file", scaffold creation and updates under `_projects/<project>/` (`index.md`, `progress.md`, `project-notes/`, `tasks/`, and adding the matching row to `_projects/index.md`) are **permitted**. These are metadata-management assets on par with the plan file and do NOT fall under "editing implementation code" that Plan mode forbids. You may perform them without exiting Plan mode.
 
 This ensures that scaffold-creation confirmation under `progress_exists: false` and ACTION_REQUIRED banner handling do NOT conflict with Plan mode.
 
@@ -89,19 +89,27 @@ When the LLM spawns a new session via the Agent tool (subagent) or a CLI launch 
 
 - `_projects/<project>/plans/` and `_projects/<project>/memory/` are archive copies maintained by the Stop hook. Do NOT reference them as authoritative sources.
 
-## Directory layout
+## Directory layout (v2)
 
 ```
 _projects/
   index.md               all-projects index
   <project>/
     index.md             project overview
-    progress.md          task progress tracking
-    project-notes/       shared knowledge (the authoritative source)
-    handoff/
-      0_pending/         handoff to the next session (not yet consumed)
-      1_in_progress/     consumed by the next session, awaiting human approval
-      2_done/            done (human-approved)
+    progress.md          task index (auto-generated table region + hand-edited free-text sections)
+    tasks/               task files, one per task (status by folder)
+      0_todo/            not started
+      1_in_progress/     started; work ongoing
+      2_done/            complete (human-approved)
+    project-notes/       reusable project knowledge (category by folder)
+      index.md           4-column index: File | Description | Tags | Updated
+      specs/             designs, decisions, ADRs, proposals
+      investigations/    research, analysis, post-mortems, retrospectives
+      checks/            verification items, checklists (no judgment)
+      procedures/        step-by-step instructions for humans
+      backlog/           candidate items, ideas, issue tracker entries
+      _archive/          exhausted (no longer authoritative)
+    _archive/            project-level archive (e.g., pre-v2 legacy files)
     plans/               plan copies from the Stop hook (archived history)
     memory/              memory copies from the Stop hook (archived history)
 ```

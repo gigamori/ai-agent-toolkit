@@ -94,11 +94,11 @@ if pj_explicit is not None or project != '':
       routing_content = f.read()
     # Replace lib/prompts/ paths with plugin absolute paths
     path_replacements = [
-      ('lib/prompts/project_router_agent.md', 'project_router_agent.md'),
-      ('lib/prompts/progress_guidelines.md', 'progress_guidelines.md'),
-      ('lib/prompts/notes_guidelines.md', 'notes_guidelines.md'),
-      ('lib/prompts/handoff_guidelines.md', 'handoff_guidelines.md'),
-      ('lib/prompts/progress_template.md', 'progress_template.md'),
+      ('taskflow/prompts/project_router_agent.md', 'project_router_agent.md'),
+      ('taskflow/prompts/progress_guidelines.md', 'progress_guidelines.md'),
+      ('taskflow/prompts/notes_guidelines.md', 'notes_guidelines.md'),
+      ('taskflow/prompts/tasks_guidelines.md', 'tasks_guidelines.md'),
+      ('taskflow/prompts/progress_template.md', 'progress_template.md'),
     ]
     for old, new in path_replacements:
       routing_content = routing_content.replace(

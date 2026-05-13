@@ -1,47 +1,60 @@
 ## Loading
 
 - Always read `progress.md` at the start of work.
+- progress.md is split into two regions:
+  - **Free-text sections** (Architecture / Key Decisions & Policies / Open Issues / Reference Materials): hand-editable; LLM and human both edit.
+  - **Table region** (between `<!-- @table:begin -->` and `<!-- @table:end -->`): auto-generated from `tasks/<status>/*.md` files. Do NOT hand-edit content inside this block.
 
-## TODO `Prompt` column
+## Single authority
 
-- The TODO table includes a `Prompt` column. Record a ready-to-use prompt that a human can paste into the LLM to execute the task.
-- Form: `pj:<project> <instruction>` — it must be copy-pasteable as-is, including the project specifier.
-- Match the granularity of the task. One TODO row → one prompt.
-- When referencing a handoff file, omit the folder: use `@handoff/<filename>` (do NOT include `0_pending/` etc., because folder transitions would break the path).
-- When referring to project-notes, include `@project-notes/<filename>` in the prompt.
-- If there are prerequisites or prior work, include them in the prompt (e.g. "after the build, ...").
+| Field | Source of truth | Editor |
+|---|---|---|
+| Task status (TODO / In Progress / Completed) | Folder of the task file (`tasks/0_todo/`, `1_in_progress/`, `2_done/`) | Move via `mv` or `/progress sync` |
+| Task summary text | Task file H1 line (`# <title>`) | Edit in the task file body |
+| Task priority | `priority:` in task frontmatter | Edit frontmatter |
+| Task created / updated date | Task frontmatter `created:` / `updated:` | Edit frontmatter |
+| Architecture / Key Decisions / Open Issues / Reference Materials | progress.md section content | Hand-edit |
 
-## Session Log
+The table region is a **cache** rebuilt from task files. It is never authoritative.
 
-- The Session Log is a history record. Do NOT use it to convey instructions.
-- `Next steps` is a record of "what remains", not an instruction to the next session.
-- Use `handoff` to convey concrete instructions to the next session.
+## `/progress` sub-actions
 
-## Status transitions and handoff coordination
+| Sub-action | Effect |
+|---|---|
+| `/progress check` | Run drift / stale / approval-pending detection. Read-only. |
+| `/progress sync` | Reconcile status text in progress.md table ↔ folder location. Moves files when text and folder disagree. |
+| `/progress rebuild` | Regenerate the table region from current task files. |
+| `/progress approve <id>...` | Move tasks from `tasks/1_in_progress/` to `tasks/2_done/`. Multiple IDs OK. |
+| `/progress revert <id>` | Move backward by one step: `1_in_progress/ → 0_todo/`, or `2_done/ → 1_in_progress/`. |
 
-When changing a status in `progress.md`, consult the `@handoff/<filename>` in the `Prompt` column and move the corresponding handoff file in lockstep:
+## Status transitions
 
-- TODO → In Progress: `handoff/0_pending/<filename>` → `handoff/1_in_progress/<filename>`
-- In Progress → Completed: after explicit human approval, `handoff/1_in_progress/<filename>` → `handoff/2_done/<filename>`
-- In Progress → TODO (send back): `handoff/1_in_progress/<filename>` → `handoff/0_pending/<filename>`
+```
+0_todo/  →  1_in_progress/  →  2_done/
+        ←                  ←
+```
 
-`[HOLD]` marker: attaching `[HOLD]` to an In Progress entry suppresses the subagent's completion reminder. Record the reason for the hold.
+Folder location is the **single authority**. Move the task file, then either run `/progress rebuild` to refresh progress.md, or let the next `/progress check` flag the drift.
+
+Entering `2_done/` requires explicit human approval (typically via `/progress approve`). AI does NOT auto-move to `2_done/`.
 
 ## When to write
 
-- Structural changes: update Architecture
-- Starting a task: update In Progress (and run the handoff-coordination move)
-- Policy decisions: append to Key Decisions & Policies
-- Problems or concerns surfacing: append to Open Issues
-- New reference material: append to Reference Materials
-- Task completion: move to Completed and remove from In Progress (after human approval, run the handoff-coordination move)
-- End of work: append a Session Log entry in this form and update Last Updated
-  ### [Date] - [Title]
-  - Goal:
-  - Done:
-  - Next steps:
+- **New task**: create `tasks/0_todo/<YYYY-MM-DD>_<topic>.md` with frontmatter + H1 + body. See [tasks_guidelines.md].
+- **Starting a task**: `mv tasks/0_todo/<file> tasks/1_in_progress/`, then update `updated:` in frontmatter.
+- **Recording progress mid-task**: append a line to the `<!-- @log:begin --> ... <!-- @log:end -->` block in the task file.
+- **Editing task content**: rewrite the body region (between frontmatter end and `<!-- @log:begin -->`).
+- **Policy decision**: append to `## Key Decisions & Policies` in progress.md.
+- **Surfacing a problem**: append to `## Open Issues` in progress.md.
+- **New reference material**: append to `## Reference Materials` in progress.md.
+- **Architectural change**: update `## Architecture` in progress.md.
+
+There is no `Session Log` section. Per-task history lives in each task file's `<!-- @log -->` block.
 
 ## Prohibitions
 
-- Do NOT delete or rewrite existing records. Only append or update status.
-- Do NOT move a partially completed task to Completed. Leave it in In Progress and record the progress in the Status column.
+- Do NOT edit content inside `<!-- @table:begin --> ... <!-- @table:end -->` by hand. Run `/progress rebuild` instead.
+- Do NOT add `status:` or `summary:` fields to task frontmatter. Folder name and H1 are the sole sources of truth.
+- Do NOT add `## Session Log` or `## Last Updated` sections to progress.md. Both are obsolete in v2.
+- Do NOT delete entries from a task's `<!-- @log -->` block. Append only.
+- Do NOT move a task into `tasks/2_done/` on your own judgment. Wait for explicit human approval.
