@@ -39,15 +39,40 @@ Prefix the prompt with `pj:<project>`. If omitted, the LLM infers the project.
 | Create a new project | `create a new project called xxx` |
 | Bypass taskflow entirely (this turn) | `norouter write a README` |
 
-### progress
+### /progress — task progress commands
 
-`progress.md` is the task index. It has a free-text region (Architecture / Key Decisions / Open Issues / Reference Materials — human-edited) and an auto-generated table region (`<!-- @table:begin -->` ... `<!-- @table:end -->`) listing the TODO / In Progress / Completed tasks.
+`/progress` is the unified entry for inspecting and mutating task state. Natural-language input is parsed by the `progress-router` subagent into (action, targets), confirmed via `AskUserQuestion` (unless `-y`), and executed.
 
-| Action | Example prompt |
-|---|---|
-| Review progress | `show the progress` |
-| Rebuild the table | `/progress rebuild` |
-| Detect drift | `/progress check` |
+| Sub-action | Effect | Examples |
+|---|---|---|
+| `check` | Drift / stale / approval-pending detection. Read-only. | `/progress check` |
+| `audit` | Classify every task by `## Next Steps` state (pending / completion candidate / untracked / clean). Read-only. | `/progress audit` |
+| `rebuild` (alias `sync`) | Regenerate the progress.md table region from task files. | `/progress rebuild` |
+| `approve` | Move a task `1_in_progress/ → 2_done/`. Human-approved transition. | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
+| `revert` | Move backward one step (`1_in_progress → 0_todo`, or `2_done → 1_in_progress`). | `/progress revert <prefix>`<br>`/progress 戻して audit` |
+
+**Action synonyms** (case-insensitive substring match on the input):
+
+- approve: `approve`, `完了`, `終了`, `done`, `finish`, `ok`
+- revert: `revert`, `戻す`, `戻し`, `undo`, `取り消し`
+- `check` / `audit` / `sync` / `rebuild`: literal keywords only
+
+**Target resolution** (highest-priority match wins):
+
+1. Filename stem starts with the phrase (case-insensitive)
+2. Substring of the filename stem
+3. Semantic match against the H1
+4. Plurality markers (`全部` / `all` / `両方` / `両`) match every candidate
+
+**Flags**:
+
+- `-y` / `--yes` — skip the confirmation prompt and execute immediately
+
+For destructive actions (`approve` / `revert`), the main agent prints the resolved plan and asks via `AskUserQuestion` before any mutation. `-y` skips this when the target is already verified. When the router returns zero matches or ambiguous low-confidence candidates, it stops and lists candidates rather than guessing.
+
+### progress.md
+
+`progress.md` is the task index. It has a free-text region (Architecture / Key Decisions / Open Issues / Reference Materials — human-edited) and an auto-generated table region (`<!-- @table:begin -->` ... `<!-- @table:end -->`) listing the TODO / In Progress / Completed tasks. Rebuild the table via `/progress rebuild`; never hand-edit inside the markers.
 
 ### tasks
 
@@ -66,28 +91,38 @@ A task file structure:
 ---
 priority: HIGH
 created: 2026-05-13
-updated: 2026-05-13
+updated: 2026-05-14
 ---
 
 # Task title (becomes the progress.md row summary)
 
 Body (mutable region — replace freely).
 
+## Next Steps
+- remaining item 1
+- remaining item 2
+
 <!-- @log:begin -->
-- 2026-05-13: started
-- 2026-05-14: phase A complete
+- 2026-05-13 [s:abc12345]: started
+- 2026-05-14 [s:def67890]: phase A complete | next: write tests
 <!-- @log:end -->
 ```
 
-The body region is mutable; the log block is append-only.
+- The body region is mutable; the log block is **append-only**.
+- `## Next Steps` non-empty = pending; empty in `1_in_progress/` = completion candidate. The `Stop` hook prompts the LLM to update this section based on actual session work (see [How it works](#how-it-works)).
+- Log lines carry a `[s:<session-id-prefix>]` tag for downstream audit lookup.
 
-Status transitions:
+Status transitions are performed via `/progress approve` and `/progress revert` (see above).
 
-| Action | Example prompt |
-|---|---|
-| Start a task | `/progress sync` (after `mv` or after editing progress.md) |
-| Approve completion | `/progress approve <id>` |
-| Send back / reopen | `/progress revert <id>` |
+#### Migrating tasks from v0.2.0
+
+If `/progress audit` reports any `UNTRACKED` tasks (files predating the `## Next Steps` requirement), retrofit them once with the repository-root migration script:
+
+```bash
+uv run python scripts/migrate_task_next_steps.py <project-root>
+```
+
+This is a one-shot tool; it lives outside the plugin distribution because it is repo maintenance, not runtime behavior.
 
 ### project-notes
 
@@ -164,12 +199,13 @@ session start
   │
   ├─ task execution
   │
-  └─ [Stop hook] ─→ reads the project name from state_file and copies plans/memory
+  └─ [Stop hooks] ─→ archive plans/memory copies, AND
+                     prompt the LLM to record next steps for touched tasks
 ```
 
 ### hooks
 
-Two hooks run automatically when the plugin is enabled.
+Three hooks run automatically when the plugin is enabled.
 
 #### UserPromptSubmit: session_init.py
 
@@ -178,3 +214,7 @@ Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Prog
 #### Stop: session_sync.py
 
 Runs at session end. Copies plan/memory files modified within the last 10 minutes into the project directory.
+
+#### Stop: session_progress_capture.py
+
+Runs at session end alongside `session_sync.py`. Scans the session jsonl for write/edit/file-moving tool calls; if any are found, returns `{"decision":"block", "reason": ...}` with an English imperative asking the LLM to update each touched task's `## Next Steps` section (create a task in `0_todo/` or `1_in_progress/` if absent, clear it on completion). Fires at most once per session via a `progress_capture_done` flag in the state file. Touched files and the `[s:<session-id-prefix>]` tag are substituted at runtime. See `_projects/harness-taskflow/project-notes/specs/progress-audit-design.md` for the design.

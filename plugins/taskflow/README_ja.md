@@ -39,15 +39,40 @@ claude --plugin-dir ./plugins/taskflow
 | 新規プロジェクト作成 | `新しいプロジェクト xxx を作って` |
 | taskflow を完全バイパス（このターン） | `norouter READMEを書いて` |
 
-### progress
+### /progress — タスク進捗コマンド
 
-`progress.md` はタスクの index。手書き自由文セクション（Architecture / Key Decisions / Open Issues / Reference Materials）と、auto-generated テーブル領域（`<!-- @table:begin -->` ... `<!-- @table:end -->`、TODO / In Progress / Completed の各表）で構成される。
+`/progress` はタスク状態の参照・変更の統一窓口。自然言語入力を `progress-router` サブエージェントが (action, targets) に解釈し、`AskUserQuestion` で確認（`-y` 指定時はスキップ）して実行する。
 
-| 操作 | プロンプト例 |
-|---|---|
-| 進捗確認 | `progressを見せて` |
-| テーブル再生 | `/progress rebuild` |
-| drift 検出 | `/progress check` |
+| sub-action | 効果 | 例 |
+|---|---|---|
+| `check` | drift / stale / 承認待ち検出。read-only。 | `/progress check` |
+| `audit` | 各タスクを `## Next Steps` 状態で 4 区分（pending / completion candidate / untracked / clean）に分類。read-only。 | `/progress audit` |
+| `rebuild`（`sync` は別名） | progress.md のテーブル領域を task ファイル群から再生成。 | `/progress rebuild` |
+| `approve` | `1_in_progress/ → 2_done/` への移動。人間承認の遷移。 | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
+| `revert` | 1 段戻す（`1_in_progress → 0_todo`、または `2_done → 1_in_progress`）。 | `/progress revert <prefix>`<br>`/progress 戻して audit` |
+
+**action 同義語**（大文字小文字無視、入力に対する substring match）:
+
+- approve: `approve`, `完了`, `終了`, `done`, `finish`, `ok`
+- revert: `revert`, `戻す`, `戻し`, `undo`, `取り消し`
+- `check` / `audit` / `sync` / `rebuild`: literal キーワードのみ
+
+**target 解決**（優先度の高い match から採用）:
+
+1. filename stem の先頭一致（大文字小文字無視）
+2. filename stem の部分一致
+3. H1 のセマンティック一致
+4. plurality 表現（`全部` / `all` / `両方` / `両` 等）→ 全候補が match
+
+**フラグ**:
+
+- `-y` / `--yes` — 確認プロンプトをスキップして即実行
+
+destructive アクション（`approve` / `revert`）では、メインエージェントが解決済 plan を表示し `AskUserQuestion` で確認を取ってから初めて mutation を実行する。`-y` で対象が確定済の場合はスキップ可。0 match / 低 confidence の複数 match の場合、router は候補を列挙して停止する（推測進行しない）。
+
+### progress.md
+
+`progress.md` はタスクの index。手書き自由文セクション（Architecture / Key Decisions / Open Issues / Reference Materials）と、auto-generated テーブル領域（`<!-- @table:begin -->` ... `<!-- @table:end -->`、TODO / In Progress / Completed の各表）で構成される。テーブル再生は `/progress rebuild`、マーカー内側は手編集禁止。
 
 ### tasks
 
@@ -66,28 +91,38 @@ task ファイル構造:
 ---
 priority: HIGH
 created: 2026-05-13
-updated: 2026-05-13
+updated: 2026-05-14
 ---
 
 # タスクタイトル（progress.md の row summary になる）
 
 本文（mutable 領域 — 自由に置換可能）。
 
+## Next Steps
+- 残作業項目 1
+- 残作業項目 2
+
 <!-- @log:begin -->
-- 2026-05-13: 着手
-- 2026-05-14: phase A 完了
+- 2026-05-13 [s:abc12345]: 着手
+- 2026-05-14 [s:def67890]: phase A 完了 | next: テスト追加
 <!-- @log:end -->
 ```
 
-本文領域は自由編集、`<!-- @log -->` ブロックは append-only。
+- 本文領域は自由編集、`<!-- @log -->` ブロックは **append-only**。
+- `## Next Steps` が非空 = pending、`1_in_progress/` で空 = 完了候補。`Stop` フックがセッション中の実作業を見て LLM にこのセクションの更新を促す（[仕組み](#仕組み) 参照）。
+- log 行には `[s:<session-id 先頭>]` タグが付き、audit の参照用 index になる。
 
-status 遷移:
+status 遷移は `/progress approve` / `/progress revert` で行う（上記参照）。
 
-| 操作 | プロンプト例 |
-|---|---|
-| タスク着手 | `/progress sync`（`mv` 後 or progress.md 編集後） |
-| 完了承認 | `/progress approve <id>` |
-| 差し戻し・再開 | `/progress revert <id>` |
+#### v0.2.0 からの移行
+
+`/progress audit` で `UNTRACKED` が検出された場合（`## Next Steps` セクション必須化以前の task）、repo ルートの移行スクリプトで一括 retrofit:
+
+```bash
+uv run python scripts/migrate_task_next_steps.py <project-root>
+```
+
+one-shot ツールで、plugin 配布対象外（repo 保守用のため plugin ではなく repo root の `scripts/` に配置）。
 
 ### project-notes
 
@@ -164,12 +199,13 @@ _projects/
   │
   ├─ タスク実行
   │
-  └─ [Stop hook] ─→ state_fileからプロジェクト名を読み、plan/memoryをコピー
+  └─ [Stop hooks] ─→ plan/memory コピーをアーカイブ、かつ
+                     書込・編集系操作のあったセッションでは LLM に残 next step の記録を促す
 ```
 
 ### hook
 
-2 つの hook がプラグイン有効時に自動で動作する。
+3 つの hook がプラグイン有効時に自動で動作する。
 
 #### UserPromptSubmit: session_init.py
 
@@ -178,3 +214,7 @@ _projects/
 #### Stop: session_sync.py
 
 セッション終了時に実行。直近 10 分以内に更新された plan/memory ファイルをプロジェクトディレクトリにコピーする。
+
+#### Stop: session_progress_capture.py
+
+セッション終了時に `session_sync.py` と並列で実行。当該セッションの jsonl をスキャンし、write / edit / ファイル移動系ツール呼出があれば `{"decision":"block", "reason": ...}` を返し、touched files を埋め込んだ英語の imperative を注入する。LLM は各 task の `## Next Steps` を更新する（対応 task がなければ `0_todo/` か `1_in_progress/` に新規作成、完了したなら空にする）。state file の `progress_capture_done` フラグでセッションあたり 1 回に制限。touched files と `[s:<session-id 先頭>]` タグは実行時 substitution。設計は `_projects/harness-taskflow/project-notes/specs/progress-audit-design.md` を参照。

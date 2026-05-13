@@ -1,127 +1,185 @@
 ---
 name: progress
-description: Inspect, rebuild, sync, approve, or revert taskflow project task progress. Sub-actions — check, sync, rebuild, approve, revert. Invoke as `/progress <action> [project] [ids...]`. Runs in the main session.
+description: Manage taskflow project task progress via natural-language commands. Invoke as `/progress <intent> [-y]`. The intent is routed by the progress-router subagent into (action, targets); the main agent confirms with the user (unless `-y`) and executes. Runs in the main session.
 disable-model-invocation: true
-allowed-tools: Bash(uv run python *) Bash(mv *) Bash(mkdir *) Bash(ls *) Bash(cat *) Bash(stat *) Read Write Edit
+allowed-tools: Bash(uv run python *) Bash(mv *) Bash(mkdir *) Bash(ls *) Bash(cat *) Bash(stat *) Read Write Edit Agent AskUserQuestion
 ---
 
 # /progress
 
 Arguments: `$ARGUMENTS`
 
-Execute the following procedure exactly. Report each step's outcome to the user.
+Execute the procedure below exactly. Report each step's outcome to the user.
 
 ## Step 1 — Parse arguments
 
-`$ARGUMENTS` is a whitespace-separated list. Token 0 = action. Token 1 = optional project name. Remaining tokens = IDs.
+`$ARGUMENTS` is a free-form natural-language instruction with an optional
+`-y` / `--yes` flag anywhere in the input.
 
-Valid actions: `check`, `sync`, `rebuild`, `approve`, `revert`.
+1. Scan for the literal tokens `-y` and `--yes`. If found, set
+   `skip_confirm = true` and remove them from the input.
+2. Trim whitespace. The remainder is `raw_input`.
+3. If `raw_input` is empty, reply:
 
-If token 0 is not in the valid list, reply with usage:
+   ```
+   Usage: /progress <intent> [-y]
+   examples:
+     /progress check
+     /progress audit
+     /progress approve 2026-05-14_existing-tasks
+     /progress 完了 migration
+     /progress 戻して audit -y
+   ```
 
-```
-Usage: /progress <check|sync|rebuild|approve|revert> [project] [ids...]
-```
-
-and stop.
+   and stop.
 
 ## Step 2 — Resolve the project
 
-If token 1 is provided AND does NOT match `YYYY-MM-DD_`, treat it as the project name. Otherwise resolve via:
-
-1. List `_projects/_state/*.json` sorted by mtime descending.
-2. Read the most recent file.
-3. Use its `project` field (JSON).
+1. List `_projects/_state/*.json` sorted by
+   mtime descending.
+2. Read the most recent file. Use its `project` field.
 
 If the resolved project is empty or the state file does not exist, reply:
 
 ```
-no project; pass /progress <action> <project> [ids...]
+no project; set with pj:<project> first
 ```
 
 and stop.
 
-Then locate the project root by trying these directories (use the first that exists):
+Then locate the project root (use the first that exists):
 
 - `_projects/<project>/`
 - `<secondary-projects-root>/<project>/`
 
 If neither exists, reply `project '<name>' not found` and stop.
 
-## Step 3 — Dispatch on action
+## Step 3 — Invoke the progress-router subagent
+
+1. Read `${CLAUDE_PLUGIN_ROOT}/prompts/progress_router_agent.md`.
+2. Construct the prompt by prepending the JSON context block:
+
+   ```json
+   {"project_root": "<absolute project root from Step 2>", "raw_input": "<raw_input from Step 1>"}
+   ```
+
+3. Invoke the Agent tool with `subagent_type: taskflow:progress-router` and
+   the prompt above. The router runs read-only.
+4. Parse the returned JSON object. Fields: `action`, `targets`, `confidence`,
+   `reasoning`.
+
+## Step 4 — Validate the router result
+
+| Condition | Reply and stop |
+|---|---|
+| `action: "unknown"` | `cannot parse: <raw_input>` + `reasoning: <reasoning>` + 1-line of valid actions/synonyms |
+| `action in {approve, revert}` AND `targets: []` | `no match for '<raw_input>'`. List up to 10 candidates from the relevant folder(s) with `<stem> | <H1>`. |
+| `action in {approve, revert}` AND `len(targets) >= 2` AND `confidence: "low"` | `ambiguous: <raw_input>`. List the returned targets with `<stem> | <H1>`. |
+
+Otherwise proceed to Step 5.
+
+## Step 5 — Confirm with user (unless `-y`)
+
+If `skip_confirm` is true, skip this step and proceed to Step 6.
+
+For `check`, `audit`, `sync`, `rebuild`: skip confirmation (these are
+non-destructive read or rebuild operations). Proceed to Step 6.
+
+For `approve` / `revert`:
+
+1. Print a plan summary in text (before the AskUserQuestion call):
+
+   ```
+   router: <reasoning>  (confidence: <level>)
+   action: <action>
+   targets:
+     - <stem> (<current_status> → <target_status>): <h1>
+     ...
+   ```
+
+2. Call AskUserQuestion with:
+   - question: `Execute <action> on <N> target(s)?`
+   - options:
+     - label: `Yes, execute`, description: `Apply the move + log update`
+     - label: `No, cancel`, description: `Stop without changes`
+
+3. If the user picks `No, cancel`, reply `cancelled` and stop. Otherwise
+   proceed to Step 6.
+
+## Step 6 — Dispatch on action
 
 Plugin script paths:
 
 - `${CLAUDE_PLUGIN_ROOT}/scripts/check_progress.py`
+- `${CLAUDE_PLUGIN_ROOT}/scripts/audit_progress.py`
 - `${CLAUDE_PLUGIN_ROOT}/scripts/rebuild_progress.py`
 
 ### action = `check`
-
-Run:
 
 ```bash
 uv run python ${CLAUDE_PLUGIN_ROOT}/scripts/check_progress.py "<project-root>"
 ```
 
-Read stdout. If empty / `OK: no drift...`, reply `OK: <project>` and stop. Otherwise, summarize findings in ≤ 20 lines:
+Read stdout. If `OK: no drift...`, reply `OK: <project>` and stop. Otherwise
+summarize findings in ≤ 20 lines using the existing format.
 
-```
-project: <name>
-findings: <total> (drift=<n>, violation=<n>, stale=<n>, pending=<n>)
+### action = `audit`
 
-  [check_name] <path>
-    <message>
-  ...
-
-next: /progress rebuild  (for drift) | /progress approve <id>  (for pending)
+```bash
+uv run python ${CLAUDE_PLUGIN_ROOT}/scripts/audit_progress.py "<project-root>"
 ```
 
-### action = `sync` — alias of `rebuild`. Proceed to rebuild.
+Echo the stdout verbatim (≤ 50 lines in the common case). This action is
+read-only.
 
-### action = `rebuild`
-
-Run:
+### action in {`sync`, `rebuild`}
 
 ```bash
 uv run python ${CLAUDE_PLUGIN_ROOT}/scripts/rebuild_progress.py "<project-root>"
 ```
 
-Echo stdout (it shows TODO / In Progress / Completed counts).
+Echo stdout.
 
 ### action = `approve`
 
-For each ID in tokens 2..N (filename-prefix match against `<project-root>/tasks/1_in_progress/`):
+For each target in `targets`:
 
-1. Resolve the file. If 0 or 2+ matches, report and skip.
-2. `mkdir -p "<project-root>/tasks/2_done"` (idempotent).
-3. `mv "<project-root>/tasks/1_in_progress/<file>" "<project-root>/tasks/2_done/<file>"`.
-4. Edit the moved file's frontmatter `updated:` to today (YYYY-MM-DD). Append one line to its `<!-- @log:begin --> ... <!-- @log:end -->` block: `- <today>: approved → 2_done`.
+1. `mkdir -p "<project-root>/tasks/2_done"` (idempotent).
+2. `mv "<project-root>/<current_file>" "<project-root>/tasks/2_done/<basename of current_file>"`.
+3. Edit the moved file:
+   - frontmatter `updated:` → today (YYYY-MM-DD)
+   - **clear the `## Next Steps` section content**: keep the `## Next Steps` header line, remove all lines between it and the next section heading (`## ...`) or the `<!-- @log:begin -->` marker — whichever comes first. Leave one blank line after the header for readability.
+   - append one line to the `<!-- @log:begin --> ... <!-- @log:end -->` block: `- <today>: approved → 2_done`
 
-After all IDs, run `rebuild_progress.py` and report.
+The Next Steps clear is destructive of historical "what was unfinished at approve time" — that intent is preserved by the `@log` entry on approve and any prior `[s:<sid>]: completed` entries. Audit no longer flags 2_done files regardless of Next Steps content, but clearing keeps file content consistent with semantics.
+
+After all targets, run `rebuild_progress.py` and report.
 
 ### action = `revert`
 
-For each ID in tokens 2..N (filename-prefix match):
+For each target in `targets`:
 
-1. Locate which folder under `<project-root>/tasks/` contains the file.
-2. Compute target:
-   - From `1_in_progress` → `0_todo`
-   - From `2_done` → `1_in_progress`
-   - From `0_todo` → error "cannot revert from 0_todo"
-3. `mkdir -p` the target folder (idempotent).
-4. `mv` the file.
-5. Edit frontmatter `updated:` to today; append `<!-- @log -->` line: `- <today>: reverted to <target>`.
+1. `mkdir -p "<project-root>/tasks/<target_status>"` (idempotent).
+2. `mv "<project-root>/<current_file>" "<project-root>/tasks/<target_status>/<basename of current_file>"`.
+3. Edit the moved file's frontmatter `updated:` to today. Append one line:
+   `- <today>: reverted to <target_status>`.
 
-After all IDs, run `rebuild_progress.py` and report.
+After all targets, run `rebuild_progress.py` and report.
 
 ## Output rules
 
 - Echo each Bash command's relevant output (or a 1-line summary).
-- For destructive actions (`approve`, `revert`), explicitly list each moved file.
-- Total response ≤ 30 lines.
+- For destructive actions (`approve`, `revert`), list each moved file as
+  `<stem>: <current_status> → <target_status>`.
+- Total response ≤ 30 lines (excluding the AskUserQuestion UI).
 
 ## Restrictions
 
-- Do NOT edit task body or H1 — only `updated:` frontmatter + one `<!-- @log -->` line per action.
+- Do NOT edit task body or H1 — only the following are permitted per action:
+  - `updated:` frontmatter (always)
+  - one `<!-- @log -->` line append (always)
+  - clearing the `## Next Steps` section content (on `approve` only, per the dispatch step above)
 - Do NOT modify `progress.md` directly; only via `rebuild_progress.py`.
 - Do NOT touch files outside `<project-root>/tasks/`.
+- The progress-router subagent is read-only. Do NOT pass it write authority,
+  and do NOT use its output to bypass user confirmation when `-y` is absent.
