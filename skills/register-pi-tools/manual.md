@@ -43,7 +43,7 @@ LLM  → skill auto-triggers → confirms input_dir / output_path → migrates e
 Once every script under the target directory is migrated, generate `tools.yaml`:
 
 ```bash
-uv run --with pyyaml python ~/.claude/skills/register-pi-tools/scripts/build_tools_yaml.py \
+uv run --with pyyaml python <skill_dir>/scripts/build_tools_yaml.py \
   --input-dir <directory containing scripts> \
   --output-path ~/.pi/agent/tools.yaml
 ```
@@ -109,21 +109,21 @@ Arguments:
 
 A thin TypeScript extension that loads `tools.yaml` and calls `pi.registerTool({...})` is planned. No pi-mono PR is required — the public extension API is sufficient.
 
-#### Claude Code compatibility (not direct; MCP server only)
+#### Agents without direct tool injection (MCP server route)
 
-`tools.yaml` cannot be loaded directly into Claude Code. Claude Code's tool registry is internal — neither slash commands, skills, nor hooks expose an API to inject entries into the Anthropic API `request.tools` array. The `UserPromptSubmit` hook can only add text context, not structured tool definitions.
+Some AI coding agents do not expose an API to inject custom entries into the `request.tools` array. The `tools.yaml` registry cannot be loaded directly into such agents.
 
-The supported route is to wrap `tools.yaml` in an **MCP server** (Model Context Protocol). The server exposes each entry via `ListTools` / `CallTool`, and Claude Code (or any MCP-aware client) auto-registers them once configured in `settings.json` `mcpServers`. The dispatch logic (load yaml, spawn `entry.command`, pipe JSON to stdin) is the same as the Python `dispatch_tools.py` and the planned pi extension — only the surface protocol differs. This is a separate implementation track from the pi extension; sharing a thin core library across both is feasible.
+The supported route is to wrap `tools.yaml` in an **MCP server** (Model Context Protocol). The server exposes each entry via `ListTools` / `CallTool`, and any MCP-aware agent auto-registers them once configured. The dispatch logic (load yaml, spawn `entry.command`, pipe JSON to stdin) is the same as the Python `dispatch_tools.py` and the planned pi extension — only the surface protocol differs.
 
 ## Files in this skill
 
 | Path | Role |
 |---|---|
-| `~/.claude/skills/register-pi-tools/SKILL.md` | LLM-facing spec (auto-trigger) |
-| `~/.claude/skills/register-pi-tools/manual.md` | This file (English, human-facing) |
-| `~/.claude/skills/register-pi-tools/manual_ja.md` | Japanese version of this manual |
-| `~/.claude/skills/register-pi-tools/scripts/build_tools_yaml.py` | Registry builder |
-| `~/.claude/skills/register-pi-tools/scripts/_tool.py` | Bundled runtime helper |
+| `<skill_dir>/SKILL.md` | LLM-facing spec (auto-trigger) |
+| `<skill_dir>/manual.md` | This file (English, human-facing) |
+| `<skill_dir>/manual_ja.md` | Japanese version of this manual |
+| `<skill_dir>/scripts/build_tools_yaml.py` | Registry builder |
+| `<skill_dir>/scripts/_tool.py` | Bundled runtime helper |
 | `~/.pi/agent/tools.yaml` | Generated registry (build artifact) |
 
 The dispatcher (`dispatch_tools.py` / `run_tool.py`) lives in the consuming project (e.g. `lib/src/`). This skill is responsible for migration and the registry build only.

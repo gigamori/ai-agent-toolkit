@@ -21,7 +21,9 @@ Each entry carries the mapping info for an Anthropic API tool object:
   - name: frontmatter.name
   - description: frontmatter.description (or "")
   - input_schema: frontmatter.args (verbatim JSON Schema)
-  - command: frontmatter.command, or `uv run python <abs_posix_path>` by default
+  - command: frontmatter.command if set, otherwise an auto-built
+    `uv run [--with <pkg> ...] python <abs_posix_path>` derived from the
+    script's top-level imports plus frontmatter.extra_with.
 
 Skip rules:
   - Files whose name starts with `_` (private modules)
@@ -34,6 +36,7 @@ Skip rules:
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sys
@@ -57,6 +60,32 @@ _PY_FRONTMATTER = re.compile(
     r"^# ---\n((?:#[^\n]*\n)*?)# ---",
     re.MULTILINE,
 )
+
+# Common import-name → pip-package-name divergences. Anything not listed is
+# assumed to share the same name on PyPI. Override per-script via frontmatter
+# `command:` (full replace) or `extra_with: [pkg]` (append).
+_IMPORT_TO_PIP = {
+    "yaml": "pyyaml",
+    "PIL": "pillow",
+    "cv2": "opencv-python",
+    "bs4": "beautifulsoup4",
+    "sklearn": "scikit-learn",
+    "dotenv": "python-dotenv",
+    "magic": "python-magic",
+    "jwt": "pyjwt",
+    "skimage": "scikit-image",
+    "googleapiclient": "google-api-python-client",
+    "google_auth_oauthlib": "google-auth-oauthlib",
+    "OpenSSL": "pyopenssl",
+    "Crypto": "pycryptodome",
+    "serial": "pyserial",
+    "win32api": "pywin32",
+    "win32com": "pywin32",
+    "win32con": "pywin32",
+    "pythoncom": "pywin32",
+}
+
+_STDLIB: set[str] = set(getattr(sys, "stdlib_module_names", set()))
 
 
 def _strip_comment_prefix(text: str) -> str:
@@ -90,12 +119,73 @@ def _iter_scripts(src_dir: Path):
         yield p
 
 
-def _default_command(script_path: Path) -> str:
+def _collect_top_imports(source: str) -> list[str]:
+    """Return top-level module names referenced by `import` / `from X import`.
+
+    Relative imports (`from . import x`) are skipped. AST is used so syntactic
+    edge cases inside docstrings or strings cannot leak.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    mods: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name:
+                    mods.append(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if (node.level or 0) > 0:
+                continue
+            if node.module:
+                mods.append(node.module.split(".")[0])
+    return mods
+
+
+def _is_local_module(mod: str, script: Path, root: Path) -> bool:
+    """True if `mod` resolves to a sibling file/package between script.parent and root."""
+    cur = script.parent
+    while True:
+        if (cur / f"{mod}.py").is_file() or (cur / mod / "__init__.py").is_file():
+            return True
+        if cur == root:
+            break
+        if root not in cur.parents:
+            break
+        cur = cur.parent
+    return False
+
+
+def _resolve_with_pkgs(
+    script: Path,
+    root: Path,
+    source: str,
+    extra: list[str],
+) -> list[str]:
+    pkgs: set[str] = set()
+    for mod in _collect_top_imports(source):
+        if not mod:
+            continue
+        if mod.startswith("_"):
+            # __future__, _tool, and other private/local-style names
+            continue
+        if mod in _STDLIB:
+            continue
+        if _is_local_module(mod, script, root):
+            continue
+        pkgs.add(_IMPORT_TO_PIP.get(mod, mod))
+    pkgs.update(extra)
+    return sorted(pkgs)
+
+
+def _default_command(script_path: Path, with_pkgs: list[str]) -> str:
     # Use absolute POSIX path so the entry is location-independent.
-    return f"uv run python {script_path.resolve().as_posix()}"
+    flags = "".join(f" --with {p}" for p in with_pkgs)
+    return f"uv run{flags} python {script_path.resolve().as_posix()}"
 
 
-def _build_entry(script_path: Path) -> dict | None:
+def _build_entry(script_path: Path, root: Path) -> dict | None:
     source = script_path.read_text(encoding="utf-8")
     fm = _extract_frontmatter(source)
     if not isinstance(fm, dict):
@@ -114,7 +204,21 @@ def _build_entry(script_path: Path) -> dict | None:
             f"(must match ^[a-zA-Z0-9_-]{{1,64}}$)"
         )
     desc = fm.get("description", "") or ""
-    command = fm.get("command") or _default_command(script_path)
+
+    extra_with_raw = fm.get("extra_with") or []
+    if not isinstance(extra_with_raw, list) or not all(
+        isinstance(x, str) for x in extra_with_raw
+    ):
+        raise ValueError(
+            f"extra_with must be a list of strings in {script_path.as_posix()}"
+        )
+
+    explicit_command = fm.get("command")
+    if explicit_command:
+        command = explicit_command
+    else:
+        with_pkgs = _resolve_with_pkgs(script_path, root, source, list(extra_with_raw))
+        command = _default_command(script_path, with_pkgs)
     return {
         "name": name,
         "description": desc,
@@ -140,7 +244,7 @@ def main() -> None:
     skipped = 0
     for script in _iter_scripts(src_dir):
         try:
-            entry = _build_entry(script)
+            entry = _build_entry(script, src_dir)
         except ValueError as e:
             sys.stderr.write(f"Error: {e}\n")
             sys.exit(1)

@@ -4,7 +4,7 @@ description: Guides users through creating effective Agent Skills. Use when you 
 ---
 # Creating Agent Skills
 
-This skill guides you through creating effective Agent Skills. Skills are markdown files that teach the agent how to perform specific tasks: reviewing PRs using team standards, generating commit messages in a preferred format, querying database schemas, or any specialized workflow. Skills work across Claude.ai, Claude Code, and API.
+This skill guides you through creating effective Agent Skills. Skills are markdown files that teach the agent how to perform specific tasks: reviewing PRs using team standards, generating commit messages in a preferred format, querying database schemas, or any specialized workflow. Skills work across various AI coding agents and API.
 
 ## Before You Begin: Gather Requirements
 
@@ -15,7 +15,7 @@ Before creating a skill, gather essential information from the user about:
    - Document & Asset Creation (consistent output: docs, presentations, code)
    - Workflow Automation (multi-step processes, coordination)
    - MCP Enhancement (workflow guidance on top of MCP tool access)
-3. **Target location**: Personal skill (~/.claude/skills/ or ~/.cursor/skills/) or project skill (.claude/skills/ or .cursor/skills/)?
+3. **Target location**: Personal skill (agent's global skill directory) or project skill (repo-local skill directory)?
 4. **Trigger scenarios**: When should the agent automatically apply this skill?
 5. **Key domain knowledge**: What specialized information does the agent need that it wouldn't already know?
 6. **Output format preferences**: Are there specific templates, formats, or styles required?
@@ -31,7 +31,7 @@ If you need clarification, use the AskQuestion tool when available:
 
 ```
 Example AskQuestion usage:
-- "Where should this skill be stored?" with options like ["Personal (~/.claude/skills/)", "Project (.claude/skills/)"]
+- "Where should this skill be stored?" with options like ["Personal (global)", "Project (repo-local)"]
 - "Should this skill include executable scripts?" with options like ["Yes", "No"]
 ```
 
@@ -60,10 +60,10 @@ skill-name/
 
 ### Storage Locations
 
-| Type | Claude Code | Cursor | Scope |
-|------|------------|--------|-------|
-| Personal | ~/.claude/skills/skill-name/ | ~/.cursor/skills/skill-name/ | Available across all your projects |
-| Project | .claude/skills/skill-name/ | .cursor/skills/skill-name/ | Shared with anyone using the repository |
+| Type | Example path | Scope |
+|------|-------------|-------|
+| Personal | ~/.<agent>/skills/skill-name/ | Available across all your projects |
+| Project | .<agent>/skills/skill-name/ | Shared with anyone using the repository |
 
 ### SKILL.md Structure
 
@@ -97,7 +97,7 @@ Concrete examples of using this skill.
 
 Security restrictions in frontmatter:
 - XML angle brackets (`<` `>`) are forbidden (frontmatter appears in system prompt; injection risk)
-- Names containing "claude" or "anthropic" are reserved
+- Some platforms reserve certain name prefixes — check your agent's restrictions
 
 ---
 
@@ -327,7 +327,7 @@ If you have access to the AskQuestion tool, use it for efficient structured gath
 4. Verify all file references are one level deep
 5. Security check:
    - No XML angle brackets (`<` `>`) in frontmatter
-   - Name does not contain "claude" or "anthropic"
+   - Name does not conflict with platform-reserved prefixes
    - No `README.md` inside the skill folder
    - Folder name matches `name` field
 6. Test that the skill can be discovered and applied
@@ -350,7 +350,7 @@ Before finalizing a skill, verify:
 
 ### Security & Naming
 - [ ] No XML angle brackets in frontmatter
-- [ ] Name does not contain "claude" or "anthropic"
+- [ ] Name does not conflict with platform-reserved prefixes
 - [ ] Folder name matches `name` field
 - [ ] No `README.md` inside skill folder
 

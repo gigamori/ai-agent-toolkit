@@ -43,7 +43,7 @@ LLM   → スキル auto-trigger → input_dir / output_path 確認 → 各 .py 
 スクリプトが揃ったら、`build_tools_yaml.py` で `tools.yaml` を生成。
 
 ```bash
-uv run --with pyyaml python ~/.claude/skills/register-pi-tools/scripts/build_tools_yaml.py \
+uv run --with pyyaml python <skill_dir>/scripts/build_tools_yaml.py \
   --input-dir <スクリプトのあるディレクトリ> \
   --output-path ~/.pi/agent/tools.yaml
 ```
@@ -109,20 +109,20 @@ uv run python /path/to/lib/src/run_tool.py \
 
 `tools.yaml` を読み込んで `pi.registerTool({...})` する TypeScript 薄ラッパ extension で配布予定。pi-mono 本体への PR は不要（公開 extension API で完結する）。
 
-#### Claude Code 互換性（直接は不可、MCP server 経由のみ）
+#### tool 直接注入に対応しないエージェント（MCP server 経由）
 
-`tools.yaml` を Claude Code に直接ロードすることは **できない**。Claude Code の tool レジストリは内部状態であり、slash command / skill / hook のいずれにも Anthropic API `request.tools` 配列にエントリを差し込む API は公開されていない。`UserPromptSubmit` hook はテキスト context の追加しかできず、構造化された tool 定義は注入できない。
+一部の AI コーディングエージェントは `request.tools` 配列にカスタムエントリを差し込む API を公開していない。そうしたエージェントには `tools.yaml` を直接ロードできない。
 
-唯一サポートされる経路は **MCP server**（Model Context Protocol）でラップする方法。`tools.yaml` の各エントリを MCP の `ListTools` / `CallTool` 経由で expose し、Claude Code（または任意の MCP 対応クライアント）の `settings.json` `mcpServers` で登録すれば自動的に tool として認識される。ディスパッチロジック（yaml ロード → `entry.command` を spawn → JSON を stdin に流す）は Python の `dispatch_tools.py` および計画中の pi extension と同一。Surface protocol だけが違う。pi extension とは別実装になるが、薄いコアライブラリを共有する設計は十分可能。
+サポートされる経路は **MCP server**（Model Context Protocol）でラップする方法。`tools.yaml` の各エントリを MCP の `ListTools` / `CallTool` 経由で expose し、MCP 対応のエージェントで登録すれば自動的に tool として認識される。ディスパッチロジック（yaml ロード → `entry.command` を spawn → JSON を stdin に流す）は Python の `dispatch_tools.py` および計画中の pi extension と同一。Surface protocol だけが違う。
 
 ## ファイル一覧
 
 | パス | 役割 |
 |---|---|
-| `~/.claude/skills/register-pi-tools/SKILL.md` | LLM 自動 trigger 用のスキル定義 |
-| `~/.claude/skills/register-pi-tools/manual.md` | このファイル（人間向け） |
-| `~/.claude/skills/register-pi-tools/scripts/build_tools_yaml.py` | レジストリビルド本体 |
-| `~/.claude/skills/register-pi-tools/scripts/_tool.py` | runtime ヘルパ（同梱コピー） |
+| `<skill_dir>/SKILL.md` | LLM 自動 trigger 用のスキル定義 |
+| `<skill_dir>/manual.md` | このファイル（人間向け） |
+| `<skill_dir>/scripts/build_tools_yaml.py` | レジストリビルド本体 |
+| `<skill_dir>/scripts/_tool.py` | runtime ヘルパ（同梱コピー） |
 | `~/.pi/agent/tools.yaml` | 生成されるレジストリ（build artifact） |
 
 ディスパッチャ系（`dispatch_tools.py` / `run_tool.py`）はスクリプト本体側のリポジトリに置く想定。本スキルは「frontmatter 移行＋レジストリ build」までを担当する。

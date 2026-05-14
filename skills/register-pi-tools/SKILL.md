@@ -88,16 +88,16 @@ If the script does Windows stdout/stderr UTF-8 setup, use `sys.stdout.reconfigur
 
 ### Step 4 — Verify (all three checks must pass)
 
-Always invoke through `uv` and resolve every third-party import the script makes by passing `--with <pkg>` (one per dependency) or `--with-requirements <file>`. Never skip verification because of `ModuleNotFoundError`; missing imports indicate the dispatch command is incomplete and must be fixed before the registry is built.
+`build_tools_yaml.py` auto-detects third-party imports via AST and writes a `uv run --with ... python <abs_path>` default command into the registry. You usually do not need to fill `command:` by hand. Verification still runs the script through `uv` to make sure that auto-resolved set actually lets it boot.
 
     uv run --with pyyaml --with <dep1> --with <dep2> python <relpath> --help          # exit 0, help derived from frontmatter
     echo '{}' | uv run --with pyyaml --with <dep1> python <relpath>                    # required missing → exit 1; else normal run
 
-Discovery loop for missing deps:
+Discovery loop for missing deps (only when auto-detection misses something):
 
 1. Run `--help`. If it fails with `ModuleNotFoundError: <pkg>`, add `--with <pkg>` and rerun.
 2. Repeat until `--help` exits 0.
-3. Persist the resolved set into frontmatter `command` (see Optional frontmatter fields) so the registry inherits the runnable command — otherwise downstream LLM-callers will hit the same `ModuleNotFoundError` at dispatch time.
+3. If the missing module name maps to a different pip name not in the built-in map (see *Bundled scripts* below), add `extra_with: [<pip-name>]` to the frontmatter so the registry picks it up. For full control over the command line, set `command:` instead — that wins over auto-detection entirely.
 
 Then run one happy-path business-logic check using a representative input to confirm migrated behavior matches the original.
 
@@ -105,20 +105,21 @@ Then run one happy-path business-logic check using a representative input to con
 
 After every script under `input_dir` has been migrated and verified, build the registry:
 
-    uv run --with pyyaml python ~/.claude/skills/register-pi-tools/scripts/build_tools_yaml.py \
+    uv run --with pyyaml python <skill_dir>/scripts/build_tools_yaml.py \
       --input-dir <input_dir> --output-path <output_path>
 
 Confirm:
 - The build prints `Wrote N tools to <path> (skipped M)`.
 - No `name` regex violation halted the build.
 - `output_path` exists and parses as YAML.
+- Spot-check an entry's `command:` field. It should look like `uv run --with <pkg1> --with <pkg2> python <abs_path>` for scripts that import third-party packages, and plain `uv run python <abs_path>` for stdlib-only scripts. If a needed `--with` is missing, fix the source: either add the import-name → pip-name mapping in `_IMPORT_TO_PIP` (for a globally common case), or add `extra_with:` / `command:` in the script's frontmatter (for a one-off).
 
 Each entry has the shape:
 
     - name: <frontmatter.name>
       description: <frontmatter.description or "">
       input_schema: <frontmatter.args>      # verbatim JSON Schema
-      command: <frontmatter.command or "uv run python <abs_posix_path>">
+      command: <frontmatter.command if set, else "uv run [--with <pkg> ...] python <abs_posix_path>">
 
 ## Anthropic tool object mapping
 
@@ -137,7 +138,18 @@ On `tool_use` reply, the dispatcher looks up the entry by name, spawns `entry.co
 
 ## Optional frontmatter fields
 
-- `command`: override the execution string (default is `uv run python <abs_posix_path>`). Use this to bake `uv --with` flags for every third-party import the script needs, so the registry stays self-contained and dispatch never fails on `ModuleNotFoundError`. Example: `command: uv run --with pillow --with pyyaml python /abs/path/to/compress_images.py`. Prefer `--with` over `pip install` into a shared venv — it keeps each tool's deps isolated and reproducible across machines.
+- `extra_with`: list of additional pip package names to append to the auto-detected `--with` set. Use this when the AST scanner cannot see the dependency — typical cases: a module loaded via `__import__()`, a runtime plugin, or an import name that does not match its pip name and is not in the built-in `_IMPORT_TO_PIP` map. Example:
+
+      # extra_with: [pendulum, "git+https://github.com/foo/bar"]
+
+  Each value is inserted verbatim after `--with`, so PEP 508 specifiers (`pkg==1.2`) and VCS URLs work.
+
+- `command`: full override of the execution string. Wins over auto-detection completely (the AST scan and `extra_with` are ignored when `command` is set). Use only when you need flags `uv run`/`--with` cannot express, e.g.:
+
+      command: uv run --python 3.11 --with-requirements /abs/path/req.txt python /abs/path/script.py
+
+  Prefer `--with` over a shared venv `pip install` — it keeps each tool's deps isolated and reproducible across machines.
+
 - `enabled: false`: exclude this script from the registry (useful for WIP / sample files).
 
 ## Reference: argparse → frontmatter args mapping
@@ -155,5 +167,9 @@ On `tool_use` reply, the dispatcher looks up the entry by name, spawns `entry.co
 
 ## Bundled scripts
 
-- `scripts/build_tools_yaml.py`: walks `input_dir`, extracts each frontmatter, validates `name`, writes the registry to `output_path`. Self-contained (depends only on `scripts/_tool.py` and `pyyaml`).
+- `scripts/build_tools_yaml.py`: walks `input_dir`, extracts each frontmatter, validates `name`, auto-detects third-party imports via `ast`, and writes the registry to `output_path`. Self-contained (depends only on `scripts/_tool.py` and `pyyaml`).
+  - Stdlib detection uses `sys.stdlib_module_names` (Python 3.10+).
+  - Local module detection walks from the script's directory up to `input_dir`, looking for `<mod>.py` or `<mod>/__init__.py`.
+  - Import-name → pip-name divergences are handled by an in-script `_IMPORT_TO_PIP` table (`yaml`→`pyyaml`, `PIL`→`pillow`, `cv2`→`opencv-python`, `bs4`→`beautifulsoup4`, `sklearn`→`scikit-learn`, `dotenv`→`python-dotenv`, `magic`→`python-magic`, `jwt`→`pyjwt`, `skimage`→`scikit-image`, `googleapiclient`→`google-api-python-client`, `google_auth_oauthlib`→`google-auth-oauthlib`, `OpenSSL`→`pyopenssl`, `Crypto`→`pycryptodome`, `serial`→`pyserial`, `win32api`/`win32com`/`win32con`/`pythoncom`→`pywin32`). Add a new entry to this table when a globally common import name maps to a different pip name. Per-script ad-hoc additions go in frontmatter `extra_with`.
+  - Resolution order per script: `command` (full override) → otherwise `auto-detected imports ∪ extra_with`.
 - `scripts/_tool.py`: bundled copy of the runtime helper that `build_tools_yaml.py` itself depends on. Treated as the authoritative copy; sync downstream copies (e.g. in a project's `lib/src/_tool.py`) from this file when divergence appears.

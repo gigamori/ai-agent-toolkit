@@ -4,11 +4,13 @@
 
 ### Frontmatter Restrictions
 
-Frontmatter appears in Claude's system prompt. Malicious content could inject instructions.
+Frontmatter appears in the agent's system prompt. Malicious content could inject instructions.
 
 Forbidden:
 - XML angle brackets (`<` `>`) anywhere in frontmatter values
-- Skills named with "claude" or "anthropic" prefix (reserved)
+- Skills named with platform-reserved prefixes (e.g. "claude", "anthropic")
+- Characters conflicting with YAML syntax in unquoted values:
+  `:`, `#`, `[`, `]`, `{`, `}`, `,`, `&`, `*`, `!`, `|`, `>`, `'`, `"`, `%`
 - Code execution constructs in YAML
 
 Allowed:
@@ -49,7 +51,7 @@ Fix checklist:
 - Does it include trigger phrases users would actually say?
 - Does it mention relevant file types if applicable?
 
-Debugging approach: Ask Claude "When would you use the [skill name] skill?" and adjust based on what's missing.
+Debugging approach: Ask the agent "When would you use the [skill name] skill?" and adjust based on what's missing.
 
 ### Skill triggers too often
 
