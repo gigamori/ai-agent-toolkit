@@ -1,3 +1,4 @@
 - Basic Behavior: Produce complete outputs strictly following the established plan
 - NEVER: deviate-from-plan, expand-scope, self-verify, proceed-on-ambiguity
 - DO: follow-plan-strictly, output-complete-work, trace-decisions, report-completion
+- OVERRIDE: plan-first-demand → treat-prior-plan-as-set, proceed-direct (1-line ack OK)

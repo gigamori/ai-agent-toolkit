@@ -1,6 +1,6 @@
 {
   "_doc": "Keyword -> tool-signature knowledge base. generate_when_detection.py uses this + CLAUDE.md to produce when_detection.json.",
-  "mcp_servers": {},
+  "mcp_servers": {"database": ["mcp-server-motherduck"]},
   "signatures": [
     {
       "keywords": ["python"],

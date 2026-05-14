@@ -116,13 +116,13 @@ The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/m
 `_common.md` (mode-only rules):
 
 ```markdown
-- NEVER: overstep(mode boundary), change-mode-silently
-- DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming)
+- NEVER: overstep(mode boundary), change-mode-silently, comply-when-violates-mode
+- DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming), refuse-[BLOCKED]-on-violation
 
 Answer starting with `[Mode: current_mode]`
 ```
 
-`_meta.md` framework header (always paired with any active slug; includes the `[BLOCKED: mode-rule <name>]` self-report rule).
+`_meta.md` framework header (always paired with any active slug; defines the three-level precedence chain `Mode > User-instruction > Role` and the `[BLOCKED: mode-rule <name>]` self-report rule).
 
 ### Behavior without a slug
 
@@ -166,7 +166,12 @@ plugins/role-mode/
     review.md
 ```
 
-Each `<mode>.md` contains exactly three lines: `Basic Behavior`, `NEVER`, `DO`. The `mode: <name>` header is generated dynamically by the hook and is not stored in the file.
+Each `<mode>.md` has three required lines — `Basic Behavior`, `NEVER`, `DO` — plus two optional sections:
+
+- **`OVERRIDE`** (line 4) — redirects requests that would violate the mode's constraints to the appropriate mode.
+- **Extended guidelines** (free-form body below the 4 lines) — strict mode-specific instructions injected into the system prompt when the mode is active. See `debug.md` for an example.
+
+The `mode: <name>` header is generated dynamically by the hook and is not stored in the file.
 
 ## Interop
 

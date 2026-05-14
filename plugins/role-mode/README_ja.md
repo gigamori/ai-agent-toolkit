@@ -116,13 +116,13 @@ nomode norole — mode:plan と mode:execute の違いは何ですか？
 `_common.md`（mode 専用ルール）：
 
 ```markdown
-- NEVER: overstep(mode boundary), change-mode-silently
-- DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming)
+- NEVER: overstep(mode boundary), change-mode-silently, comply-when-violates-mode
+- DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming), refuse-[BLOCKED]-on-violation
 
 Answer starting with `[Mode: current_mode]`
 ```
 
-`_meta.md`（framework ヘッダ。任意の active slug と必ず一緒に注入される。`[BLOCKED: mode-rule <name>]` 自己宣言ルールを含む）。
+`_meta.md`（framework ヘッダ。任意の active slug と必ず一緒に注入される。三段階の優先順位 `Mode > User-instruction > Role` と `[BLOCKED: mode-rule <name>]` 自己宣言ルールを含む）。
 
 ### slug 無しのときの挙動
 
@@ -166,7 +166,12 @@ plugins/role-mode/
     review.md
 ```
 
-各 `<mode>.md` は `Basic Behavior` / `NEVER` / `DO` の 3 行のみ。`mode: <name>` ヘッダは hook が動的生成し、ファイルには持たない。
+各 `<mode>.md` は `Basic Behavior` / `NEVER` / `DO` の 3 行が必須。加えて任意セクションが 2 種:
+
+- **`OVERRIDE`**（4 行目）— mode 制約に違反するリクエストを適切な mode へリダイレクトする
+- **拡張ガイドライン**（4 行以降の自由記述）— mode がアクティブ時にシステムプロンプトへ注入される厳格な mode 固有指示。例: `debug.md`
+
+`mode: <name>` ヘッダは hook が動的生成し、ファイルには持たない。
 
 ## 他プラグインとの併用
 
