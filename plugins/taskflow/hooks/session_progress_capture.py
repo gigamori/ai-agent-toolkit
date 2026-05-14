@@ -27,6 +27,7 @@ exists and this hook also exits 0).
 import datetime
 import json
 import os
+import re
 import shlex
 import sys
 
@@ -39,6 +40,10 @@ JSONL_DIR = os.path.expanduser(f'~/.claude/projects/{_encoded}')
 WRITE_TOOLS = {'Write', 'Edit'}
 NOTEBOOK_TOOL = 'NotebookEdit'
 BASH_FILE_VERBS = {'mv', 'cp', 'rm'}
+# Split bash commands at chain operators (&&, ||, ;, |) so that args from one
+# segment do not bleed into the verb-extraction of another. Greedy `\|\|` first
+# to avoid matching as two singles.
+_BASH_CHAIN_SPLIT = re.compile(r'\s*(?:&&|\|\||[;|])\s*')
 MAX_TOUCHED_IN_INJECTION = 30
 
 
@@ -54,16 +59,29 @@ def normalize_path(p: str, cwd: str) -> str:
 
 
 def extract_bash_paths(cmd: str) -> list[str]:
-    """For `mv|cp|rm <paths...>`, return the non-flag arguments."""
+    """For each `mv|cp|rm <paths...>` segment in a bash command, return the
+    non-flag arguments.
+
+    The command is split at shell chain operators (`&&`, `||`, `;`, `|`)
+    first, so a `cp ...` followed by `&& echo ...` does not pull `echo`'s
+    args into `cp`'s path list. Each segment is parsed independently with
+    shlex, and only segments whose first token is `mv` / `cp` / `rm`
+    contribute paths.
+    """
     if not cmd or not isinstance(cmd, str):
         return []
-    try:
-        tokens = shlex.split(cmd, posix=True)
-    except ValueError:
-        return []
-    if not tokens or tokens[0] not in BASH_FILE_VERBS:
-        return []
-    return [t for t in tokens[1:] if not t.startswith('-')]
+    paths: list[str] = []
+    for segment in _BASH_CHAIN_SPLIT.split(cmd):
+        if not segment.strip():
+            continue
+        try:
+            tokens = shlex.split(segment, posix=True)
+        except ValueError:
+            continue
+        if not tokens or tokens[0] not in BASH_FILE_VERBS:
+            continue
+        paths.extend(t for t in tokens[1:] if not t.startswith('-'))
+    return paths
 
 
 def extract_touched(jsonl_path: str, cwd: str) -> list[str]:
@@ -136,7 +154,13 @@ def main() -> int:
     except Exception:
         return 0
 
-    if state.get('progress_capture_done'):
+    # The "already fired this session" flag lives in a sidecar marker file
+    # (<sid>.captured) rather than in the JSON state. Other components
+    # (session_init.py, the project-router subagent) freely rewrite the
+    # state JSON every turn and would clobber an inline boolean field —
+    # observed empirically as the Stop hook re-firing on every turn.
+    capture_marker = os.path.join(STATE_DIR, f'{session_id}.captured')
+    if os.path.exists(capture_marker):
         return 0
 
     project = state.get('project', '')
@@ -149,11 +173,10 @@ def main() -> int:
     touched = extract_touched(jsonl_path, os.getcwd())
 
     # Mark done regardless of injection (prevents re-fire on LLM's follow-up Stop)
-    state['progress_capture_done'] = True
     try:
-        with open(state_path, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False)
-    except Exception:
+        with open(capture_marker, 'w', encoding='utf-8') as f:
+            f.write('')
+    except OSError:
         pass
 
     if not touched:
@@ -167,12 +190,21 @@ def main() -> int:
     reason = (
         f'[progress capture] session={sid8} date={date}\n'
         f'touched: {" ".join(shown)}{tail}\n\n'
-        f'For each task you advanced:\n'
-        f'- unresolved next step → update `## Next Steps`; create task if missing '
-        f'(not-yet-started → 0_todo/, in-flight → 1_in_progress/)\n'
-        f'- complete → clear `## Next Steps` and append to `<!-- @log -->`: '
-        f'`- {date} [s:{sid8}]: completed`\n'
-        f'No real work → skip.'
+        f'Procedure (do not shortcut):\n'
+        f'1. For every `tasks/<status>/*.md` in `touched`: locate the task in its '
+        f'CURRENT folder (it may have moved this session). If `<!-- @log -->` does '
+        f'not already reflect this session\'s work on that task, append '
+        f'`- {date} [s:{sid8}]: <one-line summary>`. Adjust `## Next Steps`: write '
+        f'remaining items, or clear (header only) if the task is complete. Create '
+        f'a new task in `0_todo/` or `1_in_progress/` if no task file exists for '
+        f'work you did.\n'
+        f'2. For `touched` paths outside `tasks/` (source files, specs, configs): '
+        f'map each to the owning task (by scope, any status) and update per (1). '
+        f'Bug fixes and verification-driven tweaks ARE task progress.\n'
+        f'3. Reply `[progress capture] skip — no task work` ONLY IF every `touched` '
+        f'entry is unrelated to any task in this project (e.g., transient scratch '
+        f'files, generated artifacts). Skipping while a touched entry maps to a '
+        f'task — even loosely — is wrong; update that task\'s log instead.'
     )
 
     result = {'decision': 'block', 'reason': reason}
