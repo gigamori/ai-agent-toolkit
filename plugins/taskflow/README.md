@@ -211,6 +211,22 @@ Three hooks run automatically when the plugin is enabled.
 
 Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Progress Session]` into the LLM context. Creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` if missing.
 
+Also handles guidelines injection: on the first turn of a session (and after compaction), the full content of `progress_guidelines.md`, `notes_guidelines.md`, and `tasks_guidelines.md` is injected. On subsequent turns, only a keyword reminder (`guidelines_reminder.md`) is injected to maintain attention to the guidelines at lower token cost.
+
+##### Maintaining guidelines_reminder.md
+
+`prompts/guidelines_reminder.md` is a keyword reminder injected every turn after the first. It works by re-activating the LLM's attention to the full guidelines injected earlier in the conversation.
+
+**Design principle**: the reminder contains distinctive terms from the source guidelines — particularly prohibitions, format-specific patterns, and authority definitions — that boost attention weight on the corresponding full-text passages.
+
+**Maintenance rule**: when any of the 3 source guidelines (`progress_guidelines.md`, `notes_guidelines.md`, `tasks_guidelines.md`) is updated, `guidelines_reminder.md` MUST be updated in the same commit. Stale keywords that reference removed rules cause hallucinated constraints; missing keywords for new rules cause silent non-compliance.
+
+**Keyword selection criteria** (in priority order):
+
+1. Prohibitions (what NOT to do) — highest violation risk when forgotten
+2. Format-specific patterns (frontmatter fields, filename conventions, character limits)
+3. Authority definitions (which source of truth governs which field)
+
 #### Stop: session_sync.py
 
 Runs at session end. Copies plan/memory files modified within the last 10 minutes into the project directory.

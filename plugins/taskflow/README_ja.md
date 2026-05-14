@@ -211,6 +211,22 @@ _projects/
 
 毎ターン実行。`_projects/_state/{session_id}.json` を管理し、`[Progress Session]` を LLM コンテキストに注入する。`_projects/` が存在しない場合は自動生成する（`_state/` とテンプレート `index.md` も同時作成）。
 
+ガイドライン注入も担当: セッション初回ターン（および compact 後）に `progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md` の全文を注入し、以降のターンではキーワードリマインダー（`guidelines_reminder.md`）のみを注入してトークンコストを削減する。
+
+##### guidelines_reminder.md のメンテナンス
+
+`prompts/guidelines_reminder.md` は初回以降の毎ターンに注入されるキーワードリマインダー。会話冒頭で注入された全文ガイドラインへの LLM のアテンションを再活性化する設計。
+
+**設計原則**: 元のガイドラインから特徴的な用語（特に禁止規則、フォーマット固有パターン、権威の定義）を抽出し、対応する全文パッセージへのアテンション重みを強化する。
+
+**メンテナンスルール**: 3 つのソースガイドライン（`progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md`）のいずれかを更新したら、`guidelines_reminder.md` も同じコミットで必ず更新すること。削除されたルールのキーワードが残ると幻覚的な制約を引き起こし、新ルールのキーワードが欠けるとサイレントな非準拠を招く。
+
+**キーワード選定基準**（優先順）:
+
+1. 禁止規則（してはいけないこと）— 忘却時の違反リスクが最も高い
+2. フォーマット固有パターン（frontmatter フィールド、ファイル名規約、文字数制限）
+3. 権威の定義（どのフィールドがどの情報源を正とするか）
+
 #### Stop: session_sync.py
 
 セッション終了時に実行。直近 10 分以内に更新された plan/memory ファイルをプロジェクトディレクトリにコピーする。

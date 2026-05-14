@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-SessionStart hook (matcher: compact): reset rules_loaded in state file.
+SessionStart hook (matcher: compact): reset injection flags in state file.
 
 When Claude Code auto-compacts the conversation, the additionalContext
 injected by session_init.py is lost (compaction summarizes conversation
 history; hook output is not re-attached). This hook fires on the
-SessionStart event with reason=compact and resets the `rules_loaded`
-flag so the next UserPromptSubmit turn re-injects static_rules.
+SessionStart event with reason=compact and resets injection flags so
+the next UserPromptSubmit turn re-injects static_rules, project index,
+and full guidelines.
 
 State file location: _projects/_state/{session_id}.json
-Only touches `rules_loaded`; all other fields are preserved.
+Resets: rules_loaded, indexed_project, guidelines_loaded.
+All other fields are preserved.
 """
 import json, sys, os
 
@@ -39,6 +41,8 @@ if not isinstance(state, dict):
   sys.exit(0)
 
 state['rules_loaded'] = False
+state['indexed_project'] = ''
+state['guidelines_loaded'] = False
 
 with open(state_path, 'w', encoding='utf-8') as f:
   json.dump(state, f, ensure_ascii=False)

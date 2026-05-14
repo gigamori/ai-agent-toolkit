@@ -83,9 +83,6 @@ Read these files. Record missing files as "not found":
 
 1. `_projects/<project>/index.md`
 2. `_projects/<project>/progress.md`
-3. `taskflow/prompts/progress_guidelines.md`
-4. `taskflow/prompts/notes_guidelines.md`
-5. `taskflow/prompts/tasks_guidelines.md`
 
 ## Step 4: Task inspection (lightweight)
 
@@ -156,15 +153,6 @@ progress_exists: true | false
 
 --- progress ---
 <contents of progress.md, or "not found">
-
---- progress_guidelines ---
-<contents of progress_guidelines.md>
-
---- notes_guidelines ---
-<contents of notes_guidelines.md>
-
---- tasks_guidelines ---
-<contents of tasks_guidelines.md>
 
 --- tasks_in_progress_list ---
 <filename list of tasks/1_in_progress/, or "none">

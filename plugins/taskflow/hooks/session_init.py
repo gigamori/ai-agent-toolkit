@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-UserPromptSubmit hook: smart session/project context injection (v2.1).
+UserPromptSubmit hook: smart session/project context injection (v2.2).
 
 Injection blocks per turn (decided from state file flags):
 
-  - session_info  (always): [Progress Session] header (~50 tok)
-  - static_rules  (once per session): project_routing.md (~1600 tok)
-  - project_index (on project switch): _projects/<project>/index.md (~250 tok)
-  - action_req    (every turn while progress.md missing): scaffold banner
+  - session_info       (always): [Progress Session] header (~50 tok)
+  - static_rules       (once per session): project_routing.md (~1600 tok)
+  - project_index      (on project switch): _projects/<project>/index.md (~250 tok)
+  - guidelines_full    (once per session): 3 guidelines files (~3000 tok)
+  - guidelines_reminder(subsequent turns): keyword reminder (~150 tok)
+  - action_req         (every turn while progress.md missing): scaffold banner
 
-State file schema (v2.1):
+State file schema (v2.2):
   {
-    "project":         "<current active project>",
-    "rules_loaded":    <bool — static_rules injected this session>,
-    "indexed_project": "<last project for which project_index was injected>"
+    "project":            "<current active project>",
+    "rules_loaded":       <bool — static_rules injected this session>,
+    "indexed_project":    "<last project for which project_index was injected>",
+    "guidelines_loaded":  <bool — full guidelines injected this session>
   }
 
-Backward compat: v0.2.0 state ({"project": "..."}) is loaded with safe
-defaults (rules_loaded=False, indexed_project=""), causing one full
-re-injection on the first turn after upgrade.
+Backward compat: older state is loaded with safe defaults
+(rules_loaded=False, indexed_project="", guidelines_loaded=False),
+causing one full re-injection on the first turn after upgrade.
 
 Special tokens in user prompt:
   pj:<name>   set/switch project
@@ -31,6 +34,12 @@ PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROUTING_MD = os.path.join(PLUGIN_ROOT, 'prompts', 'project_routing.md')
+GUIDELINES_FILES = [
+    os.path.join(PLUGIN_ROOT, 'prompts', 'progress_guidelines.md'),
+    os.path.join(PLUGIN_ROOT, 'prompts', 'notes_guidelines.md'),
+    os.path.join(PLUGIN_ROOT, 'prompts', 'tasks_guidelines.md'),
+]
+GUIDELINES_REMINDER_MD = os.path.join(PLUGIN_ROOT, 'prompts', 'guidelines_reminder.md')
 
 # Bootstrap _projects/ root if missing (replaces taskflow:init skill).
 if not os.path.isdir(PROGRESS_ROOT):
@@ -80,6 +89,7 @@ state = {
   'project': loaded.get('project', '') or '',
   'rules_loaded': bool(loaded.get('rules_loaded', False)),
   'indexed_project': loaded.get('indexed_project', '') or '',
+  'guidelines_loaded': bool(loaded.get('guidelines_loaded', False)),
 }
 
 # Resolve current project for this turn.
@@ -97,6 +107,8 @@ else:
 #   inject_index: project is set AND it differs from the last indexed project.
 inject_rules = (not state['rules_loaded']) and (bool(current_project) or pj_explicit is not None)
 inject_index = current_project != '' and current_project != state['indexed_project']
+inject_guidelines_full = (not state['guidelines_loaded']) and (bool(current_project) or pj_explicit is not None)
+inject_guidelines_reminder = state['guidelines_loaded'] and bool(current_project)
 
 # Build static_rules block.
 routing_content = ''
@@ -117,6 +129,25 @@ if inject_rules:
         os.path.join(PLUGIN_ROOT, 'prompts', new).replace('\\', '/')
       )
     routing_content = '\n\n' + routing_content
+  except Exception:
+    pass
+
+# Build guidelines block (full on first turn, reminder on subsequent turns).
+guidelines_content = ''
+if inject_guidelines_full:
+  parts = []
+  for gf in GUIDELINES_FILES:
+    try:
+      with open(gf, 'r', encoding='utf-8') as f:
+        parts.append(f.read())
+    except Exception:
+      pass
+  if parts:
+    guidelines_content = '\n\n' + '\n\n'.join(parts)
+elif inject_guidelines_reminder:
+  try:
+    with open(GUIDELINES_REMINDER_MD, 'r', encoding='utf-8') as f:
+      guidelines_content = '\n\n' + f.read()
   except Exception:
     pass
 
@@ -142,6 +173,7 @@ new_state = dict(loaded)
 new_state['project'] = current_project
 new_state['rules_loaded'] = state['rules_loaded'] or inject_rules
 new_state['indexed_project'] = current_project
+new_state['guidelines_loaded'] = state['guidelines_loaded'] or inject_guidelines_full
 os.makedirs(STATE_DIR, exist_ok=True)
 with open(state_path, 'w', encoding='utf-8') as f:
   json.dump(new_state, f, ensure_ascii=False)
@@ -164,7 +196,7 @@ if current_project:
 result = {
   'hookSpecificOutput': {
     'hookEventName': 'UserPromptSubmit',
-    'additionalContext': f'[Progress Session] session_id={session_id} state_file={state_path} current_project={current_project}{action_required}{index_content}{routing_content}'
+    'additionalContext': f'[Progress Session] session_id={session_id} state_file={state_path} current_project={current_project}{action_required}{index_content}{routing_content}{guidelines_content}'
   }
 }
 
