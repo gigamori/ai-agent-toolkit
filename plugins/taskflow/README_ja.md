@@ -35,6 +35,7 @@ claude --plugin-dir ./plugins/taskflow
 |---|---|
 | プロジェクト指定 | `pj:my-project ビルドエラーを直して` |
 | プロジェクト指定 + コマンド | `pj:my-project /plan スキーマを設計せよ` |
+| プロジェクト探索 | `pj:?` または `pj:? デプロイパイプライン` |
 | プロジェクト該当なし | `pj:none READMEを書いて` |
 | 新規プロジェクト作成 | `新しいプロジェクト xxx を作って` |
 | taskflow を完全バイパス（このターン） | `norouter READMEを書いて` |

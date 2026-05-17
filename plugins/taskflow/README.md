@@ -35,6 +35,7 @@ Prefix the prompt with `pj:<project>`. If omitted, the LLM infers the project.
 |---|---|
 | Specify a project | `pj:my-project fix the build error` |
 | Specify a project + slash command | `pj:my-project /plan design the schema` |
+| Discover projects | `pj:?` or `pj:? deploy pipeline` |
 | No matching project | `pj:none write a README` |
 | Create a new project | `create a new project called xxx` |
 | Bypass taskflow entirely (this turn) | `norouter write a README` |

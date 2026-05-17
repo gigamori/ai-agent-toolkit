@@ -33,6 +33,16 @@ Similarity labels (qualitative, not numeric):
 
 If the project-router subagent supplied a `nearest_projects` block, use it as-is. Otherwise the main agent computes the labels itself by reading `_projects/index.md`.
 
+### Discovery via `pj:?`
+
+When the user prompt contains `pj:?`, this is a discovery request. The hook passes `current_project` as empty to trigger `nearest_projects` computation. The main agent MUST:
+
+1. Invoke the project-router subagent with empty `current_project`.
+2. Display the `nearest_projects` block using the `[pj:(none)]` format above.
+3. Do NOT clear or change the active project — `pj:?` is a query, not a switch.
+
+After seeing the candidates, the user can type `pj:<name>` to select one.
+
 ## Running the project router
 
 When a session has a `state_file` path injected via `[Progress Session]`, invoke the project-router subagent using the procedure below **before** starting to answer the user's input. This MUST be the first action of every turn.

@@ -68,9 +68,14 @@ if re.search(r'(?:^|\s)norouter(?:\s|$)', user_prompt):
 # Parse first pj:<project> (anywhere, after start or whitespace).
 pj_match = re.search(r'(?:^|\s)pj:(\S+)', user_prompt)
 pj_explicit = None
+pj_discovery = False
 if pj_match:
   val = pj_match.group(1)
-  pj_explicit = '' if val == 'none' else val
+  if val == '?':
+    pj_explicit = ''
+    pj_discovery = True
+  else:
+    pj_explicit = '' if val == 'none' else val
 
 # Load existing state with safe defaults for missing / corrupted fields (Q5).
 # `loaded` keeps the full raw dict so that unrelated fields written by other
@@ -105,7 +110,7 @@ else:
 # Decide which blocks to inject.
 #   inject_rules: user is engaging with taskflow AND rules not yet loaded this session.
 #   inject_index: project is set AND it differs from the last indexed project.
-inject_rules = (not state['rules_loaded']) and (bool(current_project) or pj_explicit is not None)
+inject_rules = ((not state['rules_loaded']) and (bool(current_project) or pj_explicit is not None)) or pj_discovery
 inject_index = current_project != '' and current_project != state['indexed_project']
 inject_guidelines_full = (not state['guidelines_loaded']) and (bool(current_project) or pj_explicit is not None)
 inject_guidelines_reminder = state['guidelines_loaded'] and bool(current_project)
@@ -170,9 +175,9 @@ if inject_index:
 # scratch, which silently dropped `progress_capture_done` (set by the Stop hook)
 # and caused the Stop hook to re-fire every turn.
 new_state = dict(loaded)
-new_state['project'] = current_project
+new_state['project'] = current_project if not pj_discovery else state['project']
 new_state['rules_loaded'] = state['rules_loaded'] or inject_rules
-new_state['indexed_project'] = current_project
+new_state['indexed_project'] = current_project if not pj_discovery else state['indexed_project']
 new_state['guidelines_loaded'] = state['guidelines_loaded'] or inject_guidelines_full
 os.makedirs(STATE_DIR, exist_ok=True)
 with open(state_path, 'w', encoding='utf-8') as f:
