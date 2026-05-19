@@ -97,7 +97,7 @@ state = {
   'guidelines_loaded': bool(loaded.get('guidelines_loaded', False)),
 }
 
-# Resolve current project for this turn.
+# Resolve current project for this turn (before re-entry reset check).
 if pj_explicit is not None:
   current_project = pj_explicit
 elif state['project']:
@@ -107,12 +107,19 @@ else:
   path_match = re.search(r'_projects/([^/\s]+)/', user_prompt)
   current_project = path_match.group(1) if path_match else ''
 
+# Project re-entry: reset injection flags when transitioning from empty to active.
+# Without this, pj:none → pj:<name> would leave rules_loaded=True and skip injection.
+if current_project and not state['project']:
+  state['rules_loaded'] = False
+  state['guidelines_loaded'] = False
+  state['indexed_project'] = ''
+
 # Decide which blocks to inject.
 #   inject_rules: user is engaging with taskflow AND rules not yet loaded this session.
 #   inject_index: project is set AND it differs from the last indexed project.
-inject_rules = ((not state['rules_loaded']) and (bool(current_project) or pj_explicit is not None)) or pj_discovery
+inject_rules = ((not state['rules_loaded']) and bool(current_project)) or pj_discovery
 inject_index = current_project != '' and current_project != state['indexed_project']
-inject_guidelines_full = (not state['guidelines_loaded']) and (bool(current_project) or pj_explicit is not None)
+inject_guidelines_full = (not state['guidelines_loaded']) and bool(current_project)
 inject_guidelines_reminder = state['guidelines_loaded'] and bool(current_project)
 
 # Build static_rules block.
@@ -198,12 +205,17 @@ if current_project:
       f'This scaffold generation is allowed even inside Plan mode (treated equivalently to the plan file).'
     )
 
-result = {
-  'hookSpecificOutput': {
-    'hookEventName': 'UserPromptSubmit',
-    'additionalContext': f'[Progress Session] session_id={session_id} state_file={state_path} current_project={current_project}{action_required}{index_content}{routing_content}{guidelines_content}'
+# Suppress LLM-facing context entirely when no project is active and not in discovery mode.
+# Saves ~50 tok/turn and prevents the [Progress Session] header from triggering router invocation.
+if not current_project and not pj_discovery:
+  result = {}
+else:
+  result = {
+    'hookSpecificOutput': {
+      'hookEventName': 'UserPromptSubmit',
+      'additionalContext': f'[Progress Session] session_id={session_id} state_file={state_path} current_project={current_project}{action_required}{index_content}{routing_content}{guidelines_content}'
+    }
   }
-}
 
 sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
 sys.stdout.buffer.write(b'\n')

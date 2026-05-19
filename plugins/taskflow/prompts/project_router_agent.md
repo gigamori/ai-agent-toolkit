@@ -28,14 +28,14 @@ The main agent prepends the following JSON context block:
 1. If `current_project` has a value, use it.
 2. If `current_project` is empty, determine it in this order of priority:
    a. If `first_line` contains `pj:<name>`, use it (`pj:none` is treated as empty).
-   b. Read `_projects/index.md` and match the project list against `prompt_summary` / `first_line`. If a repo name, package name, or keyword matches, use it.
-   c. If none apply, proceed with an empty value. **Additionally** compute `nearest_projects` (up to 5 entries) by ranking every row in `_projects/index.md` against `prompt_summary` / `first_line` with one of these qualitative labels:
+   b. Otherwise, proceed with an empty value. Compute `nearest_projects` (up to 5 entries) by ranking every row in `_projects/index.md` against `prompt_summary` / `first_line` with one of these qualitative labels:
       - `strong` — direct keyword / scope overlap
       - `related` — same domain or adjacent area
       - `weak` — some shared vocabulary but different focus
       - `far` — different domain (only include when the project list is short)
 
       If `_projects/index.md` has 5 or fewer projects, list all of them.
+      **Do NOT auto-assign a project based on keyword matching. Only present candidates for the user to select via `pj:<name>`.**
 
 3. Write the finalized project name into state_file:
    ```bash

@@ -45,7 +45,9 @@ After seeing the candidates, the user can type `pj:<name>` to select one.
 
 ## Running the project router
 
-When a session has a `state_file` path injected via `[Progress Session]`, invoke the project-router subagent using the procedure below **before** starting to answer the user's input. This MUST be the first action of every turn.
+When a session has a `state_file` path injected via `[Progress Session]` **and `current_project` is non-empty**, invoke the project-router subagent using the procedure below before starting to answer the user's input.
+
+When `current_project` is empty, do NOT invoke the router. Proceed directly to the user's request without project context.
 
 ### Steps
 

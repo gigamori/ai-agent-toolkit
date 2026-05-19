@@ -54,7 +54,9 @@ There is no `Session Log` section. Per-task history lives in each task file's `<
 ## Prohibitions
 
 - Do NOT edit content inside `<!-- @table:begin --> ... <!-- @table:end -->` by hand. Run `/progress rebuild` instead.
+- Do NOT create multiple table regions in progress.md. There is exactly **one** `<!-- @table:begin/end -->` block per project, which rebuilds all three status tables (TODO / In Progress / Completed) together.
 - Do NOT add `status:` or `summary:` fields to task frontmatter. Folder name and H1 are the sole sources of truth.
 - Do NOT add `## Session Log` or `## Last Updated` sections to progress.md. Both are obsolete in v2.
+- Do NOT add `## Completed Tasks` or other duplicate task sections. Task status is derived solely from folder location.
 - Do NOT delete entries from a task's `<!-- @log -->` block. Append only.
 - Do NOT move a task into `tasks/2_done/` on your own judgment. Wait for explicit human approval.

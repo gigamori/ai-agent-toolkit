@@ -172,15 +172,15 @@ def main() -> int:
     jsonl_path = os.path.join(JSONL_DIR, f'{session_id}.jsonl')
     touched = extract_touched(jsonl_path, os.getcwd())
 
-    # Mark done regardless of injection (prevents re-fire on LLM's follow-up Stop)
+    if not touched:
+        return 0
+
+    # Mark done to prevent re-fire on LLM's follow-up Stop
     try:
         with open(capture_marker, 'w', encoding='utf-8') as f:
             f.write('')
     except OSError:
         pass
-
-    if not touched:
-        return 0
 
     sid8 = session_id[:8]
     date = datetime.date.today().isoformat()
