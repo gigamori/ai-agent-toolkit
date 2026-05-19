@@ -8,10 +8,10 @@ AIコーディングエージェント（Claude Code、Cursor など）向けの
 
 Claude Code プラグインマーケットプレイス経由で配布しています。
 
-| プラグイン | 説明 |
-|---|---|
-| [taskflow](plugins/taskflow/) | 同時並行するタスクの進捗とコンテキストをセッション横断で管理 |
-| [rule-inject](plugins/rule-inject/) | `CLAUDE.md` の `<rules when="..." src="..."/>` で宣言された外部ルールの読了を `PreToolUse` deny で強制。Claude Code と Cursor の両方で動作 |
+| プラグイン | 互換性 | 説明 |
+|---|---|---|
+| [taskflow](plugins/taskflow/) | CC | 同時並行するタスクの進捗とコンテキストをセッション横断で管理 |
+| [rule-inject](plugins/rule-inject/) | CC / Cursor | `CLAUDE.md` の `<rules when="..." src="..."/>` で宣言された外部ルールの読了を `PreToolUse` deny で強制 |
 
 ### インストール
 
@@ -32,18 +32,18 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 
 ### Cursor で使う場合
 
-両プラグインとも `.claude/` への symlink と `/…:init` による手動セットアップで Cursor でも動作する。詳細はプラグインごとの README を参照。
+**CC / Cursor** 表記のプラグイン・スキルは `.claude/` への symlink と `/…:init` による手動セットアップで Cursor でも動作する。**CC** 表記のものは Claude Code 固有機能（hooks, session JSONL, subagent）に依存するため Cursor では利用不可。詳細はプラグインごとの README を参照。
 
 ## スキル
 
 プラグインなしで単体のエージェントに投入できる Agent Skill。
 
-| スキル | 説明 |
-|---|---|
-| [create-skill](skills/create-skill/) | エージェントスキルの作成をガイド。ベストプラクティス、構造テンプレート、検証チェックリスト付き |
-| [compact-document](skills/compact-document/) | マルチモードのドキュメント圧縮フレームワーク。記事、仕様書、議事録などを最小限の情報損失で凝縮 |
-| [register-pi-tools](skills/register-pi-tools/) | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成 |
-| [revert](skills/revert/) | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
+| スキル | 互換性 | 説明 |
+|---|---|---|
+| [create-skill](skills/create-skill/) | CC / Cursor | エージェントスキルの作成をガイド。ベストプラクティス、構造テンプレート、検証チェックリスト付き |
+| [compact-document](skills/compact-document/) | CC / Cursor | マルチモードのドキュメント圧縮フレームワーク。記事、仕様書、議事録などを最小限の情報損失で凝縮 |
+| [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成 |
+| [revert](skills/revert/) | CC | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
 
 ### revert
 
