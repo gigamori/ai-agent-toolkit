@@ -43,6 +43,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [create-skill](skills/create-skill/) | エージェントスキルの作成をガイド。ベストプラクティス、構造テンプレート、検証チェックリスト付き |
 | [compact-document](skills/compact-document/) | マルチモードのドキュメント圧縮フレームワーク。記事、仕様書、議事録などを最小限の情報損失で凝縮 |
 | [register-pi-tools](skills/register-pi-tools/) | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成 |
+| [revert](skills/revert/) | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
 
 スキルディレクトリをエージェントのスキルフォルダにコピー:
 
@@ -73,7 +74,8 @@ ai-agent-toolkit/
 ├── skills/
 │   ├── create-skill/          スキル: スキル作成ガイド
 │   ├── compact-document/      スキル: ドキュメント圧縮
-│   └── register-pi-tools/     スキル: Python スクリプト移行と tools.yaml 生成
+│   ├── register-pi-tools/     スキル: Python スクリプト移行と tools.yaml 生成
+│   └── revert/                スキル: bias-isolated 判定による安全な undo
 ├── LICENSE
 ├── README.md
 └── README_ja.md

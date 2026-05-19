@@ -43,6 +43,7 @@ Standalone Agent Skills that can be dropped into any agent without a plugin.
 | [create-skill](skills/create-skill/) | Guides through creating effective Agent Skills with best practices, structure templates, and validation checklists |
 | [compact-document](skills/compact-document/) | Multi-mode document compaction framework — condenses articles, specs, transcripts, and more with minimal information loss |
 | [register-pi-tools](skills/register-pi-tools/) | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller |
+| [revert](skills/revert/) | Safely undo recent assistant actions using state-revert semantics — delegates judgment to a bias-isolated subagent to prevent over-removal |
 
 Copy a skill into your agent's skill folder:
 
@@ -73,7 +74,8 @@ ai-agent-toolkit/
 ├── skills/
 │   ├── create-skill/          Skill: author new skills
 │   ├── compact-document/      Skill: document compaction
-│   └── register-pi-tools/     Skill: migrate Python scripts and build tools.yaml
+│   ├── register-pi-tools/     Skill: migrate Python scripts and build tools.yaml
+│   └── revert/                Skill: safe undo with bias-isolated judgment
 ├── LICENSE
 ├── README.md
 └── README_ja.md
