@@ -45,6 +45,27 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [register-pi-tools](skills/register-pi-tools/) | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成 |
 | [revert](skills/revert/) | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
 
+### revert
+
+AI アシスタントが不要な編集・commit・git 操作を行ったとき、「戻して」と言うだけで直前の変更を安全に undo できるスキル。アシスタントが過剰に巻き戻す事故（セッション全体の変更を消す等）を防止する。
+
+1. **GATE 強制** — main agent が undo 対象や操作を自己判断することを禁止。全ての revert 要求は専用の `revert-judge` サブエージェント（fresh context で bias isolation）を必ず経由する。
+2. **State-revert 原理** — 記録層（commit ref、branch pointer 等）のみを除去し、内容は保持する。内容も消す操作（scope B）や逆操作を追加する操作（scope C）は自動的にユーザ確認に昇格する。
+
+**トリガー**: 会話中に `戻して` / `undo` / `revert` と発話、または `/revert <対象>` で明示呼び出し。
+
+**ターンスコープ**: 「戻して」のような曖昧な要求は **直前 1 ターンのみ** を対象にする。セッション全体に暗黙で拡大することはなく、曖昧な場合は必ず確認する。
+
+**必要環境**: Python 3.11+, [uv](https://docs.astral.sh/uv/), DuckDB（uv が自動インストール）。
+
+```bash
+# インストール
+cp -r skills/revert ~/.claude/skills/
+
+# またはシンボリックリンク
+ln -s "$(pwd)/skills/revert" ~/.claude/skills/revert
+```
+
 スキルディレクトリをエージェントのスキルフォルダにコピー:
 
 ```bash

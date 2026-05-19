@@ -148,6 +148,28 @@ def _extract_user_text(content_value) -> str:
 # Represented as a tuple ("__turn__", ts, user_text_preview).
 _TURN_MARKER = "__turn__"
 
+# Patterns that identify system-injected user rows (not genuine user input).
+# Skill load and harness metadata create separate user rows in session JSONL;
+# these must not generate turn boundaries.
+_SYSTEM_INJECT_MARKERS = (
+    "Base directory for this skill:",
+    "<command-name>",
+)
+
+
+def _is_system_injected_user_msg(content_value) -> bool:
+    """Detect user rows containing only system-injected content.
+
+    Skill load messages (e.g. 'Base directory for this skill: ...') create
+    separate user rows in session JSONL. If treated as turn boundaries they
+    push the real latest-turn actions into 'previous turn', breaking the
+    judge's turn-scope constraint (Step 2.5).
+    """
+    text = _extract_user_text(content_value)
+    if not text.strip():
+        return True
+    return any(marker in text for marker in _SYSTEM_INJECT_MARKERS)
+
 
 def collect_tool_actions(rows: list[tuple], n: int) -> list[tuple]:
     """Iterate rows (newest first), expand tool_use blocks, insert turn markers.
@@ -163,6 +185,8 @@ def collect_tool_actions(rows: list[tuple], n: int) -> list[tuple]:
     action_count = 0
     for msg_type, ts_local, content_value in rows:
         if msg_type == "user":
+            if _is_system_injected_user_msg(content_value):
+                continue
             user_text = _extract_user_text(content_value)
             out.append((_TURN_MARKER, ts_local, user_text))
             continue

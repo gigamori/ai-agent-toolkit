@@ -45,6 +45,27 @@ Standalone Agent Skills that can be dropped into any agent without a plugin.
 | [register-pi-tools](skills/register-pi-tools/) | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller |
 | [revert](skills/revert/) | Safely undo recent assistant actions using state-revert semantics — delegates judgment to a bias-isolated subagent to prevent over-removal |
 
+### revert
+
+When an AI assistant makes an unwanted edit, commit, or git operation, the typical response is "undo that" — but the assistant often over-corrects, wiping out an entire session's work instead of just the last change. The **revert** skill solves this by enforcing a two-layer safety protocol:
+
+1. **GATE enforcement** — the main agent is forbidden from deciding what to undo or how. Every revert request must pass through a dedicated `revert-judge` subagent running in a fresh context (bias isolation).
+2. **State-revert semantics** — only the recording layer (commit ref, branch pointer, etc.) is removed; the underlying content is preserved. Operations that would also destroy content (scope B) or add inverse operations (scope C) are automatically escalated to the user for confirmation.
+
+**Trigger**: say `戻して` / `undo` / `revert` in conversation, or invoke explicitly with `/revert <target>`.
+
+**Turn-scope default**: vague requests like "undo that" target only the **latest turn**. The skill never silently expands to session-wide changes — if ambiguity exists, it asks first.
+
+**Requirements**: Python 3.11+, [uv](https://docs.astral.sh/uv/), DuckDB (installed automatically by uv).
+
+```bash
+# Install
+cp -r skills/revert ~/.claude/skills/
+
+# Or symlink
+ln -s "$(pwd)/skills/revert" ~/.claude/skills/revert
+```
+
 Copy a skill into your agent's skill folder:
 
 ```bash
