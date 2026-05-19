@@ -58,14 +58,6 @@ When an AI assistant makes an unwanted edit, commit, or git operation, the typic
 
 **Requirements**: Python 3.11+, [uv](https://docs.astral.sh/uv/), DuckDB (installed automatically by uv).
 
-```bash
-# Install
-cp -r skills/revert ~/.claude/skills/
-
-# Or symlink
-ln -s "$(pwd)/skills/revert" ~/.claude/skills/revert
-```
-
 Copy a skill into your agent's skill folder:
 
 ```bash

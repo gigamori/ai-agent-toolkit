@@ -58,14 +58,6 @@ AI アシスタントが不要な編集・commit・git 操作を行ったとき�
 
 **必要環境**: Python 3.11+, [uv](https://docs.astral.sh/uv/), DuckDB（uv が自動インストール）。
 
-```bash
-# インストール
-cp -r skills/revert ~/.claude/skills/
-
-# またはシンボリックリンク
-ln -s "$(pwd)/skills/revert" ~/.claude/skills/revert
-```
-
 スキルディレクトリをエージェントのスキルフォルダにコピー:
 
 ```bash
