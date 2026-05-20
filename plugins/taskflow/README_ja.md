@@ -71,11 +71,11 @@ claude --plugin-dir ./plugins/taskflow
 
 destructive アクション（`approve` / `revert`）では、メインエージェントが解決済 plan を表示し `AskUserQuestion` で確認を取ってから初めて mutation を実行する。`-y` で対象が確定済の場合はスキップ可。0 match / 低 confidence の複数 match の場合、router は候補を列挙して停止する（推測進行しない）。
 
-### /dashboard — Kanban プロジェクトダッシュボード
+### /kanban — Kanban プロジェクトボード
 
-`/dashboard` はすべての taskflow プロジェクトとそのタスクを kanban ボードで表示する自己完結型 HTML ダッシュボードを生成する。タスクはステータス（未着手・作業中・完了）とプロジェクト別に整理され、優先度バッジ、セッション履歴、セッションログ or `/progress` サブコマンドへのワンクリック遷移を提供。
+`/kanban` はすべての taskflow プロジェクトとそのタスクを kanban ボードで表示する自己完結型 HTML を生成する。タスクはステータス（未着手・作業中・完了）とプロジェクト別に整理され、優先度バッジ、セッション履歴、セッションログ or `/progress` サブコマンドへのワンクリック遷移を提供。
 
-ダッシュボードの特性:
+kanban ボードの特性:
 - `_projects/index.md` からすべてのプロジェクトを読み込み、タスク一覧を列挙
 - 各タスクの `@log` ブロックからセッション履歴を抽出し、short session ID を full UUID に解決（クリッカブルリンク化）
 - 2 つのビューを備える（トグル切り替え）：**By Status**（ステータス別列）と **By Project**（プロジェクト別列）
@@ -86,13 +86,13 @@ destructive アクション（`approve` / `revert`）では、メインエージ
 
 | 方法 | コマンド | 結果 |
 |---|---|---|
-| skill 経由 | `/dashboard` | HTTP サーバーを `http://localhost:17329/` で起動、ブラウザ自動起動、Ctrl+C で停止 |
-| script（静的） | `uv run python scripts/generate_dashboard.py` | HTML を `/tmp/taskflow-dashboard.html` に出力 |
-| script（サーブ） | `uv run python scripts/generate_dashboard.py --serve --open` | サーバー起動＋ブラウザ自動起動 |
+| skill 経由 | `/kanban` | HTTP サーバーを `http://localhost:17329/` で起動、ブラウザ自動起動、Ctrl+C で停止 |
+| script（静的） | `uv run python scripts/generate_kanban.py` | HTML を `/tmp/taskflow-kanban.html` に出力 |
+| script（サーブ） | `uv run python scripts/generate_kanban.py --serve --open` | サーバー起動＋ブラウザ自動起動 |
 
 script のオプション:
 
-- `--out PATH` — HTML 出力先を指定（デフォルト：`/tmp/taskflow-dashboard.html`）
+- `--out PATH` — HTML 出力先を指定（デフォルト：`/tmp/taskflow-kanban.html`）
 - `--serve` — `localhost:17329` で HTTP サーバーを起動。`/open?session=<UUID>` と `/open?prompt=<...>` endpoints でセッション・プロンプト起動を実装
 - `--open` — 生成後、デフォルトブラウザで自動起動
 - `--scheme vscode|vscodium` — URI scheme を上書き（デフォルト：自動検出）

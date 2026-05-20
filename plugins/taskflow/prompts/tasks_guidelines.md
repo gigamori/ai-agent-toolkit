@@ -58,7 +58,7 @@ Example: `2026-05-13_extension-ui-context.md`, `2026-05-13_extension-ui-context-
 
 | From | To | Trigger |
 |---|---|---|
-| `0_todo` | `1_in_progress` | Human or LLM decides to start. `mv` the file, or `/progress sync` after editing progress.md text. |
+| `0_todo` | `1_in_progress` | `/progress start <id>`, or `mv` the file directly. |
 | `1_in_progress` | `2_done` | **Human approval required**. `/progress approve <id>...`. |
 | `1_in_progress` | `0_todo` | Send back / postpone. `/progress revert <id>`. |
 | `2_done` | `1_in_progress` | Reopen completed task. `/progress revert <id>`. |

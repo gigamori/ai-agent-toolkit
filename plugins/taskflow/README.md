@@ -71,11 +71,11 @@ Prefix the prompt with `pj:<project>`. If omitted, the LLM infers the project.
 
 For destructive actions (`approve` / `revert`), the main agent prints the resolved plan and asks via `AskUserQuestion` before any mutation. `-y` skips this when the target is already verified. When the router returns zero matches or ambiguous low-confidence candidates, it stops and lists candidates rather than guessing.
 
-### /dashboard — Kanban project dashboard
+### /kanban — Kanban project board
 
-`/dashboard` generates a self-contained HTML dashboard showing all taskflow projects and their tasks in a kanban board. Tasks are organized by status (TODO / In Progress / Done) and by project, with priority badges, session history, and one-click navigation to session logs or `/progress` sub-actions.
+`/kanban` generates a self-contained HTML kanban board showing all taskflow projects and their tasks. Tasks are organized by status (TODO / In Progress / Done) and by project, with priority badges, session history, and one-click navigation to session logs or `/progress` sub-actions.
 
-The dashboard:
+The kanban board:
 - Reads all projects from `_projects/index.md` and enumerates tasks
 - Extracts session history from each task's `@log` block; resolves short session IDs to full UUIDs for clickable links
 - Renders two views (switch via toggle): **By Status** (column-per-status) and **By Project** (column-per-project)
@@ -86,13 +86,13 @@ Invocation:
 
 | Method | Command | Result |
 |---|---|---|
-| Via skill | `/dashboard` | Starts HTTP server at `http://localhost:17329/`, opens browser, blocks until Ctrl+C |
-| Via script (static) | `uv run python scripts/generate_dashboard.py` | Writes HTML to `/tmp/taskflow-dashboard.html` |
-| Via script (serve) | `uv run python scripts/generate_dashboard.py --serve --open` | Starts server and opens browser |
+| Via skill | `/kanban` | Starts HTTP server at `http://localhost:17329/`, opens browser, blocks until Ctrl+C |
+| Via script (static) | `uv run python scripts/generate_kanban.py` | Writes HTML to `/tmp/taskflow-kanban.html` |
+| Via script (serve) | `uv run python scripts/generate_kanban.py --serve --open` | Starts server and opens browser |
 
 Options for the script:
 
-- `--out PATH` — Write HTML to a custom path (default: `/tmp/taskflow-dashboard.html`)
+- `--out PATH` — Write HTML to a custom path (default: `/tmp/taskflow-kanban.html`)
 - `--serve` — Start an HTTP server on `localhost:17329` with `/open?session=<UUID>` and `/open?prompt=<...>` endpoints for session / prompt launches
 - `--open` — Open the result in the default browser after generation
 - `--scheme vscode|vscodium` — Override the URI scheme (default: auto-detect)

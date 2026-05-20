@@ -9,7 +9,7 @@
 
 | Field | Source of truth | Editor |
 |---|---|---|
-| Task status (TODO / In Progress / Completed) | Folder of the task file (`tasks/0_todo/`, `1_in_progress/`, `2_done/`) | Move via `mv` or `/progress sync` |
+| Task status (TODO / In Progress / Completed) | Folder of the task file (`tasks/0_todo/`, `1_in_progress/`, `2_done/`) | `/progress` commands (`start` / `approve` / `revert`) or `mv` |
 | Task summary text | Task file H1 line (`# <title>`) | Edit in the task file body |
 | Task priority | `priority:` in task frontmatter | Edit frontmatter |
 | Task created / updated date | Task frontmatter `created:` / `updated:` | Edit frontmatter |
@@ -24,6 +24,7 @@ The table region is a **cache** rebuilt from task files. It is never authoritati
 | `/progress check` | Run drift / stale / approval-pending detection. Read-only. |
 | `/progress sync` | Reconcile status text in progress.md table ↔ folder location. Moves files when text and folder disagree. |
 | `/progress rebuild` | Regenerate the table region from current task files. |
+| `/progress start <id>...` | Move tasks from `tasks/0_todo/` to `tasks/1_in_progress/`. Multiple IDs OK. |
 | `/progress approve <id>...` | Move tasks from `tasks/1_in_progress/` to `tasks/2_done/`. Multiple IDs OK. |
 | `/progress revert <id>` | Move backward by one step: `1_in_progress/ → 0_todo/`, or `2_done/ → 1_in_progress/`. |
 
@@ -40,8 +41,8 @@ Entering `2_done/` requires explicit human approval (typically via `/progress ap
 
 ## When to write
 
-- **New task**: create `tasks/0_todo/<YYYY-MM-DD>_<topic>.md` with frontmatter + H1 + body. See [tasks_guidelines.md].
-- **Starting a task**: `mv tasks/0_todo/<file> tasks/1_in_progress/`, then update `updated:` in frontmatter.
+- **New task**: create task file with frontmatter + H1 + body. Default folder is `tasks/0_todo/`. If the task is clearly already underway, create in `tasks/1_in_progress/`. When ambiguous, ask the user which folder to use. See [tasks_guidelines.md].
+- **Starting a task**: `/progress start <id>`, or `mv tasks/0_todo/<file> tasks/1_in_progress/`, then update `updated:` in frontmatter.
 - **Recording progress mid-task**: append a line to the `<!-- @log:begin --> ... <!-- @log:end -->` block in the task file.
 - **Editing task content**: rewrite the body region (between frontmatter end and `<!-- @log:begin -->`).
 - **Policy decision**: append to `## Key Decisions & Policies` in progress.md.

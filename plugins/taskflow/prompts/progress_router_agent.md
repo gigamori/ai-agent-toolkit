@@ -58,6 +58,7 @@ Map `raw_input` to one canonical action via the synonym table:
 |---|---|
 | `approve` | `approve`, `完了`, `終了`, `done`, `finish`, `ok` |
 | `revert` | `revert`, `戻す`, `戻し`, `undo`, `取り消し` |
+| `start` | `start`, `開始`, `着手`, `begin` |
 | `check` | `check` |
 | `audit` | `audit` |
 | `sync` | `sync` |
@@ -68,7 +69,7 @@ Rules:
 - If exactly one synonym set matches → that action.
 - If multiple synonyms from different sets match → choose the one whose token
   appears earliest in `raw_input`. If still tied, prefer in this order:
-  `approve` > `revert` > `audit` > `check` > `sync` > `rebuild`.
+  `approve` > `revert` > `start` > `audit` > `check` > `sync` > `rebuild`.
 - If no synonym matches → `action: "unknown"`. Emit immediately with empty
   `targets` and reasoning that explains what could not be parsed.
 
@@ -76,12 +77,13 @@ Rules:
 
 For `check` / `audit` / `sync` / `rebuild`: `targets: []`. Proceed to Step 3.
 
-For `approve` and `revert`:
+For `approve`, `revert`, and `start`:
 
 1. **List candidate task files**:
    - `approve` candidates: `<project_root>/tasks/1_in_progress/*.md`
    - `revert` candidates: `<project_root>/tasks/1_in_progress/*.md` and
      `<project_root>/tasks/2_done/*.md`
+   - `start` candidates: `<project_root>/tasks/0_todo/*.md`
 
    Use `Bash(ls <dir>)` or `Glob` to enumerate. If a folder does not exist,
    treat as empty.
@@ -114,6 +116,7 @@ For `approve` and `revert`:
    - `approve` → always `2_done`
    - `revert` from `1_in_progress` → `0_todo`
    - `revert` from `2_done` → `1_in_progress`
+   - `start` → always `1_in_progress`
 
 ## Step 3 — Emit JSON
 
@@ -121,7 +124,7 @@ Output a single JSON object on stdout:
 
 ```json
 {
-  "action": "approve | revert | check | audit | sync | rebuild | unknown",
+  "action": "approve | revert | start | check | audit | sync | rebuild | unknown",
   "targets": [
     {
       "current_file": "tasks/<status>/<stem>.md",
@@ -138,9 +141,9 @@ Output a single JSON object on stdout:
 For `check` / `audit` / `sync` / `rebuild`: emit `targets: []` and
 `confidence: "high"`.
 
-For `approve` / `revert` with no candidates resolved: emit `targets: []` with
-the identified action. Main agent will list available candidates and stop —
-the router does NOT list candidates itself.
+For `approve` / `revert` / `start` with no candidates resolved: emit
+`targets: []` with the identified action. Main agent will list available
+candidates and stop — the router does NOT list candidates itself.
 
 For unknown action: emit `action: "unknown"`, `targets: []`,
 `confidence: "low"`, and reasoning explaining the ambiguity.

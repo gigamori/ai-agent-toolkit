@@ -26,9 +26,10 @@ Execute the procedure below exactly. Report each step's outcome to the user.
    examples:
      /progress check
      /progress audit
-     /progress approve 2026-05-14_existing-tasks
-     /progress 完了 migration
-     /progress 戻して audit -y
+     /progress rebuild
+     /progress タスクXを完了にして
+     /progress Xに着手
+     /progress Xを戻して
    ```
 
    and stop.
@@ -73,8 +74,27 @@ If neither exists, reply `project '<name>' not found` and stop.
 | Condition | Reply and stop |
 |---|---|
 | `action: "unknown"` | `cannot parse: <raw_input>` + `reasoning: <reasoning>` + 1-line of valid actions/synonyms |
-| `action in {approve, revert}` AND `targets: []` | `no match for '<raw_input>'`. List up to 10 candidates from the relevant folder(s) with `<stem> | <H1>`. |
-| `action in {approve, revert}` AND `len(targets) >= 2` AND `confidence: "low"` | `ambiguous: <raw_input>`. List the returned targets with `<stem> | <H1>`. |
+| `action in {approve, revert, start}` AND `len(targets) >= 2` AND `confidence: "low"` | `ambiguous: <raw_input>`. List the returned targets with `<stem> | <H1>`. |
+
+### Session-based target resolution (when `targets: []`)
+
+If `action in {approve, revert, start}` AND `targets: []`:
+
+1. Extract short session ID from the state filename (Step 2): first segment
+   before `-` (e.g., `935c918a` from `935c918a-0d33-46a7-...`).
+2. Grep for the literal string `[s:<short_id>]` in task files under the
+   action's candidate folder(s):
+   - `approve`: `<project-root>/tasks/1_in_progress/*.md`
+   - `start`: `<project-root>/tasks/0_todo/*.md`
+   - `revert`: `<project-root>/tasks/1_in_progress/*.md` and
+     `<project-root>/tasks/2_done/*.md`
+3. For each matched file, read H1 and build a target entry
+   (`current_file`, `h1`, `current_status`, `target_status`).
+4. Results:
+   - **≥ 1 match**: use matched files as targets with `confidence: "medium"`.
+     Proceed to Step 5.
+   - **0 matches**: `no match for '<raw_input>'`. List up to 10 candidates
+     from the relevant folder(s) with `<stem> | <H1>`.
 
 Otherwise proceed to Step 5.
 
@@ -85,7 +105,7 @@ If `skip_confirm` is true, skip this step and proceed to Step 6.
 For `check`, `audit`, `sync`, `rebuild`: skip confirmation (these are
 non-destructive read or rebuild operations). Proceed to Step 6.
 
-For `approve` / `revert`:
+For `approve` / `revert` / `start`:
 
 1. Print a plan summary in text (before the AskUserQuestion call):
 
@@ -166,10 +186,21 @@ For each target in `targets`:
 
 After all targets, run `rebuild_progress.py` and report.
 
+### action = `start`
+
+For each target in `targets`:
+
+1. `mkdir -p "<project-root>/tasks/1_in_progress"` (idempotent).
+2. `mv "<project-root>/<current_file>" "<project-root>/tasks/1_in_progress/<basename of current_file>"`.
+3. Edit the moved file's frontmatter `updated:` to today. Append one line:
+   `- <today>: started → 1_in_progress`.
+
+After all targets, run `rebuild_progress.py` and report.
+
 ## Output rules
 
 - Echo each Bash command's relevant output (or a 1-line summary).
-- For destructive actions (`approve`, `revert`), list each moved file as
+- For state-changing actions (`approve`, `revert`, `start`), list each moved file as
   `<stem>: <current_status> → <target_status>`.
 - Total response ≤ 30 lines (excluding the AskUserQuestion UI).
 
