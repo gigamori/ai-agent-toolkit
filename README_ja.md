@@ -44,6 +44,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [compact-document](skills/compact-document/) | CC / Cursor | マルチモードのドキュメント圧縮フレームワーク。記事、仕様書、議事録などを最小限の情報損失で凝縮 |
 | [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成 |
 | [revert](skills/revert/) | CC | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
+| [debug-isolate](skills/debug-isolate/) | CC | 反復デバッグを forked subagent に隔離。git stash チェックポイントと連続失敗時の自動ロールバックで作業ツリーの状態を保全 |
 
 ### revert
 
@@ -88,7 +89,8 @@ ai-agent-toolkit/
 │   ├── create-skill/          スキル: スキル作成ガイド
 │   ├── compact-document/      スキル: ドキュメント圧縮
 │   ├── register-pi-tools/     スキル: Python スクリプト移行と tools.yaml 生成
-│   └── revert/                スキル: bias-isolated 判定による安全な undo
+│   ├── revert/                スキル: bias-isolated 判定による安全な undo
+│   └── debug-isolate/         スキル: forked subagent による隔離デバッグ
 ├── LICENSE
 ├── README.md
 └── README_ja.md

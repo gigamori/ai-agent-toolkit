@@ -44,6 +44,7 @@ Standalone Agent Skills that can be dropped into any agent without a plugin.
 | [compact-document](skills/compact-document/) | CC / Cursor | Multi-mode document compaction framework — condenses articles, specs, transcripts, and more with minimal information loss |
 | [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller |
 | [revert](skills/revert/) | CC | Safely undo recent assistant actions using state-revert semantics — delegates judgment to a bias-isolated subagent to prevent over-removal |
+| [debug-isolate](skills/debug-isolate/) | CC | Isolate iterative debugging in a forked subagent — preserves working tree state with git stash checkpoints and automatic rollback on consecutive failures |
 
 ### revert
 
@@ -88,7 +89,8 @@ ai-agent-toolkit/
 │   ├── create-skill/          Skill: author new skills
 │   ├── compact-document/      Skill: document compaction
 │   ├── register-pi-tools/     Skill: migrate Python scripts and build tools.yaml
-│   └── revert/                Skill: safe undo with bias-isolated judgment
+│   ├── revert/                Skill: safe undo with bias-isolated judgment
+│   └── debug-isolate/         Skill: isolated debugging with forked subagent
 ├── LICENSE
 ├── README.md
 └── README_ja.md
