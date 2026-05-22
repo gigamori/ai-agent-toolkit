@@ -46,7 +46,8 @@ The main agent prepends a JSON context block:
 ```json
 {
   "project_root": "<absolute path to _projects/<project>/>",
-  "raw_input": "<user input after /progress, with -y / --yes flags stripped>"
+  "raw_input": "<user input after /progress, with -y / --yes flags stripped>",
+  "session_id": "<short session ID (first 8 chars), optional>"
 }
 ```
 
@@ -95,6 +96,22 @@ For `approve`, `revert`, and `start`:
    action synonym (and any obviously instructional fillers like "task",
    "タスク", "を", "して", "ください") to get the residual `target_phrase`.
 
+3½. **Empty target_phrase handling**:
+    If `target_phrase` is empty or whitespace-only after cleanup:
+    a. If `session_id` is present in the input context, grep for the literal
+       string `[s:<session_id>]` across task files in ALL
+       folders relevant to the action (not just the primary folder):
+       - `approve`: `tasks/0_todo/*.md` and `tasks/1_in_progress/*.md`
+       - `start`:   `tasks/0_todo/*.md`
+       - `revert`:  `tasks/1_in_progress/*.md` and `tasks/2_done/*.md`
+    b. If ≥ 1 match: use matched files as targets with `confidence: "medium"`.
+       For matches found outside the action's primary folder
+       (e.g., `0_todo/` for an `approve` action), add `"status_mismatch": true`
+       to that target entry.
+    c. If 0 matches or no `session_id`: emit `targets: []`,
+       `confidence: "high"`.
+    d. Skip Step 2.4–2.6 in all cases.
+
 4. **Resolve `target_phrase`** against candidates in priority order:
 
    | Priority | Match rule |
@@ -130,13 +147,16 @@ Output a single JSON object on stdout:
       "current_file": "tasks/<status>/<stem>.md",
       "h1": "<H1 line, without the leading '# '>",
       "current_status": "0_todo | 1_in_progress | 2_done",
-      "target_status": "0_todo | 1_in_progress | 2_done"
+      "target_status": "0_todo | 1_in_progress | 2_done",
+      "status_mismatch": false
     }
   ],
   "confidence": "high | medium | low",
   "reasoning": "<1-2 line explanation of which keywords matched and how target was resolved>"
 }
 ```
+
+`status_mismatch`: `true when the task was found outside the action's primary candidate folder (e.g., found in 0_todo for an approve action). Default: false. Omit or set false when not applicable.`
 
 For `check` / `audit` / `sync` / `rebuild`: emit `targets: []` and
 `confidence: "high"`.

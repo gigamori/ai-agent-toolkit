@@ -61,42 +61,38 @@ If neither exists, reply `project '<name>' not found` and stop.
 2. Construct the prompt by prepending the JSON context block:
 
    ```json
-   {"project_root": "<absolute project root from Step 2>", "raw_input": "<raw_input from Step 1>"}
+   {"project_root": "<absolute project root from Step 2>", "raw_input": "<raw_input from Step 1>", "session_id": "<first 8 chars of state filename from Step 2>"}
    ```
 
 3. Invoke the Agent tool with `subagent_type: taskflow:progress-router` and
    the prompt above. The router runs read-only.
 4. Parse the returned JSON object. Fields: `action`, `targets`, `confidence`,
    `reasoning`.
+5. If the router response is not valid JSON (parse error, prose, or empty):
+   - Derive `action` from `raw_input` using the synonym table in the router
+     spec (Step 1 of the router prompt, loaded in Step 3.1 above).
+     If no synonym matches, treat as `action: "unknown"`.
+   - Set `targets: []`, `confidence: "high"`.
+   - Proceed to Step 4 with this synthetic result.
 
 ## Step 4 — Validate the router result
 
 | Condition | Reply and stop |
 |---|---|
 | `action: "unknown"` | `cannot parse: <raw_input>` + `reasoning: <reasoning>` + 1-line of valid actions/synonyms |
-| `action in {approve, revert, start}` AND `len(targets) >= 2` AND `confidence: "low"` | `ambiguous: <raw_input>`. List the returned targets with `<stem> | <H1>`. |
+| `action in {approve, revert, start}` AND `len(targets) >= 2` AND `confidence: "low"` | `ambiguous: <raw_input>`. List the returned targets with `<stem> \| <H1>`. |
+| `action in {approve, revert, start}` AND `len(targets) == 0` | `no match for '<raw_input>'`. List up to 10 candidates from the action's candidate folder(s) with `<stem> \| <H1>`. |
 
-### Session-based target resolution (when `targets: []`)
+### Status mismatch warning
 
-If `action in {approve, revert, start}` AND `targets: []`:
+If any target has `status_mismatch: true`, include a warning line in the
+plan summary (Step 5):
 
-1. Extract short session ID from the state filename (Step 2): first segment
-   before `-` (e.g., `935c918a` from `935c918a-0d33-46a7-...`).
-2. Grep for the literal string `[s:<short_id>]` in task files under the
-   action's candidate folder(s):
-   - `approve`: `<project-root>/tasks/1_in_progress/*.md`
-   - `start`: `<project-root>/tasks/0_todo/*.md`
-   - `revert`: `<project-root>/tasks/1_in_progress/*.md` and
-     `<project-root>/tasks/2_done/*.md`
-3. For each matched file, read H1 and build a target entry
-   (`current_file`, `h1`, `current_status`, `target_status`).
-4. Results:
-   - **≥ 1 match**: use matched files as targets with `confidence: "medium"`.
-     Proceed to Step 5.
-   - **0 matches**: `no match for '<raw_input>'`. List up to 10 candidates
-     from the relevant folder(s) with `<stem> | <H1>`.
+```
+⚠ <stem> is in <current_status> (expected <primary_folder> for <action>)
+```
 
-Otherwise proceed to Step 5.
+The user confirms or cancels as usual.
 
 ## Step 5 — Confirm with user (unless `-y`)
 
