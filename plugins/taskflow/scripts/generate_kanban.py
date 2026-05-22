@@ -39,7 +39,18 @@ SCRIPT_DIR = Path(__file__).parent          # plugins/taskflow/scripts
 PLUGIN_DIR = SCRIPT_DIR.parent              # plugins/taskflow
 REPO_ROOT  = PLUGIN_DIR.parent.parent       # ai-agent-toolkit root
 PRIMARY_ROOT   = REPO_ROOT / "_projects"    # <ai-agent-toolkit>/_projects
-SECONDARY_ROOT = Path("<secondary-projects-root>")  # known secondary location
+
+
+def _project_roots() -> list[Path]:
+    """Return the list of _projects root directories.
+
+    Reads ``TASKFLOW_PROJECT_ROOTS`` (semicolon-separated paths).  Falls back
+    to ``PRIMARY_ROOT`` when the variable is unset or empty.
+    """
+    env = os.environ.get('TASKFLOW_PROJECT_ROOTS', '')
+    if env:
+        return [Path(p.strip()) for p in env.split(';') if p.strip()]
+    return [PRIMARY_ROOT]
 
 # ── regex ──────────────────────────────────────────────────────────────────
 
@@ -722,7 +733,7 @@ def main(argv: list[str] | None = None) -> int:
 
     scheme = args.scheme or detect_scheme()
 
-    roots = [r for r in [PRIMARY_ROOT, SECONDARY_ROOT] if r.is_dir()]
+    roots = [r for r in _project_roots() if r.is_dir()]
     if not roots:
         print("error: no _projects/ directory found", file=sys.stderr)
         return 2

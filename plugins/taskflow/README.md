@@ -25,6 +25,29 @@ No manual setup is required. On the first user prompt in a workspace, taskflow's
 
 > **Claude Code only.** taskflow's per-turn project routing depends on `UserPromptSubmit`'s `additionalContext` injection. Cursor's `beforeSubmitPrompt` (the third-party auto-mapped equivalent) cannot inject context into the LLM, so taskflow does not work on Cursor. See `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md` for background.
 
+## Configuration
+
+### `TASKFLOW_PROJECT_ROOTS`
+
+Semicolon-separated list of `_projects/` root directories. Skills and scripts
+use this variable to locate project data across multiple repositories.
+
+```bash
+export TASKFLOW_PROJECT_ROOTS="/path/to/repo-a/_projects;/path/to/repo-b/_projects"
+```
+
+When unset, taskflow falls back to `_projects/` in the current workspace.
+
+To set it permanently in Claude Code, add it to your `settings.json`:
+
+```json
+{
+  "env": {
+    "TASKFLOW_PROJECT_ROOTS": "/path/to/repo-a/_projects;/path/to/repo-b/_projects"
+  }
+}
+```
+
 ## Usage
 
 ### Specifying a project
@@ -260,4 +283,8 @@ Runs at session end. Copies plan/memory files modified within the last 10 minute
 
 #### Stop: session_progress_capture.py
 
-Runs at session end alongside `session_sync.py`. Scans the session jsonl for write/edit/file-moving tool calls; if any are found, returns `{"decision":"block", "reason": ...}` with an English imperative asking the LLM to update each touched task's `## Next Steps` section (create a task in `0_todo/` or `1_in_progress/` if absent, clear it on completion). Fires at most once per session via a `progress_capture_done` flag in the state file. Touched files and the `[s:<session-id-prefix>]` tag are substituted at runtime. See `_projects/harness-taskflow/project-notes/specs/progress-audit-design.md` for the design.
+Runs at session end alongside `session_sync.py`. Scans the session jsonl for write/edit/file-moving tool calls; if any are found, returns `{"decision":"block", "reason": ...}` with an English imperative asking the LLM to update each touched task's `## Next Steps` section (create a task in `0_todo/` or `1_in_progress/` if absent, clear it on completion). Fires at most once per session via a sidecar marker file (`{session_id}.captured`) to avoid conflicts with concurrent state rewrites. Touched files and the `[s:<session-id-prefix>]` tag are substituted at runtime. See `_projects/harness-taskflow/project-notes/specs/progress-audit-design.md` for the design.
+
+## Known issues
+
+- **State file race condition**: Multiple hooks (`session_init.py`, `session_compact_reset.py`) read and write the same `_projects/_state/{session_id}.json` without file locking. In practice the triggering events (`UserPromptSubmit` vs `SessionStart:compact`) do not fire concurrently, so data loss has not been observed. A future release may add atomic writes or advisory locking.

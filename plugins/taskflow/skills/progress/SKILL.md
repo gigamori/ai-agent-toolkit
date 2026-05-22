@@ -36,8 +36,7 @@ Execute the procedure below exactly. Report each step's outcome to the user.
 
 ## Step 2 — Resolve the project
 
-1. List `_projects/_state/*.json` sorted by
-   mtime descending.
+1. List `_projects/_state/*.json` sorted by mtime descending.
 2. Read the most recent file. Use its `project` field.
 
 If the resolved project is empty or the state file does not exist, reply:
@@ -48,12 +47,13 @@ no project; set with pj:<project> first
 
 and stop.
 
-Then locate the project root (use the first that exists):
+Then locate the project root. Split the environment variable
+`$TASKFLOW_PROJECT_ROOTS` by `;` into a list of root directories. Check each
+`<root>/<project>/` in order and use the first that exists. If
+`$TASKFLOW_PROJECT_ROOTS` is unset, fall back to `_projects/` in the current
+workspace.
 
-- `_projects/<project>/`
-- `<secondary-projects-root>/<project>/`
-
-If neither exists, reply `project '<name>' not found` and stop.
+If no root contains the project, reply `project '<name>' not found` and stop.
 
 ## Step 3 — Invoke the progress-router subagent
 

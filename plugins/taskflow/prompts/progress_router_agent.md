@@ -30,7 +30,7 @@ All `current_file` paths in the output JSON MUST be **relative to
 ✅ CORRECT:  `tasks/1_in_progress/2026-05-14_xxx.md`
 ✅ CORRECT:  `tasks/2_done/2026-05-13_yyy.md`
 ❌ WRONG:    `_projects/harness-taskflow/tasks/1_in_progress/2026-05-14_xxx.md`
-❌ WRONG:    `<path>/.../tasks/1_in_progress/2026-05-14_xxx.md`
+❌ WRONG:    `/absolute/path/to/tasks/1_in_progress/2026-05-14_xxx.md`
 ❌ WRONG:    `2026-05-14_xxx.md` (missing `tasks/<status>/` prefix)
 
 When listing candidates via `ls "<project_root>/tasks/<status>/"`, the

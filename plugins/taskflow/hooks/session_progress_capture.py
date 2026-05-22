@@ -17,8 +17,9 @@ Behavior:
   - If touched list is empty (read-only session), exits 0 without injection.
   - Otherwise returns {"decision": "block", "reason": "..."} so the LLM
     continues for one more turn to perform the capture, then stops.
-  - Marks `progress_capture_done: true` in the state file to prevent
-    re-injection on the LLM's follow-up Stop.
+  - Marks completion via a sidecar marker file (`{session_id}.captured`)
+    rather than in the state JSON to avoid conflicts with concurrent state
+    rewrites by other hooks (session_init.py, project-router).
 
 Bypass: same `norouter` token semantics as session_init.py (handled by the
 state file: if session_init exited without writing state, no state_path
@@ -40,10 +41,11 @@ JSONL_DIR = os.path.expanduser(f'~/.claude/projects/{_encoded}')
 WRITE_TOOLS = {'Write', 'Edit'}
 NOTEBOOK_TOOL = 'NotebookEdit'
 BASH_FILE_VERBS = {'mv', 'cp', 'rm'}
-# Split bash commands at chain operators (&&, ||, ;, |) so that args from one
-# segment do not bleed into the verb-extraction of another. Greedy `\|\|` first
-# to avoid matching as two singles.
-_BASH_CHAIN_SPLIT = re.compile(r'\s*(?:&&|\|\||[;|])\s*')
+# Split bash commands at chain operators (&&, ||, ;) so that args from one
+# segment do not bleed into the verb-extraction of another.  Pipe `|` is NOT
+# a split point here; instead, token-level extraction stops at `|` to avoid
+# pulling piped-command args into the file-verb's path list.
+_BASH_CHAIN_SPLIT = re.compile(r'\s*(?:&&|\|\||;)\s*')
 MAX_TOUCHED_IN_INJECTION = 30
 
 
@@ -62,11 +64,12 @@ def extract_bash_paths(cmd: str) -> list[str]:
     """For each `mv|cp|rm <paths...>` segment in a bash command, return the
     non-flag arguments.
 
-    The command is split at shell chain operators (`&&`, `||`, `;`, `|`)
-    first, so a `cp ...` followed by `&& echo ...` does not pull `echo`'s
-    args into `cp`'s path list. Each segment is parsed independently with
-    shlex, and only segments whose first token is `mv` / `cp` / `rm`
-    contribute paths.
+    The command is split at shell chain operators (`&&`, `||`, `;`) first,
+    so a `cp ...` followed by `&& echo ...` does not pull `echo`'s args
+    into `cp`'s path list.  Pipe `|` is handled at the token level: path
+    collection stops when a bare `|` token is encountered.  Each segment
+    is parsed independently with shlex, and only segments whose first
+    token is `mv` / `cp` / `rm` contribute paths.
     """
     if not cmd or not isinstance(cmd, str):
         return []
@@ -75,12 +78,17 @@ def extract_bash_paths(cmd: str) -> list[str]:
         if not segment.strip():
             continue
         try:
-            tokens = shlex.split(segment, posix=True)
+            tokens = shlex.split(segment, posix=(os.name != 'nt'))
         except ValueError:
+            print(f'[progress_capture] shlex parse error: {segment[:80]}', file=sys.stderr)
             continue
         if not tokens or tokens[0] not in BASH_FILE_VERBS:
             continue
-        paths.extend(t for t in tokens[1:] if not t.startswith('-'))
+        for t in tokens[1:]:
+            if t == '|':
+                break
+            if not t.startswith('-'):
+                paths.append(t)
     return paths
 
 
@@ -107,6 +115,7 @@ def extract_touched(jsonl_path: str, cwd: str) -> list[str]:
                 try:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
+                    print(f'[progress_capture] skipping malformed JSONL line: {line[:120]}', file=sys.stderr)
                     continue
                 if rec.get('type') != 'assistant':
                     continue
@@ -135,9 +144,30 @@ def extract_touched(jsonl_path: str, cwd: str) -> list[str]:
     return out
 
 
+_MARKER_MAX_AGE_DAYS = 7
+
+
+def _cleanup_stale_markers(state_dir: str) -> None:
+    """Remove .captured marker files older than _MARKER_MAX_AGE_DAYS."""
+    try:
+        cutoff = datetime.datetime.now().timestamp() - _MARKER_MAX_AGE_DAYS * 86400
+        for name in os.listdir(state_dir):
+            if not name.endswith('.captured'):
+                continue
+            path = os.path.join(state_dir, name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def main() -> int:
     if not os.path.isdir(PROGRESS_ROOT):
         return 0
+    _cleanup_stale_markers(STATE_DIR)
     try:
         data = json.loads(sys.stdin.buffer.read().decode('utf-8'))
     except Exception:

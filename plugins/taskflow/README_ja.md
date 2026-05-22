@@ -25,6 +25,28 @@ claude --plugin-dir ./plugins/taskflow
 
 > **Claude Code 専用。** taskflow の毎ターン project routing は `UserPromptSubmit` の `additionalContext` 注入に依存している。Cursor の third-party 互換で auto-map される `beforeSubmitPrompt` は LLM コンテキスト注入を持たない（block 専用）ため、taskflow は Cursor 上では動作しない。背景は `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md` を参照。
 
+## 設定
+
+### `TASKFLOW_PROJECT_ROOTS`
+
+セミコロン区切りの `_projects/` ルートディレクトリ一覧。skill とスクリプトがこの変数を参照し、複数リポジトリにまたがるプロジェクトデータを検索する。
+
+```bash
+export TASKFLOW_PROJECT_ROOTS="/path/to/repo-a/_projects;/path/to/repo-b/_projects"
+```
+
+未設定の場合、現在の workspace の `_projects/` にフォールバックする。
+
+Claude Code で恒久設定するには `settings.json` に追加:
+
+```json
+{
+  "env": {
+    "TASKFLOW_PROJECT_ROOTS": "/path/to/repo-a/_projects;/path/to/repo-b/_projects"
+  }
+}
+```
+
 ## 使い方
 
 ### プロジェクト指定
@@ -260,4 +282,8 @@ _projects/
 
 #### Stop: session_progress_capture.py
 
-セッション終了時に `session_sync.py` と並列で実行。当該セッションの jsonl をスキャンし、write / edit / ファイル移動系ツール呼出があれば `{"decision":"block", "reason": ...}` を返し、touched files を埋め込んだ英語の imperative を注入する。LLM は各 task の `## Next Steps` を更新する（対応 task がなければ `0_todo/` か `1_in_progress/` に新規作成、完了したなら空にする）。state file の `progress_capture_done` フラグでセッションあたり 1 回に制限。touched files と `[s:<session-id 先頭>]` タグは実行時 substitution。設計は `_projects/harness-taskflow/project-notes/specs/progress-audit-design.md` を参照。
+セッション終了時に `session_sync.py` と並列で実行。当該セッションの jsonl をスキャンし、write / edit / ファイル移動系ツール呼出があれば `{"decision":"block", "reason": ...}` を返し、touched files を埋め込んだ英語の imperative を注入する。LLM は各 task の `## Next Steps` を更新する（対応 task がなければ `0_todo/` か `1_in_progress/` に新規作成、完了したなら空にする）。サイドカーマーカーファイル（`{session_id}.captured`）でセッションあたり 1 回に制限（他フックとの state 競合を回避）。touched files と `[s:<session-id 先頭>]` タグは実行時 substitution。設計は `_projects/harness-taskflow/project-notes/specs/progress-audit-design.md` を参照。
+
+## 既知の問題
+
+- **state file の競合**: 複数フック（`session_init.py`, `session_compact_reset.py`）が同一の `_projects/_state/{session_id}.json` をロックなしで読み書きする。実際にはトリガーイベント（`UserPromptSubmit` と `SessionStart:compact`）が同時発火しないためデータ損失は観測されていない。将来のリリースで atomic write または advisory lock の導入を予定。

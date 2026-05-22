@@ -15,17 +15,17 @@ allowed-tools: Bash(uv run python *) Bash(mkdir *) Bash(mv *) Bash(cp *) Bash(ls
 
 ## Project location
 
-Look in both standard roots, use whichever has `_projects/$project_name/`:
+Split the environment variable `$TASKFLOW_PROJECT_ROOTS` by `;` into a list of
+root directories. Check each `<root>/$project_name/` in order and use the first
+that exists. If `$TASKFLOW_PROJECT_ROOTS` is unset, fall back to `_projects/`
+in the current workspace.
 
-- `_projects/$project_name/`
-- `<secondary-projects-root>/$project_name/`
-
-If neither exists, abort and report.
+If no root contains the project, abort and report.
 
 ## Script paths
 
 - **This skill's own helper** (legacy progress.md parser): `${CLAUDE_SKILL_DIR}/scripts/parse_progress_table.py`
-- **taskflow plugin scripts** (used in Phases 7-8): `${CLAUDE_PLUGIN_ROOT}/scripts/`
+- **taskflow plugin scripts** (used in Phases 7-8): `${CLAUDE_PLUGIN_ROOT}/scripts/` (from the taskflow plugin)
   - `rebuild_progress.py` — regenerate progress.md table region
   - `check_progress.py` — final verification
 
