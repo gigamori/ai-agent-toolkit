@@ -1,0 +1,43 @@
+# run-sql connections template
+# Copy to ~/.config/run-sql/connections.toml
+# Or set RUN_SQL_CONFIG env var to a custom path
+#
+# Uncomment and edit the connections you need.
+
+# --- PostgreSQL ---
+# [connections.postgres]
+# dsn = "postgresql+psycopg2://user:password@localhost:5432/dbname"
+# description = "PostgreSQL (local)"
+
+# --- MySQL ---
+# [connections.mysql]
+# dsn = "mysql+pymysql://user:password@localhost:3306/dbname"
+# description = "MySQL (local)"
+
+# --- MariaDB ---
+# [connections.mariadb]
+# dsn = "mariadb+mariadbconnector://user:password@localhost:3306/dbname"
+# description = "MariaDB (local)"
+
+# --- Amazon Redshift ---
+# [connections.redshift]
+# dsn = "redshift+redshift_connector://user:password@cluster.xxxx.region.redshift.amazonaws.com:5439/dbname"
+# description = "Redshift"
+
+# --- Snowflake ---
+# [connections.snowflake]
+# dsn = "snowflake://user:password@account/dbname/schema?warehouse=WH&role=ROLE"
+# description = "Snowflake"
+
+# --- Google BigQuery ---
+# [connections.bigquery]
+# dsn = "bigquery://project-id/dataset?credentials_path=/path/to/service-account-key.json"
+# description = "BigQuery"
+#
+# Alternative: set GOOGLE_APPLICATION_CREDENTIALS env var instead of credentials_path
+# dsn = "bigquery://project-id/dataset"
+
+# --- DuckDB ---
+# [connections.duckdb]
+# dsn = "duckdb:///path/to/database.duckdb"
+# description = "DuckDB (local file)"
