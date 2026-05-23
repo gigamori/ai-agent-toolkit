@@ -11,12 +11,13 @@ Injection blocks per turn (decided from state file flags):
   - guidelines_reminder(subsequent turns): keyword reminder (~150 tok)
   - action_req         (every turn while progress.md missing): scaffold banner
 
-State file schema (v2.2):
+State file schema (v2.3):
   {
     "project":            "<current active project>",
     "rules_loaded":       <bool — static_rules injected this session>,
     "indexed_project":    "<last project for which project_index was injected>",
-    "guidelines_loaded":  <bool — full guidelines injected this session>
+    "guidelines_loaded":  <bool — full guidelines injected this session>,
+    "origin":             "cc"  — generator identifier (Claude Code)
   }
 
 Backward compat: older state is loaded with safe defaults
@@ -95,6 +96,7 @@ state = {
   'rules_loaded': bool(loaded.get('rules_loaded', False)),
   'indexed_project': loaded.get('indexed_project', '') or '',
   'guidelines_loaded': bool(loaded.get('guidelines_loaded', False)),
+  'origin': loaded.get('origin', 'cc'),
 }
 
 # Resolve current project for this turn (before re-entry reset check).
@@ -186,6 +188,7 @@ new_state['project'] = current_project if not pj_discovery else state['project']
 new_state['rules_loaded'] = state['rules_loaded'] or inject_rules
 new_state['indexed_project'] = current_project if not pj_discovery else state['indexed_project']
 new_state['guidelines_loaded'] = state['guidelines_loaded'] or inject_guidelines_full
+new_state['origin'] = state['origin']
 os.makedirs(STATE_DIR, exist_ok=True)
 with open(state_path, 'w', encoding='utf-8') as f:
   json.dump(new_state, f, ensure_ascii=False)
