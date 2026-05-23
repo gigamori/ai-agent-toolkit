@@ -11,13 +11,14 @@ Injection blocks per turn (decided from state file flags):
   - guidelines_reminder(subsequent turns): keyword reminder (~150 tok)
   - action_req         (every turn while progress.md missing): scaffold banner
 
-State file schema (v2.3):
+State file schema (v2.4):
   {
     "project":            "<current active project>",
     "rules_loaded":       <bool — static_rules injected this session>,
     "indexed_project":    "<last project for which project_index was injected>",
     "guidelines_loaded":  <bool — full guidelines injected this session>,
-    "origin":             "cc"  — generator identifier (Claude Code)
+    "origin":             "cc"  — generator identifier (Claude Code),
+    "parent_session_id":  "<parent session id if forked, absent otherwise>"
   }
 
 Backward compat: older state is loaded with safe defaults
@@ -29,7 +30,7 @@ Special tokens in user prompt:
   pj:none     clear project
   norouter    bypass hook entirely for this turn
 """
-import json, sys, os, re
+import json, sys, os, re, glob
 
 PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
@@ -41,6 +42,44 @@ GUIDELINES_FILES = [
     os.path.join(PLUGIN_ROOT, 'prompts', 'tasks_guidelines.md'),
 ]
 GUIDELINES_REMINDER_MD = os.path.join(PLUGIN_ROOT, 'prompts', 'guidelines_reminder.md')
+
+def detect_parent_session(transcript_path, session_id):
+  """Detect parent session_id for forked sessions via shared message uuid.
+
+  Fork copies all parent JSONL entries (with sessionId rewritten) but preserves
+  message uuids. If the first entry's uuid exists in another recent JSONL in
+  the same directory, that file's session is the parent.
+
+  Returns parent session_id string, or None if not a fork.
+  """
+  try:
+    with open(transcript_path, 'r', encoding='utf-8') as f:
+      first_line = f.readline()
+    first_entry = json.loads(first_line)
+    target_uuid = first_entry.get('uuid')
+    if not target_uuid:
+      return None
+  except (OSError, json.JSONDecodeError):
+    return None
+
+  directory = os.path.dirname(transcript_path)
+  candidates = sorted(
+    glob.glob(os.path.join(directory, '*.jsonl')),
+    key=os.path.getmtime, reverse=True
+  )[:6]
+
+  for path in candidates:
+    if os.path.abspath(path) == os.path.abspath(transcript_path):
+      continue
+    try:
+      with open(path, 'r', encoding='utf-8') as f:
+        line = f.readline()
+      entry = json.loads(line)
+      if entry.get('uuid') == target_uuid:
+        return os.path.splitext(os.path.basename(path))[0]
+    except (OSError, json.JSONDecodeError):
+      continue
+  return None
 
 # Bootstrap _projects/ root if missing (replaces taskflow:init skill).
 if not os.path.isdir(PROGRESS_ROOT):
@@ -60,6 +99,7 @@ if not session_id:
   sys.exit(0)
 
 state_path = os.path.join(STATE_DIR, f'{session_id}.json')
+transcript_path = data.get('transcript_path', '')
 user_prompt = data.get('prompt', '')
 
 # norouter bypass: total skip of taskflow for this turn.
@@ -83,7 +123,8 @@ if pj_match:
 # components (e.g., `progress_capture_done` from session_progress_capture.py)
 # survive the persist step at the end of this hook.
 loaded = {}
-if os.path.exists(state_path):
+is_new_session = not os.path.exists(state_path)
+if not is_new_session:
   try:
     with open(state_path, 'r', encoding='utf-8') as f:
       data = json.load(f)
@@ -91,6 +132,45 @@ if os.path.exists(state_path):
         loaded = data
   except Exception:
     pass
+
+# Fork detection: on first turn of a new session, check if this session was
+# forked from another by comparing message uuids in JSONL transcripts.
+# If a parent is found, inherit its project from the parent state file.
+if is_new_session:
+  parent_id = detect_parent_session(
+    transcript_path, session_id
+  ) if transcript_path else None
+  if parent_id:
+    loaded['parent_session_id'] = parent_id
+    parent_state_path = os.path.join(STATE_DIR, f'{parent_id}.json')
+    try:
+      with open(parent_state_path, 'r', encoding='utf-8') as f:
+        parent_state = json.load(f)
+      if isinstance(parent_state, dict) and parent_state.get('project'):
+        loaded['project'] = parent_state['project']
+        # Find tasks the parent session was working on by scanning @log regions
+        # for the parent session_id in 1_in_progress/ tasks.
+        parent_tasks = []
+        tasks_dir = os.path.join(
+          PROGRESS_ROOT, parent_state['project'], 'tasks', '1_in_progress'
+        )
+        if os.path.isdir(tasks_dir):
+          for fname in os.listdir(tasks_dir):
+            if not fname.endswith('.md'):
+              continue
+            fpath = os.path.join(tasks_dir, fname)
+            try:
+              with open(fpath, 'r', encoding='utf-8') as tf:
+                content = tf.read()
+              if parent_id[:8] in content:
+                parent_tasks.append(fname)
+            except OSError:
+              continue
+        if parent_tasks:
+          loaded['inherited_tasks'] = parent_tasks
+    except Exception:
+      pass
+
 state = {
   'project': loaded.get('project', '') or '',
   'rules_loaded': bool(loaded.get('rules_loaded', False)),
@@ -208,6 +288,17 @@ if current_project:
       f'This scaffold generation is allowed even inside Plan mode (treated equivalently to the plan file).'
     )
 
+# Fork context: on the first turn of a forked session, tell the LLM which
+# tasks were inherited so it continues working on them.
+fork_context = ''
+if is_new_session and loaded.get('inherited_tasks'):
+  task_list = ', '.join(loaded['inherited_tasks'])
+  fork_context = (
+    f'\n\n[Forked Session] parent_session={loaded.get("parent_session_id", "unknown")} '
+    f'inherited_tasks={task_list} — Continue working on these tasks. '
+    f'Log entries in task files should use the current session_id={session_id}.'
+  )
+
 # Suppress LLM-facing context entirely when no project is active and not in discovery mode.
 # Saves ~50 tok/turn and prevents the [Progress Session] header from triggering router invocation.
 if not current_project and not pj_discovery:
@@ -216,7 +307,7 @@ else:
   result = {
     'hookSpecificOutput': {
       'hookEventName': 'UserPromptSubmit',
-      'additionalContext': f'[Progress Session] session_id={session_id} state_file={state_path} current_project={current_project}{action_required}{index_content}{routing_content}{guidelines_content}'
+      'additionalContext': f'[Progress Session] session_id={session_id} state_file={state_path} current_project={current_project}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}'
     }
   }
 
