@@ -69,17 +69,11 @@ When `current_project` is empty, do NOT invoke the router. Proceed directly to t
 
 ### When the project is not yet determined (empty project returned)
 
-The subagent only sees this turn's prompt and cannot infer from the conversation. If the main agent can infer the project from accumulated conversation (repos mentioned in prior turns, files open in the IDE, etc.), it MUST:
-
-1. Write the finalized project name into state_file: `echo '{"project": "<name>"}' > <state_file>`
-2. Continue to use the same project in subsequent turns unless the user explicitly switches within the same session.
-3. Once the project is finalized, read `_projects/<project>/progress.md` etc. yourself when needed in that turn.
-
-If inference is not possible, proceed with an empty project and wait for the user to specify it with `pj:`.
+Do NOT auto-assign a project based on keyword matching or conversation inference. Write `{"project": ""}` to state_file and proceed with an empty project. Wait for the user to specify it with `pj:<name>`.
 
 ### When progress.md does not exist
 
-If the subagent returns `progress_exists: false`, ask the user whether to create it. On approval, generate it from `taskflow/prompts/progress_template.md`.
+If the project is empty, skip scaffold creation entirely — no project means no scaffold needed. If a non-empty project is set and the subagent returns `progress_exists: false`, ask the user whether to create it. On approval, generate it from `taskflow/prompts/progress_template.md`.
 
 ## Interaction with Plan mode
 
