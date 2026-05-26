@@ -28,6 +28,7 @@ causing one full re-injection on the first turn after upgrade.
 Special tokens in user prompt:
   pj:<name>   set/switch project
   pj:none     clear project
+  pj:?        discovery (list projects, independent of current project)
   norouter    bypass hook entirely for this turn
 """
 import json, sys, os, re, glob
@@ -113,7 +114,6 @@ pj_discovery = False
 if pj_match:
   val = pj_match.group(1)
   if val == '?':
-    pj_explicit = ''
     pj_discovery = True
   else:
     pj_explicit = '' if val == 'none' else val
@@ -266,7 +266,7 @@ if inject_index:
 new_state = dict(loaded)
 new_state['project'] = current_project if not pj_discovery else state['project']
 new_state['rules_loaded'] = state['rules_loaded'] or inject_rules
-new_state['indexed_project'] = current_project if not pj_discovery else state['indexed_project']
+new_state['indexed_project'] = current_project
 new_state['guidelines_loaded'] = state['guidelines_loaded'] or inject_guidelines_full
 new_state['origin'] = state['origin']
 os.makedirs(STATE_DIR, exist_ok=True)
@@ -285,7 +285,8 @@ if current_project:
       f'(1) ask the user to approve scaffold generation; (2) on approval, create '
       f'`_projects/{current_project}/index.md`, `progress.md`, and `project-notes/index.md`; '
       f'(3) add the matching row to `_projects/index.md`. '
-      f'This scaffold generation is allowed even inside Plan mode (treated equivalently to the plan file).'
+      f'This scaffold generation is allowed even inside Plan mode (treated equivalently to the plan file). '
+      f'Response frontmatter lines (e.g. [pj:{current_project}]) still apply during this preflight.'
     )
 
 # Fork context: on the first turn of a forked session, tell the LLM which

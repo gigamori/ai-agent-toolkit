@@ -9,4 +9,4 @@ AUTHORITY: folder location = single authority for status, H1 = summary/title, pr
 NOTES: 6 fixed categories (specs/ investigations/ checks/ procedures/ backlog/ _archive/), auto-save requires user confirmation, code-derivable info must not be saved, temporary single-session memos must not be saved
 AUTOSAVE: project_notes_autosave: true → deliver result then ask save confirmation, false → do not ask, manual "save to notes" → skip confirmation, propose appending to existing note when topic overlaps
 TASK WRITE: body region = mutable (replace fully), log region = append-only, update updated: on every modify, 0_todo → 1_in_progress via /progress start, 2_done/ requires /progress approve, new task default 0_todo (if ambiguous ask user), distill durable knowledge from 2_done/ into project-notes/
-RESPONSE PREFIX: every response MUST start with [pj:<project>] on its own line, before any other content (project determined → [pj:<name>], undetermined → [pj:(none)])
+RESPONSE FRONTMATTER: when a project is assigned, include [pj:<project>] as a response frontmatter line (before the main body). When unassigned, omit it.

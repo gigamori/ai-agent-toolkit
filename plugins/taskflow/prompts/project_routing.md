@@ -1,44 +1,19 @@
-## Response prefix
+## Response frontmatter
 
-Every LLM response MUST start with a `[pj:<project>]` marker on its own line, before any other content (including tool-call narration).
-
-- Project determined → `[pj:<project>]` (e.g. `[pj:harness-taskflow]`)
-- Project undetermined → `[pj:(none)]`
-
-The marker itself and the similarity labels below are fixed English tokens. The body of the response follows the user's input language as usual.
-
-### When prefix is `[pj:(none)]`
-
-Immediately after the marker line, list up to 5 nearest existing projects from `_projects/index.md`, ranked by relevance to the user's input. If `_projects/index.md` has 5 or fewer projects, list all of them.
-
-Format:
-
-```
-[pj:(none)]
-Nearest existing projects:
-- <project> — <label>: <one-line reason>
-- ...
-
-Specify with `pj:<name>` to select, or `pj:none` to proceed without a project.
-```
-
-Similarity labels (qualitative, not numeric):
-
-| Label | Meaning |
-|---|---|
-| `strong` | Direct keyword / scope overlap; almost certainly the right project |
-| `related` | Same domain or adjacent area |
-| `weak` | Some shared vocabulary but different focus |
-| `far` | Different domain (include only when the project list is short) |
-
-If the project-router subagent supplied a `nearest_projects` block, use it as-is. Otherwise the main agent computes the labels itself by reading `_projects/index.md`.
+When a project is assigned, include `[pj:<project>]` as a response frontmatter line (before the main body).
+When no project is assigned, omit the `[pj:...]` frontmatter entirely.
+The body of the response follows the user's input language.
 
 ### Discovery via `pj:?`
 
-When the user prompt contains `pj:?`, this is a discovery request. The hook passes `current_project` as empty to trigger `nearest_projects` computation. The main agent MUST:
+When the user prompt contains `pj:?`, this is a discovery request. The main agent MUST:
 
-1. Invoke the project-router subagent with empty `current_project`.
-2. Display the `nearest_projects` block using the `[pj:(none)]` format above.
+1. Read `_projects/index.md` and rank each project by relevance to the user's input using these similarity labels:
+   - `strong` — direct keyword / scope overlap
+   - `related` — same domain or adjacent area
+   - `weak` — some shared vocabulary but different focus
+   - `far` — different domain (include only when the project list is short)
+2. Display the ranked list in the format: `- <project> — <label>: <one-line reason>`
 3. Do NOT clear or change the active project — `pj:?` is a query, not a switch.
 
 After seeing the candidates, the user can type `pj:<name>` to select one.
@@ -67,13 +42,14 @@ When `current_project` is empty, do NOT invoke the router. Proceed directly to t
    - `action: apply` → use the returned context (progress, tasks, project-notes, etc.) as the premise for task execution.
    - `action: skip` → skip project management and proceed to the task.
 
-### When the project is not yet determined (empty project returned)
+## Empty project rules
 
-Do NOT auto-assign a project based on keyword matching or conversation inference. Write `{"project": ""}` to state_file and proceed with an empty project. Wait for the user to specify it with `pj:<name>`.
+When the project is empty (pj unassigned), only discovery (`pj:?`) is available. All other project management is disabled:
 
-### When progress.md does not exist
-
-If the project is empty, skip scaffold creation entirely — no project means no scaffold needed. If a non-empty project is set and the subagent returns `progress_exists: false`, ask the user whether to create it. On approval, generate it from `taskflow/prompts/progress_template.md`.
+- Do NOT auto-assign or infer a project based on keywords or conversation context.
+- Do NOT perform any project management operations (task creation, progress tracking, project-notes saving, or scaffold creation).
+- Proceed with the user's request without project context.
+- Project management becomes available when the user explicitly assigns a project via `pj:<name>`.
 
 ## Interaction with Plan mode
 
