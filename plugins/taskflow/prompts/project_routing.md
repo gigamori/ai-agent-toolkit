@@ -26,8 +26,11 @@ When `current_project` is empty, do NOT invoke the router. Proceed directly to t
 
 ### Steps
 
-1. Read `taskflow/prompts/project_router_agent.md`.
-2. Prepend the following JSON context block to the template:
+The router spec is built into the subagent definition body
+(`agents/project-router.md`); do NOT inline it. Pass only the JSON context
+block as the prompt.
+
+1. Build the following JSON context block:
    ```json
    {
      "session_id": "extracted from [Progress Session]",
@@ -37,7 +40,7 @@ When `current_project` is empty, do NOT invoke the router. Proceed directly to t
      "prompt_summary": "summary of the user input (≤ 50 chars)"
    }
    ```
-3. Invoke the subagent via the Agent tool: `subagent_type: project-router`, `prompt: <JSON context block + template body>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself.
+2. Invoke the subagent via the Agent tool: `subagent_type: project-router`, `prompt: <JSON context block>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself by reading the spec in the body of `agents/project-router.md`.
 4. Handling the result:
    - `action: apply` → use the returned context (progress, tasks, project-notes, etc.) as the premise for task execution.
    - `action: skip` → skip project management and proceed to the task.

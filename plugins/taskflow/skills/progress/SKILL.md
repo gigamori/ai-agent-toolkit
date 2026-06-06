@@ -57,20 +57,23 @@ If no root contains the project, reply `project '<name>' not found` and stop.
 
 ## Step 3 — Invoke the progress-router subagent
 
-1. Read `${CLAUDE_PLUGIN_ROOT}/prompts/progress_router_agent.md`.
-2. Construct the prompt by prepending the JSON context block:
+The router spec is built into the subagent definition body
+(`${CLAUDE_PLUGIN_ROOT}/agents/progress-router.md`); the skill does NOT inline
+it. Pass only the JSON context block as the prompt.
+
+1. Construct the prompt as the JSON context block:
 
    ```json
    {"project_root": "<absolute project root from Step 2>", "raw_input": "<raw_input from Step 1>", "session_id": "<first 8 chars of state filename from Step 2>"}
    ```
 
-3. Invoke the Agent tool with `subagent_type: taskflow:progress-router` and
+2. Invoke the Agent tool with `subagent_type: taskflow:progress-router` and
    the prompt above. The router runs read-only.
-4. Parse the returned JSON object. Fields: `action`, `targets`, `confidence`,
+3. Parse the returned JSON object. Fields: `action`, `targets`, `confidence`,
    `reasoning`.
-5. If the router response is not valid JSON (parse error, prose, or empty):
+4. If the router response is not valid JSON (parse error, prose, or empty):
    - Derive `action` from `raw_input` using the synonym table in the router
-     spec (Step 1 of the router prompt, loaded in Step 3.1 above).
+     spec (Step 1 of the body of `${CLAUDE_PLUGIN_ROOT}/agents/progress-router.md`).
      If no synonym matches, treat as `action: "unknown"`.
    - Set `targets: []`, `confidence: "high"`.
    - Proceed to Step 4 with this synthetic result.
