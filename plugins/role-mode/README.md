@@ -119,7 +119,7 @@ The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/m
 - NEVER: overstep(mode boundary), change-mode-silently, comply-when-violates-mode
 - DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming), refuse-[BLOCKED]-on-violation
 
-Answer starting with `[Mode: current_mode]`
+Include `[Mode: current_mode]` on its own line before the main body.
 ```
 
 `_meta.md` framework header (always paired with any active slug; defines the three-level precedence chain `Mode > User-instruction > Role` and the `[BLOCKED: mode-rule <name>]` self-report rule).

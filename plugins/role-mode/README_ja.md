@@ -119,7 +119,7 @@ nomode norole — mode:plan と mode:execute の違いは何ですか？
 - NEVER: overstep(mode boundary), change-mode-silently, comply-when-violates-mode
 - DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming), refuse-[BLOCKED]-on-violation
 
-Answer starting with `[Mode: current_mode]`
+Include `[Mode: current_mode]` on its own line before the main body.
 ```
 
 `_meta.md`（framework ヘッダ。任意の active slug と必ず一緒に注入される。三段階の優先順位 `Mode > User-instruction > Role` と `[BLOCKED: mode-rule <name>]` 自己宣言ルールを含む）。
