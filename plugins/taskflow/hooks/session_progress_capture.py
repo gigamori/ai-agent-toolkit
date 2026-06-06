@@ -193,6 +193,32 @@ def main() -> int:
     if os.path.exists(capture_marker):
         return 0
 
+    # --- State recovery: pj prefix from assistant response ---
+    # If state has no project but the assistant's response contains a
+    # [pj:<name>] frontmatter line, recover the project into state. The
+    # marker may not be on line 1 — it shares the frontmatter region with
+    # other plugins' markers (e.g. [Mode:]) and the order is unspecified.
+    # Self-heals cases where session_init failed to write the project on
+    # the first turn or fork inherited an empty parent state.
+    if not state.get('project'):
+        assistant_msg = data.get('last_assistant_message', '')
+        if isinstance(assistant_msg, str):
+            # Bound the search to the frontmatter region (a few short marker
+            # lines): [pj:...] always lands well within the first 200 chars
+            # whatever the marker order. Narrowing the window also avoids
+            # matching a literal [pj:...] token deeper in the body.
+            pj_m = re.search(r'\[pj:([^\]]+)\]', assistant_msg[:200])
+            if pj_m:
+                val = pj_m.group(1)
+                if val and val not in ('(none)', '?', 'none'):
+                    if os.path.isdir(os.path.join(PROGRESS_ROOT, val)):
+                        state['project'] = val
+                        try:
+                            with open(state_path, 'w', encoding='utf-8') as f:
+                                json.dump(state, f, ensure_ascii=False)
+                        except OSError:
+                            pass
+
     project = state.get('project', '')
     if not project:
         return 0
