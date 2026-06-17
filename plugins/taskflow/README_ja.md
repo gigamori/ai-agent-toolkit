@@ -236,7 +236,9 @@ _projects/
 ```
 セッション開始
   │
-  ├─ [UserPromptSubmit hook] ─→ state_file作成 + pj:パース + session情報注入
+  ├─ [SessionStart:compact hook]（auto-compaction 時のみ）─→ injection フラグをリセットし次ターンで guidelines を再注入
+  │
+  ├─ [UserPromptSubmit hook] ─→ state_file作成 + pj:パース + session情報 / guidelines 注入
   │
   ├─ [LLM] プロジェクト判定（常時実行）─→ state_fileにプロジェクト名を書き込み
   │
@@ -247,6 +249,8 @@ _projects/
   ├─ [LLM] project_notes_autosave判定 ─→ 調査系意図なら応答後に保存確認を提示
   │
   ├─ タスク実行
+  │     ├─ [PreToolUse:Write|Edit] project-notes/ ファイル書込 ─→ project-notes/index.md 同期ルールを注入
+  │     └─ [PostToolUse:Write|Edit] tasks/ ファイル書込 ─→ progress.md テーブルを自動 rebuild
   │
   └─ [Stop hooks] ─→ plan/memory コピーをアーカイブ、かつ
                      書込・編集系操作のあったセッションでは LLM に残 next step の記録を促す
@@ -254,7 +258,7 @@ _projects/
 
 ### hook
 
-3 つの hook がプラグイン有効時に自動で動作する。
+6 つの hook がプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` / `SessionStart:compact` に wire されている。
 
 #### UserPromptSubmit: session_init.py
 
@@ -275,6 +279,18 @@ _projects/
 1. 禁止規則（してはいけないこと）— 忘却時の違反リスクが最も高い
 2. フォーマット固有パターン（frontmatter フィールド、ファイル名規約、文字数制限）
 3. 権威の定義（どのフィールドがどの情報源を正とするか）
+
+#### PreToolUse: notes_index_reminder.py (matcher: Write|Edit)
+
+`_projects/<project>/project-notes/` 配下のファイル（`index.md` 自身は除く）への `Write`/`Edit` 直前に発火。`additionalContext` 経由で `[Project Notes Index Rule]` リマインダーを注入し、操作後に `project-notes/index.md` を同期するよう LLM に指示する（新規ファイルは行追加、Description/Tags 変更時は該当行更新、削除時は該当行除去）。
+
+#### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit)
+
+`_projects/<project>/tasks/<status>/` 配下のファイルへの `Write`/`Edit` 直後に発火。`scripts/rebuild_progress.py` を実行して該当プロジェクトの `progress.md` テーブル領域を再生成し、手動の `/progress rebuild` なしでタスクインデックスを最新に保つ。
+
+#### SessionStart: session_compact_reset.py (matcher: compact)
+
+Claude Code が会話を auto-compaction した際に発火。compaction では `session_init.py` が注入した `additionalContext` が失われるため、state file の injection フラグ（`rules_loaded`, `indexed_project`, `guidelines_loaded`）をリセットする（他のフィールドは保持）。次の `UserPromptSubmit` ターンで `static_rules`・プロジェクトインデックス・全文ガイドラインが再注入される。
 
 #### Stop: session_sync.py
 

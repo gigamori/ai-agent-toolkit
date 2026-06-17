@@ -259,10 +259,17 @@ def main() -> int:
         f'2. For `touched` paths outside `tasks/` (source files, specs, configs): '
         f'map each to the owning task (by scope, any status) and update per (1). '
         f'Bug fixes and verification-driven tweaks ARE task progress.\n'
-        f'3. Reply `[progress capture] skip — no task work` ONLY IF every `touched` '
+        f'3. Reply `[progress capture] skip — no task work` IF every `touched` '
         f'entry is unrelated to any task in this project (e.g., transient scratch '
-        f'files, generated artifacts). Skipping while a touched entry maps to a '
-        f'task — even loosely — is wrong; update that task\'s log instead.'
+        f'files, generated artifacts, project-notes). If a mapping is ambiguous, '
+        f'skip rather than force-assign.\n'
+        f'4. After completing updates, reply with exactly this format (one line per '
+        f'updated task):\n'
+        f'   [progress capture] done\n'
+        f'   - <task-filename> ← [s:{sid8}] logged\n'
+        f'   If you proposed a new task (not yet created), append:\n'
+        f'   - (proposed) <suggested-title> — <status> — awaiting confirmation\n'
+        f'   If no task was updated, the skip message from step 3 serves as the output.'
     )
 
     result = {'decision': 'block', 'reason': reason}

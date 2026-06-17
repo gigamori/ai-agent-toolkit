@@ -180,14 +180,16 @@ state = {
 }
 
 # Resolve current project for this turn (before re-entry reset check).
+# No path-based inference: when no project is explicitly assigned via
+# pj:<name> and none is carried in state, the project stays empty.
+# Empty-project rules (project_routing.md) require explicit assignment,
+# not auto-inference from a _projects/<x>/ path mention.
 if pj_explicit is not None:
   current_project = pj_explicit
 elif state['project']:
   current_project = state['project']
 else:
-  # First-turn heuristic: infer from _projects/<x>/ path in prompt.
-  path_match = re.search(r'_projects/([^/\s]+)/', user_prompt)
-  current_project = path_match.group(1) if path_match else ''
+  current_project = ''
 
 # Project re-entry: reset injection flags when transitioning from empty to active.
 # Without this, pj:none → pj:<name> would leave rules_loaded=True and skip injection.

@@ -237,7 +237,9 @@ _projects/
 ```
 session start
   │
-  ├─ [UserPromptSubmit hook] ─→ creates state_file + parses pj: + injects session info
+  ├─ [SessionStart:compact hook] (only on auto-compaction) ─→ resets injection flags so guidelines re-inject next turn
+  │
+  ├─ [UserPromptSubmit hook] ─→ creates state_file + parses pj: + injects session info / guidelines
   │
   ├─ [LLM] project determination (always) ─→ writes the project name to state_file
   │
@@ -248,6 +250,8 @@ session start
   ├─ [LLM] project_notes_autosave judgement ─→ for investigation intents, prompts to save after the main response
   │
   ├─ task execution
+  │     ├─ [PreToolUse:Write|Edit] writing a project-notes/ file ─→ injects the project-notes/index.md sync rule
+  │     └─ [PostToolUse:Write|Edit] writing a tasks/ file ─→ auto-rebuilds the progress.md table
   │
   └─ [Stop hooks] ─→ archive plans/memory copies, AND
                      prompt the LLM to record next steps for touched tasks
@@ -255,7 +259,7 @@ session start
 
 ### hooks
 
-Three hooks run automatically when the plugin is enabled.
+Six hooks run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SessionStart:compact`.
 
 #### UserPromptSubmit: session_init.py
 
@@ -276,6 +280,18 @@ Also handles guidelines injection: on the first turn of a session (and after com
 1. Prohibitions (what NOT to do) — highest violation risk when forgotten
 2. Format-specific patterns (frontmatter fields, filename conventions, character limits)
 3. Authority definitions (which source of truth governs which field)
+
+#### PreToolUse: notes_index_reminder.py (matcher: Write|Edit)
+
+Fires before a `Write`/`Edit` targeting a file under `_projects/<project>/project-notes/` (excluding `index.md` itself). Injects a `[Project Notes Index Rule]` reminder via `additionalContext`, instructing the LLM to keep `project-notes/index.md` in sync after the operation (add a row for new files, update on Description/Tags change, remove on delete).
+
+#### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit)
+
+Fires after a `Write`/`Edit` targeting a file under `_projects/<project>/tasks/<status>/`. Runs `scripts/rebuild_progress.py` to regenerate the `progress.md` table region for that project, so the task index stays current without a manual `/progress rebuild`.
+
+#### SessionStart: session_compact_reset.py (matcher: compact)
+
+Fires when Claude Code auto-compacts the conversation. Compaction discards the `additionalContext` injected by `session_init.py`, so this hook resets the injection flags (`rules_loaded`, `indexed_project`, `guidelines_loaded`) in the state file; all other fields are preserved. The next `UserPromptSubmit` turn then re-injects `static_rules`, the project index, and the full guidelines.
 
 #### Stop: session_sync.py
 
