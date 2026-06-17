@@ -112,7 +112,7 @@ user prompt
   ▼ [UserPromptSubmit hook] session_init.py
   │  ├─ first turn: create state_file
   │  │   1. parse `pj:xx` from the first line of the prompt
-  │  │   2. if absent, infer from the `_projects/<project>/` path
+  │  │   2. if absent, leave the project empty (no path inference)
   │  │   3. write {"project": "..."} into state_file
   │  │
   │  ├─ subsequent turns:
@@ -129,14 +129,14 @@ user prompt
   │  2. prepend a JSON context block
   │  3. invoke the project-router subagent via the Agent tool
   │
-  ▼ [project-router subagent] runs on an isolated generation path (haiku)
+  ▼ [project-router subagent] runs on an isolated generation path (sonnet)
   │  1. write state_file (always)
   │  2. applicability decision (skip / apply)
-  │  3. on apply: read index.md, progress.md, and the 3 guideline files
-  │     (progress_guidelines / notes_guidelines / tasks_guidelines)
+  │  3. on apply: read index.md and progress.md
+  │     (the 3 guideline files are injected by session_init.py, not the router)
   │  4. tasks: list 1_in_progress/, selectively read relevant files;
   │     emit stale_hint if any are >14 days old
-  │  5. project-notes: selective read via index.md (fallback: recursive walk)
+  │  5. project-notes: emit paths + verbatim Description from index.md; do NOT read note bodies (fallback: path list only)
   │  6. return a structured result (no auto-promotion in v2)
   │
   ▼ [LLM] receives the subagent result
@@ -172,7 +172,7 @@ Path: `_projects/_state/{session_id}.json`
 
 | Actor | Timing | Condition |
 |---|---|---|
-| hook (init) | every turn | `pj:` is specified, or path inference succeeded |
+| hook (init) | every turn | `pj:` is specified (explicit assignment only) |
 | subagent | when the project is finalized | the routing procedure has decided |
 | main agent | when project can be inferred from conversation but is empty | as documented in project_routing.md |
 
@@ -205,7 +205,7 @@ When routing and task execution share a single generation path, they compete for
 
 ### Resolution
 
-Delegate routing to a dedicated subagent (haiku, isolated generation path). The main agent's system prompt keeps only a short instruction to "invoke the subagent." Attention is now separated.
+Delegate routing to a dedicated subagent (sonnet, isolated generation path). The main agent's system prompt keeps only a short instruction to "invoke the subagent." Attention is now separated.
 
 The router subagent is intentionally lightweight: per-turn reads + decisions only. Heavy operations (drift detection, rebuild, approval bulk moves) live in the `/progress` slash command which runs on user demand.
 

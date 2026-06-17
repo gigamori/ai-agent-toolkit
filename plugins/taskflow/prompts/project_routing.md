@@ -44,6 +44,8 @@ block as the prompt.
 4. Handling the result:
    - `action: apply` → use the returned context (progress, tasks, project-notes, etc.) as the premise for task execution.
    - `action: skip` → skip project management and proceed to the task.
+   - Treat the routed context as a routing aid, not a primary source. `--- index ---`, `--- progress ---`, and task contents are verbatim file dumps; `--- project_notes_list ---` gives only paths + the index's Description — the router does NOT return note bodies. Before you assert or act on any claim of the form "<file/section> says X" that originates from the routed context (or any subagent digest of a primary artifact), open the cited primary file and confirm it. This generalizes the history_lookup rule (verify against the source, never trust a secondary digest) beyond chat history to all subagent-returned summaries.
+   - When `--- project_notes_list ---` marks notes `[relevant]` to the task, proactively open those primary files before acting, rather than working without them.
 
 ## Empty project rules
 

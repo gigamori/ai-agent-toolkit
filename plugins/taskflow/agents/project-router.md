@@ -2,7 +2,7 @@
 name: project-router
 description: Project routing subagent. Writes state file, reads progress/tasks/project-notes, returns structured context.
 tools: Read, Bash, Glob, Grep
-model: haiku
+model: sonnet
 ---
 
 # Project Routing Task
@@ -114,17 +114,20 @@ For each file in `tasks/1_in_progress/` whose mtime is older than 14 days, emit 
 
 This step does NOT perform full drift / lockstep analysis. Defer to `/progress check`.
 
-## Step 5: project-notes inspection
+## Step 5: project-notes inspection (locations + Description only — never note bodies)
 
-Read `_projects/<project>/project-notes/index.md`.
+Read `_projects/<project>/project-notes/index.md` (4-column table: File | Description | Tags | Updated).
+
+You return only locations and the index's own Description/Tags — never the body of a note. The main agent opens the primary files itself.
 
 If `index.md` exists:
-- Match `Description` / `Tags` against `prompt_summary` and read the relevant files.
-- If no match, record only the filename list.
+- For every row, emit its path and copy the Description and Tags cells VERBATIM (no paraphrase, translation, summarization, reordering, or cross-file merging).
+- Mark which rows are relevant to `prompt_summary` (by path). Relevance is a hint only.
+- Do NOT open or read the note files themselves.
 
 If `index.md` does not exist (fallback):
-- Walk `_projects/<project>/project-notes/**/*.md` (across all category subdirs).
-- Read files whose names look relevant to `prompt_summary`.
+- Walk `_projects/<project>/project-notes/**/*.md` and emit the path list only.
+- Do NOT open, read, or summarize any file body.
 
 If no files or the directory is missing, record "none".
 
@@ -174,10 +177,7 @@ progress_exists: true | false
 <one-line note if any tasks/1_in_progress/ files are >14 days old, suggesting `/progress check`. "none" otherwise.>
 
 --- project_notes_list ---
-<filename list of project-notes/ (with category subdir paths), or "none">
-
---- project_notes_content ---
-<contents of the project-notes that were read, or "none">
+<For each row in project-notes/index.md: "- <path> — <Description verbatim> | tags: <Tags verbatim>"; append " [relevant]" to rows matching prompt_summary. "none" if index.md or the directory is missing. Verbatim copy only — no paraphrase, translation, summarization, reordering, or merging across files. In the no-index fallback, list paths only. The router does NOT return note bodies; the main agent opens primary files itself.>
 
 --- nearest_projects ---
 <only when project is empty. Up to 5 entries, format: "- <name> — <label>: <reason>". "none" otherwise.>
