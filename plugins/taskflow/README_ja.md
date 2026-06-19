@@ -51,7 +51,7 @@ Claude Code で恒久設定するには `settings.json` に追加:
 
 ### プロジェクト指定
 
-プロンプト先頭に `pj:プロジェクト名` を付ける。省略時は LLM が推定する。
+`pj:プロジェクト名` はプロンプトの冒頭（最初のほう）に置く。行頭または空白直後ならどこでも認識されるため、他の先頭行（`mode:` など）の後でもよく、物理的な先頭である必要はない。省略時は直前に設定済みのプロジェクトを維持する（文脈からの推定は行わない）。
 
 | 操作 | プロンプト例 |
 |---|---|
@@ -71,6 +71,7 @@ Claude Code で恒久設定するには `settings.json` に追加:
 | `check` | drift / stale / 承認待ち検出。read-only。 | `/progress check` |
 | `audit` | 各タスクを `## Next Steps` 状態で 4 区分（pending / completion candidate / untracked / clean）に分類。read-only。 | `/progress audit` |
 | `rebuild`（`sync` は別名） | progress.md のテーブル領域を task ファイル群から再生成。 | `/progress rebuild` |
+| `start` | `0_todo/ → 1_in_progress/` への移動。 | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
 | `approve` | `1_in_progress/ → 2_done/` への移動。人間承認の遷移。 | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
 | `revert` | 1 段戻す（`1_in_progress → 0_todo`、または `2_done → 1_in_progress`）。 | `/progress revert <prefix>`<br>`/progress 戻して audit` |
 
@@ -78,6 +79,7 @@ Claude Code で恒久設定するには `settings.json` に追加:
 
 - approve: `approve`, `完了`, `終了`, `done`, `finish`, `ok`
 - revert: `revert`, `戻す`, `戻し`, `undo`, `取り消し`
+- start: `start`, `開始`, `着手`, `begin`
 - `check` / `audit` / `sync` / `rebuild`: literal キーワードのみ
 
 **target 解決**（優先度の高い match から採用）:
@@ -108,7 +110,7 @@ kanban ボードの特性:
 
 | 方法 | コマンド | 結果 |
 |---|---|---|
-| skill 経由 | `/kanban` | HTTP サーバーを `http://localhost:17329/` で起動、ブラウザ自動起動、Ctrl+C で停止 |
+| skill 経由 | `/kanban` | サーバーをバックグラウンドで `http://localhost:17329/` に起動し、URL と `pkill` 停止コマンドを報告する（ブロックしない） |
 | script（静的） | `uv run python scripts/generate_kanban.py` | HTML を `/tmp/taskflow-kanban.html` に出力 |
 | script（サーブ） | `uv run python scripts/generate_kanban.py --serve --open` | サーバー起動＋ブラウザ自動起動 |
 
@@ -161,17 +163,7 @@ updated: 2026-05-14
 - `## Next Steps` が非空 = pending、`1_in_progress/` で空 = 完了候補。`Stop` フックがセッション中の実作業を見て LLM にこのセクションの更新を促す（[仕組み](#仕組み) 参照）。
 - log 行には `[s:<session-id 先頭>]` タグが付き、audit の参照用 index になる。
 
-status 遷移は `/progress approve` / `/progress revert` で行う（上記参照）。
-
-#### v0.2.0 からの移行
-
-`/progress audit` で `UNTRACKED` が検出された場合（`## Next Steps` セクション必須化以前の task）、repo ルートの移行スクリプトで一括 retrofit:
-
-```bash
-uv run python scripts/migrate_task_next_steps.py <project-root>
-```
-
-one-shot ツールで、plugin 配布対象外（repo 保守用のため plugin ではなく repo root の `scripts/` に配置）。
+status 遷移は `/progress start` / `/progress approve` / `/progress revert` で行う（上記参照）。
 
 ### project-notes
 
@@ -192,16 +184,18 @@ one-shot ツールで、plugin 配布対象外（repo 保守用のため plugin 
 | 一覧確認 | `notesに何がある？` |
 | codebase 記録 | `このリポの構造をnotesにまとめて` |
 
-`project-notes/index.md` は 4 列テーブル（`File | Description | Tags | Updated`）で notes を管理する。notes 作成・更新時に自動で更新される。
+`project-notes/index.md` は 4 列テーブル（`File | Description | Tags | Updated`）で notes を管理する。notes 作成・更新時に LLM が（PreToolUse フックの促しを受けて）同期する。
+
+project-router は project-notes を **pointer のみ**（ファイル一覧＋`project-notes/index.md` の該当行の逐語コピー、本文は返さない）で返すため、note 内容を要約・翻訳・confabulate して routing 結果に混入させない。本文が要るときはメインエージェントが直接読む。
 
 #### 調査系タスクの自動保存
 
 ユーザーの意図が「情報収集・比較・整理・調査」である場合、project-router が意味ベースで検知し `project_notes_autosave: true` を返す。メインエージェントは応答本体を返したあと、カテゴリと slug の候補と共にユーザーに保存可否を確認する。承諾された場合のみ `project-notes/<category>/<slug>.md` と `project-notes/index.md` を更新する。
 
-判定条件の詳細は `taskflow/prompts/project_router_agent.md` の `Step 2b`、保存フローの詳細は `taskflow/prompts/notes_guidelines.md` の「自動保存フロー」節を参照。
+判定条件の詳細は `taskflow/agents/project-router.md` の `Step 2b`、保存フローの詳細は `taskflow/prompts/notes_guidelines.md` の「自動保存フロー」節を参照。
 
 - 発火する例: 「このrepoの構造を調べて」「A案とB案を比較して」「○○の運用を整理して」
-- 発火しない例: 「READMEのtypo直して」「○○って何？」（単発説明要求）、「保存しないで」（明示拒否）
+- 発火しない例: 質問・確認（「○○って何？」「認証フローはどうなってる？」）、デバッグ・トラブルシュート、artifact 主体や単発些末な編集（「READMEのtypo直して」）、明示拒否（「保存しないで」）
 
 ## ディレクトリ構造
 
@@ -240,7 +234,7 @@ _projects/
   │
   ├─ [UserPromptSubmit hook] ─→ state_file作成 + pj:パース + session情報 / guidelines 注入
   │
-  ├─ [LLM] プロジェクト判定（常時実行）─→ state_fileにプロジェクト名を書き込み
+  ├─ [LLM] プロジェクト判定（プロジェクトが有効なときのみ。空のときはスキップ）─→ state_fileにプロジェクト名を書き込み
   │
   ├─ [LLM] 適用判定 ─→ progress管理が必要か判断
   │     不要 → タスク実行のみ
@@ -258,7 +252,7 @@ _projects/
 
 ### hook
 
-6 つの hook がプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` / `SessionStart:compact` に wire されている。
+6 つの hook がプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`（2 つ）/ `SessionStart:compact` に wire されている。
 
 #### UserPromptSubmit: session_init.py
 

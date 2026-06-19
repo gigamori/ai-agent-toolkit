@@ -288,7 +288,7 @@ if current_project:
       f'`_projects/{current_project}/index.md`, `progress.md`, and `project-notes/index.md`; '
       f'(3) add the matching row to `_projects/index.md`. '
       f'This scaffold generation is allowed even inside Plan mode (treated equivalently to the plan file). '
-      f'Response frontmatter lines (e.g. [pj:{current_project}]) still apply during this preflight.'
+      f'Response leading lines (e.g. [pj:{current_project}]) still apply during this preflight.'
     )
 
 # Fork context: on the first turn of a forked session, tell the LLM which

@@ -52,7 +52,7 @@ To set it permanently in Claude Code, add it to your `settings.json`:
 
 ### Specifying a project
 
-Prefix the prompt with `pj:<project>`. If omitted, the LLM infers the project.
+Put `pj:<project>` near the beginning of the prompt — it is recognized at the start or after any whitespace, so it may follow other leading lines (e.g. `mode:`); it need not be the literal first line. If omitted, the previously set project (if any) is kept; the project is NOT inferred from context.
 
 | Action | Example prompt |
 |---|---|
@@ -72,6 +72,7 @@ Prefix the prompt with `pj:<project>`. If omitted, the LLM infers the project.
 | `check` | Drift / stale / approval-pending detection. Read-only. | `/progress check` |
 | `audit` | Classify every task by `## Next Steps` state (pending / completion candidate / untracked / clean). Read-only. | `/progress audit` |
 | `rebuild` (alias `sync`) | Regenerate the progress.md table region from task files. | `/progress rebuild` |
+| `start` | Move a task `0_todo/ → 1_in_progress/`. | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
 | `approve` | Move a task `1_in_progress/ → 2_done/`. Human-approved transition. | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
 | `revert` | Move backward one step (`1_in_progress → 0_todo`, or `2_done → 1_in_progress`). | `/progress revert <prefix>`<br>`/progress 戻して audit` |
 
@@ -79,6 +80,7 @@ Prefix the prompt with `pj:<project>`. If omitted, the LLM infers the project.
 
 - approve: `approve`, `完了`, `終了`, `done`, `finish`, `ok`
 - revert: `revert`, `戻す`, `戻し`, `undo`, `取り消し`
+- start: `start`, `開始`, `着手`, `begin`
 - `check` / `audit` / `sync` / `rebuild`: literal keywords only
 
 **Target resolution** (highest-priority match wins):
@@ -109,7 +111,7 @@ Invocation:
 
 | Method | Command | Result |
 |---|---|---|
-| Via skill | `/kanban` | Starts HTTP server at `http://localhost:17329/`, opens browser, blocks until Ctrl+C |
+| Via skill | `/kanban` | Starts the server in the background at `http://localhost:17329/`; reports the URL and the `pkill` stop command (does not block) |
 | Via script (static) | `uv run python scripts/generate_kanban.py` | Writes HTML to `/tmp/taskflow-kanban.html` |
 | Via script (serve) | `uv run python scripts/generate_kanban.py --serve --open` | Starts server and opens browser |
 
@@ -162,17 +164,7 @@ Body (mutable region — replace freely).
 - `## Next Steps` non-empty = pending; empty in `1_in_progress/` = completion candidate. The `Stop` hook prompts the LLM to update this section based on actual session work (see [How it works](#how-it-works)).
 - Log lines carry a `[s:<session-id-prefix>]` tag for downstream audit lookup.
 
-Status transitions are performed via `/progress approve` and `/progress revert` (see above).
-
-#### Migrating tasks from v0.2.0
-
-If `/progress audit` reports any `UNTRACKED` tasks (files predating the `## Next Steps` requirement), retrofit them once with the repository-root migration script:
-
-```bash
-uv run python scripts/migrate_task_next_steps.py <project-root>
-```
-
-This is a one-shot tool; it lives outside the plugin distribution because it is repo maintenance, not runtime behavior.
+Status transitions are performed via `/progress start`, `/progress approve`, and `/progress revert` (see above).
 
 ### project-notes
 
@@ -193,16 +185,18 @@ Project-specific persistent knowledge, categorized by folder:
 | List | `what's in notes?` |
 | Record codebase structure | `summarize this repo's structure into notes` |
 
-`project-notes/index.md` is a 4-column table (`File | Description | Tags | Updated`) tracking notes; updated automatically when notes are created or edited.
+`project-notes/index.md` is a 4-column table (`File | Description | Tags | Updated`) tracking notes; the LLM keeps it in sync (prompted by the PreToolUse hook) when notes are created or edited.
+
+The project-router surfaces project-notes as **pointers only** — the file list plus the verbatim matching rows of `project-notes/index.md`, never note body contents — so it cannot summarize, translate, or confabulate note contents into the routing result. The main agent reads the note files themselves when needed.
 
 #### Auto-save for investigation-style tasks
 
 When the user's intent is information gathering / comparison / structuring / investigation, the project-router detects it semantically and returns `project_notes_autosave: true`. The main agent delivers its primary answer, then asks the user whether to save — including a suggested category and slug. Only on approval are `project-notes/<category>/<slug>.md` and `project-notes/index.md` updated.
 
-See `taskflow/prompts/project_router_agent.md` `Step 2b` for the detection conditions, and the "auto-save flow" section of `taskflow/prompts/notes_guidelines.md` for the save flow.
+See `taskflow/agents/project-router.md` `Step 2b` for the detection conditions, and the "auto-save flow" section of `taskflow/prompts/notes_guidelines.md` for the save flow.
 
 - Fires for: "investigate this repo's structure", "compare options A and B", "organize how X works"
-- Does NOT fire for: "fix a typo in the README", one-shot explanation requests ("what is X?"), or explicit refusal ("don't save")
+- Does NOT fire for: questions / confirmations ("what is X?", "how does the auth flow work?"), debugging / troubleshooting, artifact-primary or trivial edits ("fix a typo in the README"), or explicit refusal ("don't save")
 
 ## Directory layout
 
@@ -241,7 +235,7 @@ session start
   │
   ├─ [UserPromptSubmit hook] ─→ creates state_file + parses pj: + injects session info / guidelines
   │
-  ├─ [LLM] project determination (always) ─→ writes the project name to state_file
+  ├─ [LLM] project determination (when a project is active; skipped when empty) ─→ writes the project name to state_file
   │
   ├─ [LLM] applicability decision ─→ decides whether progress management is needed
   │     not needed → run the task only
@@ -259,7 +253,7 @@ session start
 
 ### hooks
 
-Six hooks run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SessionStart:compact`.
+Six hooks run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop` (two hooks), and `SessionStart:compact`.
 
 #### UserPromptSubmit: session_init.py
 

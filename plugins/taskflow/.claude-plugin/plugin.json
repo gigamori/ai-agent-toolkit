@@ -1,7 +1,7 @@
 {
   "name": "taskflow",
   "description": "Concurrent task progress and context management across Claude Code sessions",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "author": {
     "name": "gigamori"
   }

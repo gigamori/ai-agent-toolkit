@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""check_progress.py — taskflow v2 drift detector.
+"""check_progress.py — taskflow v0.2.2 drift detector.
 
 Inspects a project's progress.md, tasks/, and project-notes/ for:
   1. task link drift     — progress.md @tasks/<status>/<file> refs vs filesystem
@@ -406,7 +406,7 @@ def print_findings(result: Result) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Inspect a taskflow v2 project for drift, stale tasks, "
+            "Inspect a taskflow v0.2.2 project for drift, stale tasks, "
             "and rule violations."
         )
     )

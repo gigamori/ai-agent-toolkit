@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""audit_progress.py — taskflow v0.2.1 reality auditor.
+"""audit_progress.py — taskflow v0.2.2 reality auditor.
 
 For each task file under tasks/<status>/*.md, classify by `## Next Steps`
 section state and folder location:
@@ -225,7 +225,7 @@ def format_output(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit a taskflow v0.2.1 project for pending Next Steps, "
+            "Audit a taskflow v0.2.2 project for pending Next Steps, "
             "completion candidates, and untracked legacy tasks."
         )
     )

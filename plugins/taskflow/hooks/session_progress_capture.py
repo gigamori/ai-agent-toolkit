@@ -195,18 +195,18 @@ def main() -> int:
 
     # --- State recovery: pj prefix from assistant response ---
     # If state has no project but the assistant's response contains a
-    # [pj:<name>] frontmatter line, recover the project into state. The
-    # marker may not be on line 1 — it shares the frontmatter region with
-    # other plugins' markers (e.g. [Mode:]) and the order is unspecified.
-    # Self-heals cases where session_init failed to write the project on
-    # the first turn or fork inherited an empty parent state.
+    # [pj:<name>] line in the leading lines, recover the project into state.
+    # The [pj:...] line may not be on line 1 — it shares the leading-line
+    # region with other plugins' leading lines (e.g. [Mode:]) and the order
+    # is unspecified. Self-heals cases where session_init failed to write the
+    # project on the first turn or fork inherited an empty parent state.
     if not state.get('project'):
         assistant_msg = data.get('last_assistant_message', '')
         if isinstance(assistant_msg, str):
-            # Bound the search to the frontmatter region (a few short marker
-            # lines): [pj:...] always lands well within the first 200 chars
-            # whatever the marker order. Narrowing the window also avoids
-            # matching a literal [pj:...] token deeper in the body.
+            # Bound the search to the leading-line region (a few short lines):
+            # [pj:...] always lands well within the first 200 chars whatever
+            # the line order. Narrowing the window also avoids matching a
+            # literal [pj:...] token deeper in the body.
             pj_m = re.search(r'\[pj:([^\]]+)\]', assistant_msg[:200])
             if pj_m:
                 val = pj_m.group(1)

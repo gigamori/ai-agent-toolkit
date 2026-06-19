@@ -1,7 +1,7 @@
-## Response frontmatter
+## Response leading lines
 
-When a project is assigned, include `[pj:<project>]` as a response frontmatter line (before the main body).
-When no project is assigned, omit the `[pj:...]` frontmatter entirely.
+When a project is assigned, include `[pj:<project>]` in the leading lines of the response (near the beginning, before the main body; it may follow other leading lines such as `mode:`, not necessarily the literal first line).
+When no project is assigned, omit `[pj:...]` entirely.
 The body of the response follows the user's input language.
 
 ### Discovery via `pj:?`
@@ -36,7 +36,7 @@ block as the prompt.
      "session_id": "extracted from [Progress Session]",
      "state_file": "extracted from [Progress Session]",
      "current_project": "extracted from [Progress Session]",
-     "first_line": "first line of the user input",
+     "leading_lines": "the leading lines of the user input (near the beginning, before the body; pj:/mode: etc. may appear in any order, not necessarily the literal first line)",
      "prompt_summary": "summary of the user input (≤ 50 chars)"
    }
    ```
@@ -44,8 +44,17 @@ block as the prompt.
 4. Handling the result:
    - `action: apply` → use the returned context (progress, tasks, project-notes, etc.) as the premise for task execution.
    - `action: skip` → skip project management and proceed to the task.
-   - Treat the routed context as a routing aid, not a primary source. `--- index ---`, `--- progress ---`, and task contents are verbatim file dumps; `--- project_notes_list ---` gives only paths + the index's Description — the router does NOT return note bodies. Before you assert or act on any claim of the form "<file/section> says X" that originates from the routed context (or any subagent digest of a primary artifact), open the cited primary file and confirm it. This generalizes the history_lookup rule (verify against the source, never trust a secondary digest) beyond chat history to all subagent-returned summaries.
-   - When `--- project_notes_list ---` marks notes `[relevant]` to the task, proactively open those primary files before acting, rather than working without them.
+
+### Secondary-source discipline (router result handling)
+
+The router returns **pointers and secondary material, not primary truth**. Treat it accordingly:
+
+- Facts attributed to project-notes (findings, line numbers, section references, existing dependencies) MUST be confirmed by a primary read before you act on them. Do NOT propagate specifics that exist only in the router's returned text.
+- The router emits project-notes as pointers only (`project_notes_list` + verbatim `project_notes_relevant` rows). It never returns note body contents. Anything resembling a note-body digest is not authoritative.
+- The authority for a task's status / existence is the `tasks/` folder. The `progress.md` table is a cache.
+- Any subagent digest is secondary material: verify it against the primary source before acting.
+
+> Reservation: `project_routing.md` is injected via `UserPromptSubmit`, so it is absent during Stop-hook block turns (see the hooks spec). The router runs on normal turns, so the impact is small, but the edge case of handling a *prior* router result during a block turn is not covered by this discipline.
 
 ## Empty project rules
 
@@ -64,7 +73,7 @@ This ensures that scaffold-creation confirmation under `progress_exists: false` 
 
 ## Propagation to child sessions
 
-When the LLM spawns a new session via the Agent tool (subagent) or a CLI launch through Bash, insert `pj:<current_project>` as the **first line** of the prompt. This allows the child session to inherit the parent's project context.
+When the LLM spawns a new session via the Agent tool (subagent) or a CLI launch through Bash, insert `pj:<current_project>` into the leading lines of the prompt (near the beginning; it may follow other leading lines such as `mode:`, not necessarily the literal first line). This allows the child session to inherit the parent's project context.
 
 ## Adding, changing, and removing projects
 
@@ -76,7 +85,7 @@ When the LLM spawns a new session via the Agent tool (subagent) or a CLI launch 
 
 - `_projects/<project>/plans/` and `_projects/<project>/memory/` are archive copies maintained by the Stop hook. Do NOT reference them as authoritative sources.
 
-## Directory layout (v2)
+## Directory layout (v0.2.2)
 
 ```
 _projects/
@@ -96,7 +105,7 @@ _projects/
       procedures/        step-by-step instructions for humans
       backlog/           candidate items, ideas, issue tracker entries
       _archive/          exhausted (no longer authoritative)
-    _archive/            project-level archive (e.g., pre-v2 legacy files)
+    _archive/            project-level archive (e.g., pre-v0.2.2 legacy files)
     plans/               plan copies from the Stop hook (archived history)
     memory/              memory copies from the Stop hook (archived history)
 ```
