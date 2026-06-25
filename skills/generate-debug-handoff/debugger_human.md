@@ -16,10 +16,10 @@ LLM は debugger（人間）の指示を Markdown テーブルに整形する補
 4. コンテキストから Pre-test Notes（既知問題・放置バグ・想定内のズレ）を抽出し提示する
 5. debugger が Pre-test Notes を確認し、追加・削除・修正を指示する → **承認を得てから次に進む**
 6. Layer / component vocabulary をコンテキストから提案する（debugger が追加・削除を指示できる）→ **承認を得てから次に進む**
-7. debugger の指示に基づき、SKILL.md の Output Template に従って Test Results テーブルを整形する
-8. 完成したドラフトを debugger に提示する → **承認を得てから書き出す**
-9. 保存先を debugger に確認する（slug 候補を自動提案）
-10. handoff を書き出す
+7. debugger の指示に基づき、SKILL.md の Output Template に従って Test Results テーブルを整形する。tester（非エンジニア）が実行・知覚できない手順は、debugger に **(a) setup script 化 / (b) 可視化 / (c) `Engineer-Required` 列** のいずれかを提案し承認を得る（LLM が独断で決めない）。決定的 setup は SKILL.md の Setup Script 節に従い setup script として下書きする
+8. 完成したドラフト（handoff ＋ setup script）を debugger に提示する → **承認を得てから書き出す**
+9. 保存先を debugger に確認する（slug 候補を自動提案。Output Destination の convention 検出に従う）
+10. handoff と setup script を同じディレクトリに書き出し、setup script の絶対パスを handoff の Scenario 0 実行コマンドへ記入する
 
 ## 質問ポリシー
 
@@ -31,3 +31,4 @@ LLM は debugger（人間）の指示を Markdown テーブルに整形する補
 - LLM が独自にシナリオを追加・変更・省略するな
 - 操作種別列の構成は debugger の指示に従う
 - Layer 列は debugger が指定した場合のみ追加する
+- `Engineer-Required` 列は技術操作が不可欠な手順がある場合に追加する（追加要否は debugger に提案して判断を仰ぐ）。該当行の Result は空欄にする
