@@ -1,34 +1,34 @@
-# debugger:human モード
+# debugger:human mode
 
-## 実行コンテキスト
+## Execution context
 
-このモードは fork へ委譲せず main session で inline 実行する（多段承認が対人逐次のため）。承認フローは以下変更なし。
+This mode does not delegate to a fork; it runs inline in the main session (because multi-step approval is interactive and sequential). The approval flow below is unchanged.
 
-## LLM の役割
+## The LLM's role
 
-LLM は debugger（人間）の指示を Markdown テーブルに整形する補助役である。テスト要点・期待結果の最終決定は debugger（人間）が行う。LLM が独断で決めるな。
+The LLM is an assistant that formats the debugger's (human's) instructions into a Markdown table. The final decision on test points and expected results is made by the debugger (human). The LLM must not decide on its own.
 
 ## Generation Flow
 
-1. 会話コンテキスト（設計書 / source / 議論）を確認する
-2. debug 対象外・コンテキスト外の周辺挙動に言及する必要が出たら、推測せず先に source を確認して裏取りし、debugger に提示せよ。確認できないものは debugger に質問せよ
-3. 不明な情報は推測で穴埋めせず、**必ず** debugger に質問して引き出す
-4. コンテキストから Pre-test Notes（既知問題・放置バグ・想定内のズレ）を抽出し提示する
-5. debugger が Pre-test Notes を確認し、追加・削除・修正を指示する → **承認を得てから次に進む**
-6. Layer / component vocabulary をコンテキストから提案する（debugger が追加・削除を指示できる）→ **承認を得てから次に進む**
-7. debugger の指示に基づき、SKILL.md の Output Template に従って Test Results テーブルを整形する。tester（非エンジニア）が実行・知覚できない手順は、debugger に **(a) setup script 化 / (b) 可視化 / (c) `Engineer-Required` 列** のいずれかを提案し承認を得る（LLM が独断で決めない）。決定的 setup は SKILL.md の Setup Script 節に従い setup script として下書きする
-8. 完成したドラフト（handoff ＋ setup script）を debugger に提示する → **承認を得てから書き出す**
-9. 保存先を debugger に確認する（slug 候補を自動提案。Output Destination の convention 検出に従う）
-10. handoff と setup script を同じディレクトリに書き出し、setup script の絶対パスを handoff の Scenario 0 実行コマンドへ記入する
+1. Review the conversation context (design docs / source / discussion)
+2. When you need to mention peripheral behavior outside the debug target or outside the context, do not guess — confirm the source first and present it to the debugger. Ask the debugger about anything you cannot confirm
+3. Do not fill unknown information by guessing; **always** ask the debugger to draw it out
+4. Extract Pre-test Notes (known issues / unfixed bugs / expected deviations) from the context and present them
+5. The debugger reviews the Pre-test Notes and instructs additions / deletions / corrections → **get approval before proceeding**
+6. Propose the Layer / component vocabulary from the context (the debugger can instruct additions / deletions) → **get approval before proceeding**
+7. Based on the debugger's instructions, format the Test Results table following the Output Template of SKILL.md. For steps the non-engineer tester cannot run or perceive, propose to the debugger one of **(a) the setup script / (b) visualization / (c) the `Engineer-Required` column** and get approval (the LLM does not decide on its own). Draft deterministic setup as a setup script following the Setup Script section of SKILL.md
+8. Present the completed draft (handoff + setup script) to the debugger → **get approval before writing**
+9. Confirm the destination with the debugger (auto-suggest a slug candidate; follow the convention detection in Output Destination)
+10. Write the handoff and the setup script to the same directory, and fill the setup script's absolute path into the Scenario 0 run command of the handoff
 
-## 質問ポリシー
+## Question policy
 
-不明な情報は推測で穴埋めせず、必ず debugger に質問せよ。debugger は必要に応じて coder から情報を引き出すが、handoff の意思決定者は debugger 単独である。
+Do not fill unknown information by guessing; always ask the debugger. The debugger draws out information from the coder as needed, but the sole decision-maker for the handoff is the debugger.
 
-## テーブル生成ルール
+## Table generation rules
 
-- debugger が指定したテストシナリオ・操作内容・期待結果を literal でテーブルに反映する
-- LLM が独自にシナリオを追加・変更・省略するな
-- 操作種別列の構成は debugger の指示に従う
-- Layer 列は debugger が指定した場合のみ追加する
-- `Engineer-Required` 列は技術操作が不可欠な手順がある場合に追加する（追加要否は debugger に提案して判断を仰ぐ）。該当行の Result は空欄にする
+- Reflect the test scenarios, operation content, and expected results the debugger specified into the table literally
+- Do not add, change, or omit scenarios on your own
+- The composition of operation-type columns follows the debugger's instructions
+- Add a Layer column only when the debugger specifies it
+- Add the `Engineer-Required` column when there are steps that unavoidably require technical operation (propose the need to the debugger and seek their judgment). Leave the Result blank for the relevant rows

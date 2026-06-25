@@ -1,214 +1,215 @@
 ---
 name: generate-debug-handoff
-description: E2Eテスト用の debug handoff Markdown を生成する。debugger引数(human/llm)必須。debugger:humanではLLMは整形補助役で人間が承認、debugger:llmではLLMがdebugger役で承認なし。「debug handoff」「テストhandoff」「E2Eテスト表」に言及がある場合に使用。
+description: Generate a debug handoff Markdown for E2E testing. The debugger argument (human/llm) is required. With debugger:human the LLM only formats and the human approves; with debugger:llm the LLM acts as the debugger with no approval. Use when "debug handoff", "test handoff", or "E2E test table" is mentioned.
 ---
 
 # Debug Handoff Generation
 
 ## Overview
 
-E2Eテストの不具合切り分け用 debug handoff Markdown を生成する。
+Generate a debug handoff Markdown for isolating defects in E2E testing.
 
-handoff の役割:
-- tester が実行・記入する
-- debugger が記入済み handoff を見てバグ発生箇所を整理する
+Roles of the handoff:
+- The tester runs it and fills it in.
+- The debugger reads the filled-in handoff and pinpoints where the bug occurs.
 
-## tester 前提と不変条件
+## Tester premise and invariants
 
-- **tester は非エンジニア**である。CLI / DevTools / コード読解を前提にしない。
-- **不変条件**: handoff と付随する setup script は、tester（非エンジニア）が端から端まで**実行・検証できる**こと。tester が実行・知覚できない手順が出たら、debugger は次のいずれかで処理する:
-  - (a) 決定的な setup を**生成 setup script に寄せる**（実行コマンド1行を Scenario 0 に置く）
-  - (b) 観察を**人間が知覚可能な形に変える**（例: 1px の極小 probe 画像を、setup script で視認可能サイズに生成する）
-  - (c) どうしても技術操作が要る手順は **`Engineer-Required` 列**に出す（例: DevTools での CSP violation 確認）
-- この処理を「誰が決めるか」はモードに従う（debugger:llm は LLM が決定、debugger:human は人間 debugger が決定し LLM は提案のみ）。
+- **The tester is a non-engineer.** Do not assume CLI / DevTools / code reading.
+- **Invariant**: the handoff and its accompanying setup script must be **executable and verifiable end to end by the tester (a non-engineer)**. If a step appears that the tester cannot run or perceive, the debugger handles it in one of the following ways:
+  - (a) **Push deterministic setup into the generated setup script** (place the single run command in Scenario 0).
+  - (b) **Turn the observation into something a human can perceive** (e.g. generate a 1px probe image at a visible size via the setup script).
+  - (c) Steps that truly require technical operation go into the **`Engineer-Required` column** (e.g. confirming a CSP violation in DevTools).
+- "Who decides" this handling follows the mode (with debugger:llm the LLM decides; with debugger:human the human debugger decides and the LLM only proposes).
 
 ## Arguments
 
-- `debugger`: 必須。`human` または `llm`。テスト設計（テスト要点・期待結果）を誰が所有・承認するかを選ぶ。
-  - `human`: テスト設計をユーザ自身が所有・承認したいとき。人間が debugger となり、LLM は整形補助役で承認ステップあり。
-  - `llm`: テスト設計を LLM に委ねるとき。LLM が debugger となり、承認なしで進める。
-  - この選択はテスト対象や実行方法（実機操作の要否・GUI/CLI 等）からは推論できないユーザの作業選好である。省略時は文脈から既定を正当化せず必ず確認する。
+- `debugger`: required. `human` or `llm`. Selects who owns and approves the test design (test points and expected results).
+  - `human`: the user owns/approves the test design. The human is the debugger; the LLM only formats, and an approval step exists.
+  - `llm`: the test design is delegated to the LLM. The LLM is the debugger and proceeds without approval.
+  - Before anything else, check whether the invocation literally contains `debugger:human` or `debugger:llm`, and quote it. If you cannot quote either from the invocation, do not pick or infer a default — ask the user which, then proceed. This is a work preference (who approves), not something derivable from the target or the execution method.
+  - Known failure to avoid: the conversation will be saturated with talk of real-device / GUI / CLI / "a person operates the machine," because that is the test material — it is not evidence for the debugger preference. If you catch yourself reasoning from how the test is executed toward `human` or `llm`, that is the failure; stop and ask instead.
 
 ## Mode Loading
 
-`debugger` 引数に応じて、このスキルと同じディレクトリにあるモード別ファイルを読み込み、その指示に従え。
+Depending on the `debugger` argument, load the mode-specific file in the same directory as this skill and follow its instructions.
 
-- `debugger:human` → `debugger_human.md` を読み込む
-- `debugger:llm` → `debugger_llm.md` を読み込む
+- `debugger:human` → load `debugger_human.md`
+- `debugger:llm` → load `debugger_llm.md`
 
-モード別ファイルの指示が Generation Flow・LLM の役割・承認フローを定義する。以下の共通仕様と合わせて適用せよ。
+The mode-specific file defines the Generation Flow, the LLM's role, and the approval flow. Apply it together with the common specification below.
 
 ## Execution / Context
 
-この skill は現セッションに inline 展開され、main session が現会話の文脈（議論 / 設計書 / source）を直接使う。
+This skill is expanded inline in the current session; the main session uses the current conversation's context (discussion / design docs / source) directly.
 
-- `debugger:llm`: 生成は `subagent_type:"fork"` の subagent への1回委譲を優先する（context 隔離のため。往復・再委譲なし）。fork は会話＋inline 注入された本 skill 本文を継承し、handoff 本文のみを返す（fork の tool 出力は main に残らない）。fork が利用不能、または返却が会話既知の文脈を反映しない場合は、main が文脈を保持しているため main session で inline 生成する（正規フォールバック。error 停止しない）。いずれの経路でも、最終 handoff が会話既知の文脈を反映していることを main が確認する。
-- `debugger:human`: fork へ委譲せず main session で inline 実行する（多段承認が対人逐次のため）。
-- 両モードとも、保存先のユーザ確認と file write は main session が行う（fork は本文生成のみ）。main は handoff と setup script の両方を write し、setup script の絶対パスは保存先確定後に main が handoff の Scenario 0 実行コマンドへ記入する（fork は絶対パスを placeholder のままにする）。fork が確定できないセルは推測で埋めず `?` とし、不足は別途 "Unresolved" として main に返して user に提示する（書き出す handoff には 5 セクションのみ。Unresolved は永続化しない）。
+- `debugger:llm`: prefer a single delegation of generation to a `subagent_type:"fork"` subagent (for context isolation; no round trips, no re-delegation). The fork inherits the conversation plus this skill body injected inline, and returns only the handoff body (the fork's tool output does not remain in main). If the fork is unavailable, or its return does not reflect context known from the conversation, the main session generates inline because main holds the context (this is the canonical fallback; do not stop with an error). On either path, main confirms that the final handoff reflects context known from the conversation.
+- `debugger:human`: do not delegate to a fork; run inline in the main session (because multi-step approval is interactive and sequential).
+- In both modes, the user confirmation of the destination and the file write are done by the main session (the fork only generates the body). Main writes both the handoff and the setup script, and after the destination is fixed, main fills the setup script's absolute path into the Scenario 0 run command of the handoff (the fork leaves the absolute path as a placeholder). For any cell the fork cannot determine, do not fill it by guessing — use `?` and return shortfalls separately as "Unresolved" for main to present to the user (the written handoff contains only the 5 sections; Unresolved is not persisted).
 
 ## Output Structure
 
-生成物は2つ: (1) 下記 5 セクションの handoff Markdown、(2) 決定的 setup をまとめた **setup script**（「Setup Script」節を参照）。以下 5 セクションを順に含む Markdown を生成する。これ以外の独立セクションを増やさない（5 セクション制約は handoff Markdown に対するもの。setup script は別ファイルとして出力する）。
+There are two artifacts: (1) the handoff Markdown with the 5 sections below, and (2) a **setup script** that bundles deterministic setup (see the "Setup Script" section). Generate Markdown containing the following 5 sections in order. Do not add any independent section beyond these (the 5-section constraint applies to the handoff Markdown; the setup script is output as a separate file).
 
 ### Section 1: Header
 
-- 作成日時
-- 対象システム名 / コンポーネント名
-- 関連 path（設計書 / source / 関連ドキュメント。debugger が参照するもの）
-- 引き継ぎ元 / 引き継ぎ先（任意、空欄可）
+- Created date/time
+- Target system name / component name
+- Related paths (design docs / source / related documents the debugger refers to)
+- Handed from / handed to (optional, may be blank)
 
 ### Section 2: Pre-test Notes
 
-コンテキストから既知問題を抽出し記載する:
+Extract known issues from the context and record them:
 
-- 既知の不確定事項
-- 既知の放置バグ
-- 想定内のズレ（tester に「これは新規バグではない」と認識させるため）
-- Layer / component の vocabulary
+- Known uncertainties
+- Known unfixed bugs
+- Expected deviations (so the tester recognizes "this is not a new bug")
+- Layer / component vocabulary
 
-入力にない場合は「特になし」と記す。
+If none in the input, write "None".
 
-承認フローはモード別ファイルに従う。
+The approval flow follows the mode-specific file.
 
-### Section 3: 実行・記入ガイド
+### Section 3: Run/Fill Guide
 
-#### 実行ルール
+#### Run rules
 
-シナリオは原則シナリオ 0 の終了状態を起点に連続実行する。各シナリオは独立に環境を初期化しない（debugger が個別指定した場合を除く）。
+In principle the scenarios run consecutively starting from the end state of Scenario 0. Each scenario does not initialize the environment independently (unless the debugger specifies otherwise).
 
-#### 記入ルール
+#### Fill rules
 
-Result 欄に `*` がある行は tester が `○`（Expected を満たした）または `×`（Expected と異なる結果）に置き換える。Result 欄が空欄の行は記入不要。詳細は Comments に行参照（例: `2-4:` = シナリオ 2 のステップ 4）付きで記載する。Layer 列は debugger 用、tester は読まなくてよい。
+For rows whose Result cell has `*`, the tester replaces it with `○` (met the Expected) or `×` (differed from Expected). Rows with an empty Result cell need no entry. Record details in Comments with a row reference (e.g. `2-4:` = scenario 2, step 4). The Layer column is for the debugger; the tester need not read it.
 
 ### Section 4: Test Results Table
 
-**テーブル形式で出力せよ。リスト形式・散文形式は不可。**
+**Output in table form. List form or prose form is not allowed.**
 
-#### 操作種別列
+#### Operation-type columns
 
-操作種別ごとに独立列にする（単一 Operation 列にするな）。該当しない行は空欄。
+Make each operation type its own column (do not use a single Operation column). Leave non-applicable rows blank.
 
-操作種別の例:
-- CLI / shell コマンド: `Command` 列
-- 自然言語 prompt: `User→LLM Message` 列
-- GUI 操作: `GUI Action` 列
+Examples of operation types:
+- CLI / shell command: `Command` column
+- Natural-language prompt: `User→LLM Message` column
+- GUI operation: `GUI Action` column
 
-複数種別が混在する場合はそれぞれ独立列にし、該当しない行は空欄とせよ。
+When multiple types are mixed, make each its own column and leave non-applicable rows blank.
 
-#### 基本 columns
-
-```
-| Scenario | Step | <操作種別 1> | <操作種別 2> | ... | Expected | Result |
-```
-
-Layer を含む場合:
+#### Base columns
 
 ```
-| Scenario | Step | <操作種別> | ... | Expected | Layer | Result |
+| Scenario | Step | <operation type 1> | <operation type 2> | ... | Expected | Result |
 ```
 
-`Engineer-Required` を含む場合（tester（非エンジニア）が実行できない技術操作の手順があるとき。該当ゼロなら列ごと作らない）:
+When a Layer is included:
 
 ```
-| Scenario | Step | <操作種別> | ... | Expected | Engineer-Required | Result |
+| Scenario | Step | <operation type> | ... | Expected | Layer | Result |
 ```
 
-#### セル記入ルール
+When `Engineer-Required` is included (when there are steps the non-engineer tester cannot run; if there are zero such rows, do not create the column at all):
 
-- 行内容（操作 / Expected / Layer）は debugger が指定したものを literal で反映せよ
-- pass 基準のある行は Result 欄に `*` を初期値として入れる
-- pass 基準のない行は Expected 欄・Result 欄を空欄にする
-- 先頭行に Scenario 0（setup）行を含める。Scenario 0 は**生成 setup script の実行コマンド1行**（絶対パスは生成時に記入）＋ script 化できない不可分な GUI 手順のみとする。断片的な setup コマンドを並べない
-- `Engineer-Required` 列は、tester（非エンジニア）が実行できない技術操作（DevTools / CLI 等）の手順がある場合のみ追加し、該当行に必要手段を記入して Result は空欄にする（非エンジニアは skip しエンジニアに回す routing 列）
-- `User→LLM Message` セルは貼り付け即送信できる完全 prompt（抽象・要約不可）
+```
+| Scenario | Step | <operation type> | ... | Expected | Engineer-Required | Result |
+```
+
+#### Cell-fill rules
+
+- Reflect row content (operation / Expected / Layer) literally as the debugger specified
+- For rows with a pass criterion, put `*` as the initial value in the Result cell
+- For rows without a pass criterion, leave the Expected and Result cells blank
+- Include a Scenario 0 (setup) row as the first row. Scenario 0 is **the single run command of the generated setup script** (absolute path filled at generation time) plus any indivisible GUI steps that cannot be scripted. Do not list fragmentary setup commands
+- Add the `Engineer-Required` column only when there are steps the non-engineer tester cannot run (DevTools / CLI, etc.); fill the needed means in the relevant row and leave Result blank (a routing column where the non-engineer skips and hands off to an engineer)
+- `User→LLM Message` cells must be complete prompts that can be pasted and sent as-is (no abstraction or summarization)
 
 ### Section 5: Comments
 
-空のセクションとして用意する。LLM は事前に内容を埋めない。tester が記入時に stdout / note / 異常を行参照付きで自由記述する。
+Provide it as an empty section. The LLM does not fill in content in advance. The tester writes freely at fill time with row references for stdout / notes / anomalies.
 
 ## Setup Script
 
-handoff とは別に、決定的な setup（fixture 生成 / build・package / 同梱物の実在確認等）をまとめた setup script を1本生成する。tester は workspace で実行コマンド1つを走らせるだけでよい。
+Separately from the handoff, generate one setup script that bundles the deterministic setup (fixture generation / build·package / presence checks of bundled items, etc.). The tester only runs a single run command in the workspace.
 
-- **形式**: 実行先 workspace の環境で実行可能な形式を選ぶ（例: toolchain に node があれば `.mjs`、Windows なら PowerShell 等）。実行できない形式は不可。main session が処理系の存在を確認してから確定する
-- **自己検証**: script は (1) 書き込む全 path を冒頭で宣言し、(2) 確立すべき前提（fixture の存在 / 登録行の追加等）を自分で検証し、(3) 成否を plain な文言（PASS / FAIL と理由）で出力する。エラーを握り潰さない
-- **冪等**: 再実行しても壊れない（重複登録・既存 dir での失敗を避ける）。後始末（teardown）は自動で行わず、再実行可能性で担保する
-- **限定**: 書き込みは対象 workspace 内に限定する
-- **GUI 境界**: GUI でしか行えない操作（拡張の Reload / インストール UI 等）は script に入れず、handoff の GUI Action 行に残す。script が検証できない GUI 由来の前提（画面表示等）を「script PASS ＝ 全 setup 完了」と誤認させないよう、当該 GUI 手順を Scenario 0 に明示する
-- **Scenario 0 と絶対パス**: setup script は handoff と同じディレクトリに保存し、保存後にその絶対パスを Scenario 0 の実行コマンド1行へ記入する（絶対パスの記入は生成される handoff にのみ。この SKILL.md 等の追跡対象ファイルには placeholder のみ書く）
+- **Format**: choose a format runnable in the target workspace's environment (e.g. `.mjs` if the toolchain has node, PowerShell on Windows, etc.). A non-runnable format is not allowed. The main session confirms the runtime exists before fixing it
+- **Self-verification**: the script (1) declares all paths it writes at the top, (2) verifies by itself the premises to establish (existence of fixtures / addition of registration lines, etc.), and (3) outputs success/failure in plain wording (PASS / FAIL with reason). Do not swallow errors
+- **Idempotent**: re-running does not break it (avoid duplicate registration / failure on existing dirs). Do not perform teardown automatically; guarantee via re-runnability
+- **Bounded**: writes are limited to within the target workspace
+- **GUI boundary**: operations possible only via GUI (extension Reload / install UI, etc.) are not put in the script; leave them in the handoff's GUI Action rows. To avoid misreading "script PASS = all setup done" for GUI-derived premises the script cannot verify (screen display, etc.), state those GUI steps explicitly in Scenario 0
+- **Scenario 0 and absolute path**: save the setup script in the same directory as the handoff, and after saving, fill its absolute path into the single run command of Scenario 0 (the absolute path is filled only into the generated handoff; in this SKILL.md and other tracked files, write only a placeholder)
 
 ## Output Destination
 
-- 保存先を人間に確認してから書き込む
-- slug 候補は `debug-handoff-<target-system>-<YYYY-MM-DD>.md` で自動提案
-- 保存先の既定は workspace を探索して決める: `_projects/`（理想は `_projects/*/project-notes/`）が存在すれば `_projects/<project>/project-notes/checks/<slug>.md` を既定提案する（`<project>` は会話文脈で対象が明確ならそれ、曖昧なら user に質問。project routing を再実装しない）。存在しなければ neutral な保存先を slug 提案する。これは taskflow への依存ではなく、規約ディレクトリの存在検出による便乗既定である
-- setup script は handoff と同じディレクトリに保存し、保存後その絶対パスを handoff の Scenario 0 実行コマンドへ記入する
-- repository にディレクトリを勝手に作らない
+- Confirm the destination with the human before writing
+- Auto-suggest a slug candidate as `debug-handoff-<target-system>-<YYYY-MM-DD>.md`
+- Default destination is decided by exploring the workspace: if `_projects/` exists (ideally `_projects/*/project-notes/`), suggest `_projects/<project>/project-notes/checks/<slug>.md` as the default (`<project>` is the one clear from the conversation context if the target is clear, otherwise ask the user; do not re-implement project routing). If it does not exist, suggest a neutral destination slug. This is not a dependency on taskflow but an opportunistic default based on detecting a conventional directory
+- Save the setup script in the same directory as the handoff, and after saving fill its absolute path into the Scenario 0 run command of the handoff
+- Do not create directories in the repository arbitrarily
 
 ## Rules
 
-- input の literal を尊重し、要約・補完・整形しない
-- 診断フローを生成するな
-- 設計書・source の要約を handoff に入れるな（関連 path を Header に置けば十分）
-- 操作列は操作種別ごとに分けよ（単一 Operation 列にするな）
-- テーブル形式で出力せよ（リスト・散文・番号付き手順書は不可）
-- 5 セクション（Header / Pre-test Notes / 実行・記入ガイド / Test Results / Comments）以外の独立セクションを増やすな
-- debug 対象外の周辺挙動（一般 UI / 共通処理 / setup / 画面遷移など、会話コンテキストに無いもの）を推測・補完で書くな。言及が必要なら先に source を確認し、実在・実挙動を確認したもののみ記載せよ。debug 対象の Expected（あるべき挙動）はこの限りでなく spec / debugger 判断で決める
-- `User→LLM Message` 列は tester がそのまま貼り付けて送信できる完全 prompt を literal で記載せよ。抽象・要約記述（例「配列型の出力を持つ」）で代替するな
-- tester（非エンジニア）が実行・知覚できない手順を裸で残すな。決定的 setup は setup script に寄せ、不可視な観察は可視化し、技術操作が不可欠な手順は `Engineer-Required` 列に隔離せよ（「tester 前提と不変条件」を参照）
-- setup script は決定的 setup の機械化であって診断フローではない（「診断フローを生成するな」に抵触しない）。script は作成物の path を冒頭で宣言し、確立すべき前提を自己検証して PASS / FAIL を plain な文言で出力し、冪等で、書き込みを対象 workspace に限定せよ
-- 追跡対象ファイル（この SKILL.md 等）に絶対パスを literal で書くな。setup script の絶対パスは生成される handoff にのみ、main が保存先確定後に記入せよ
+- Respect the literal of the input; do not summarize, complete, or reformat
+- Do not generate a diagnostic flow
+- Do not put summaries of design docs / source into the handoff (placing related paths in the Header is enough)
+- Split operation columns by operation type (do not use a single Operation column)
+- Output in table form (list / prose / numbered procedure is not allowed)
+- Do not add any independent section beyond the 5 (Header / Pre-test Notes / Run-Fill Guide / Test Results / Comments)
+- Do not write, by guessing or completion, peripheral behavior outside the debug target (general UI / common processing / setup / screen transitions, etc. that are not in the conversation context). If mention is needed, confirm the source first and record only what is confirmed to exist and behave so. The Expected (intended behavior) of the debug target is exempt from this and is decided by spec / debugger judgment
+- The `User→LLM Message` column must record complete prompts the tester can paste and send as-is. Do not substitute with abstract / summarized descriptions (e.g. "has an array-typed output")
+- Do not leave bare steps the non-engineer tester cannot run or perceive. Push deterministic setup into the setup script, make invisible observations visible, and isolate steps that unavoidably require technical operation into the `Engineer-Required` column (see "Tester premise and invariants")
+- The setup script is the mechanization of deterministic setup, not a diagnostic flow (it does not conflict with "do not generate a diagnostic flow"). The script declares the paths of its artifacts at the top, self-verifies the premises to establish, outputs PASS / FAIL in plain wording, is idempotent, and limits writes to the target workspace
+- Do not write absolute paths literally into tracked files (this SKILL.md, etc.). The setup script's absolute path is filled only into the generated handoff, by main after the destination is fixed
 
 ## Output Template
 
 ````markdown
 ---
-title: Debug Handoff - <対象システム名>
+title: Debug Handoff - <target system name>
 type: handoff
 created: <date>
-target_system: <対象システム名>
+target_system: <target system name>
 debugger_mode: <human|llm>
-handed_from: <任意>
-handed_to: <任意>
+handed_from: <optional>
+handed_to: <optional>
 ---
 
-# Debug Handoff: <対象システム名>
+# Debug Handoff: <target system name>
 
 ## Header
 
 - Date: <date>
 - Target System: <system / component>
-- 関連 path: <design doc path>, <source path>, ...
-- Handed From: <任意>
-- Handed To: <任意>
+- Related paths: <design doc path>, <source path>, ...
+- Handed From: <optional>
+- Handed To: <optional>
 
 ## Pre-test Notes
 
-<既知の不確定事項 / 放置バグ / 想定内のズレ>
+<known uncertainties / unfixed bugs / expected deviations>
 <Layer / component vocabulary>
 
-または「特になし」
+or "None"
 
-## 実行・記入ガイド
+## Run/Fill Guide
 
-### 実行ルール
+### Run rules
 
-シナリオは原則シナリオ 0 の終了状態を起点に連続実行する。各シナリオは独立に環境を初期化しない（debugger 個別指定時を除く）。
+In principle the scenarios run consecutively starting from the end state of Scenario 0. Each scenario does not initialize the environment independently (except when the debugger specifies otherwise).
 
-### 記入ルール
+### Fill rules
 
-Result 欄に `*` がある行は `○` / `×` に置き換えて記入する。`○` は Expected を満たした、`×` は Expected と異なる結果。Result 欄が空欄の行は記入不要。詳細は Comments に行参照（例: `2-4:`）付きで記載する。Layer 列追加時は debugger 用、tester は読まなくてよい。
+For rows whose Result cell has `*`, replace it with `○` / `×`. `○` means it met the Expected, `×` means it differed from the Expected. Rows with an empty Result cell need no entry. Record details in Comments with a row reference (e.g. `2-4:`). When a Layer column is added it is for the debugger; the tester need not read it.
 
 ## Test Results
 
 | Scenario | Step | Command | User→LLM Message | Expected | Result |
 |---|---|---|---|---|---|
-| 0 | 1 | `<setup script の絶対パス>` を実行 |  | script が PASS を出力（作成物・前提を確立） |  |
+| 0 | 1 | Run `<absolute path of the setup script>` |  | The script outputs PASS (establishes artifacts/premises) |  |
 | 1 | 1 |  | <user prompt> | <expected> | * |
 | 1 | 2 |  | <user prompt> | <expected> | * |
 | 2 | 1 | <command> |  | <expected> | * |
 
 ## Comments
 
-<tester 記入欄、空で生成>
+<tester fill-in area, generated empty>
 ````
