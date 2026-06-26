@@ -36,6 +36,16 @@
       "source": "./plugins/role-mode",
       "category": "productivity",
       "homepage": "https://github.com/gigamori/ai-agent-toolkit/tree/main/plugins/role-mode"
+    },
+    {
+      "name": "llm-wiki",
+      "description": "Immutable engine for an LLM-maintained wiki: ingest/query/lint procedures plus the wiki-contract schema templates a per-wiki repo is initialized from",
+      "author": {
+        "name": "gigamori"
+      },
+      "source": "./plugins/llm-wiki",
+      "category": "productivity",
+      "homepage": "https://github.com/gigamori/ai-agent-toolkit/tree/main/plugins/llm-wiki"
     }
   ]
 }

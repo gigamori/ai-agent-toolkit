@@ -12,6 +12,8 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 |---|---|---|
 | [taskflow](plugins/taskflow/) | CC | 同時並行するタスクの進捗とコンテキストをセッション横断で管理 |
 | [rule-inject](plugins/rule-inject/) | CC / Cursor | `CLAUDE.md` の `<rules when="..." src="..."/>` で宣言された外部ルールの読了を `PreToolUse` deny で強制 |
+| [role-mode](plugins/role-mode/) | CC | ターンごとに認知 `mode:` および/または `role:` を slug で宣言し、該当する NEVER/DO ルールと framework meta を `UserPromptSubmit` で注入（slug が無ければ何も注入しない） |
+| [llm-wiki](plugins/llm-wiki/) | CC | LLM が維持管理する wiki：ソースを Markdown ページに ingest し、それらに接地して質問に答え、graph を lint/promote/view する。書込先 allowlist と単一 git トランザクション（失敗で rollback）の 2 code ゲートで保護 |
 
 ### インストール
 
@@ -26,6 +28,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 ```
 /plugin install taskflow@ai-agent-toolkit
 /plugin install rule-inject@ai-agent-toolkit
+/plugin install llm-wiki@ai-agent-toolkit
 ```
 
 各プラグインの `README.md` にセットアップ手順、使い方、Cursor 互換情報が記載されている。
@@ -45,6 +48,10 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成 |
 | [revert](skills/revert/) | CC | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
 | [debug-isolate](skills/debug-isolate/) | CC | 反復デバッグを forked subagent に隔離。git stash チェックポイントと連続失敗時の自動ロールバックで作業ツリーの状態を保全 |
+| [run-sql](skills/run-sql/) | CC | 設定済みデータベース (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) に対し SQL を実行し、生の JSON 結果を返す |
+| [generate-debug-handoff](skills/generate-debug-handoff/) | CC | E2E テスト用の debug handoff Markdown を生成。`debugger:` 引数 (human/llm) で、LLM が整形補助に留まる（人間が承認）か debugger 役を担う（承認なし）かを選択 |
+| [mode-orchestrator](skills/mode-orchestrator/) | CC | todolist と context を含むドキュメントを読み、各ステップを role-mode の `mode:`/`role:` ヘッダ付きで隔離 `general-purpose` subagent ターンとして実行。1ターン 1 mode（+任意 role）、混在なし。autonomous mode 限定 |
+| [extract-cc-log](skills/extract-cc-log/) | CC | 過去の Claude Code セッションをタイトルキーで解決し、会話ターンを Markdown transcript として抽出。隔離 fork で実行。過去セッションの LLM/tool/subagent 行動履歴を調べる第一手 |
 
 ### revert
 
@@ -84,13 +91,19 @@ ai-agent-toolkit/
 │   └── marketplace.json       マーケットプレイスマニフェスト
 ├── plugins/
 │   ├── taskflow/              プラグイン: タスク進捗 / コンテキスト管理
-│   └── rule-inject/             プラグイン: CLAUDE.md ルール強制
+│   ├── rule-inject/           プラグイン: CLAUDE.md ルール強制
+│   ├── role-mode/             プラグイン: ターンごとの認知 mode / role 注入
+│   └── llm-wiki/              プラグイン: LLM が維持管理する wiki (ingest / query / lint / promote / view)
 ├── skills/
 │   ├── create-skill/          スキル: スキル作成ガイド
 │   ├── compact-document/      スキル: ドキュメント圧縮
 │   ├── register-pi-tools/     スキル: Python スクリプト移行と tools.yaml 生成
 │   ├── revert/                スキル: bias-isolated 判定による安全な undo
-│   └── debug-isolate/         スキル: forked subagent による隔離デバッグ
+│   ├── debug-isolate/         スキル: forked subagent による隔離デバッグ
+│   ├── run-sql/               スキル: 設定済み DB への SQL 実行
+│   ├── generate-debug-handoff/ スキル: E2E debug handoff Markdown 生成
+│   ├── mode-orchestrator/      スキル: todolist を role-mode subagent ターンで実行
+│   └── extract-cc-log/         スキル: 過去 CC セッションの transcript 抽出 (fork)
 ├── LICENSE
 ├── README.md
 └── README_ja.md
