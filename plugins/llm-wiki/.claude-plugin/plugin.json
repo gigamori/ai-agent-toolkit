@@ -1,0 +1,8 @@
+{
+  "name": "llm-wiki",
+  "description": "Immutable engine for an LLM-maintained wiki: ingest/query/lint procedures plus the wiki-contract schema templates a per-wiki repo is initialized from",
+  "version": "0.1.0",
+  "author": {
+    "name": "gigamori"
+  }
+}

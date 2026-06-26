@@ -1,0 +1,6 @@
+# Ephemeral ingest lock (transaction.py, D21). Never committed; recreated per ingest.
+.llmwiki.lock
+# Ephemeral ingest transaction sidecar (ingest_driver.py, plan R-a). On-disk
+# transaction state between begin and finish/abort; deleted on every terminal
+# path, never committed.
+.llmwiki.txn

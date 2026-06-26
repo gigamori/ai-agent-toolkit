@@ -1,0 +1,5 @@
+# LLM Wiki marker (D8). Presence of this file = wiki-root.
+# Thin: detection only. config lives in SCHEMA.md frontmatter (not here).
+# `schema` is forward-compat: rename SCHEMA.md -> update this path (F-9).
+version: 1
+schema: SCHEMA.md
