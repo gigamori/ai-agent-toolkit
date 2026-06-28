@@ -51,7 +51,7 @@ Standalone Agent Skills that can be dropped into any agent without a plugin.
 | [run-sql](skills/run-sql/) | CC | Execute SQL against configured databases (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) and relay raw JSON results |
 | [generate-debug-handoff](skills/generate-debug-handoff/) | CC | Generate an E2E-test debug handoff Markdown; requires a `debugger:` arg (human/llm) selecting whether the LLM only formats the table (human approves) or acts as the debugger (no approval) |
 | [mode-orchestrator](skills/mode-orchestrator/) | CC | Read a document holding a todolist + context, then run each step as an isolated `general-purpose` subagent turn with a role-mode `mode:`/`role:` header — one mode (and optional role) per turn, never mixed; autonomous modes only |
-| [extract-cc-log](skills/extract-cc-log/) | CC | Resolve a past Claude Code session by its title key and extract the conversation turns to a markdown transcript — runs as an isolated fork; first-line tool for auditing a prior session's LLM/tool/subagent action history |
+| [inspect-cc-log](skills/inspect-cc-log/) | CC | Investigate past Claude Code session logs with SQL over pre-built DuckDB views (conversation, tool calls with arguments, file changes, forks, compaction, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a fork tree via a self-contained query script |
 
 ### revert
 
@@ -103,7 +103,7 @@ ai-agent-toolkit/
 │   ├── run-sql/               Skill: run SQL against configured databases
 │   ├── generate-debug-handoff/ Skill: generate E2E debug handoff Markdown
 │   ├── mode-orchestrator/      Skill: run a todolist through role-mode subagent turns
-│   └── extract-cc-log/         Skill: extract a past CC session transcript (forked)
+│   └── inspect-cc-log/         Skill: SQL views over CC logs for session investigation
 ├── LICENSE
 ├── README.md
 └── README_ja.md

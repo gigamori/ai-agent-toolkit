@@ -1,0 +1,3 @@
+# Python bytecode cache from scripts/query.py
+__pycache__/
+*.pyc

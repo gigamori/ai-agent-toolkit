@@ -51,7 +51,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [run-sql](skills/run-sql/) | CC | 設定済みデータベース (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) に対し SQL を実行し、生の JSON 結果を返す |
 | [generate-debug-handoff](skills/generate-debug-handoff/) | CC | E2E テスト用の debug handoff Markdown を生成。`debugger:` 引数 (human/llm) で、LLM が整形補助に留まる（人間が承認）か debugger 役を担う（承認なし）かを選択 |
 | [mode-orchestrator](skills/mode-orchestrator/) | CC | todolist と context を含むドキュメントを読み、各ステップを role-mode の `mode:`/`role:` ヘッダ付きで隔離 `general-purpose` subagent ターンとして実行。1ターン 1 mode（+任意 role）、混在なし。autonomous mode 限定 |
-| [extract-cc-log](skills/extract-cc-log/) | CC | 過去の Claude Code セッションをタイトルキーで解決し、会話ターンを Markdown transcript として抽出。隔離 fork で実行。過去セッションの LLM/tool/subagent 行動履歴を調べる第一手 |
+| [inspect-cc-log](skills/inspect-cc-log/) | CC | 過去の Claude Code セッションログを、事前構築した DuckDB ビュー（会話・引数付き tool 呼び出し・ファイル変更・fork・compaction・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 
 ### revert
 
@@ -103,7 +103,7 @@ ai-agent-toolkit/
 │   ├── run-sql/               スキル: 設定済み DB への SQL 実行
 │   ├── generate-debug-handoff/ スキル: E2E debug handoff Markdown 生成
 │   ├── mode-orchestrator/      スキル: todolist を role-mode subagent ターンで実行
-│   └── extract-cc-log/         スキル: 過去 CC セッションの transcript 抽出 (fork)
+│   └── inspect-cc-log/         スキル: CC ログ調査用の SQL ビュー群
 ├── LICENSE
 ├── README.md
 └── README_ja.md
