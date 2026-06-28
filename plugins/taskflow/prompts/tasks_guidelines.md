@@ -31,9 +31,9 @@ Common subsections:
 - ## Plan / Next Steps
 
 <!-- @log:begin -->
-- 2026-05-08: started
-- 2026-05-10: phase A complete
-- 2026-05-12: phase B underway
+- 2026-05-08T09:15:00 [s:1a2b3c4d]: started
+- 2026-05-10T14:30:00 [s:9f8e7d6c]: phase A complete
+- 2026-05-12T11:05:00 [s:0a1b2c3d]: phase B underway
 <!-- @log:end -->
 ```
 
@@ -42,7 +42,7 @@ Common subsections:
 A task file has TWO regions:
 
 1. **Body region** (from frontmatter close `---` to `<!-- @log:begin -->`): **mutable**. Replace fully when content changes.
-2. **Log region** (`<!-- @log:begin -->` ↔ `<!-- @log:end -->`): **append-only**. Never edit, reorder, or delete existing entries.
+2. **Log region** (`<!-- @log:begin -->` ↔ `<!-- @log:end -->`): **append-only**. Never edit, reorder, or delete existing entries. Each entry is `- <YYYY-MM-DD>T<HH:MM:SS> [s:<sid8>]: <summary>` — an ISO8601 `T`-separated timestamp plus the 8-char session id tag `[s:<sid8>]` (supplied as `sid8=` in the Progress Session context). Status-transition lines (start / approve / revert) may omit the `[s:<sid8>]` tag.
 
 When you modify the body or append to the log, you MUST also update `updated:` in frontmatter to today's date.
 

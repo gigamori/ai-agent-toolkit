@@ -151,6 +151,10 @@ user prompt
   │  - skip  → skip project management
   │
   ▼ task execution
+  │
+  ▼ [PostToolUse hooks] on each Write / Edit / NotebookEdit / Bash:
+     • task_rebuild_progress.py — regenerate the progress.md table when a tasks/ file changed
+     • touched_capture.py       — append the written path(s) to `{session_id}.touched`
 ```
 
 ### Session end
@@ -165,20 +169,25 @@ session end
   │     ~/.claude/plans/*.md                          → _projects/<project>/plans/
   │     ~/.claude/projects/{encoded_cwd}/memory/*.md  → _projects/<project>/memory/
   │
-  ▼ [Stop hook #2] session_progress_capture.py
+  ▼ [Stop hook #2] session_progress_capture.py  (design: project-notes/specs/exec-binding.md)
      1. read `project` from state_file
         (self-heal: if empty, recover from a `[pj:...]` line in the assistant's last message)
-     2. scan the session JSONL for Write / Edit / NotebookEdit / file-moving Bash (mv/cp/rm)
-     3. if any files were touched → return {"decision":"block", "reason": ...} asking the
-        LLM to update the touched tasks' `## Next Steps`; fires once per session
-        (sidecar marker {session_id}.captured)
+     2. read the per-session `{session_id}.touched` ledger written by the PostToolUse hook
+        `touched_capture.py` (NOT a jsonl scan / git diff); resolve touched task md by basename
+     3. exec-binding: union-merge any `[tasks: a.md b.md]` carry from the assistant's last
+        message into state `exec_bind`, then code-bind those owning tasks' `@log`
+     4. gate (INV-1, no-loop): return {"decision":"block", ...} ONLY to (a) Round1-remind a
+        missing touched task, (b) report a code auto-bind, or (c) report a new exec-bind skip
+        — each bounded by the `{session_id}.bind` sidecar (reminded rounds + `exec_tried`).
+        A task that can never be bound (no `@log:end`) does NOT loop the gate.
+     bind writes are serialized by the bounded per-task advisory lock `log_lock.py` (INV-2)
 ```
 
 ## state_file
 
 Path: `_projects/_state/{session_id}.json`
 
-The hook (`session_init.py`) writes the full schema below. The project-router subagent writes only `{"project": "..."}`. The "already captured this session" flag is NOT a JSON field — it is a sidecar marker file (`{session_id}.captured`), to avoid clobbering by concurrent state rewrites.
+The hook (`session_init.py`) writes the full schema below. The project-router subagent writes only `{"project": "..."}`. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (Round1/Round2 reminder rounds + `exec_tried` skip records) and `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
 
 ```json
 {
@@ -188,7 +197,8 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
   "guidelines_loaded": true,
   "origin": "cc",
   "parent_session_id": "<parent session id if forked; absent otherwise>",
-  "inherited_tasks": ["<task filenames inherited from the parent, if forked>"]
+  "inherited_tasks": ["<task filenames inherited from the parent, if forked>"],
+  "exec_bind": ["<owning task basenames carried via [tasks:]; union-merged, append-only>"]
 }
 ```
 
@@ -200,7 +210,7 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
 |---|---|---|
 | `session_init.py` (hook) | every turn (while project active or `pj:?`) | writes the full schema; project from explicit `pj:` only — **no path inference** |
 | project-router subagent | each turn it is invoked | writes `{"project": "..."}` |
-| `session_progress_capture.py` (hook) | session end | self-heal only: recovers `project` from a `[pj:...]` line in the assistant's last message when state is empty |
+| `session_progress_capture.py` (hook) | session end | recovers `project` from a `[pj:...]` line (self-heal); union-merges `exec_bind` from a `[tasks:]` carry in the assistant's last message |
 
 ### Readers
 
@@ -252,6 +262,10 @@ State files carry `origin: "cc"` (generator = Claude Code). `backfill_origin.py`
 ### Progress-capture self-heal
 
 If `session_progress_capture.py` finds an empty `project` in state at session end, it recovers the project from a `[pj:<name>]` line in the assistant's last message (searched within the leading-line region, order-agnostic — the `[pj:]` line shares that region with other plugins' leading lines such as `[Mode:]`). This rescues cases where `session_init.py` failed to persist the project on the first turn, or a fork inherited an empty parent state.
+
+### exec-binding (`[tasks:]` carry)
+
+When a session does task work whose result lands OUTSIDE the task's own `tasks/<status>/*.md` file (execution-by-reference), the LLM lists the owning task filename(s) in a `[tasks: a.md b.md]` leading line. `session_progress_capture.py` union-merges these into the state `exec_bind` array and code-binds each owning task's `@log` (provenance note `(auto) executed via [tasks:] carry`), so the work is recorded even though `tasks/` was never edited. Bind failure (no `@log:end`) is surfaced once as `auto-skip(ambiguous)` and recorded in `exec_tried` to stop retrying (INV-1 c). The `[tasks:]` instruction is wired into the injected prompts (`project_routing.md` "Response leading lines" + `guidelines_reminder.md`), parallel to `[pj:]`; direct task-file edits need no `[tasks:]` (the PostToolUse `.touched` capture records them). See `project-notes/specs/exec-binding.md`.
 
 ### ACTION_REQUIRED preflight banner
 

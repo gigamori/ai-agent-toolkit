@@ -2,6 +2,8 @@
 
 When a project is assigned, include `[pj:<project>]` in the leading lines of the response (near the beginning, before the main body; it may follow other leading lines such as `mode:`, not necessarily the literal first line).
 When no project is assigned, omit `[pj:...]` entirely.
+
+When you did task work without editing the task's own `tasks/<status>/*.md` file (execution-by-reference — e.g., you read a task or handoff and produced the result elsewhere), also include `[tasks: <file>.md ...]` in the leading lines, listing the owning task filename(s) you actually worked on this turn. Omit it when you edited the task file directly (that edit is captured automatically) or when you did no task work. This binds the off-task work to the owning task's log.
 The body of the response follows the user's input language.
 
 ### Discovery via `pj:?`

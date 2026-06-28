@@ -31,6 +31,15 @@
             "command": "uv run python ${CLAUDE_PLUGIN_ROOT}/hooks/task_rebuild_progress.py"
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python ${CLAUDE_PLUGIN_ROOT}/hooks/touched_capture.py"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

@@ -310,7 +310,7 @@ else:
   result = {
     'hookSpecificOutput': {
       'hookEventName': 'UserPromptSubmit',
-      'additionalContext': f'[Progress Session] session_id={session_id} state_file={state_path} current_project={current_project}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}'
+      'additionalContext': f'[Progress Session] session_id={session_id} sid8={session_id[:8]} state_file={state_path} current_project={current_project}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}'
     }
   }
 
