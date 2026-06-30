@@ -33,6 +33,13 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
+# note-task-link.md §10 option-a: the Round1 reminder is superseded by an async
+# capture spawn-block, and the deterministic Round2 placeholder backstop now
+# fires on capture EXPIRY rather than unconditionally on the 2nd Stop. Force
+# immediate expiry so these process-level tests still exercise the 2-Stop
+# request→backstop path without a 15s wall-clock wait (env hook in the Stop gate).
+export TASKFLOW_CAPTURE_EXPIRY_S=0
+
 HOOK="$REPO_ROOT/plugins/taskflow/hooks/session_progress_capture.py"
 LOCK_HELPER="$REPO_ROOT/plugins/taskflow/hooks/log_lock.py"
 PROJECTS_DIR="$REPO_ROOT/_projects"

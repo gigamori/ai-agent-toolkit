@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
 Stop hook: bind this session's task work to each owning task's `@log` block as
-a `- <ISO8601 T> [s:<sid8>]: <summary>` line, with an LLM reminder (Round1) and
-a deterministic hook backstop (Round2).
+a `- <ISO8601 T> [s:<sid8>]: <summary>` line. Owner judgment (touched-task
+summaries, note→task links) is delegated to an async capture subagent and
+applied deterministically here; a deterministic hook backstop guarantees a
+binding when the subagent is absent.
 
-Design: project-notes/specs/exec-binding.md (PostToolUse capture + exec-binding
-redesign of the W1 sid-binding gate `sid-binding-gate.md`).
+Design: project-notes/specs/exec-binding.md (PostToolUse capture + exec-binding)
+and project-notes/specs/note-task-link.md §10 (the shared async apply-path that
+supersedes the inline Round1 reminder — option-a / §11 R-round1-relationship).
 
 Detection (§3.1/§3.2): `touched` is read from the per-session
 `<STATE_DIR>/<session_id>.touched` ledger written by the PostToolUse hook
@@ -14,15 +17,28 @@ Agent-tool subagent / fork internal writes with the PARENT session_id
 (TBD-1 probe 2026-06-28), so subagent writes (P3) are already in `.touched`.
 The `.touched` read is tolerant: a torn trailing line is dropped.
 
-Invariants (§2):
-  - INV-1 (no-loop): the gate returns `block` ONLY to (a) emit a Round1
-    reminder for a not-yet-reminded missing task, or (b) report a successful
-    auto-bind. It NEVER blocks on the raw "task is missing" condition (which can
-    persist when `@log:end` is absent or a write fails).
-  - INV-2 (no-deadlock): `@log` writes use the bounded `log_lock`; one lock at a
-    time.
+Async apply-path (note-task-link.md §10): when a touched task still needs a
+summary or a freshly-written project-notes deliverable has no owning task yet,
+the gate (E) commits `capture.status=requested` and blocks with an instruction
+to spawn the `taskflow:progress-capture` subagent. That subagent writes a
+`<sid>.capture` JSON sidecar; a later Stop (A) applies it — `confirmed` →
+`@log` summaries (`append_auto_binding`), `note_links` → task `@notes`
+(`append_note_link`, Phase A) — then consumes it. If no sidecar appears within
+`_CAPTURE_EXPIRY_S` (§10.4) the request expires and the deterministic G backstop
+(D) takes over: placeholder-bind every still-missing touched task and
+`referenced` over-bind note-write owners known via the reverse index.
+
+Invariants (§2 / §10):
+  - INV-1 (no-loop): the gate returns `block` ONLY to (b) report a deterministic
+    bind, (c) report a NEW exec-bind skip, or (d) spawn capture / surface
+    proposals. `requested` is committed before the spawn-block, so the next Stop
+    re-enters via the requested/pending branch and never re-blocks; an in-flight
+    `pending` with nothing to report does not block (AC-9). It NEVER blocks on
+    the raw "task is missing" condition.
+  - INV-2 (no-deadlock): `@log` / `@notes` writes use the bounded `log_lock`.
   - INV-3 (idempotent): the ledger is the actual presence of a `[s:<sid8>]` line
-    inside a task md's `<!-- @log:begin/end -->` block, recomputed every Stop.
+    inside a task md's `<!-- @log:begin/end -->` block, recomputed every Stop;
+    apply / backstop are idempotent and eventual (AC-11).
 
 exec-binding (§3.4): the terminal agent may carry owning tasks whose work landed
 OUTSIDE `tasks/` via a `[tasks: a.md b.md]` leading line. This hook regex-reads
@@ -30,10 +46,11 @@ it from `last_assistant_message`, union-merges into `state['exec_bind']`, and
 deterministically binds each owning task (skip+log + `.bind` record on failure,
 to stop retrying — INV-1). Under fork it skips (W2 delegation).
 
-Round state lives in a sidecar `{session_id}.bind` (`reminded` rounds +
-`exec_tried`), kept separate from the state JSON so concurrent rewrites by other
-hooks cannot clobber it. A 7-day cleanup prunes stale `.bind` / `.touched` /
-legacy `.captured` sidecars.
+Round / lifecycle state lives in a sidecar `{session_id}.bind` (`reminded`,
+`exec_tried`, and the `capture` lifecycle `{status, items, requested_ts,
+tried_notes}` — writer = this hook only, §10.1), kept separate from the state
+JSON so concurrent rewrites by other hooks cannot clobber it. A 7-day cleanup
+prunes stale `.bind` / `.touched` / `.capture` / legacy `.captured` sidecars.
 """
 import datetime
 import json
@@ -46,9 +63,29 @@ import sys
 # own directory to sys.path before importing it.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_lock import log_lock  # noqa: E402
+from note_links import (  # noqa: E402
+    append_note_link,
+    build_reverse_index,
+    is_note_deliverable,
+    normalize_note_rel,
+    resolve_note_owner,
+)
 
 PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
+
+# Async capture subagent (spec §10.5). The Stop gate emits a block instruction
+# to spawn this agent type; the subagent writes a `<sid>.capture` sidecar that a
+# later Stop applies deterministically.
+CAPTURE_AGENT_TYPE = 'taskflow:progress-capture'
+# Capture expiry (§10.4): a requested capture whose sidecar has not appeared
+# within this many seconds (measured at Stop firing) is declared expired and the
+# deterministic G backstop takes over. 15s fixed by design; env-overridable so
+# tests can force immediate expiry (mirrors log_lock's TASKFLOW_LOCK_TIMEOUT).
+try:
+    _CAPTURE_EXPIRY_S = float(os.environ.get('TASKFLOW_CAPTURE_EXPIRY_S', '15.0'))
+except ValueError:
+    _CAPTURE_EXPIRY_S = 15.0
 
 MAX_TOUCHED_IN_INJECTION = 30
 # `[tasks:]` exec-binding carry must appear in the leading lines; accept the
@@ -60,8 +97,11 @@ EXEC_PARSE_WINDOW = 500
 _MARKER_MAX_AGE_DAYS = 7
 # Sidecars swept by the same 7-day mechanism. `.captured` is retained so markers
 # left by a pre-Gate-C hook version are still pruned; the current hook writes
-# `.bind` (round state) and `touched_capture.py` writes `.touched`.
-_CLEANUP_SUFFIXES = ('.captured', '.bind', '.touched')
+# `.bind` (round state) and `touched_capture.py` writes `.touched`. `.capture`
+# is the async capture sidecar (§10.1): an orphan (expired, never consumed) is
+# pruned here. `'.captured'.endswith('.capture')` is False, so the two suffixes
+# do not collide.
+_CLEANUP_SUFFIXES = ('.captured', '.bind', '.touched', '.capture')
 
 # task md files live under `tasks/<status>/*.md` within a project.
 _TASK_PATH_RE = re.compile(r'(?:^|/)tasks/[^/]+/[^/]+\.md$', re.IGNORECASE)
@@ -224,26 +264,135 @@ def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pendin
 
 
 def _load_bind(bind_path):
+    """Round-trip the `.bind` sidecar. CLOSED whitelist — a key not re-emitted
+    by `_save_bind` is silently dropped every Stop, so `capture` MUST be carried
+    here or the §10 lifecycle never advances (spec §10.1 trap)."""
     try:
         with open(bind_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return {'reminded': {}, 'exec_tried': []}
+        return {'reminded': {}, 'exec_tried': [], 'capture': {}}
     reminded = data.get('reminded')
     exec_tried = data.get('exec_tried')
+    capture = data.get('capture')
     return {
         'reminded': reminded if isinstance(reminded, dict) else {},
         'exec_tried': exec_tried if isinstance(exec_tried, list) else [],
+        'capture': capture if isinstance(capture, dict) else {},
     }
 
 
-def _save_bind(bind_path, reminded, exec_tried):
+def _save_bind(bind_path, reminded, exec_tried, capture):
     try:
         with open(bind_path, 'w', encoding='utf-8') as f:
-            json.dump({'reminded': reminded, 'exec_tried': exec_tried},
-                      f, ensure_ascii=False)
+            json.dump({'reminded': reminded, 'exec_tried': exec_tried,
+                       'capture': capture}, f, ensure_ascii=False)
     except OSError:
         pass
+
+
+# --- §10 async capture apply-path helpers ---------------------------------
+
+def _to_project_rel(rel_repo: str, project: str) -> str:
+    """Convert a repo-relative path to project-relative by stripping a leading
+    `_projects/<project>/` (path convention, note_links.py module docstring).
+    A path already without that prefix is returned forward-slashed."""
+    r = str(rel_repo).replace('\\', '/')
+    prefix = f'_projects/{project}/'
+    if r.lower().startswith(prefix.lower()):
+        return r[len(prefix):]
+    return r
+
+
+def _scan_note_writes(touched, project, project_root, reverse_index):
+    """From `touched` (repo-relative write paths) return (note_writes, unlinked):
+    project-relative deliverable notes written this session, and the subset whose
+    reverse-index resolution is empty (no owning task yet → needs judgment, §3.2).
+    """
+    note_writes: list[str] = []
+    unlinked: list[str] = []
+    seen: set[str] = set()
+    for rel in touched:
+        prel = normalize_note_rel(_to_project_rel(rel, project))
+        if not prel or prel in seen:
+            continue
+        if not is_note_deliverable(prel):
+            continue
+        seen.add(prel)
+        note_writes.append(prel)
+        if not resolve_note_owner(prel, project_root, reverse_index):
+            unlinked.append(prel)
+    return note_writes, unlinked
+
+
+def _load_capture_sidecar(path):
+    """Return the capture sidecar as a dict, or None if absent / torn / not a
+    JSON object (§10.1: partial-apply forbidden — a torn write fails json.loads
+    and is treated as absent, never partially applied)."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts):
+    """Apply a validated capture sidecar deterministically (§10.3). All writes
+    are idempotent (`log_block_has_sid` / `append_note_link` union). Returns
+    (summaries, links, proposals) for observability:
+      - summaries: list[task-basename] @log-bound with a real one-line summary
+      - links:     list[(note_rel, task-basename)] established in a task @notes
+      - proposals: list[str] surfaced (display-only; never auto-created)."""
+    summaries: list[str] = []
+    links: list[tuple] = []
+    proposals: list[str] = []
+
+    confirmed = sidecar.get('confirmed')
+    if isinstance(confirmed, list):
+        for item in confirmed:
+            if not isinstance(item, dict):
+                continue
+            base = item.get('task')
+            summ = item.get('summary')
+            if not isinstance(base, str) or not isinstance(summ, str):
+                continue
+            base = os.path.basename(base.replace('\\', '/'))
+            path = current_index.get(base)
+            if not path or log_block_has_sid(path, sid8):
+                continue  # missing/already bound — idempotent
+            note = ' '.join(summ.split())[:200] or '(captured) summary pending'
+            if append_auto_binding(path, sid8, iso_ts, note):
+                summaries.append(base)
+
+    note_links = sidecar.get('note_links')
+    if isinstance(note_links, list):
+        for item in note_links:
+            if not isinstance(item, dict):
+                continue
+            note = item.get('note')
+            base = item.get('task')
+            if not isinstance(note, str) or not isinstance(base, str):
+                continue
+            if not base or base.strip().lower() == 'none':
+                continue  # task==none → no-op (§10.3)
+            base = os.path.basename(base.replace('\\', '/'))
+            path = current_index.get(base)
+            if not path:
+                continue
+            note_rel = normalize_note_rel(_to_project_rel(note, project))
+            if not is_note_deliverable(note_rel):
+                continue
+            if append_note_link(path, note_rel):
+                links.append((note_rel, base))
+
+    props = sidecar.get('proposals')
+    if isinstance(props, list):
+        for p in props:
+            if isinstance(p, str) and p.strip():
+                proposals.append(p.strip())
+
+    return summaries, links, proposals
 
 
 def merge_exec_bind(state, state_path, data):
@@ -353,9 +502,10 @@ def main() -> int:
     bind = _load_bind(bind_path)
     reminded = bind['reminded']
     exec_tried = bind['exec_tried']
+    capture = bind['capture']
 
-    # `auto_bound`: list[str rel] code-appended this Stop (Round2 + exec). Drives
-    # the (b) report; INV-1.
+    # `auto_bound`: list[str rel] code-appended this Stop (exec + placeholder +
+    # referenced). Drives the (b) report; INV-1.
     auto_bound: list[str] = []
     # `exec_skipped`: NEW exec-bind skips this Stop (no @log:end / write fail).
     # Surfaced once via the injection (F5 / AC-7) then suppressed by exec_tried,
@@ -386,104 +536,209 @@ def main() -> int:
                       f'failed (no @log block / write failed); left unbound.',
                       file=sys.stderr)
 
-    # --- ledger: which touched task md still lack a [s:sid8] line? ----------
+    # === §10 async capture apply-path =======================================
+    # Replaces the inline Round1 reminder (option-a, §10.2 / §11
+    # R-round1-relationship): the touched-task summary and note→owner judgment
+    # are delegated to an async `taskflow:progress-capture` subagent; the Stop
+    # hook deterministically applies the sidecar it writes and keeps a
+    # deterministic G backstop (placeholder + referenced over-bind) as fallback.
+    capture_path = os.path.join(STATE_DIR, f'{session_id}.capture')
+    current_index = _task_basename_index(project_root)
+    status = capture.get('status') or ''
+    tried_notes = capture.get('tried_notes')
+    tried_notes = list(tried_notes) if isinstance(tried_notes, list) else []
+    # tried_tasks: touched task basenames that went through a capture cycle and
+    # still cannot be placeholder-bound (no `@log:end` anchor). Bounding novelty
+    # by this is the no-loop 打止め for un-bindable touched tasks (INV-1), the
+    # analogue of `exec_tried` / `tried_notes`.
+    tried_tasks = capture.get('tried_tasks')
+    tried_tasks = list(tried_tasks) if isinstance(tried_tasks, list) else []
+    requested_ts = capture.get('requested_ts')
+
+    applied_summaries: list[str] = []
+    applied_links: list[tuple] = []
+    proposals: list[str] = []
+
+    def _fold_tried(items):
+        for n in (items.get('notes') if isinstance(items, dict) else []) or []:
+            if n not in tried_notes:
+                tried_notes.append(n)
+
+    # --- (A) apply a delivered sidecar (only when one was requested) --------
+    applied_this_stop = False
+    if status in ('requested', 'pending'):
+        sidecar = _load_capture_sidecar(capture_path)
+        if sidecar is not None:
+            applied_this_stop = True
+            applied_summaries, applied_links, proposals = _apply_capture(
+                sidecar, current_index, project, project_root, sid8, iso_ts)
+            # Consume: unlink so a later request cannot re-match a stale sidecar.
+            # On unlink failure, do NOT mark done — the next Stop re-applies
+            # (idempotent), keeping the apply eventual (§10.2 / AC-11).
+            try:
+                os.remove(capture_path)
+                _fold_tried(capture.get('items'))
+                status = 'done'
+            except OSError:
+                pass  # leave status; re-apply next Stop
+
+    # --- (B) lifecycle transition for an un-delivered request --------------
+    if status in ('requested', 'pending') and not applied_this_stop:
+        age = datetime.datetime.now().timestamp() - float(requested_ts or 0)
+        if age >= _CAPTURE_EXPIRY_S:
+            _fold_tried(capture.get('items'))
+            status = 'expired'  # §10.4 — G backstop takes over below
+        else:
+            status = 'pending'  # in-flight: do NOT block (AC-9, no double-spawn)
+
+    # --- (C) recompute missing AFTER apply, and the novelty set ------------
     missing = {
         base: path
         for base, path in resolved.items()
         if not log_block_has_sid(path, sid8)
     }
+    reverse_index = build_reverse_index(project_root)
+    note_writes, unlinked = _scan_note_writes(
+        touched, project, project_root, reverse_index)
+    novel_notes = [n for n in unlinked if n not in tried_notes]
 
-    # --- Round2 backstop: touched tasks reminded once (round==1) still missing
-    for base, path in list(missing.items()):
-        rel = _rel(path, cwd)
-        if reminded.get(rel) == 1:
+    # --- (D) deterministic G backstop once capture has resolved ------------
+    # §10.4: G (touched → placeholder) is guaranteed every Stop once capture is
+    # done/expired. Apply runs BEFORE this (§10.2 ordering) so a real summary is
+    # never pre-empted by a placeholder. On expiry, note writes whose owner is
+    # known via the reverse index get a `referenced` over-bind (AC-6/AC-10);
+    # unlinked notes are NOT established under judgment-absent expiry (§10.4).
+    if status in ('done', 'expired'):
+        for base, path in list(missing.items()):
             if append_auto_binding(path, sid8, iso_ts):
-                reminded[rel] = 2  # stop escalating this task
-                auto_bound.append(rel)
+                auto_bound.append(_rel(path, cwd))
                 missing.pop(base, None)
+            elif base not in tried_tasks:
+                # Cannot bind (no @log:end) after a full capture cycle — stop
+                # requesting it (打止め / no-loop, INV-1).
+                tried_tasks.append(base)
+    if status == 'expired':
+        for prel in note_writes:
+            for owner_path in resolve_note_owner(
+                    prel, project_root, reverse_index):
+                if log_block_has_sid(owner_path, sid8):
+                    continue
+                if append_auto_binding(
+                        owner_path, sid8, iso_ts,
+                        f'(referenced) owner of {prel} via reverse-index; '
+                        f'capture expired'):
+                    auto_bound.append(_rel(owner_path, cwd))
 
-    # --- Round1: touched tasks missing and not yet reminded → block-reminder.
-    round1_targets = []
-    for base, path in missing.items():
-        rel = _rel(path, cwd)
-        if rel not in reminded:
-            round1_targets.append((rel, path))
+    # --- (E) request capture when novelty remains in a re-requestable state -
+    # Novelty is bounded by the 打止め sets: a touched task already tried (no
+    # bindable anchor) and a note already attempted no longer re-trigger a spawn.
+    missing_novel = {b: p for b, p in missing.items() if b not in tried_tasks}
+    spawn = False
+    if status in ('', 'done', 'expired') and (missing_novel or novel_notes):
+        requested_ts = datetime.datetime.now().timestamp()
+        capture = {
+            'status': 'requested',
+            'items': {'tasks': sorted(missing_novel.keys()), 'notes': novel_notes},
+            'requested_ts': requested_ts,
+            'tried_notes': tried_notes,
+            'tried_tasks': tried_tasks,
+        }
+        spawn = True
+    else:
+        capture = {
+            'status': status,
+            'items': capture.get('items'),
+            'requested_ts': requested_ts,
+            'tried_notes': tried_notes,
+            'tried_tasks': tried_tasks,
+        }
 
-    # --- Gate (INV-1): block only to (a) Round1-remind, (b) report an auto-bind,
-    # or (c) report a NEW exec-bind skip (bounded — exec_tried suppresses re-report).
-    if not round1_targets and not auto_bound and not exec_skipped:
-        # Nothing to remind, nothing auto-bound, no new skip. Persist bind state
-        # (exec_tried may have grown) and exit without injecting. A still-missing
-        # task with no @log:end does NOT block (no-loop).
-        _save_bind(bind_path, reminded, exec_tried)
+    # --- Gate (INV-1): block only to (b) report binds, (c) report exec-skip,
+    # (d) spawn capture, or to surface proposals. `requested` is committed before
+    # the block, so the next Stop re-enters via the requested/pending branch
+    # (no re-block loop). An in-flight `pending` with nothing to report → no
+    # block (AC-9).
+    report_binds = auto_bound or applied_summaries or applied_links
+    if not spawn and not report_binds and not exec_skipped and not proposals:
+        _save_bind(bind_path, reminded, exec_tried, capture)
         return 0
+    _save_bind(bind_path, reminded, exec_tried, capture)
 
-    for rel, _path in round1_targets:
-        reminded[rel] = 1
-    _save_bind(bind_path, reminded, exec_tried)
-
-    # --- F5 observability (AC-7): one line per auto-binding and per exec-skip.
+    # --- F5 observability: one line per deterministic action this Stop. -----
     auto_lines = ''.join(
         f'[progress capture] auto-bound: {rel} [s:{sid8}]\n' for rel in auto_bound
+    )
+    auto_lines += ''.join(
+        f'[progress capture] applied summary: {b} [s:{sid8}]\n'
+        for b in applied_summaries
+    )
+    auto_lines += ''.join(
+        f'[progress capture] linked note: {note} -> {b}\n'
+        for note, b in applied_links
     )
     auto_lines += ''.join(
         f'[progress capture] auto-skip(ambiguous): {rel}\n' for rel in exec_skipped
     )
 
-    if round1_targets:
+    if spawn:
         shown = touched[:MAX_TOUCHED_IN_INJECTION]
         tail = '' if len(touched) <= MAX_TOUCHED_IN_INJECTION else \
             f' ...({len(touched) - MAX_TOUCHED_IN_INJECTION} more)'
+        task_list = ' '.join(f'"{b}"' for b in sorted(missing_novel.keys()))
+        note_list = ' '.join(f'"{n}"' for n in novel_notes)
+        context = (
+            '{'
+            f'"sid8":"{sid8}","iso_ts":"{iso_ts}",'
+            f'"sidecar_path":"_projects/_state/{session_id}.capture",'
+            f'"project_root":"_projects/{project}",'
+            f'"touched_tasks":[{task_list}],'
+            f'"note_writes":[{note_list}]'
+            '}'
+        )
         reason = (
             f'{auto_lines}'
             f'[progress capture] session={sid8} date={date}\n'
             f'touched: {" ".join(shown)}{tail}\n\n'
-            f'Procedure (do not shortcut):\n'
-            f'1. For every `tasks/<status>/*.md` in `touched`: locate the task in '
-            f'its CURRENT folder (it may have moved this session). If its '
-            f'`<!-- @log:begin/end -->` block does not already contain a line '
-            f'tagged `[s:{sid8}]`, APPEND-ONLY a line of exactly this form before '
-            f'`<!-- @log:end -->`: `- {iso_ts} [s:{sid8}]: <one-line summary>` '
-            f'(ISO8601, `T` separator, do not edit existing lines). Adjust '
-            f'`## Next Steps`: write remaining items, or clear (header only) if '
-            f'the task is complete. If no task file exists for work you did, '
-            f'propose creating one: state the suggested title, status (TODO / In '
-            f'Progress / Done), and reason for that status. Do NOT create the '
-            f'file yet — wait for user confirmation. If the user ignores the '
-            f'proposal, do not create it.\n'
-            f'2. For `touched` paths outside `tasks/` (source files, specs, '
-            f'configs): map each to the owning task (by scope, any status) and '
-            f'update per (1). Bug fixes and verification-driven tweaks ARE task '
-            f'progress.\n'
-            f'3. Reply `[progress capture] skip — no task work` IF every '
-            f'`touched` entry is unrelated to any task in this project (e.g., '
-            f'transient scratch files, generated artifacts, project-notes). If a '
-            f'mapping is ambiguous, skip rather than force-assign.\n'
-            f'4. After completing updates, reply with exactly this format (one '
-            f'line per updated task):\n'
-            f'   [progress capture] done\n'
-            f'   - <task-filename> ← [s:{sid8}] logged\n'
-            f'   If you proposed a new task (not yet created), append:\n'
-            f'   - (proposed) <suggested-title> — <status> — awaiting '
-            f'confirmation\n'
-            f'   If no task was updated, the skip message from step 3 serves as '
-            f'the output.'
+            f'Spawn the async capture subagent to summarize this turn\'s task '
+            f'work and map note deliverables to owning tasks. Do NOT update '
+            f'`@log` / `@notes` yourself — the taskflow Stop hook applies the '
+            f'subagent\'s result deterministically on a later Stop.\n\n'
+            f'1. Use the Agent tool with subagent_type `{CAPTURE_AGENT_TYPE}`.\n'
+            f'2. In its prompt, give this context block verbatim AND add, in '
+            f'prose, what you did this turn (which tasks you advanced, which '
+            f'project-notes you wrote/read, any task-worthy work with no task '
+            f'file yet):\n'
+            f'   {context}\n'
+            f'3. The subagent MUST write its judgment as JSON to '
+            f'`_projects/_state/{session_id}.capture` and write nothing else. '
+            f'If you judge there is genuinely no task work, you may instead '
+            f'reply `[progress capture] skip — no task work`; the deterministic '
+            f'backstop will still bind touched tasks on a later Stop.'
         )
     else:
-        # Only auto-binds / exec-skips to report (INV-1 b/c); no touched task
-        # needs an LLM summary this turn.
+        # Report-only block (INV-1 b/c) + any proposals surfaced from a sidecar.
         note = '(reported above. '
         if exec_skipped:
             note += ('auto-skip = the [tasks:] target has no writable '
                      '<!-- @log:begin/end --> block; add one to it if that task '
                      'should carry a session log. ')
         if auto_bound:
-            note += 'auto-bound entries need no further action. '
+            note += ('auto-bound = deterministic backstop (placeholder / '
+                     'referenced); a richer summary is no longer needed. ')
+        if applied_summaries or applied_links:
+            note += 'applied entries came from the capture subagent. '
         note = note.rstrip() + ')'
+        prop_lines = ''
+        if proposals:
+            prop_lines = (
+                '\nProposed new tasks (capture subagent — NOT created; confirm '
+                'with the user before creating any):\n'
+                + ''.join(f'   - (proposed) {p}\n' for p in proposals)
+            )
         reason = (
             f'{auto_lines}'
             f'[progress capture] session={sid8} date={date}\n'
-            f'{note}'
+            f'{note}{prop_lines}'
         )
 
     result = {'decision': 'block', 'reason': reason}
