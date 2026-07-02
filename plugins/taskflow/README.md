@@ -4,6 +4,8 @@ A Claude Code plugin that manages progress and context across concurrent tasks. 
 
 [日本語版 README はこちら](README_ja.md)
 
+> **New to taskflow?** Start with the [User Guide](USER_GUIDE.md) — a task-oriented walkthrough with diagrams. This README is the feature reference; [`docs/architecture.md`](docs/architecture.md) is the internal design.
+
 ## Installation
 
 ### Via the plugin marketplace (recommended)
@@ -104,21 +106,25 @@ The kanban board:
 - Reads all projects from `_projects/index.md` and enumerates tasks
 - Extracts session history from each task's `@log` block; resolves short session IDs to full UUIDs for clickable links
 - Renders two views (switch via toggle): **By Status** (column-per-status) and **By Project** (column-per-project)
-- Supports real-time project / status filtering via legend buttons
+- Supports real-time project / status filtering via legend buttons, plus a manual light / dark theme toggle
 - Includes a `/progress` dropdown for quick access to `/progress check`, `/progress audit`, and `/progress rebuild`
+- Launches a task into Claude Code via a **▶ CC** button on each card (pre-fills `pj:<project> @<task-file>`)
+- Opens each task's Markdown in an in-browser viewer (**📄**, serve mode): sanitized rendering with clickable file references (in-modal navigation with a back button) and inline images
+- Surfaces unreferenced sessions: a **No Task** column / per-project section for CC sessions attributed to a project but linked to no task, and a rightmost **No Project** column for CC sessions with no project at all (newest first, capped)
 
 Invocation:
 
 | Method | Command | Result |
 |---|---|---|
-| Via skill | `/kanban` | Starts the server in the background at `http://localhost:17329/`; reports the URL and the `pkill` stop command (does not block) |
-| Via script (static) | `uv run python scripts/generate_kanban.py` | Writes HTML to `/tmp/taskflow-kanban.html` |
-| Via script (serve) | `uv run python scripts/generate_kanban.py --serve --open` | Starts server and opens browser |
+| Via skill | `/kanban` | Starts the server in the background at `http://localhost:17329/` (idempotent — reports `already serving` if one is running); prints the URL and the `--stop` command (does not block) |
+| Via script (static) | `uv run scripts/generate_kanban.py` | Writes HTML to `/tmp/taskflow-kanban.html` |
+| Via script (serve) | `uv run scripts/generate_kanban.py --serve --open` | Starts server and opens browser |
 
 Options for the script:
 
 - `--out PATH` — Write HTML to a custom path (default: `/tmp/taskflow-kanban.html`)
-- `--serve` — Start an HTTP server on `localhost:17329` with `/open?session=<UUID>` and `/open?prompt=<...>` endpoints for session / prompt launches
+- `--serve` — Start an HTTP server on `localhost:17329`; endpoints: `/open?session=<UUID>` and `/open?prompt=<...>` (session / prompt launches), `/md?path=<file>` (sanitized Markdown render), `/file?path=<file>` (project-scoped image / attachment serving), `/health`
+- `--stop` — Stop a running `--serve` instance (by its `/health` pid)
 - `--open` — Open the result in the default browser after generation
 - `--scheme vscode|vscodium` — Override the URI scheme (default: auto-detect)
 
@@ -163,6 +169,7 @@ Body (mutable region — replace freely).
 - The body region is mutable; the log block is **append-only**.
 - `## Next Steps` non-empty = pending; empty in `1_in_progress/` = completion candidate. The `Stop` hook prompts the LLM to update this section based on actual session work (see [How it works](#how-it-works)).
 - Log lines carry a `[s:<session-id-prefix>]` tag for downstream audit lookup.
+- A task may also carry an auto-managed `<!-- @notes:begin/end -->` block (placed right after `@log:end`) that lists related `project-notes/` paths. It is written by the note↔task link mechanism (see [How it works](#how-it-works)); never hand-edit it.
 
 Status transitions are performed via `/progress start`, `/progress approve`, and `/progress revert` (see above).
 
@@ -245,15 +252,18 @@ session start
   │
   ├─ task execution
   │     ├─ [PreToolUse:Write|Edit] writing a project-notes/ file ─→ injects the project-notes/index.md sync rule
-  │     └─ [PostToolUse:Write|Edit] writing a tasks/ file ─→ auto-rebuilds the progress.md table
+  │     └─ [PostToolUse:Write|Edit|NotebookEdit|Bash] ─→ (a) rebuilds the progress.md table when a tasks/ file changed
+  │                                                       (b) appends the written path(s) to the per-session .touched ledger
   │
   └─ [Stop hooks] ─→ archive plans/memory copies, AND
-                     prompt the LLM to record next steps for touched tasks
+                     bind this session's work to each touched / owning task's @log,
+                     delegating the summary + note↔task-link judgement to the async
+                     progress-capture subagent (deterministic backstop if it is absent)
 ```
 
 ### hooks
 
-Six hooks run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop` (two hooks), and `SessionStart:compact`.
+Seven hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (two hooks), `Stop` (two hooks), and `SessionStart:compact`. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (a bounded per-task advisory lock) — are shared modules imported by the Stop hook, not wired hooks themselves.
 
 #### UserPromptSubmit: session_init.py
 
@@ -283,6 +293,10 @@ Fires before a `Write`/`Edit` targeting a file under `_projects/<project>/projec
 
 Fires after a `Write`/`Edit` targeting a file under `_projects/<project>/tasks/<status>/`. Runs `scripts/rebuild_progress.py` to regenerate the `progress.md` table region for that project, so the task index stays current without a manual `/progress rebuild`.
 
+#### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
+
+Fires after every `Write` / `Edit` / `NotebookEdit` and file-touching `Bash` (`mv`/`cp`/`rm`, `>`/`>>` redirection, `tee`). Appends the normalized repo-relative write target(s) to a per-session `_projects/_state/{session_id}.touched` ledger (append-only, lock-free). This ledger is the input the Stop capture hook uses to decide which tasks this session actually touched — it observes *this session's tool writes* rather than scanning the jsonl or a git diff, which avoids mis-stamping unrelated tasks. Subagent / fork internal writes fire with the parent `session_id`, so they land in the parent's ledger automatically.
+
 #### SessionStart: session_compact_reset.py (matcher: compact)
 
 Fires when Claude Code auto-compacts the conversation. Compaction discards the `additionalContext` injected by `session_init.py`, so this hook resets the injection flags (`rules_loaded`, `indexed_project`, `guidelines_loaded`) in the state file; all other fields are preserved. The next `UserPromptSubmit` turn then re-injects `static_rules`, the project index, and the full guidelines.
@@ -293,8 +307,16 @@ Runs at session end. Copies plan/memory files modified within the last 10 minute
 
 #### Stop: session_progress_capture.py
 
-Runs at session end alongside `session_sync.py`. Scans the session jsonl for write/edit/file-moving tool calls; if any are found, returns `{"decision":"block", "reason": ...}` with an English imperative asking the LLM to update each touched task's `## Next Steps` section (create a task in `0_todo/` or `1_in_progress/` if absent, clear it on completion). Fires at most once per session via a sidecar marker file (`{session_id}.captured`) to avoid conflicts with concurrent state rewrites. Touched files and the `[s:<session-id-prefix>]` tag are substituted at runtime. See `_projects/harness-taskflow/project-notes/specs/progress-audit-design.md` for the design.
+Runs at session end alongside `session_sync.py`. It binds this session's work to each owning task's append-only `@log` block as a `- <ISO8601> [s:<sid>]: <summary>` line, using the `.touched` ledger (above) plus any `[tasks:]` exec-binding carry (below) to decide the owning tasks. Owner judgement — a one-line summary per touched task and note↔task links for freshly-written `project-notes/` deliverables — is delegated to the async `taskflow:progress-capture` subagent: the hook commits `capture.status=requested` and blocks once with an instruction to spawn it; the subagent writes a `{session_id}.capture` JSON sidecar; a later `Stop` applies it deterministically (`@log` summaries via `append_auto_binding`, note links via `append_note_link`). If no sidecar appears within a 15 s expiry, a deterministic backstop placeholder-binds every still-missing touched task instead. Round / lifecycle state lives in a `{session_id}.bind` sidecar (kept separate from the state JSON so concurrent rewrites cannot clobber it); the old `{session_id}.captured` marker is legacy and only swept by the 7-day cleanup. See `_projects/harness-taskflow/project-notes/specs/exec-binding.md` and `project-notes/specs/note-task-link.md` for the design.
+
+##### exec-binding (`[tasks:]` carry)
+
+When a session does task work whose result lands **outside** the task's own `tasks/<status>/*.md` file (execution-by-reference — e.g. it reads a task or handoff and writes the result elsewhere), the agent lists the owning task filename(s) in a `[tasks: a.md b.md]` leading line of its reply. `session_progress_capture.py` reads this carry, union-merges it into the state `exec_bind` array, and binds each owning task's `@log`, so the work is recorded even though `tasks/` was never edited. Direct task-file edits need no `[tasks:]` — the PostToolUse `.touched` capture records them.
+
+##### note↔task links (`@notes` block)
+
+When a session writes a durable `project-notes/` deliverable, the progress-capture subagent maps it to its owning task and the hook records the link on the **task** side — an auto-managed `<!-- @notes:begin/end -->` block in the task file listing project-relative note paths (`note_links.py`). The link travels with the task file when the project directory is renamed or moved, and stale entries (a note whose file no longer exists) are skipped when the reverse index is built.
 
 ## Known issues
 
-- **State file race condition**: Multiple hooks (`session_init.py`, `session_compact_reset.py`) read and write the same `_projects/_state/{session_id}.json` without file locking. In practice the triggering events (`UserPromptSubmit` vs `SessionStart:compact`) do not fire concurrently, so data loss has not been observed. A future release may add atomic writes or advisory locking.
+- **State file race condition**: Multiple hooks (`session_init.py`, `session_compact_reset.py`) read and write the same `_projects/_state/{session_id}.json` without file locking. In practice the triggering events (`UserPromptSubmit` vs `SessionStart:compact`) do not fire concurrently, so data loss has not been observed. A future release may add atomic writes or advisory locking. (Capture round-state and the touched ledger are deliberately kept in separate `.bind` / `.touched` / `.capture` sidecars to avoid this class of clobbering, and `@log` / `@notes` writes are serialized by the bounded advisory lock in `log_lock.py`.)

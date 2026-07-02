@@ -4,6 +4,8 @@ Claude Code プラグイン。同時並行するタスクの進捗とコンテ�
 
 [English README](README.md)
 
+> **taskflow は初めて？** まず [ユーザーガイド](USER_GUIDE_ja.md) から — 図つきのタスク指向な手引き。この README は機能リファレンス、[`docs/architecture.md`](docs/architecture.md) は内部設計。
+
 ## インストール
 
 ### マーケットプレイス経由（推奨）
@@ -103,21 +105,25 @@ kanban ボードの特性:
 - `_projects/index.md` からすべてのプロジェクトを読み込み、タスク一覧を列挙
 - 各タスクの `@log` ブロックからセッション履歴を抽出し、short session ID を full UUID に解決（クリッカブルリンク化）
 - 2 つのビューを備える（トグル切り替え）：**By Status**（ステータス別列）と **By Project**（プロジェクト別列）
-- legend ボタンでプロジェクト・ステータスのリアルタイムフィルタリングを実装
+- legend ボタンでプロジェクト・ステータスのリアルタイムフィルタリング、および手動のライト / ダークテーマトグルを実装
 - `/progress check`, `/progress audit`, `/progress rebuild` への quick-access dropdown を装備
+- 各カードの **▶ CC** ボタンでタスクを Claude Code に起動（`pj:<project> @<タスクファイル>` をプリフィル）
+- 各タスクの Markdown をブラウザ内ビューア（**📄**、serve モード）で表示：サニタイズ描画・クリッカブルなファイル参照（モーダル内遷移＋戻るボタン）・インライン画像
+- 未参照セッションを可視化：プロジェクトに属すがタスク未紐付けの CC セッションを **No Task** 列／プロジェクト列内セクションに、どのプロジェクトにも属さない CC セッションを最右の **No Project** 列に表示（新しい順・上限あり）
 
 起動方法：
 
 | 方法 | コマンド | 結果 |
 |---|---|---|
-| skill 経由 | `/kanban` | サーバーをバックグラウンドで `http://localhost:17329/` に起動し、URL と `pkill` 停止コマンドを報告する（ブロックしない） |
-| script（静的） | `uv run python scripts/generate_kanban.py` | HTML を `/tmp/taskflow-kanban.html` に出力 |
-| script（サーブ） | `uv run python scripts/generate_kanban.py --serve --open` | サーバー起動＋ブラウザ自動起動 |
+| skill 経由 | `/kanban` | サーバーをバックグラウンドで `http://localhost:17329/` に起動（冪等 — 既に稼働中なら `already serving` を報告）し、URL と `--stop` コマンドを表示する（ブロックしない） |
+| script（静的） | `uv run scripts/generate_kanban.py` | HTML を `/tmp/taskflow-kanban.html` に出力 |
+| script（サーブ） | `uv run scripts/generate_kanban.py --serve --open` | サーバー起動＋ブラウザ自動起動 |
 
 script のオプション:
 
 - `--out PATH` — HTML 出力先を指定（デフォルト：`/tmp/taskflow-kanban.html`）
-- `--serve` — `localhost:17329` で HTTP サーバーを起動。`/open?session=<UUID>` と `/open?prompt=<...>` endpoints でセッション・プロンプト起動を実装
+- `--serve` — `localhost:17329` で HTTP サーバーを起動。endpoints：`/open?session=<UUID>`・`/open?prompt=<...>`（セッション・プロンプト起動）、`/md?path=<file>`（サニタイズ済み Markdown 描画）、`/file?path=<file>`（プロジェクト配下の画像・添付配信）、`/health`
+- `--stop` — 稼働中の `--serve` を停止（`/health` の pid 経由）
 - `--open` — 生成後、デフォルトブラウザで自動起動
 - `--scheme vscode|vscodium` — URI scheme を上書き（デフォルト：自動検出）
 
@@ -162,6 +168,7 @@ updated: 2026-05-14
 - 本文領域は自由編集、`<!-- @log -->` ブロックは **append-only**。
 - `## Next Steps` が非空 = pending、`1_in_progress/` で空 = 完了候補。`Stop` フックがセッション中の実作業を見て LLM にこのセクションの更新を促す（[仕組み](#仕組み) 参照）。
 - log 行には `[s:<session-id 先頭>]` タグが付き、audit の参照用 index になる。
+- task には、関連する `project-notes/` パスを列挙する自動管理ブロック `<!-- @notes:begin/end -->`（`@log:end` の直後に配置）が付くことがある。note↔task link 機構が書き込む（[仕組み](#仕組み) 参照）ため手編集禁止。
 
 status 遷移は `/progress start` / `/progress approve` / `/progress revert` で行う（上記参照）。
 
@@ -244,15 +251,18 @@ _projects/
   │
   ├─ タスク実行
   │     ├─ [PreToolUse:Write|Edit] project-notes/ ファイル書込 ─→ project-notes/index.md 同期ルールを注入
-  │     └─ [PostToolUse:Write|Edit] tasks/ ファイル書込 ─→ progress.md テーブルを自動 rebuild
+  │     └─ [PostToolUse:Write|Edit|NotebookEdit|Bash] ─→ (a) tasks/ 変更時に progress.md テーブルを rebuild
+  │                                                       (b) 書込先パスを per-session .touched ledger に追記
   │
   └─ [Stop hooks] ─→ plan/memory コピーをアーカイブ、かつ
-                     書込・編集系操作のあったセッションでは LLM に残 next step の記録を促す
+                     当該セッションの作業を各 touched / owning task の @log に bind。
+                     summary + note↔task-link の判定は async な progress-capture
+                     サブエージェントに委譲する（不在時は決定論バックストップ）
 ```
 
 ### hook
 
-6 つの hook がプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`（2 つ）/ `SessionStart:compact` に wire されている。
+7 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（2 つ）/ `Stop`（2 つ）/ `SessionStart:compact` に wire されている。加えて `note_links.py`（note↔task link のデータ層）と `log_lock.py`（task ごとの bounded advisory lock）の 2 ファイルは、Stop hook が import する共有モジュールであり、単体で wire された hook ではない。
 
 #### UserPromptSubmit: session_init.py
 
@@ -282,6 +292,10 @@ _projects/
 
 `_projects/<project>/tasks/<status>/` 配下のファイルへの `Write`/`Edit` 直後に発火。`scripts/rebuild_progress.py` を実行して該当プロジェクトの `progress.md` テーブル領域を再生成し、手動の `/progress rebuild` なしでタスクインデックスを最新に保つ。
 
+#### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
+
+すべての `Write` / `Edit` / `NotebookEdit` と、ファイルを触る `Bash`（`mv`/`cp`/`rm`、`>`/`>>` リダイレクト、`tee`）の直後に発火。書込先の正規化 repo-relative パスを per-session の `_projects/_state/{session_id}.touched` ledger（append-only、lock-free）に追記する。この ledger が、Stop の capture hook が「このセッションが実際に触った task」を判定する入力になる。jsonl スキャンや git diff ではなく **このセッションの tool 書込** を観測するため、無関係な task の誤 stamp を避けられる。サブエージェント / fork の内部書込は親の `session_id` で発火するため、自動的に親の ledger に入る。
+
 #### SessionStart: session_compact_reset.py (matcher: compact)
 
 Claude Code が会話を auto-compaction した際に発火。compaction では `session_init.py` が注入した `additionalContext` が失われるため、state file の injection フラグ（`rules_loaded`, `indexed_project`, `guidelines_loaded`）をリセットする（他のフィールドは保持）。次の `UserPromptSubmit` ターンで `static_rules`・プロジェクトインデックス・全文ガイドラインが再注入される。
@@ -292,8 +306,16 @@ Claude Code が会話を auto-compaction した際に発火。compaction では 
 
 #### Stop: session_progress_capture.py
 
-セッション終了時に `session_sync.py` と並列で実行。当該セッションの jsonl をスキャンし、write / edit / ファイル移動系ツール呼出があれば `{"decision":"block", "reason": ...}` を返し、touched files を埋め込んだ英語の imperative を注入する。LLM は各 task の `## Next Steps` を更新する（対応 task がなければ `0_todo/` か `1_in_progress/` に新規作成、完了したなら空にする）。サイドカーマーカーファイル（`{session_id}.captured`）でセッションあたり 1 回に制限（他フックとの state 競合を回避）。touched files と `[s:<session-id 先頭>]` タグは実行時 substitution。設計は `_projects/harness-taskflow/project-notes/specs/progress-audit-design.md` を参照。
+セッション終了時に `session_sync.py` と並列で実行。当該セッションの作業を、各 owning task の append-only `@log` ブロックに `- <ISO8601> [s:<sid>]: <summary>` 行として bind する。owning task の判定には `.touched` ledger（上記）と `[tasks:]` exec-binding carry（下記）を用いる。owner 判定 — touched task ごとの 1 行 summary と、新規書込された `project-notes/` 成果物の note↔task link — は async な `taskflow:progress-capture` サブエージェントに委譲する: hook は `capture.status=requested` を commit し、サブエージェント起動を促す block を 1 回返す。サブエージェントは `{session_id}.capture` JSON サイドカーを書き、後続の `Stop` がそれを決定論的に apply する（`@log` summary は `append_auto_binding`、note link は `append_note_link`）。15 秒の expiry 内にサイドカーが現れなければ、決定論バックストップが未 bind の touched task を placeholder-bind する。round / lifecycle 状態は `{session_id}.bind` サイドカーに保持する（state JSON とは分離し、他フックの並行書換による clobber を防ぐ）。旧 `{session_id}.captured` マーカーは legacy で、7 日クリーンアップで掃除されるのみ。設計は `_projects/harness-taskflow/project-notes/specs/exec-binding.md` と `project-notes/specs/note-task-link.md` を参照。
+
+##### exec-binding（`[tasks:]` carry）
+
+セッションの task 作業の結果が、その task 自身の `tasks/<status>/*.md` の **外** に落ちる場合（execution-by-reference — 例: task や handoff を読んで結果を別所に書く）、エージェントは応答の先頭行に `[tasks: a.md b.md]` で owning task のファイル名を列挙する。`session_progress_capture.py` はこの carry を読み、state の `exec_bind` 配列に union-merge し、各 owning task の `@log` に bind する。これにより `tasks/` を一切編集しなくても作業が記録される。task ファイルを直接編集した場合は `[tasks:]` は不要（PostToolUse の `.touched` capture が記録する）。
+
+##### note↔task link（`@notes` block）
+
+セッションが永続的な `project-notes/` 成果物を書くと、progress-capture サブエージェントがそれを owning task に対応付け、hook が link を **task 側** に記録する — task ファイル内の自動管理ブロック `<!-- @notes:begin/end -->` に project-relative な note パスを列挙する（`note_links.py`）。この link は、プロジェクトディレクトリの rename / move に task ファイルと共に追随する。stale なエントリ（ファイルが消えた note）は reverse index 構築時にスキップされる。
 
 ## 既知の問題
 
-- **state file の競合**: 複数フック（`session_init.py`, `session_compact_reset.py`）が同一の `_projects/_state/{session_id}.json` をロックなしで読み書きする。実際にはトリガーイベント（`UserPromptSubmit` と `SessionStart:compact`）が同時発火しないためデータ損失は観測されていない。将来のリリースで atomic write または advisory lock の導入を予定。
+- **state file の競合**: 複数フック（`session_init.py`, `session_compact_reset.py`）が同一の `_projects/_state/{session_id}.json` をロックなしで読み書きする。実際にはトリガーイベント（`UserPromptSubmit` と `SessionStart:compact`）が同時発火しないためデータ損失は観測されていない。将来のリリースで atomic write または advisory lock の導入を予定。（capture の round 状態と touched ledger は、この種の clobber を避けるため `.bind` / `.touched` / `.capture` の別サイドカーに意図的に分離しており、`@log` / `@notes` 書込は `log_lock.py` の bounded advisory lock で直列化される。）

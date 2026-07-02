@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["pyyaml"]
+# dependencies = ["pyyaml", "markdown", "nh3"]
 # ///
 """generate_kanban.py — Trello-like HTML kanban for taskflow projects.
 
@@ -20,6 +20,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -27,7 +28,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -83,6 +84,7 @@ class Task:
     created: str = ""
     updated: str = ""
     sessions: list[SessionRef] = field(default_factory=list)
+    file_path: str = ""
 
 
 @dataclass
@@ -90,6 +92,7 @@ class Project:
     name: str
     description: str
     tasks: list[Task] = field(default_factory=list)
+    unassigned_sessions: list[SessionRef] = field(default_factory=list)
 
 
 # ── file helpers ───────────────────────────────────────────────────────────
@@ -157,14 +160,36 @@ def parse_index(path: Path) -> list[tuple[str, str]]:
 # ── data loading ───────────────────────────────────────────────────────────
 
 
-def build_uuid_index(state_dir: Path) -> dict[str, str]:
-    """Map short_id (first 8 hex chars) → full UUID string."""
-    index: dict[str, str] = {}
+@dataclass
+class StateEntry:
+    uuid: str
+    origin: str = ""
+    project: str = ""
+
+
+def build_uuid_index(state_dir: Path) -> dict[str, StateEntry]:
+    """Map short_id (first 8 hex chars) → StateEntry(uuid, origin, project).
+
+    ``origin`` / ``project`` are read from the ``_state/*.json`` sidecar so the
+    kanban can attribute unreferenced CC sessions to their project (§7).
+    """
+    index: dict[str, StateEntry] = {}
     if not state_dir.is_dir():
         return index
     for f in state_dir.iterdir():
         if f.suffix == ".json" and len(f.stem) == 36:
-            index[f.stem[:8]] = f.stem
+            origin = ""
+            project = ""
+            content = read_text(f)
+            if content:
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        origin = str(data.get("origin", "") or "")
+                        project = str(data.get("project", "") or "")
+                except ValueError:
+                    pass
+            index[f.stem[:8]] = StateEntry(uuid=f.stem, origin=origin, project=project)
     return index
 
 
@@ -179,7 +204,7 @@ def find_project_dir(name: str, roots: list[Path]) -> Path | None:
 def load_tasks(
     project_dir: Path,
     project_name: str,
-    uuid_index: dict[str, str],
+    uuid_index: dict[str, StateEntry],
 ) -> list[Task]:
     tasks: list[Task] = []
     tasks_dir = project_dir / "tasks"
@@ -212,7 +237,8 @@ def load_tasks(
             updated = _date(fm.get("updated", ""))
             sessions = extract_sessions(content)
             for s in sessions:
-                s.full_uuid = uuid_index.get(s.short_id, "")
+                entry = uuid_index.get(s.short_id)
+                s.full_uuid = entry.uuid if entry else ""
             tasks.append(Task(
                 status=status,
                 h1=h1,
@@ -221,8 +247,82 @@ def load_tasks(
                 created=created,
                 updated=updated,
                 sessions=sessions,
+                file_path=str(p),
             ))
     return tasks
+
+
+# ── CC session sidecar (unassigned sessions, §7) ────────────────────────────
+
+SESSION_HEAD_BYTES = 8192
+
+
+def build_cc_session_index() -> dict[str, Path]:
+    """Scan ``~/.claude/projects/*/`` for ``<uuid>.jsonl`` → path.
+
+    Scans every project dir (rather than guessing the cwd encoding) so a
+    session started in any workspace can be resolved by its UUID.
+    """
+    index: dict[str, Path] = {}
+    base = Path.home() / ".claude" / "projects"
+    if not base.is_dir():
+        return index
+    for proj_dir in base.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        try:
+            for f in proj_dir.glob("*.jsonl"):
+                index.setdefault(f.stem, f)
+        except OSError:
+            continue
+    return index
+
+
+def read_cc_session_first_message(path: Path) -> tuple[str, str]:
+    """Return ``(date, summary)`` from the head of a CC session JSONL.
+
+    Reads only the first ``SESSION_HEAD_BYTES`` to avoid loading multi-MB files.
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(SESSION_HEAD_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return "", ""
+    timestamp = ""
+    for line in head.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        ts = entry.get("timestamp")
+        if ts and not timestamp:
+            timestamp = str(ts)
+        msg = entry.get("message")
+        is_user = (
+            entry.get("type") == "user"
+            and isinstance(msg, dict)
+            and msg.get("role") == "user"
+        )
+        if not is_user:
+            continue
+        content = msg.get("content")
+        text = ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                    text = str(b["text"])
+                    break
+        if text:
+            date = timestamp.split("T")[0][:10] if timestamp else ""
+            return date, text.strip()[:72]
+    return (timestamp.split("T")[0][:10] if timestamp else ""), ""
 
 
 # ── HTML generation ────────────────────────────────────────────────────────
@@ -291,6 +391,26 @@ def progress_url(project: str, sub: str, scheme: str, serve: bool) -> str:
     return f"{scheme}://anthropic.claude-code/open?prompt={quote(prompt)}"
 
 
+def task_start_url(project: str, file_path: str, scheme: str, serve: bool) -> str:
+    """Build a CC launch URL that pre-fills ``pj:<project> @<taskfile>``.
+
+    The ``@`` reference is REPO_ROOT-relative (base=a) so CC resolves it against
+    a repo-root workspace.  Task files outside REPO_ROOT (secondary
+    ``TASKFLOW_PROJECT_ROOTS``) fall back to an absolute path — emitted only in
+    the runtime-generated URL, never written to a tracked file (D3).
+    """
+    from urllib.parse import quote
+    p = Path(file_path)
+    try:
+        ref = p.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        ref = p.resolve().as_posix()
+    prompt = f"pj:{project} @{ref}"
+    if serve:
+        return f"http://localhost:{SERVE_PORT}/open?prompt={quote(prompt)}"
+    return f"{scheme}://anthropic.claude-code/open?prompt={quote(prompt)}"
+
+
 def render_progress_picker(project: str, scheme: str, serve: bool) -> str:
     items = ""
     for sub in PROGRESS_SUBS:
@@ -351,6 +471,19 @@ def render_card(
     if dates:
         body = f'<div class="task-dates">{dates}</div>' + body
 
+    if task.file_path:
+        from urllib.parse import quote
+        start_url = task_start_url(task.project, task.file_path, scheme, serve)
+        btns = (
+            f'<a class="start-btn start-cc" href="{esc(start_url)}" target="_blank">▶ CC</a>'
+        )
+        if serve:
+            md_url = f"http://localhost:{SERVE_PORT}/md?path={quote(task.file_path)}"
+            btns += (
+                f'<button class="view-md-btn" type="button" data-md="{esc(md_url)}">📄</button>'
+            )
+        body += f'<div class="start-btns">{btns}</div>'
+
     n = len(unique_sessions)
     status_badge = (
         f'<span class="badge st" style="background:{STATUS_HEADER_COLOR[task.status]}">'
@@ -373,7 +506,28 @@ def render_card(
 """
 
 
-def render_html(projects: list[Project], scheme: str, serve: bool = False) -> str:
+def _session_li(s: SessionRef, scheme: str, serve: bool, project: str = "") -> str:
+    """One clickable session row for the No Task / No Project lists."""
+    url = session_url(s, scheme, serve)
+    summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
+    pa = f' data-project="{esc(project)}"' if project else ""
+    return (
+        f'<li class="ua-item"{pa}>'
+        f'<a href="{esc(url)}" target="_blank">'
+        f'<span class="s-date">{esc(s.date)}</span>'
+        f'<span class="s-id">[{esc(s.short_id)}]</span>'
+        f'<span class="s-summary">{esc(summary_short)}</span>'
+        f"</a></li>\n"
+    )
+
+
+def render_html(
+    projects: list[Project],
+    scheme: str,
+    serve: bool = False,
+    no_project: list[SessionRef] | None = None,
+    no_project_total: int = 0,
+) -> str:
     proj_colors: dict[str, str] = {
         p.name: PROJECT_PALETTE[i % len(PROJECT_PALETTE)]
         for i, p in enumerate(projects)
@@ -392,17 +546,73 @@ def render_html(projects: list[Project], scheme: str, serve: bool = False) -> st
     for status in TASK_STATUSES:
         tasks = by_status[status]
         hdr_color = STATUS_HEADER_COLOR[status]
-        bg = STATUS_BG[status]
         cards = "".join(
             render_card(t, proj_colors[t.project], scheme, serve) for t in tasks
         ) or '<p class="empty-col">No tasks</p>'
         status_cols += f"""\
-<div class="column" data-status="{status}" style="background:{bg}">
+<div class="column" data-status="{status}">
   <div class="col-header" style="border-bottom:3px solid {hdr_color}">
     <span class="col-title" style="color:{hdr_color}">{STATUS_LABELS[status]}</span>
     <span class="col-count" style="background:{hdr_color}">{len(tasks)}</span>
   </div>
   <div class="cards">{cards}</div>
+</div>
+"""
+
+    # ── unassigned CC sessions column (§7) ───────────────────────────────────
+    all_unassigned: list[tuple[str, SessionRef]] = []
+    for proj in projects:
+        for s in proj.unassigned_sessions:
+            all_unassigned.append((proj.name, s))
+    all_unassigned.sort(key=lambda t: t[1].date, reverse=True)
+    if all_unassigned:
+        ua_items = ""
+        for pname, s in all_unassigned:
+            url = session_url(s, scheme, serve)
+            summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
+            ua_items += (
+                f'<li class="ua-item" data-project="{esc(pname)}">'
+                f'<a href="{esc(url)}" target="_blank">'
+                f'<span class="s-date">{esc(s.date)}</span>'
+                f'<span class="s-id">[{esc(s.short_id)}]</span>'
+                f'<span class="s-summary">{esc(summary_short)}</span>'
+                f"</a></li>\n"
+            )
+        status_cols += f"""\
+<div class="column" data-status="unassigned">
+  <div class="col-header" style="border-bottom:3px solid #718096">
+    <span class="col-title" style="color:#718096">No Task</span>
+    <span class="col-count" style="background:#718096">{len(all_unassigned)}</span>
+  </div>
+  <ul class="sessions ua-list">{ua_items}</ul>
+</div>
+"""
+
+    # ── no-project CC sessions column (sessions tied to no pj at all) ─────────
+    no_project = no_project or []
+    if no_project:
+        np_items = ""
+        for s in no_project:
+            url = session_url(s, scheme, serve)
+            summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
+            np_items += (
+                f'<li class="ua-item">'
+                f'<a href="{esc(url)}" target="_blank">'
+                f'<span class="s-date">{esc(s.date)}</span>'
+                f'<span class="s-id">[{esc(s.short_id)}]</span>'
+                f'<span class="s-summary">{esc(summary_short)}</span>'
+                f"</a></li>\n"
+            )
+        shown = len(no_project)
+        more = f" (+{no_project_total - shown} older)" if no_project_total > shown else ""
+        status_cols += f"""\
+<div class="column" data-status="no_project">
+  <div class="col-header" style="border-bottom:3px solid #805ad5">
+    <span class="col-title" style="color:#805ad5">No Project</span>
+    <span class="col-count" style="background:#805ad5">{no_project_total}</span>
+  </div>
+  <p class="ua-note">showing latest {shown}{more}</p>
+  <ul class="sessions ua-list">{np_items}</ul>
 </div>
 """
 
@@ -423,14 +633,43 @@ def render_html(projects: list[Project], scheme: str, serve: bool = False) -> st
             for t in sorted_tasks
         ) or '<p class="empty-col">No tasks</p>'
         picker = render_progress_picker(proj.name, scheme, serve)
+        ua_section = ""
+        if proj.unassigned_sessions:
+            ua_lis = "".join(
+                _session_li(s, scheme, serve) for s in proj.unassigned_sessions
+            )
+            ua_section = (
+                '<div class="unassigned-section">'
+                '<div class="unassigned-header">Sessions (no task) '
+                f'<span class="ua-count">{len(proj.unassigned_sessions)}</span></div>'
+                f'<ul class="sessions ua-list">{ua_lis}</ul>'
+                '</div>'
+            )
         proj_cols += f"""\
-<div class="column" style="background:#f7fafc">
+<div class="column proj-col">
   <div class="col-header" style="border-bottom:3px solid {color}">
     <span class="col-title" style="color:{color}">{esc(proj.name)}</span>
     {picker}
   </div>
   <div class="pc-counts">{count_badges}</div>
   <div class="cards">{cards}</div>
+  {ua_section}
+</div>
+"""
+
+    # ── no-project column, rightmost in project view ─────────────────────────
+    if no_project:
+        pnp_items = "".join(_session_li(s, scheme, serve) for s in no_project)
+        np_shown = len(no_project)
+        np_more = f" (+{no_project_total - np_shown} older)" if no_project_total > np_shown else ""
+        proj_cols += f"""\
+<div class="column proj-col" data-status="no_project">
+  <div class="col-header" style="border-bottom:3px solid #805ad5">
+    <span class="col-title" style="color:#805ad5">No Project</span>
+    <span class="col-count" style="background:#805ad5">{no_project_total}</span>
+  </div>
+  <p class="ua-note">showing latest {np_shown}{np_more}</p>
+  <ul class="sessions ua-list">{pnp_items}</ul>
 </div>
 """
 
@@ -445,28 +684,54 @@ def render_html(projects: list[Project], scheme: str, serve: bool = False) -> st
         )
 
     css = """\
+:root{
+  --bg:#dde1e7;--header-bg:#1a202c;--header-fg:#fff;--meta-fg:#a0aec0;
+  --bar-bg:#2d3748;--bar-border:#1a202c;--btn-border:#4a5568;--btn-fg:#a0aec0;
+  --btn-active-bg:#4a5568;--muted:#718096;--id-fg:#a0aec0;--hi:#e2e8f0;
+  --col-todo-bg:#edf2f7;--col-wip-bg:#ebf8ff;--col-done-bg:#f0fff4;--col-unassigned-bg:#eceff3;
+  --proj-col-bg:#f7fafc;--card-bg:#fff;--card-body-bg:#f9fafb;--card-title:#2d3748;
+  --border:#e2e8f0;--row-border:#edf2f7;--hover-bg:#f7fafc;--link:#3182ce;
+  --menu-bg:#fff;--menu-fg:#2d3748;--menu-hover-bg:#ebf8ff;--menu-hover-fg:#2b6cb0;
+  --code-bg:#f1f5f9;--shadow:rgba(0,0,0,.12);
+}
+html[data-theme="dark"]{
+  --bg:#12161d;--header-bg:#0f141c;--header-fg:#e2e8f0;--meta-fg:#8a94a6;
+  --bar-bg:#171d27;--bar-border:#0b0f16;--btn-border:#3a4557;--btn-fg:#8a94a6;
+  --btn-active-bg:#3a4557;--muted:#8a94a6;--id-fg:#6b7688;--hi:#e2e8f0;
+  --col-todo-bg:#232a35;--col-wip-bg:#1a2836;--col-done-bg:#1a2b23;--col-unassigned-bg:#20252e;
+  --proj-col-bg:#1c222c;--card-bg:#232a35;--card-body-bg:#1b212b;--card-title:#e2e8f0;
+  --border:#2d3748;--row-border:#2a3340;--hover-bg:#2a3340;--link:#63b3ed;
+  --menu-bg:#232a35;--menu-fg:#e2e8f0;--menu-hover-bg:#2a3340;--menu-hover-fg:#63b3ed;
+  --code-bg:#161b22;--shadow:rgba(0,0,0,.4);
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#dde1e7;min-height:100vh}
-header{background:#1a202c;color:#fff;padding:10px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);min-height:100vh}
+header{background:var(--header-bg);color:var(--header-fg);padding:10px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 header h1{font-size:17px;font-weight:700;letter-spacing:.02em}
-.meta{font-size:12px;color:#a0aec0;flex:1}
+.meta{font-size:12px;color:var(--meta-fg);flex:1}
 .toggle{display:flex;gap:4px}
-.toggle button{font-size:11px;font-weight:600;padding:4px 10px;border:1px solid #4a5568;border-radius:4px;
-  background:transparent;color:#a0aec0;cursor:pointer;letter-spacing:.03em}
-.toggle button.active{background:#4a5568;color:#fff;border-color:#4a5568}
-.filter-bar{background:#2d3748;padding:5px 20px;display:flex;align-items:center;gap:6px}
-.filter-bar span{font-size:11px;color:#718096;margin-right:4px}
-.fb{font-size:11px;font-weight:600;padding:3px 10px;border:1px solid #4a5568;border-radius:12px;
-  background:transparent;color:#a0aec0;cursor:pointer}
+.toggle button,.theme-toggle{font-size:11px;font-weight:600;padding:4px 10px;border:1px solid var(--btn-border);border-radius:4px;
+  background:transparent;color:var(--btn-fg);cursor:pointer;letter-spacing:.03em}
+.toggle button.active{background:var(--btn-active-bg);color:#fff;border-color:var(--btn-active-bg)}
+.theme-toggle:hover{color:var(--header-fg);border-color:var(--muted)}
+.filter-bar{background:var(--bar-bg);padding:5px 20px;display:flex;align-items:center;gap:6px}
+.filter-bar span{font-size:11px;color:var(--muted);margin-right:4px}
+.fb{font-size:11px;font-weight:600;padding:3px 10px;border:1px solid var(--btn-border);border-radius:12px;
+  background:transparent;color:var(--btn-fg);cursor:pointer}
 .fb.active{color:#fff}
-.legend{background:#2d3748;padding:5px 20px 7px;display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid #1a202c;align-items:center}
-.leg{display:flex;align-items:center;gap:4px;font-size:11px;color:#a0aec0;background:transparent;
-  border:1px solid #4a5568;border-radius:12px;padding:2px 8px;cursor:pointer}
-.leg.active{background:var(--lc,#4a5568);border-color:var(--lc,#4a5568);color:#fff}
-.leg:hover{border-color:#718096;color:#e2e8f0}
+.legend{background:var(--bar-bg);padding:5px 20px 7px;display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--bar-border);align-items:center}
+.leg{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--btn-fg);background:transparent;
+  border:1px solid var(--btn-border);border-radius:12px;padding:2px 8px;cursor:pointer}
+.leg.active{background:var(--lc,var(--btn-active-bg));border-color:var(--lc,var(--btn-active-bg));color:#fff}
+.leg:hover{border-color:var(--muted);color:var(--hi)}
 .leg-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
 .board{display:flex;gap:12px;padding:14px;overflow-x:auto;align-items:flex-start;min-height:calc(100vh - 120px)}
-.column{flex:0 0 310px;border-radius:8px;padding:10px;max-height:calc(100vh - 148px);overflow-y:auto}
+.column{flex:0 0 310px;border-radius:8px;padding:10px;max-height:calc(100vh - 148px);overflow-y:auto;background:var(--proj-col-bg)}
+.column[data-status="0_todo"]{background:var(--col-todo-bg)}
+.column[data-status="1_in_progress"]{background:var(--col-wip-bg)}
+.column[data-status="2_done"]{background:var(--col-done-bg)}
+.column[data-status="unassigned"]{background:var(--col-unassigned-bg)}
+.column.proj-col{background:var(--proj-col-bg)}
 .column.hidden{display:none}
 .col-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:8px;position:relative}
 .col-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
@@ -478,34 +743,82 @@ header h1{font-size:17px;font-weight:700;letter-spacing:.02em}
   border-radius:3px;padding:2px 8px;cursor:pointer;list-style:none;user-select:none;white-space:nowrap}
 .progress-picker summary.progress-link::-webkit-details-marker{display:none}
 .progress-picker summary.progress-link:hover{background:#44337a}
-.picker-menu{position:absolute;right:0;top:calc(100% + 4px);background:#fff;border:1px solid #e2e8f0;
-  border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:100;min-width:110px;overflow:hidden}
-.pm-item{display:block;padding:7px 14px;font-size:12px;color:#2d3748;text-decoration:none;white-space:nowrap}
-.pm-item:hover{background:#ebf8ff;color:#2b6cb0}
-.card{background:#fff;border-radius:6px;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.12);overflow:hidden}
+.picker-menu{position:absolute;right:0;top:calc(100% + 4px);background:var(--menu-bg);border:1px solid var(--border);
+  border-radius:6px;box-shadow:0 4px 12px var(--shadow);z-index:100;min-width:110px;overflow:hidden}
+.pm-item{display:block;padding:7px 14px;font-size:12px;color:var(--menu-fg);text-decoration:none;white-space:nowrap}
+.pm-item:hover{background:var(--menu-hover-bg);color:var(--menu-hover-fg)}
+.card{background:var(--card-bg);border-radius:6px;margin-bottom:8px;box-shadow:0 1px 3px var(--shadow);overflow:hidden}
 .card.hidden{display:none}
 .card summary{padding:10px 12px;cursor:pointer;list-style:none;user-select:none}
 .card summary::-webkit-details-marker{display:none}
-.card[open] summary{background:#f7fafc;border-bottom:1px solid #e2e8f0}
-.card summary:hover{background:#f7fafc}
+.card[open] summary{background:var(--hover-bg);border-bottom:1px solid var(--border)}
+.card summary:hover{background:var(--hover-bg)}
 .card-tags{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px}
 .badge{font-size:10px;font-weight:700;color:#fff;padding:2px 6px;border-radius:3px;text-transform:uppercase;letter-spacing:.04em}
-.card-title{font-size:13px;color:#2d3748;line-height:1.4;margin-bottom:4px}
-.expand-hint{font-size:10px;color:#a0aec0}
-.card-body{padding:8px 12px 10px;background:#f9fafb}
+.card-title{font-size:13px;color:var(--card-title);line-height:1.4;margin-bottom:4px}
+.expand-hint{font-size:10px;color:var(--muted)}
+.card-body{padding:8px 12px 10px;background:var(--card-body-bg)}
 ul.sessions{list-style:none;padding:0}
-ul.sessions li{padding:4px 0;border-bottom:1px solid #edf2f7;font-size:11px;line-height:1.4}
+ul.sessions li{padding:4px 0;border-bottom:1px solid var(--row-border);font-size:11px;line-height:1.4}
 ul.sessions li:last-child{border-bottom:none}
-ul.sessions a{color:#3182ce;text-decoration:none;display:flex;flex-wrap:wrap;gap:4px}
+ul.sessions a{color:var(--link);text-decoration:none;display:flex;flex-wrap:wrap;gap:4px}
 ul.sessions a:hover{text-decoration:underline}
-li.no-uuid{display:flex;flex-wrap:wrap;gap:4px;color:#718096}
-.s-date{color:#718096;flex-shrink:0}
-.s-id{color:#a0aec0;flex-shrink:0;font-family:monospace}
+li.no-uuid{display:flex;flex-wrap:wrap;gap:4px;color:var(--muted)}
+.s-date{color:var(--muted);flex-shrink:0}
+.s-id{color:var(--id-fg);flex-shrink:0;font-family:monospace}
 .s-summary{color:inherit}
 .task-dates{display:flex;gap:10px;margin-bottom:6px}
-.t-date{font-size:10px;color:#a0aec0}
-.no-sessions{font-size:11px;color:#a0aec0;font-style:italic}
-.empty-col{font-size:12px;color:#a0aec0;text-align:center;padding:24px 0;font-style:italic}
+.t-date{font-size:10px;color:var(--muted)}
+.no-sessions{font-size:11px;color:var(--muted);font-style:italic}
+.empty-col{font-size:12px;color:var(--muted);text-align:center;padding:24px 0;font-style:italic}
+.ua-note{font-size:10px;color:var(--muted);font-style:italic;margin-bottom:6px}
+.md-back.hidden{display:none}
+.unassigned-section{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+.unassigned-header{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.04em;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.ua-count{font-size:10px;font-weight:700;color:#fff;background:#718096;border-radius:10px;padding:1px 7px}
+.md-body code a,.md-body a.path-link{color:var(--link);text-decoration:underline}
+.ua-list{list-style:none;padding:0}
+.ua-item{padding:4px 8px;border-bottom:1px solid var(--row-border);font-size:11px;line-height:1.4}
+.ua-item:last-child{border-bottom:none}
+.ua-item.hidden{display:none}
+.ua-item a{color:var(--link);text-decoration:none;display:flex;flex-wrap:wrap;gap:4px}
+.ua-item a:hover{text-decoration:underline}
+.start-btns{display:flex;gap:6px;margin-top:8px}
+.start-btn{font-size:11px;font-weight:600;padding:3px 10px;border-radius:4px;border:1px solid var(--btn-border);
+  cursor:pointer;letter-spacing:.02em;text-decoration:none}
+.start-cc{background:#2b6cb0;color:#fff;border-color:#2b6cb0}
+.start-cc:hover{background:#2c5282}
+.view-md-btn{font-size:11px;font-weight:600;padding:3px 10px;border-radius:4px;border:1px solid var(--btn-border);
+  cursor:pointer;letter-spacing:.02em;background:transparent;color:var(--muted)}
+.view-md-btn:hover{color:var(--card-title);border-color:var(--link)}
+.md-modal{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center}
+.md-modal.hidden{display:none}
+.md-modal-backdrop{position:absolute;inset:0;background:rgba(0,0,0,0.6)}
+.md-modal-container{position:relative;width:80vw;max-width:900px;max-height:85vh;background:var(--bg);
+  border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
+.md-modal-header{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);
+  background:var(--header-bg);flex-shrink:0}
+.md-title{flex:1;font-size:13px;font-weight:600;color:var(--header-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.md-btn{background:transparent;border:1px solid var(--btn-border);color:var(--meta-fg);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:13px}
+.md-btn:hover{color:var(--header-fg);border-color:var(--link)}
+.md-close{font-size:16px;font-weight:700}
+.md-body{overflow-y:auto;padding:16px 24px;flex:1;font-size:14px;line-height:1.6;color:var(--card-title)}
+.md-body h1{font-size:1.6em;margin:.8em 0 .4em;border-bottom:1px solid var(--border);padding-bottom:.3em}
+.md-body h2{font-size:1.3em;margin:.7em 0 .3em}
+.md-body h3{font-size:1.1em;margin:.6em 0 .2em}
+.md-body p{margin:.5em 0}
+.md-body ul,.md-body ol{margin:.5em 0;padding-left:1.5em}
+.md-body li{margin:.2em 0}
+.md-body a{color:var(--link)}
+.md-body code{font-family:monospace;background:var(--code-bg);padding:1px 4px;border-radius:3px;font-size:.9em}
+.md-body pre{background:var(--code-bg);padding:12px;border-radius:6px;overflow-x:auto;margin:.5em 0}
+.md-body pre code{background:none;padding:0}
+.md-body blockquote{border-left:3px solid var(--border);margin:.5em 0;padding:.3em 1em;color:var(--muted)}
+.md-body table{border-collapse:collapse;margin:.5em 0;width:100%}
+.md-body th,.md-body td{border:1px solid var(--border);padding:6px 10px;text-align:left;font-size:13px}
+.md-body th{background:var(--proj-col-bg);font-weight:600}
+.md-body hr{border:none;border-top:1px solid var(--border);margin:1em 0}
 """
 
     filter_colors = {s: STATUS_HEADER_COLOR[s] for s in TASK_STATUSES}
@@ -567,6 +880,9 @@ function applyFilter(){
         col.querySelectorAll('.card').forEach(function(card){
           card.classList.toggle('hidden',curProj!=='all'&&card.dataset.project!==curProj);
         });
+        col.querySelectorAll('.ua-item').forEach(function(it){
+          it.classList.toggle('hidden',curProj!=='all'&&it.dataset.project!==curProj);
+        });
       }
     });
   } else {
@@ -581,8 +897,86 @@ function applyFilter(){
       }
     });
   }
+  updateCounts();
 }
+function updateCounts(){
+  var board=curView==='status'?document.getElementById('board-status'):document.getElementById('board-project');
+  var total=0;
+  board.querySelectorAll('.column:not(.hidden)').forEach(function(col){
+    var st=col.dataset.status;
+    if(st==='no_project'){ return; }
+    var visible;
+    if(st==='unassigned'){
+      visible=col.querySelectorAll('.ua-item:not(.hidden)').length;
+    }else{
+      visible=col.querySelectorAll('.card:not(.hidden)').length;
+      total+=visible;
+    }
+    var badge=col.querySelector('.col-count');
+    if(badge) badge.textContent=String(visible);
+  });
+  var meta=document.getElementById('kanban-meta');
+  if(meta){
+    var totalAll=parseInt(meta.dataset.total,10)||0;
+    var gen=meta.dataset.gen||'';
+    if(curFilter==='all'&&curProj==='all'){
+      meta.textContent=totalAll+' tasks · '+gen;
+    }else{
+      meta.textContent=total+' / '+totalAll+' tasks · '+gen;
+    }
+  }
+}
+function applyTheme(t){
+  document.documentElement.dataset.theme=t;
+  var b=document.getElementById('theme-toggle');
+  if(b) b.textContent=t==='dark'?'☀ Light':'\U0001f319 Dark';
+  localStorage.setItem('tfTheme',t);
+}
+function toggleTheme(){
+  var cur=document.documentElement.dataset.theme==='dark'?'dark':'light';
+  applyTheme(cur==='dark'?'light':'dark');
+}
+var mdStack=[], mdCurrentUrl=null;
+function mdFetch(url){
+  var modal=document.getElementById('md-modal');
+  var title=document.getElementById('md-title');
+  var mbody=document.getElementById('md-body');
+  var back=document.getElementById('md-back');
+  fetch(url).then(function(r){return r.ok?r.json():Promise.reject(r.status);})
+    .then(function(d){
+      modal.classList.remove('hidden');
+      title.textContent=d.title||'';
+      mbody.innerHTML=d.html||'';
+      mbody.scrollTop=0;
+      mdCurrentUrl=url;
+      if(back) back.classList.toggle('hidden', mdStack.length===0);
+    }).catch(function(){
+      modal.classList.remove('hidden');
+      title.textContent='Error';
+      mbody.textContent='Could not load the file.';
+    });
+}
+function openMdModal(url){ mdStack=[]; mdCurrentUrl=null; mdFetch(url); }
+function closeMdModal(){ document.getElementById('md-modal').classList.add('hidden'); mdStack=[]; mdCurrentUrl=null; }
+document.addEventListener('click',function(e){
+  var md=e.target.closest('.view-md-btn');
+  if(md){ openMdModal(md.dataset.md); return; }
+  var mdlink=e.target.closest('#md-body a[data-mdlink]');
+  if(mdlink){
+    e.preventDefault();
+    var abs=mdlink.getAttribute('data-mdlink');
+    if(abs){ if(mdCurrentUrl) mdStack.push(mdCurrentUrl); mdFetch('/md?path='+encodeURIComponent(abs)); }
+    return;
+  }
+  if(e.target.closest('#md-back')){ if(mdStack.length>0){ mdFetch(mdStack.pop()); } return; }
+  if(e.target.classList.contains('md-modal-backdrop')){ closeMdModal(); return; }
+  if(e.target.closest('#md-close')){ closeMdModal(); return; }
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape' && !document.getElementById('md-modal').classList.contains('hidden')) closeMdModal();
+});
 (function(){
+  applyTheme(localStorage.getItem('tfTheme')||'light');
   var v=localStorage.getItem('tfView')||'status';
   setView(v);
 })();
@@ -590,7 +984,7 @@ function applyFilter(){
 
     return f"""\
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -600,7 +994,8 @@ function applyFilter(){
 <body>
 <header>
   <h1>taskflow kanban</h1>
-  <span class="meta">{total} tasks &middot; {generated_at}</span>
+  <span class="meta" id="kanban-meta" data-total="{total}" data-gen="{generated_at}">{total} tasks &middot; {generated_at}</span>
+  <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
   <div class="toggle">
     <button id="btn-status" onclick="setView('status')">By Status</button>
     <button id="btn-project" onclick="setView('project')">By Project</button>
@@ -614,6 +1009,17 @@ function applyFilter(){
 <div id="board-project" class="board">
 {proj_cols}
 </div>
+<div id="md-modal" class="md-modal hidden">
+  <div class="md-modal-backdrop"></div>
+  <div class="md-modal-container">
+    <div class="md-modal-header">
+      <button id="md-back" class="md-btn md-back hidden">←</button>
+      <span id="md-title" class="md-title"></span>
+      <button id="md-close" class="md-btn md-close">×</button>
+    </div>
+    <div id="md-body" class="md-body"></div>
+  </div>
+</div>
 <script>{js}</script>
 </body>
 </html>
@@ -625,6 +1031,81 @@ function applyFilter(){
 
 SERVE_PORT = 17329
 SESSION_RE = re.compile(r'^[0-9a-f-]+$')
+APP_ID = "taskflow-kanban"
+
+
+def script_version() -> str:
+    """Identity for /health: the script's mtime (D3, zero-maintenance)."""
+    try:
+        return str(int(Path(__file__).stat().st_mtime))
+    except OSError:
+        return "0"
+
+
+class KanbanServer(ThreadingHTTPServer):
+    # Threaded: the board page holds a connection while the MD modal fetches
+    # /file images and /md pages concurrently — a single-threaded server would
+    # serialize and can wedge on a held connection, starving /health.
+    daemon_threads = True
+    # PH-4: do NOT set SO_REUSEADDR — on Windows it lets a 2nd server co-bind an
+    # active port and silently shadow the running one.  With this False, a 2nd
+    # bind raises OSError instead, which the serve path reports (P3).
+    allow_reuse_address = False
+
+
+def port_status(port: int) -> tuple[str, dict | None]:
+    """Probe ``localhost:<port>/health`` → ``(state, info)``.
+
+    state ∈ {"free", "ours", "foreign"}.  Nothing listening → free; our
+    /health signature → ours (info carries pid/version); any other response →
+    foreign (port occupied by an unrelated service).
+    """
+    import urllib.error
+    import urllib.request
+    url = f"http://localhost:{port}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            raw = resp.read(4096)
+    except urllib.error.HTTPError:
+        return ("foreign", None)
+    except (urllib.error.URLError, OSError):
+        return ("free", None)
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return ("foreign", None)
+    if isinstance(data, dict) and data.get("app") == APP_ID:
+        return ("ours", data)
+    return ("foreign", None)
+
+
+def _report_already_serving(url: str, info: dict | None) -> None:
+    pid = info.get("pid", "?") if info else "?"
+    ver = info.get("version", "?") if info else "?"
+    print(
+        f"[kanban] already serving at {url} (pid {pid}, v{ver}); stop it first with --stop",
+        file=sys.stderr,
+    )
+
+
+def stop_server(port: int) -> int:
+    """PH-5: stop a running kanban server via its /health pid."""
+    import signal as _signal
+    state, info = port_status(port)
+    if state != "ours" or not info:
+        print(f"[kanban] no kanban server running on port {port}", file=sys.stderr)
+        return 0
+    pid = info.get("pid")
+    if not isinstance(pid, int):
+        print("[kanban] running server reported no pid; stop it manually", file=sys.stderr)
+        return 1
+    try:
+        os.kill(pid, _signal.SIGTERM)
+    except OSError as e:
+        print(f"[kanban] failed to stop pid {pid}: {e}", file=sys.stderr)
+        return 1
+    print(f"[kanban] stopped kanban server (pid {pid})", file=sys.stderr)
+    return 0
 
 
 def detect_scheme() -> str:
@@ -640,11 +1121,224 @@ def open_browser(url: str) -> None:
         subprocess.run(["xdg-open", url], check=False)
 
 
-def make_handler(build_html, scheme: str):
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+IMAGE_MIME_INLINE = {
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon",
+}
+
+
+def _resolve_under_roots(base_dir: Path, ref: str, roots: list[Path]) -> Path | None:
+    """Resolve ``ref`` relative to ``base_dir``; return it only if under a root."""
+    from urllib.parse import unquote
+    try:
+        target = (base_dir / unquote(ref)).resolve()
+    except (OSError, ValueError):
+        return None
+    if any(_is_within(target, r.resolve()) for r in roots):
+        return target
+    return None
+
+
+def _postprocess_md_links(html: str, md_dir: Path, roots: list[Path]) -> str:
+    """Rewrite relative img/links for the browser modal (M2, Pi-parity).
+
+    - ``<img src=rel>``  → ``/file?path=<abs>`` (served with nosniff).
+    - ``<a href=rel.md>``→ in-modal navigation marker (``data-mdlink``).
+    - ``<a href=rel>``   → ``/file?path=<abs>`` in a new tab.
+    - external http(s)/mailto → open in a new tab.
+    Only paths under a project root are rewritten; anything else is left as-is.
+    """
+    from urllib.parse import quote
+
+    def img_sub(m: re.Match) -> str:
+        pre, src, post = m.group(1), m.group(2), m.group(3)
+        if src.startswith(("http://", "https://", "data:", "/file?")):
+            return m.group(0)
+        t = _resolve_under_roots(md_dir, src, roots)
+        if not t or not t.is_file():
+            return m.group(0)
+        return f'<img {pre}src="/file?path={quote(str(t))}"{post}>'
+
+    html = re.sub(r'<img\s+([^>]*?)src="([^"]*)"([^>]*?)>', img_sub, html)
+
+    def a_sub(m: re.Match) -> str:
+        pre, href, post = m.group(1), m.group(2), m.group(3)
+        if href.startswith(("http://", "https://", "mailto:")):
+            if "target=" in pre or "target=" in post:
+                return m.group(0)
+            return f'<a {pre}href="{href}"{post} target="_blank">'
+        if href.startswith("#") or href.startswith("/file?"):
+            return m.group(0)
+        t = _resolve_under_roots(md_dir, href, roots)
+        if not t or not t.is_file():
+            return m.group(0)
+        if t.suffix == ".md":
+            return f'<a {pre}href="#" data-mdlink="{esc(str(t))}"{post}>'
+        return f'<a {pre}href="/file?path={quote(str(t))}"{post} target="_blank">'
+
+    html = re.sub(r'<a\s+([^>]*?)href="([^"]*)"([^>]*?)>', a_sub, html)
+    return html
+
+
+PATH_TEXT_RE = re.compile(
+    r'(?:_projects/[\w-]+/)?(?:project-notes|handoff|tasks|plans)(?:/[\w.@-]+)+\.md'
+)
+
+
+def _linkify_path_text(html: str, md_path: Path, roots: list[Path]) -> str:
+    """Linkify bare taskflow path references in text/code (Pi postProcessPathLinks).
+
+    Task bodies cite related files as inline-code paths (e.g. ``tasks/0_todo/x.md``)
+    rather than markdown links; turn the resolvable ``.md`` ones into in-modal
+    navigation links.  Existing <a> anchors are protected from double-linking.
+    """
+    root: Path | None = None
+    for r in roots:
+        rr = r.resolve()
+        if _is_within(md_path.resolve(), rr):
+            root = rr
+            break
+    if root is None:
+        return html
+    try:
+        proj = md_path.resolve().relative_to(root).parts[0]
+    except (ValueError, IndexError):
+        return html
+    project_root = root / proj
+
+    def resolve(ref: str) -> Path | None:
+        base = root.parent if ref.startswith("_projects/") else project_root
+        try:
+            t = (base / ref).resolve()
+        except (OSError, ValueError):
+            return None
+        if t.suffix == ".md" and t.is_file() and any(_is_within(t, r.resolve()) for r in roots):
+            return t
+        return None
+
+    anchors: list[str] = []
+
+    def _stash(m: re.Match) -> str:
+        anchors.append(m.group(0))
+        return f"\x00A{len(anchors) - 1}\x00"
+
+    safe = re.sub(r'<a\s[^>]*>.*?</a>', _stash, html, flags=re.DOTALL)
+
+    def _one(pm: re.Match) -> str:
+        ref = pm.group(0)
+        t = resolve(ref)
+        if not t:
+            return ref
+        return f'<a href="#" class="path-link" data-mdlink="{esc(str(t))}">{ref}</a>'
+
+    def _text_sub(m: re.Match) -> str:
+        return m.group(1) + PATH_TEXT_RE.sub(_one, m.group(2)) + m.group(3)
+
+    safe = re.sub(r'(>)([^<]+)(<)', _text_sub, safe)
+    return re.sub('\x00A(\\d+)\x00', lambda m: anchors[int(m.group(1))], safe)
+
+
+def render_markdown_file(path: Path, roots: list[Path]) -> str:
+    """Render a task ``.md`` to HTML for the /md modal (D1: server-side).
+
+    Frontmatter is shown as a fenced ``yaml`` block, matching the Pi viewer.
+    Output is sanitized with nh3 (M4, DOMPurify-parity) then relative
+    image/link targets are rewritten for the browser (M2).
+    """
+    import markdown as _md
+    import nh3
+    text = read_text(path) or ""
+    m = FRONTMATTER_RE.match(text)
+    if m:
+        text = "```yaml\n" + m.group(1) + "\n```\n\n" + text[m.end():]
+    html = _md.markdown(text, extensions=["fenced_code", "tables"])
+    html = nh3.clean(html)
+    html = _postprocess_md_links(html, path.parent, roots)
+    html = _linkify_path_text(html, path, roots)
+    return html
+
+
+def make_handler(build_html, scheme: str, roots: list[Path]):
     class KanbanHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path == "/open":
+            if parsed.path == "/health":
+                payload = json.dumps(
+                    {"app": APP_ID, "pid": os.getpid(), "version": script_version()}
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            if parsed.path == "/file":
+                import mimetypes
+                from urllib.parse import unquote
+                qs = parse_qs(parsed.query)
+                raw = qs.get("path", [""])[0]
+                if not raw:
+                    self._respond(400, b"missing path")
+                    return
+                target = Path(unquote(raw)).resolve()
+                if (
+                    not target.is_file()
+                    or not any(_is_within(target, r.resolve()) for r in roots)
+                ):
+                    self._respond(403, b"forbidden")
+                    return
+                ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+                inline = ctype in IMAGE_MIME_INLINE
+                try:
+                    data = target.read_bytes()
+                except OSError:
+                    self._respond(500, b"read error")
+                    return
+                self.send_response(200)
+                # Non-image (incl. SVG) is forced to download so it cannot execute
+                # as same-origin HTML/script; images render inline with nosniff.
+                self.send_header("Content-Type", ctype if inline else "application/octet-stream")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                if not inline:
+                    self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if parsed.path == "/md":
+                from urllib.parse import unquote
+                qs = parse_qs(parsed.query)
+                raw = qs.get("path", [""])[0]
+                if not raw:
+                    self._respond(400, b"missing path")
+                    return
+                target = Path(unquote(raw)).resolve()
+                if (
+                    target.suffix != ".md"
+                    or not target.is_file()
+                    or not any(_is_within(target, r.resolve()) for r in roots)
+                ):
+                    self._respond(403, b"forbidden")
+                    return
+                try:
+                    html = render_markdown_file(target, roots)
+                except Exception:
+                    self._respond(500, b"render error")
+                    return
+                payload = json.dumps({"title": target.name, "html": html}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            elif parsed.path == "/open":
                 from urllib.parse import quote, unquote
                 qs = parse_qs(parsed.query)
                 cmd = shutil.which("codium") or shutil.which("code") or "code"
@@ -692,7 +1386,14 @@ def make_handler(build_html, scheme: str):
     return KanbanHandler
 
 
-def load_projects(roots: list[Path], uuid_index: dict[str, str]) -> list[Project]:
+NO_PROJECT_CAP = 50
+
+
+def load_projects(
+    roots: list[Path],
+    uuid_index: dict[str, StateEntry],
+) -> tuple[list[Project], list[SessionRef], int]:
+    """Return ``(projects, no_project_sessions, no_project_total)``."""
     seen: set[str] = set()
     project_defs: list[tuple[str, str]] = []
     for root in roots:
@@ -710,7 +1411,89 @@ def load_projects(roots: list[Path], uuid_index: dict[str, str]) -> list[Project
         tasks = load_tasks(proj_dir, name, uuid_index)
         projects.append(Project(name=name, description=desc, tasks=tasks))
         print(f"[kanban] {name}: {len(tasks)} tasks", file=sys.stderr)
-    return projects
+
+    referenced: set[str] = set()
+    for proj in projects:
+        for task in proj.tasks:
+            for s in task.sessions:
+                if s.full_uuid:
+                    referenced.add(s.full_uuid)
+    cc_index = build_cc_session_index()
+    attach_unassigned_sessions(projects, uuid_index, referenced, cc_index)
+    no_project, no_project_total = collect_no_project_sessions(uuid_index, referenced, cc_index)
+    return projects, no_project, no_project_total
+
+
+def attach_unassigned_sessions(
+    projects: list[Project],
+    uuid_index: dict[str, StateEntry],
+    referenced: set[str],
+    cc_index: dict[str, Path],
+) -> None:
+    """Attach CC sessions attributed to a project but referenced by no task (§7).
+
+    Only ``origin == "cc"`` entries are considered — pi sessions cannot be
+    reopened from the browser, so they are intentionally excluded.
+    """
+    proj_map = {p.name: p for p in projects}
+    for entry in uuid_index.values():
+        if entry.origin != "cc" or not entry.project or entry.uuid in referenced:
+            continue
+        proj = proj_map.get(entry.project)
+        if proj is None:
+            continue
+        date, summary = "", ""
+        jsonl = cc_index.get(entry.uuid)
+        if jsonl:
+            date, summary = read_cc_session_first_message(jsonl)
+        proj.unassigned_sessions.append(SessionRef(
+            date=date, short_id=entry.uuid[:8], summary=summary, full_uuid=entry.uuid,
+        ))
+    for proj in projects:
+        proj.unassigned_sessions.sort(key=lambda s: s.date, reverse=True)
+
+
+def collect_no_project_sessions(
+    uuid_index: dict[str, StateEntry],
+    referenced: set[str],
+    cc_index: dict[str, Path],
+    cap: int = NO_PROJECT_CAP,
+) -> tuple[list[SessionRef], int]:
+    """CC sessions with no project attribution at all ("No Project").
+
+    Sorted by session-file mtime (a cheap stat); only the newest ``cap`` have
+    their first message read, so head I/O is bounded regardless of backlog.
+    Returns the capped list plus the full candidate count.
+    """
+    cands = [
+        e for e in uuid_index.values()
+        if e.origin == "cc" and not e.project and e.uuid not in referenced
+    ]
+    total = len(cands)
+    if not cands:
+        return [], 0
+
+    def _mtime(e: StateEntry) -> float:
+        p = cc_index.get(e.uuid)
+        if not p:
+            return 0.0
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    cands.sort(key=_mtime, reverse=True)
+    out: list[SessionRef] = []
+    for e in cands[:cap]:
+        date, summary = "", ""
+        p = cc_index.get(e.uuid)
+        if p:
+            date, summary = read_cc_session_first_message(p)
+        out.append(SessionRef(
+            date=date, short_id=e.uuid[:8], summary=summary, full_uuid=e.uuid,
+        ))
+    out.sort(key=lambda s: s.date, reverse=True)
+    return out, total
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -729,7 +1512,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--scheme", default="", help="URI scheme override: vscode or vscodium",
     )
+    parser.add_argument(
+        "--stop", action="store_true",
+        help="Stop a running kanban --serve instance (via its /health pid)",
+    )
     args = parser.parse_args(argv)
+
+    if args.stop:
+        return stop_server(SERVE_PORT)
 
     scheme = args.scheme or detect_scheme()
 
@@ -738,24 +1528,45 @@ def main(argv: list[str] | None = None) -> int:
         print("error: no _projects/ directory found", file=sys.stderr)
         return 2
 
-    uuid_index: dict[str, str] = {}
+    uuid_index: dict[str, StateEntry] = {}
     for root in roots:
         uuid_index.update(build_uuid_index(root / "_state"))
     print(f"[kanban] sessions indexed: {len(uuid_index)}", file=sys.stderr)
 
-    projects = load_projects(roots, uuid_index)
+    projects, no_project, no_project_total = load_projects(roots, uuid_index)
     total = sum(len(p.tasks) for p in projects)
 
     if args.serve:
+        url = f"http://localhost:{SERVE_PORT}/"
+        state, info = port_status(SERVE_PORT)
+        if state == "ours":
+            _report_already_serving(url, info)
+            return 0
+        if state == "foreign":
+            print(
+                f"[kanban] port {SERVE_PORT} is in use by another service; not starting",
+                file=sys.stderr,
+            )
+            return 1
+
         def build_html():
-            uuid_idx: dict[str, str] = {}
+            uuid_idx: dict[str, StateEntry] = {}
             for r in roots:
                 uuid_idx.update(build_uuid_index(r / "_state"))
-            projs = load_projects(roots, uuid_idx)
-            return render_html(projs, scheme, serve=True)
-        handler = make_handler(build_html, scheme)
-        server = HTTPServer(("localhost", SERVE_PORT), handler)
-        url = f"http://localhost:{SERVE_PORT}/"
+            projs, np, npt = load_projects(roots, uuid_idx)
+            return render_html(projs, scheme, serve=True, no_project=np, no_project_total=npt)
+        handler = make_handler(build_html, scheme, roots)
+        try:
+            server = KanbanServer(("localhost", SERVE_PORT), handler)
+        except OSError as e:
+            # PH-4: bind lost a race with a concurrent start; re-probe so the
+            # message matches the P3 primary path instead of a raw bind error.
+            st2, inf2 = port_status(SERVE_PORT)
+            if st2 == "ours":
+                _report_already_serving(url, inf2)
+                return 0
+            print(f"[kanban] cannot bind port {SERVE_PORT}: {e}", file=sys.stderr)
+            return 1
         print(f"[kanban] serving {total} tasks at {url} (Ctrl+C to stop)", file=sys.stderr)
         open_browser(url)
         try:
@@ -764,7 +1575,9 @@ def main(argv: list[str] | None = None) -> int:
             print("\n[kanban] stopped", file=sys.stderr)
         return 0
 
-    html = render_html(projects, scheme, serve=False)
+    html = render_html(
+        projects, scheme, serve=False, no_project=no_project, no_project_total=no_project_total
+    )
     args.out.write_text(html, encoding="utf-8")
     print(f"[kanban] generated: {args.out}", file=sys.stderr)
 
