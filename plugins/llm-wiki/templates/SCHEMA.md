@@ -10,11 +10,17 @@ config:
   activation_scope: scoped     # scoped|always|manual    (empty -> scoped)
   read_grounding:  implicit    # implicit|explicit        (empty -> implicit)
   write_mode:      explicit    # explicit|implicit        (empty -> explicit)
-  write_autocommit: auto       # forced true when write_mode=implicit (floor)
+  write_autocommit: auto       # INERT: the engine invokes no git; kept for config stability
   override_scope:  operation   # operation|session        (empty -> operation)
   apply_fanout_k:  10          # touch pages <=K inline, >K -> per-cluster subagent (D23)
   max_count:       100         # max pages a write tx may touch (budget gate, D-a)  (empty -> 100)
   max_bytes:       10485760    # max total write bytes per tx = 10 MiB (budget gate, D-a)  (empty -> 10485760)
+  # optional qmd full-text search backend (opt-in; optional-search-qmd.md). Left
+  # COMMENTED so the default (index) applies and behavior stays byte-identical to
+  # today. To enable, delete the leading "# " on a line (keep the 2-space indent):
+  # search_backend: index        # index|qmd  (uncomment + set qmd to enable; empty/absent -> index)
+  # qmd_bin: qmd                  # qmd binary resolved via PATH (shutil.which)         (empty -> qmd)
+  # qmd_page_threshold: 100       # use qmd only when page count (scan_pages) > this    (empty -> 100)
 
 # doc_type_profiles — 8 types seeded from compact2.md:54-89, plus mandatory `default`.
 # LLM extraction covers all types for free; type-specific deterministic lint is
@@ -133,11 +139,13 @@ Each axis resolves independently (code):
 3. Empty -> built-in default (shown in the frontmatter comments).
 4. Any write-bearing operation declares the resolved value + its source in one
    line before writing (D5).
-5. An ingest-unit git checkpoint is the default in all modes (D14): confirm/stash a
-   clean tree before ingest, commit on success, restore the wiki path on failure.
+5. An ingest-unit journal checkpoint is the default in all modes (D14): open the
+   write-ahead undo journal before ingest, discard it on success, replay it on
+   failure to restore the pre-ingest state. No git is invoked (the engine never
+   commits; version the wiki yourself if desired).
 6. `write_mode` controls only whether a confirmation is shown before applying
-   (not whether a commit happens). `write_mode=implicit` is announced loudly at
-   session start (explicit notice that confirmation is skipped).
+   (not whether the journal is finalized). `write_mode=implicit` is announced
+   loudly at session start (explicit notice that confirmation is skipped).
 
 > wiki-local config is read by the plugin's own script parsing this frontmatter —
 > it does not depend on the CC settings mechanism.
@@ -169,8 +177,7 @@ Examples (front-end dispatch):
 - SCHEMA.md is wiki-local and per-wiki (D1). The plugin engine never edits it.
 - The ingest core's allowlist write tool REJECTS `SCHEMA.md`, `.llmwiki`, and
   `raw/` as write targets (D19); the LLM cannot mutate this file during ingest.
-- The maintainer (a human) edits it explicitly. Uncommitted hand-edits are stashed
-  as an ingest-checkpoint precondition (R8).
+- The maintainer (a human) edits it explicitly.
 - Profile pruning/extending is done on the wiki side: start from the 8 seeded types,
   drop unneeded types, add types as needed. Adding a type without a type-specific
   lint still yields LLM extraction along the profile; deterministic lint follows

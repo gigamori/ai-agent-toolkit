@@ -23,20 +23,13 @@ report `[BLOCKED: lint must not write]`.
 Run the code checks — do NOT re-implement them in prose:
 
 ```bash
-uv run python - "$WIKI_ROOT" <<'PY'
-import sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-import link_lint, wiki_index
-root = sys.argv[1]
-lr = link_lint.lint(root)               # LintReport{missing, orphans}
-print("missing-crossrefs:", lr.missing) # [(src_rel_path, target_name), ...]
-print("orphans:", lr.orphans)           # [rel_path, ...]
-ir = wiki_index.check_integrity(root)   # IntegrityReport{ok, missing, stale}
-print("integrity-ok:", ir.ok)
-print("index-missing:", ir.missing, "index-stale:", ir.stale)
-print("tier-mismatch:", getattr(ir, "tier_mismatch", []))
-PY
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki lint "$WIKI_ROOT"
 ```
+
+The `lint` verb runs both deterministic checks and prints them: `missing-crossrefs:`
+(`link_lint.lint` — `[(src_rel_path, target_name), ...]`), `orphans:` (`[rel_path,
+...]`), then `wiki_index.check_integrity` as `integrity-ok:`, `index-missing:` /
+`index-stale:`, and `tier-mismatch:`. It is read-only.
 
 ## Step 2 — Type-specific lint (v1: transcript ONLY; 05-plan §3.1 step 2)
 
@@ -50,22 +43,19 @@ For each page-body span you identify as a claim recorded under "decisions", pass
 it to the deterministic floor and flag every span the code returns as
 non-admissible:
 
+Build a JSON array of the `{span, speaker}` candidate pairs YOU isolated from the
+transcript page bodies (the code decides token presence; you decided the spans) and
+pipe it to the `floor-check` verb on STDIN. The verb runs the deterministic
+`transcript_floor.check_decision_claim` per candidate and prints
+`FLOOR-VIOLATION <gate> :: <span>` for every non-admissible span:
+
 ```bash
-uv run python - <<'PY'
-import sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-import transcript_floor as tf
-# Replace the example list with the (span, speaker) pairs YOU isolated from the
-# transcript page bodies. The code decides token presence; you decided the spans.
-candidates = [
-    # ("<decisions-claim span text>", "<deciding speaker or None>"),
-]
-for span, speaker in candidates:
-    r = tf.check_decision_claim(span, speaker=speaker)
-    if not r.admissible:
-        print("FLOOR-VIOLATION", r.gate, "::", span)
-PY
+printf '%s' "$CANDIDATES_JSON" \
+  | uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki floor-check
 ```
+
+`$CANDIDATES_JSON` is a JSON array `[{"span": "<decisions-claim span text>",
+"speaker": "<deciding speaker or null>"}, ...]` (an empty array yields no output).
 
 Every `FLOOR-VIOLATION` line is a decision-floor violation: the claim lacks an
 explicit affirmative token from the deciding speaker, so silence / absence of

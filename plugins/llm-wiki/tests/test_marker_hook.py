@@ -1,0 +1,118 @@
+"""Tests: UserPromptSubmit marker-inject hook (D8, design §6 F2).
+
+Covers: marker present -> wiki-active additionalContext emitted; dormant -> empty
+exit (no output). The hook is run as a subprocess with hook JSON on stdin.
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+_HOOK = (
+    Path(__file__).resolve().parents[1] / "hooks" / "wiki_marker_inject.py"
+)
+
+
+def _run(cwd: Path, prompt: str = "hello", session_id: str = "", env=None):
+    payload = {"cwd": str(cwd), "prompt": prompt}
+    if session_id:
+        payload["session_id"] = session_id
+    # encoding="utf-8" is REQUIRED on Windows: the hook writes UTF-8 and the
+    # default cp932 decode raises on any non-ASCII byte (e.g. resolved paths).
+    return subprocess.run(
+        [sys.executable, str(_HOOK)],
+        input=json.dumps(payload), capture_output=True, text=True,
+        encoding="utf-8", timeout=30, env=env,
+    )
+
+
+def _ctx(r):
+    return json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def _make_wiki(path: Path):
+    path.mkdir(parents=True, exist_ok=True)
+    (path / ".llmwiki").write_text("version: 1\nschema: SCHEMA.md\n", encoding="utf-8")
+
+
+def _write_state(cwd: Path, project: str, name: str):
+    state_dir = cwd / "_projects" / "_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / name).write_text(json.dumps({"project": project}), encoding="utf-8")
+
+
+def test_emits_wiki_active_when_marker_present(tmp_path):
+    (tmp_path / ".llmwiki").write_text("version: 1\nschema: SCHEMA.md\n", encoding="utf-8")
+    r = _run(tmp_path)
+    assert r.returncode == 0
+    ctx = _ctx(r)
+    assert "wiki-active" in ctx
+    assert json.loads(r.stdout)["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+
+
+def test_empty_exit_when_dormant(tmp_path):
+    r = _run(tmp_path)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1 P2/P3 — `wiki:on|off` toggle + injection extensions
+# --------------------------------------------------------------------------- #
+def test_on_emits_wiki_on_leading_line_directive(tmp_path):
+    _make_wiki(tmp_path)
+    ctx = _ctx(_run(tmp_path, session_id="sid-a"))
+    assert "[wiki:on]" in ctx
+    assert "wiki-active" in ctx
+
+
+def test_off_suppresses_injection_and_emits_off_notice(tmp_path):
+    _make_wiki(tmp_path)
+    ctx = _ctx(_run(tmp_path, prompt="please wiki:off now", session_id="sid-a"))
+    assert "[wiki:off]" in ctx
+    assert "wiki-active" not in ctx
+    assert "active wiki:" not in ctx  # discovery line fully suppressed while off
+
+
+def test_toggle_is_sticky_and_reversible(tmp_path):
+    _make_wiki(tmp_path)
+    # off -> stays off next turn (no marker) -> on restores
+    _run(tmp_path, prompt="wiki:off", session_id="sid-a")
+    ctx_still_off = _ctx(_run(tmp_path, prompt="hello", session_id="sid-a"))
+    assert "[wiki:off]" in ctx_still_off
+    ctx_back_on = _ctx(_run(tmp_path, prompt="wiki:on", session_id="sid-a"))
+    assert "wiki-active" in ctx_back_on
+    assert "[wiki:on]" in ctx_back_on
+
+
+def test_new_session_starts_on_despite_other_session_off(tmp_path):
+    _make_wiki(tmp_path)
+    _run(tmp_path, prompt="wiki:off", session_id="sid-a")
+    ctx = _ctx(_run(tmp_path, prompt="hello", session_id="sid-b"))
+    assert "wiki-active" in ctx  # sid-b is unaffected by sid-a's off
+
+
+def test_toggle_ignored_when_unresolved(tmp_path):
+    # No wiki anywhere -> `wiki:off` is ignored and nothing is emitted.
+    r = _run(tmp_path, prompt="wiki:off", session_id="sid-a")
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+
+
+def test_pj_scope_injects_coexistence_guide(tmp_path, monkeypatch):
+    proot = tmp_path / "roots"
+    _make_wiki(proot / "myproj" / "wiki")
+    _write_state(tmp_path, "myproj", name="sid-a.json")
+    env = dict(os.environ, TASKFLOW_PROJECT_ROOTS=str(proot))
+    r = _run(tmp_path, prompt="hello", session_id="sid-a", env=env)
+    ctx = _ctx(r)
+    assert "[wiki<->taskflow]" in ctx  # pj-scope coexistence guide present
+
+
+def test_cwd_scope_has_no_coexistence_guide(tmp_path):
+    # cwd scope resolves but must NOT carry the pj-only coexistence guide.
+    _make_wiki(tmp_path)
+    ctx = _ctx(_run(tmp_path, session_id="sid-a"))
+    assert "[wiki<->taskflow]" not in ctx
+    assert "wiki-active" in ctx

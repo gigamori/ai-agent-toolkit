@@ -4,9 +4,11 @@
 
 [English README is here](README.md)
 
+> **はじめての方へ** — まずは図解つきのタスク志向ガイド **[ユーザーガイド](USER_GUIDE_ja.md)** から。この README は全リファレンス（コマンド・設定・安全モデル・設計の根拠）です。
+
 ## これが解決する問題
 
-メモや決定はチャット・コマンド出力・セッションログに散在する。llm-wiki はそれらを不変の `raw/` アーティファクトに正規化し、コードで強制される安全境界の下で LLM に wiki ページの執筆・更新を行わせる：untrusted なソース読取とページ書込を分離し、すべての書込を allowlist ゲートに通し、ingest 全体を単一の git トランザクションとして走らせる（失敗時は wiki を ingest 前の状態にロールバック）。
+メモや決定はチャット・コマンド出力・セッションログに散在する。llm-wiki はそれらを不変の `raw/` アーティファクトに正規化し、コードで強制される安全境界の下で LLM に wiki ページの執筆・更新を行わせる：untrusted なソース読取とページ書込を分離し、すべての書込を allowlist ゲートに通し、ingest 全体を単一のファイルジャーナル・トランザクションとして走らせる（失敗時は wiki を ingest 前の状態にロールバック）。
 
 ## インストール（Claude Code）
 
@@ -23,11 +25,19 @@
 claude --plugin-dir ./plugins/llm-wiki
 ```
 
-プラグインの決定的スクリプトと hook は `uv run python` 経由で動く。プラグインのロードに別途 `init` ステップは不要。`UserPromptSubmit` hook はプラグインを有効化した時点で起動する。
+プラグインの決定的エンジンは path-import される Python パッケージ（`llmwiki/`、install 不要）で、`bin/` 配下の 3 つの CLI entrypoint を `uv run` で起動して駆動する（各 entrypoint は PEP 723 で自身の依存を宣言する）：
+
+```bash
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki <verb> ...        # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|finish|abort|enumerate}
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve # markdown: ローカル HTML ビューア
+```
+
+commands / skills / agents / hook はこれらの entrypoint を呼ぶだけの薄い shim。dep-free な読取経路（`bin/llmwiki`）は `duckdb` も `markdown` も巻き込まない。プラグインのロードに別途 `init` ステップは不要。`UserPromptSubmit` hook はプラグインを有効化した時点で起動する。
 
 ## wiki の初期化
 
-wiki は **`/wiki-init`** で初期化する。選択した scope に、wiki を**独立した nested git repo**（自前の `git init` ＋ 初期 commit）として作成する。scope は対話的に選ぶ：
+wiki は **`/wiki-init`** で初期化する。選択した scope に、wiki を**プレーンなディレクトリ**（git 非依存。エンジンは git を一切呼ばない）として作成する。scope は対話的に選ぶ：
 
 - **taskflow 有効かつ project 割当あり** — **active pj**（`_projects/<project>/wiki/`）／ **workspace**（`<workspace-root>/_llm-wiki/`）／ **path 入力** から選ぶ。
 - **taskflow 無効または project 未割当** — **project を選ぶ**（`$TASKFLOW_PROJECT_ROOTS`、無ければ `_projects/` を走査）／ **workspace** ／ **path 入力**。
@@ -38,7 +48,7 @@ wiki は **`/wiki-init`** で初期化する。選択した scope に、wiki を
 /wiki-init --root ./path/to/wiki # 対象 root を明示し選択を省略
 ```
 
-wiki は自身が独立 repo なので、ingest ロールバックの `git reset --hard` が親 repo に届くことはない。`/wiki-init` は周囲の親 repo を検出し、wiki-root の相対パスを**親 repo の `.git/info/exclude`** に登録する — repo-local で commit されないため、親は wiki を追跡しない。注意：後で wiki を削除しても `.git/info/exclude` の行は残る。手動で削除すること。
+wiki はプレーンなディレクトリであり、エンジンは git を一切呼ばない。同梱の `<wiki-root>/.gitignore` は、あなた自身が wiki を versioning する場合に、周囲の親 repo が wiki の churn を追跡しないようにする。
 
 wiki はプラグインの `templates/` から初期化される：
 
@@ -51,13 +61,15 @@ wiki はプラグインの `templates/` から初期化される：
 
 ## active な wiki の解決
 
-操作は active な wiki を**存在ベース**で上から解決する：**prompt `--root` > pj（`_projects/<project>/wiki/`）> workspace（`_llm-wiki/`）> CWD `.llmwiki`**。pj scope は taskflow から一方向に読む（最新の `_projects/_state/*.json` の `project` field を `$TASKFLOW_PROJECT_ROOTS` で解決）。state file が無ければ pj scope は綺麗にスキップする。解決が CWD だけに依存しなくなったため、`cd` の無い **VSCode 拡張でも動作する**。marker hook は毎ターン `active wiki: <root> (scope: pj|workspace|cwd)` を表示し、解決された wiki が常に可視になる。
+操作は active な wiki を**存在ベース**で上から解決する：**prompt `--root` > pj（`_projects/<project>/wiki/`）> workspace（`_llm-wiki/`）> CWD `.llmwiki`**。pj scope は taskflow から一方向に読み、`$TASKFLOW_PROJECT_ROOTS` で解決する：marker hook がそのターンの `session_id` を渡すため、pj scope は **このセッション自身の** `_projects/_state/<session_id>.json` の `project` field を優先して読む — 別プロジェクトの 2 セッションを同時に走らせても互いの wiki を取り違えない。そのファイルが無い場合は最新の `_projects/_state/*.json`（mtime）へフォールバックし、state file が一切無ければ pj scope は綺麗にスキップする。（CLI はセッション文脈を持たないため `resolve-root` は mtime-latest 動作のまま。）解決が CWD だけに依存しなくなったため、`cd` の無い **VSCode 拡張でも動作する**。marker hook は毎ターン `active wiki: <root> (scope: pj|workspace|cwd)` を表示し、解決された wiki が常に可視になる。
 
 ## 使い方
 
 典型的なセッション：
 
-1. **wiki に入る。** 解決は自動（上記「active な wiki の解決」参照）— wiki root へ `cd` するか、pj/workspace scope に任せるか、`--root <path>` を渡す。scope hook はそのターンに `wiki-active` と `active wiki:` 行を注入する。何も解決しなければプラグインは不可視のまま。
+1. **wiki に入る。** 解決は自動（上記「active な wiki の解決」参照）— wiki root へ `cd` するか、pj/workspace scope に任せるか、`--root <path>` を渡す。scope hook はそのターンに `wiki-active`、`active wiki:` 行、そして `[wiki:on]` の leading-line 指示（taskflow の `[pj:…]` と同様）を注入する。**pj** scope で解決した場合は wiki↔taskflow の棲み分けガイド（恒久・横断知識 → wiki／タスク遂行文脈・進捗 → taskflow）と filing 提案規範も加わる。何も解決しなければプラグインは不可視のまま。
+
+   **セッション単位でトグル — `wiki:on` / `wiki:off`。** wiki が解決されている限り既定は on。プロンプトの任意の位置に `wiki:off` を含めると、現在のセッションだけ静かにできる：hook は `wiki-active` / filing の注入を抑止し、最小限の `[wiki:off]` 通知のみを注入する（Claude は返答の冒頭に `[wiki:off]` を出し、wiki に触れない）。`wiki:on` で戻す。状態は解決した wiki root 直下の per-session marker（`.llmwiki.toggle.d/<session_id>.off`、存在 = off）なので、**セッション内では sticky**、**新しいセッションは on** で始まる。*恒久的な* off は代わりに wiki の `SCHEMA.md` の `activation_scope` を使う。wiki が一切解決されない場合、`wiki:on|off` は無視される（何も注入しない — pj 未割当と同型）。
 
 2. **ソースを ingest する。**
 
@@ -76,7 +88,7 @@ wiki はプラグインの `templates/` から初期化される：
 
    ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）のみ拾い、非テキスト（例：画像）はスキップする。バッチでは 1 ファイルの失敗は**そのファイルだけ**ロールバックして続行し、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する。0 件マッチはエラー。
 
-   何かが書き込まれる前に、解決値の一行宣言（`[wiki] write_mode = explicit (default)` …）が出る。既定の `write_mode=explicit` では Stage 2 のページ適用前に確認する。ingest 全体は（ファイル単位の）単一 git トランザクションなので、失敗や却下時は wiki が ingest 前の状態にロールバックする。
+   何かが書き込まれる前に、解決値の一行宣言（`[wiki] write_mode = explicit (default)` …）が出る。既定の `write_mode=explicit` では Stage 2 のページ適用前に確認する。ingest 全体は（ファイル単位の）単一のファイルジャーナル・トランザクションなので、失敗や却下時は wiki が ingest 前の状態にロールバックする。
 
 3. **質問する。** 自然言語で尋ねるだけ — 例：*「retry backoff について何を決めたっけ？」*。`wiki-query` skill が自動起動し、`wiki/` と `wiki/derived/` の両方を読み、各 claim をページパスで citation する（パスが source / derived tier を示す）。これは read-only。
 
@@ -89,57 +101,92 @@ wiki はプラグインの `templates/` から初期化される：
    retry backoff について何を決めたっけ？ llm-wiki:file=retry-policy # ページ名を固定 → wiki/derived/retry-policy.md
    ```
 
-   `llm-wiki:file=<page-slug>` はページ名を `wiki/derived/<page-slug>.md` に固定する。slug 無しの時は LLM が回答からページ名を生成する。marker は wiki の中（`.llmwiki` がある時）でのみ有効。安全境界（redaction → write-tool の location ゲート → 単一トランザクション）は不変で、省略されるのは確認プロンプトのみ。
+   `llm-wiki:file=<page-slug>` はページ名を `wiki/derived/<page-slug>.md` に固定する。slug 無しの時は LLM が回答からページ名を生成する。marker は wiki の中（`.llmwiki` がある時）でのみ有効。安全境界（redaction → write-tool の location ゲート → 単一トランザクション）は不変で、省略されるのは確認プロンプトのみ。（セッションが `wiki:off` の間は filing も抑止される。先に `wiki:on` で再有効化すること。）
+
+   llm-wiki は 2 つのプロンプトマーカーを領有する：`llm-wiki:file[=<slug>]`（この決定的な filing トリガ）と `wiki:on|off`（step 1 のセッショントグル）。どちらも文字列先頭または空白の直後でのみ発火し、case-insensitive なので token の途中にはマッチしない。
 
 5. **Lint。** `/wiki-lint` がグラフ / index 検査と transcript の decision floor を実行し、優先順位付きの「next questions」リストを返す。read-only。
 
-6. **wiki を閲覧する。** `/wiki-view` がローカル HTML ビューア（`http://127.0.0.1:17330/`）を起動し、wiki の `wiki/` + `wiki/derived/` ページをレンダリングして `[[wikilinks]]` をクリックで辿れるようにする。read-only。停止は `pkill -f "generate_wiki_view.py --serve"`。
+6. **wiki を閲覧する。** `/wiki-view` がローカル HTML ビューア（`http://127.0.0.1:17330/`）を起動し、wiki の `wiki/` + `wiki/derived/` ページをレンダリングして `[[wikilinks]]` をクリックで辿れるようにする。read-only。停止は `pkill -f "llmwiki-view view --serve"`。
 
 7. **Promote。** `wiki/derived/` のページが source tier に値する時：`/wiki-promote wiki/derived/retry-policy.md`。明示的な承認と contamination チェックの後、`wiki/retry-policy.md` へ move し inbound link を rewrite する。derived→source の唯一の経路。
 
-**回復（recovery）。** ingest が中断（プロセスが途中で kill）されると `.llmwiki.lock` が残ることがある。手動でクリアする — ingest 前の checkpoint へロールバックし lock を解放する：
+**回復（recovery）。** ingest が中断（プロセスが途中で kill）されると `.llmwiki.lock` と `.llmwiki.txn.d/` のジャーナルディレクトリが残ることがある。**単独の** stale lock — 死んだプロセスが残し、進行中トランザクションが無い（ジャーナルも sidecar も無い）もの — は次の ingest で自動回収される（記録された所有 pid の生存を確認し、疑わしきは held 扱いの fail-closed なので稼働中の ingest は決して奪わない）。ジャーナルや sidecar を伴う lock（中断されたトランザクション）は自動回収され**ない** — `abort` verb で明示的に回復する。`abort` は ingest 前の状態へロールバックし（ジャーナルを再生して orphan な `raw/` 生成物を除去し）lock を解放する。トランザクションの sidecar が書かれる前にクラッシュした場合でも回復する（sidecar だけでなくジャーナル / lock を手掛かりにする）：
 
 ```bash
-uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/ingest_driver.py" abort <wiki-root>
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort <wiki-root>
 ```
 
 ## 操作
 
-すべての操作は wiki root（`.llmwiki` を持つディレクトリ）から実行する。
+操作は active wiki を multi-scope（prompt>pj>workspace>cwd）で解決するため、wiki へ `cd` せずに動作する。特定の wiki を明示指定するには `--root <path>` を渡す。
 
 ### scope 検出
 
-`activation_scope: scoped` は `UserPromptSubmit` hook（`hooks/wiki_marker_inject.py`）として実装される：毎ターン CWD の `.llmwiki` marker を検出し、存在すれば `wiki-active` コンテキストを注入する。marker が無ければ silent に exit し何も注入しない（wiki の外ではプラグインは不可視）。注入されるコンテキストと `wiki-query` skill の description が query を自動起動させる。書込を伴う操作は明示的コマンドで、hook には依存しない。
+`activation_scope: scoped` は `UserPromptSubmit` hook（`hooks/wiki_marker_inject.py`）として実装される：毎ターン active wiki を multi-scope（prompt>pj>workspace>cwd、`wiki_root_resolver` 経由）で解決する。この時そのターンの `session_id` を渡すため、pj scope はこのセッション自身の state file を優先して読む（上記「active な wiki の解決」参照）。解決できれば `wiki-active` コンテキスト（解決した root と scope を含む。CWD が wiki root でなくても — 例えば VSCode 拡張 — wiki が可視になる）、`[wiki:on]` の leading-line 指示、そして pj scope 限定で wiki↔taskflow の棲み分け／filing ガイドを注入する。どの scope でも解決できなければ silent に exit し何も注入しない（wiki の外ではプラグインは不可視）。注入されるコンテキストと `wiki-query` skill の description が query を自動起動させる。書込を伴う操作は明示的コマンドで、hook には依存しない。
+
+hook は `wiki:on|off` トグルも扱う：プロンプト中の `wiki:on`/`wiki:off` マーカーが per-session フラグを設定する（解決した wiki root 直下に `.llmwiki.lock` / `.cc-turn-ledger.jsonl` と並べて `.llmwiki.toggle.d/<session_id>.off`、存在 = off として保持。`llmwiki/core/wiki_toggle.py` が管理し、best-effort で放置セッションを mtime prune する）。off の間は `wiki-active` / filing ブロック全体を抑止し、最小限の `[wiki:off]` 通知のみ注入する。トグルは wiki が解決された時のみ効き（それ以外は何も注入しない）、セッション sticky で既定 on（新しいセッションは on で始まる）。トグルディレクトリは ingest から強制除外される（self-ingestion guard の `.llmwiki.toggle.d`）。`.llmwiki.txn.d` と同様。
 
 ### Ingest — `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`
 
-3rd-party ソース（FE-B）または Claude Code セッション jsonl（FE-B'）を、2 段 `extract → apply` core を通して単一 git トランザクション内で ingest する。引数は単一ファイルのほか、**クォートした glob**（`"./docs/**/*.md"`）や**ディレクトリ**（`./docs/`）も指定できる：driver が（シェルではなく）Python で展開し、wiki 内部パスを強制除外し、ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）に限定する。glob/ディレクトリは**1 ファイル 1 トランザクション**で ingest し、1 ファイルの失敗はそのファイルだけロールバックして続行、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する（0 件マッチはエラー）。
+3rd-party ソース（FE-B）または Claude Code セッション jsonl（FE-B'）を、2 段 `extract → apply` core を通して単一のファイルジャーナル・トランザクション内で ingest する。引数は単一ファイルのほか、**クォートした glob**（`"./docs/**/*.md"`）や**ディレクトリ**（`./docs/`）も指定できる：driver が（シェルではなく）Python で展開し、wiki 内部パスを強制除外し、ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）に限定する。glob/ディレクトリは**1 ファイル 1 トランザクション**で ingest し、1 ファイルの失敗はそのファイルだけロールバックして続行、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する（0 件マッチはエラー）。
 
 - **Stage 1（extract）** — `wiki-ingest-extract` subagent が redaction 済み・untrusted の raw ソースを**構造的に書込ツールなし**で読み、提案編集のみを出力する。
-- **Stage 2（apply）** — `wiki-ingest-apply` subagent がページ更新を執筆し、すべての書込を allowlist write ツール（`scripts/write_tool.py`）経由でのみ stage する。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。index / log / commit は join 後に中央集約される。
+- **Stage 2（apply）** — `wiki-ingest-apply` subagent がページ更新を執筆し、すべての書込を allowlist write ツール（`llmwiki/write/write_tool.py`、`llmwiki ingest-apply` として起動）経由でのみ stage する。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。index / log / commit は join 後に中央集約される。提案された touch ページ集合の総数はまず `max_count` でゲートされる：これを超える ingest は fan-out せず human gate へエスカレートするため、per-worker の書込 budget が cluster 数だけ暗黙に乗算されることはない。
 
-cc-log（FE-B'）入力は `doc_type=transcript` に pin され、決定的な decision floor（`scripts/transcript_floor.py`）が掛かる：claim は明示的な affirmative token がある時のみ decision として記録され、沈黙は非承認として扱う。
+cc-log（FE-B'）入力は `doc_type=transcript` に pin され、決定的な decision floor（`llmwiki/ingest/transcript_floor.py`、`llmwiki floor-check` として起動）が掛かる：claim は明示的な affirmative token がある時のみ decision として記録され、沈黙は非承認として扱う。
+
+FE-B' の抽出は **fork 対応**：単一ファイル読み取りではなく、セッション（`session_id`）を — その agent/fork 子（親の `session_id` を持つ）を含めて — vendored DuckDB views（`llmwiki/ingest/cc_views.sql`。`inspect-cc-log` skill の `views.sql` を byte 単位で vendor したコピーで、sync され contract test で drift ガードされる）から projector `llmwiki/ingest/cc_log_project.py` で投影する。注入された boilerplate を除去し、turn は content hash `md5(nfc_normalize(role) ‖ 0x1F ‖ nfc_normalize(text))` で **exact かつ長さ非依存**に dedup する（thinking ブロックは SQL レベルで除外）。wiki-local な **turn ledger**（`.cc-turn-ledger.jsonl`、`llmwiki/ingest/ledger.py` が書く）が各 owned turn の hash を初回 ingest で記録するため、同じセッションの再取り込み — またはセッション間で共有される prefix — でも各 turn は **1 回だけ** file される（first-ingested-owns、path 跨ぎ・再実行跨ぎで冪等）。ledger 差分はトランザクション内で journal されるので、失敗したセッションは何も所有せず、次のセッションが共有 prefix を file し直す（欠落なし）。dedup/ledger の単位は **CC record**（`record_uuid`）であって会話 turn ではない：合成された replay record（1 record に複数の `USER:`/`ASSISTANT:` ブロックを埋め込んだもの）は 1 単位として扱い、会話粒度への分解は non-goal。
+
+### プロジェクト全体を ingest — `/wiki-ingest-project [--pj <name>] [--root <wiki>]`
+
+Path B は**現在のプロジェクトの全 cc-log セッション**を 1 コマンドで ingest する。セッション集合を解決し — taskflow プロジェクトが割り当てられていれば `_projects/_state/*.json` を `project == <name>` で filter、そうでなければ実行中セッションの CC プロジェクトディレクトリ（ground-truth：現在のセッションの `<sid>.jsonl` を含むディレクトリ）から — session id をセッション開始タイムスタンプの昇順に並べ、既存の per-transaction ingest サイクルを **1 セッション 1 トランザクション**でループする（failure-continue、glob ループと同じ `N total / M succeeded / K failed / S dedup-skipped` サマリ）。dedup は ledger 駆動なので、プロジェクトの成長に伴う再実行は **incremental**：既に所有された turn は skip され、サマリは解決したセッション数と **ledger-skipped turn 数**も報告するため、incremental な再実行が無音の no-op になることはない。0 件マッチ / プロジェクトディレクトリ解決不能は明示的エラー（fail-closed）。
+
+`--pj <name>` スコープは **taskflow が登録したセッションのみ**（`_projects/_state/*.json` の `project == <name>`）を対象にし、CC ディレクトリ全体ではない：`_state` ファイルの無いセッションは `--pj` 集合に入らない。プロジェクトの全 CC セッションを対象にするには `--pj` を省く（ドライバが CC ディレクトリを ground truth として解決する）。`~/.claude/projects` corpus 全体をセッションごとに再スキャンする（N セッション → N スキャン）のを避けるため、read-only の `project-batch` verb がループ前に全セッションの turn を **1 回**のスキャンで抽出する（per-session の turn ファイルを temp dir に書き、ループが cleanup する）。各 `begin` は `--turns` で抽出済み turn を受け取り、安価な per-session の dedup + ledger 差分のみを実行するので、ledger の read-after-write が逐次に保たれる。
 
 ### Query — `wiki-query` skill
 
-wiki が active な時に description 駆動で自動起動する。`wiki/` と `wiki/derived/` の**両方**を読み、すべての claim をページパスで citation する。パスが trust tier を表す（`wiki/` = source、`wiki/derived/` = derived）。既定で read-only。明示的な filing トリガがある時のみ回答を wiki へ filing する — 自然言語の依頼（LLM 判断）か、質問の任意の位置に含めた決定的・hook 検出の marker `llm-wiki:file[=<page-slug>]` のいずれか。marker は確認なしで filing を強制する。slug 指定時はページ名を `wiki/derived/<page-slug>.md` に固定し、無指定時は LLM が生成する。省略されるのは確認のみで、redaction → write-tool ゲート → 単一トランザクションの包絡は不変。
+wiki が active で**かつ off にトグルされていない**時に description 駆動で自動起動する（`wiki:off` はそのセッションの起動注入を抑止する）。`wiki/` と `wiki/derived/` の**両方**を読み、すべての claim をページパスで citation する。パスが trust tier を表す（`wiki/` = source、`wiki/derived/` = derived）。既定で read-only。明示的な filing トリガがある時のみ回答を wiki へ filing する — 自然言語の依頼（LLM 判断）か、質問の任意の位置に含めた決定的・hook 検出の marker `llm-wiki:file[=<page-slug>]` のいずれか。marker は確認なしで filing を強制する。slug 指定時はページ名を `wiki/derived/<page-slug>.md` に固定し、無指定時は LLM が生成する。省略されるのは確認のみで、redaction → write-tool ゲート → 単一トランザクションの包絡は不変。
+
+### 検索 backend（任意の外部依存）— qmd
+
+既定の query 経路は `index`：`wiki-query` は全ページを列挙し（`llmwiki search <root>
+--q …` が `scan-pages` と同じ集合を返す）、LLM が読むページを選ぶ — **外部依存なし・
+従来と byte 等価**。大規模 wiki 向けに、外部のオンデバイス全文検索エンジン **qmd
+（Quick Markdown Search、別途インストール・~GB のモデル）** に opt-in できる。wiki の
+`SCHEMA.md` config で `search_backend: qmd` を設定すると、`search` verb が内部で qmd に
+dispatch し、全列挙の代わりに関連度上位 k の ranked なページを返す。
+
+- **opt-in かつ隔離。** qmd は同梱せず Python 依存も増やさない（`read/` 層が `qmd` CLI に
+  shell-out する）。qmd の状態は全て `<wiki-root>/.qmd/` 配下（project-local、`wiki/`
+  subtree のみ・`raw/` は index しない）。2 つの code ゲート（write allowlist・ingest
+  transaction）は不変で、qmd はページを読むだけ。
+- **正しさの境界。** qmd の各ヒットは `scan_pages`（page-ness の単一権威）を通す post-filter に
+  掛けるため、`raw/` や `wiki/README.md` は決して cite されず、tier は依然パスで決まる（D22）
+  — qmd が決めることはない。
+- **`/wiki-reindex` で構築。** 一度（および大きな ingest の後に）実行して project-local index を
+  構築/更新する（`qmd init` → `collection add wiki/` → `embed` → `update`）。書込は `.qmd/`
+  配下のみ、冪等で、**`search_backend` が `qmd` でない、または qmd 未インストール時は no-op**
+  （告知して exit、crash しない）。query 時に qmd が使えない場合、`search` は一行 loud-announce
+  して index 経路へ degrade する — 同じ一行 degrade は query 途中の qmd エラーや
+  空の結果（例：index が未構築）もカバーする。
 
 ### Lint — `/wiki-lint`
 
-read-only。決定的な link / index グラフ検査（`scripts/link_lint.py`、`scripts/wiki_index.py`）に加え transcript 限定の型別 lint（v1）を実行し、優先順位付きの「next questions」リストを報告する。書込は一切しない。
+read-only。決定的な link / index グラフ検査（`llmwiki/lint/link_lint.py`、`llmwiki/core/wiki_index.py`、`llmwiki lint` として起動）に加え transcript 限定の型別 lint（v1）を実行し、優先順位付きの「next questions」リストを報告する。書込は一切しない。
 
 ### Promote — `/wiki-promote <wiki/derived/X.md>`
 
-derived な synthesis ページを source tier へ昇格する（`wiki/derived/X.md → wiki/X.md`）。コード駆動の move ＋ inbound link-rewrite（`scripts/promote.py`）で、明示的な人間承認と contamination チェックでゲートされる。derived から source tier への唯一の経路。
+derived な synthesis ページを source tier へ昇格する（`wiki/derived/X.md → wiki/X.md`）。コード駆動の move ＋ inbound link-rewrite（`llmwiki/write/promote.py`）で、明示的な人間承認と contamination チェックでゲートされる。フローは read-only verb と write verb に分割される：`llmwiki declare`（Step1 解決値宣言）、read-only `llmwiki promote-check`（Step2 承認**前**の contamination preview、move しない）、`llmwiki promote`（Step3 move、承認**後**のみ）。derived から source tier への唯一の経路。
 
 ### View — `/wiki-view`
 
-active な wiki のローカル HTML ビューアを起動する — `127.0.0.1` bind の HTTP サーバ（ポート `17330`、`scripts/generate_wiki_view.py --serve`、外部公開しない）が wiki の Markdown ページをオンデマンドで HTML にレンダリングし、`[[wikilinks]]` をページ間の navigable なリンクにする。read-only（wiki には書き込まない）。wiki-root は多スコープ resolver（`--root` > pj > workspace > CWD）で解決するため、CWD が wiki root である必要はなくなった。明示する場合は `--root <path>` を渡す。
+active な wiki のローカル HTML ビューアを起動する — `127.0.0.1` bind の HTTP サーバ（ポート `17330`、`llmwiki-view view --serve`、内部は `llmwiki/view/generate_wiki_view.py`、外部公開しない）が wiki の Markdown ページをオンデマンドで HTML にレンダリングし、`[[wikilinks]]` をページ間の navigable なリンクにする。read-only（wiki には書き込まない）。wiki-root は多スコープ resolver（`--root` > pj > workspace > CWD）で解決するため、CWD が wiki root である必要はなくなった。明示する場合は `--root <path>` を渡す。
 
 - 表示対象は `wiki/` + `wiki/derived/` のみ。`raw/` は**公開しない**。
 - 各ページに tier バッジ（**source** / **derived**）を表示し、ページは **tier-distinct**：同名の `wiki/X.md` と `wiki/derived/X.md` は別ページ。basename が両方に解決する `[[X]]` は**両方**を tier 明示のリンク（`X (source)` / `X (derived)`）として描画する。
 - 対象ページが存在しない `[[link]]` は、区別される navigable でない「missing」リンクとして表示する。
-- 起動時に URL ＋ ページ数を出力する（`[wiki-view] serving <N> pages at http://127.0.0.1:17330/ ...`）。停止は `pkill -f "generate_wiki_view.py --serve"`。
+- 起動時に URL ＋ ページ数を出力する（`[wiki-view] serving <N> pages at http://127.0.0.1:17330/ ...`）。停止は `pkill -f "llmwiki-view view --serve"`。
 
 ## 設定とデフォルト（D3–D5）
 
@@ -150,11 +197,16 @@ config は `SCHEMA.md` frontmatter（wiki-local）にあり、Claude Code の設
 | `activation_scope` | `scoped` | `.llmwiki` wiki root の中でのみ起動（D3） |
 | `read_grounding` | `implicit` | query は明示指示なしで wiki に接地（D3） |
 | `write_mode` | `explicit` | 書込適用前に確認（D3）。`implicit` は確認を省略し、セッション冒頭で loud に告知 |
-| `write_autocommit` | `auto` | `write_mode=implicit` の時 `true` 強制（floor、D5） |
+| `write_autocommit` | `auto` | INERT — エンジンは git を一切呼ばない。config 安定性のため保持 |
 | `override_scope` | `operation` | prompt override は 1 操作に適用。`session` で sticky |
 | `apply_fanout_k` | `10` | touch ページ ≤K はインライン、>K で per-cluster fan-out（D23） |
+| `max_count` | `100` | 書込数 budget：per-apply-worker のページ上限、かつ ingest 粒度のゲート — touch 総数がこれを超えると human gate へエスカレート（F2） |
+| `max_bytes` | `10485760` | write session あたりの書込サイズ budget（10 MiB）。超過は human gate へエスカレート |
+| `search_backend` | `index` | query 読取経路：`index`（既定・外部依存なし）または `qmd`（opt-in の外部全文検索 backend） |
+| `qmd_bin` | `qmd` | PATH で解決する qmd バイナリ（`search_backend=qmd` の時のみ使用） |
+| `qmd_page_threshold` | `100` | wiki のページ数がこれを超える時のみ qmd を使う（以下は index 直） |
 
-ingest の git checkpoint は `write_mode` に関わらず毎回取得する（D14）：`write_mode` は「書込適用前に確認を出すか」のみを制御し、wiki を commit するか否かは制御しない。
+ingest のジャーナル checkpoint は毎回取得する（D14）：`write_mode` は「書込適用前に確認を出すか」のみを制御する。エンジンは git に commit することはない。
 
 ## ファイル構成
 
@@ -165,22 +217,39 @@ plugins/llm-wiki/
     hooks.json                 # UserPromptSubmit -> wiki_marker_inject.py
     wiki_marker_inject.py      # active wiki を解決 -> "wiki-active" ＋ "active wiki:" 行を注入。dormant 時は silent
   commands/
-    wiki-ingest.md             # /wiki-ingest  （ingest オーケストレータ）
+    wiki-ingest.md             # /wiki-ingest  （ingest オーケストレータ。単一ファイル / glob / ディレクトリ）
+    wiki-ingest-project.md     # /wiki-ingest-project  （Path B：プロジェクト全体の cc-log セッションを ingest）
     wiki-lint.md               # /wiki-lint    （read-only lint ディスパッチ）
     wiki-promote.md            # /wiki-promote （derived -> source）
+    wiki-reindex.md            # /wiki-reindex （任意の qmd 検索 index を再構築。.qmd/ のみ）
   agents/
     wiki-ingest-extract.md     # Stage1 extract（tools: Read。書込ツールなし）
     wiki-ingest-apply.md       # Stage2 apply（書込は allowlist ツール経由のみ）
     wiki-lint.md               # read 中心の lint subagent
   skills/
-    wiki-init/SKILL.md         # /wiki-init（対話的に scope 選択 -> wiki_init.py）
+    wiki-init/SKILL.md         # /wiki-init（対話的に scope 選択 -> llmwiki init）
     wiki-query/SKILL.md        # query skill（description 駆動の自動起動）
     wiki-view/SKILL.md         # /wiki-view（ローカル HTML ページビューアを起動）
-  scripts/                     # 決定的エンジン（uv 実行可能）
-    config_resolver.py marker.py redaction.py content_hash.py frontends.py
-    extract_cc_log.py wiki_log.py wiki_index.py link_lint.py write_tool.py
-    transaction.py promote.py transcript_floor.py generate_wiki_view.py
-    wiki_root_resolver.py wiki_init.py
+  llmwiki/                     # path-import されるパッケージ（install 不要）。決定的エンジン
+    __init__.py                # version ＋ 公開 re-export
+    cli.py                     # verb dispatch（branch-local lazy import で read-only profile を強制）
+    core/                      # 単一権威・dep-free
+      wiki_index.py marker.py config_resolver.py wiki_root_resolver.py wiki_log.py content_hash.py wiki_toggle.py   # wiki_toggle: per-session wiki:on|off 状態
+    write/                     # allowlist write ゲート ＋ promote
+      write_tool.py transaction.py promote.py
+    ingest/                    # duckdb
+      ingest_driver.py frontends.py redaction.py transcript_floor.py
+      cc_log_project.py ledger.py cc_views.sql   # fork 対応 cc-log projector ＋ turn-hash dedup ledger ＋ vendored SQL views
+    read/                      # dep-free な読取経路（qmd は外部 CLI の shell-out で、Python 依存ではない）
+      query.py qmd_search.py
+    lint/   link_lint.py       # graph/index lint
+    view/   generate_wiki_view.py  # ローカル HTML ビューア（markdown）
+    init/   wiki_init.py       # wiki 初期化
+  bin/                         # CLI entrypoint（PEP 723 で依存宣言・uv run）
+    llmwiki                    # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
+    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|finish|abort|enumerate}
+    llmwiki-view               # markdown: view --serve
+  pyproject.toml               # version / requires-python / extras(doc)。runtime は install しない
   templates/                   # 新しい wiki インスタンスの初期化元
     .llmwiki SCHEMA.md index.md log.md raw/ wiki/
 ```

@@ -1,0 +1,33 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""llmwiki — dep-free CLI entrypoint (DEC-1=(b) area-split; bin/ shim).
+
+This is the single T-layer bootstrap for the dep-free verbs (spec §T層): it puts
+the plugin root on `sys.path` so `import llmwiki` resolves under path-import
+(no-install), then dispatches to `llmwiki.cli.main`. The path insert lives ONLY
+here (and the sibling bins) — never in `cli.py` or the migrated modules.
+
+Verbs (dep-free, D-2 read-profile preserved by cli.py's branch-local imports):
+    resolve-root scan-pages search marker-detect file declare promote-check
+    promote lint init ingest-apply floor-check reindex
+
+`ingest` (duckdb) and `view` (markdown) live in the sibling entrypoints
+(`llmwiki-ingest`, `llmwiki-view`) so a missing native dep never blocks the read
+path (failure isolation, DEC-1(b)). `search` dispatches the index|qmd backend
+internally (DEC-3); `reindex` maintains the optional qmd index under `.qmd/`.
+"""
+import os
+import sys
+
+# T-layer bootstrap: plugin root = parent of bin/. Single path-injection point.
+_PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PLUGIN_ROOT not in sys.path:
+    sys.path.insert(0, _PLUGIN_ROOT)
+
+from llmwiki.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

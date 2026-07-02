@@ -4,3 +4,9 @@
 # transaction state between begin and finish/abort; deleted on every terminal
 # path, never committed.
 .llmwiki.txn
+# Ephemeral write-ahead undo journal dir (transaction.py). Pre-image backups +
+# per-process journal segments; discarded on commit/rollback, never committed.
+.llmwiki.txn.d/
+# Optional qmd full-text search index (read/qmd_search.py). Project-local index +
+# vectors (can be GBs); rebuilt from wiki/ on demand — never commit it.
+.qmd/

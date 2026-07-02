@@ -1,17 +1,17 @@
 ---
 name: wiki-init
-description: Initialize a new LLM wiki at a chosen scope (active project, workspace, or an explicit path). Copies the contract templates, makes the wiki its own nested git repo, and force-ignores it in the parent repo. Use when the user wants to create/initialize a new wiki.
+description: Initialize a new LLM wiki at a chosen scope (active project, workspace, or an explicit path). Copies the contract templates into a plain directory (git-independent; the engine invokes no git). Use when the user wants to create/initialize a new wiki.
 disable-model-invocation: true
-allowed-tools: AskUserQuestion, Bash(uv run python *), Bash(mkdir *)
+allowed-tools: AskUserQuestion, Bash(uv run *), Bash(mkdir *)
 ---
 
 # /wiki-init
 
 Create a brand-new llm-wiki. Scope selection is context-driven and interactive
-(Q3); the actual generation — template copy, nested `git init`, and parent-repo
-force-ignore — is done by `wiki_init.py` (W-c: generation lives only there; do
-NOT reimplement it here). This skill RESOLVES a target root, then calls the
-script.
+(Q3); the actual generation — the template copy into a plain directory (no git;
+the engine invokes none) — is done by the `llmwiki init` verb (W-c: generation
+lives only there; do NOT reimplement it here). This skill RESOLVES a target root,
+then calls the verb.
 
 ## Step 0 — Honor an explicit `--root` (Q4)
 
@@ -56,16 +56,16 @@ Do NOT add non-active projects to the active-pj branch's menu — those go throu
 
 The selection yields a resolved target `<root>` and a `<scope>` label.
 
-## Step 2 — Initialize (the script does all generation)
+## Step 2 — Initialize (the verb does all generation)
 
-Call `wiki_init.py` with the resolved root and scope label. The script refuses
-to overwrite an existing wiki (`.llmwiki` present → error), copies the contract
-templates, makes the root its own nested git repo with an initial commit, and
-registers the wiki-root's relative path in the parent repo's `.git/info/exclude`
-(idempotent).
+Call `llmwiki init` with the resolved root and scope label. The verb refuses
+to overwrite an existing wiki (`.llmwiki` present → error) and copies the contract
+templates into the target root. It invokes no git — the wiki is a plain directory;
+the shipped `<wiki-root>/.gitignore` keeps a surrounding parent repo clean if you
+choose to version the wiki yourself.
 
 ```bash
-uv run python ${CLAUDE_PLUGIN_ROOT}/scripts/wiki_init.py "<root>" --scope "<scope>"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki init "<root>" --scope "<scope>"
 ```
 
 If it exits non-zero (e.g. a wiki already exists at `<root>`), surface its error
@@ -73,19 +73,13 @@ verbatim and stop — do NOT attempt to overwrite or repair anything yourself.
 
 ## Step 3 — Report
 
-Relay the script's report (created wiki-root, scope, whether a parent repo was
-found, and the force-ignore entry written) as a short summary, then point at the
-next step:
+Relay the script's report (created wiki-root, scope) as a short summary, then
+point at the next step:
 
 ```
 wiki initialized at <root> (scope: <scope>)
-force-ignored in parent repo: <entry>   # omit this line if no parent repo
 
 Next: /wiki-view to browse it, or /wiki-ingest to add content.
 ```
-
-Note: deleting a wiki later leaves its `/<rel>/` line in the parent repo's
-`.git/info/exclude` (registration only ever appends, there is no
-de-registration); if you remove a wiki, trim that stale line manually.
 
 Do not add further commentary.

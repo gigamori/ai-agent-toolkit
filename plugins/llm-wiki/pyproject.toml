@@ -1,0 +1,16 @@
+[project]
+name = "llmwiki"
+version = "0.1.0"
+description = "Immutable engine for an LLM-maintained wiki (path-import, no-install)."
+requires-python = ">=3.11"
+# Runtime dependencies are intentionally NOT declared here: the package is
+# consumed by path-import (no-install), and runtime deps (duckdb, markdown) are
+# declared per-entrypoint via PEP 723 inline metadata on the bin/ scripts, not
+# installed through this project. See package-cli-architecture spec
+# (no-install / DEC-1 area-split entrypoints).
+dependencies = []
+
+[project.optional-dependencies]
+# `doc` extra: documentation-build tooling group. Declared per spec; contents
+# are added when the doc build is wired up.
+doc = []

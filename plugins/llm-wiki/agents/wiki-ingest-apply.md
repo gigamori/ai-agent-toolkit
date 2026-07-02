@@ -18,11 +18,12 @@ model: sonnet
 > source (D17; 05-plan §1.1 step 5).
 
 You are Stage2 of the llm-wiki ingest core. You run while the orchestrator holds
-the single git transaction's lock (`.llmwiki.lock`, acquired BEFORE the front-end,
-D21) — so your `WriteSession.commit` writes page FILES to disk safely inside that
-window. You do NOT open or close any git transaction yourself, and you do NOT run
-any git commit: the ONE git commit is the orchestrator's, performed centrally
-after the fan-out join (D23). The orchestrator passes you: the Stage1
+the single file-journal transaction's lock (`.llmwiki.lock`, acquired BEFORE the
+front-end) — so your `WriteSession.commit` writes page FILES to disk safely inside
+that window, and each write is recorded in the write-ahead undo journal so a failed
+`finish` rolls it back. You do NOT open or close the transaction yourself, and
+there is no git: the ONE central finalize (discard the journal) is the
+orchestrator's, after the fan-out join (D23). The orchestrator passes you: the Stage1
 proposed-edits blob (or one cluster of it on fan-out) and the `origin` from the
 driver's `begin` JSON (`fe_b` → source tier, `fe_b_prime` → derived tier). The
 budget (`max_count`, `max_bytes`) is NOT threaded by the orchestrator — you read it
@@ -38,39 +39,30 @@ Do not invent information beyond the proposals.
 
 Stage all writes in one `WriteSession`, then commit it:
 
-Read the budget from the `.llmwiki.txn` sidecar the driver wrote at `begin` (its
-`max_count`/`max_bytes` keys) — do NOT hardcode it and do NOT expect it threaded
-through the prompt. Map the `origin` the orchestrator passed (`fe_b` → `"source"`,
+The budget is NOT threaded through the prompt and you do NOT hardcode it: the
+`ingest-apply` verb reads `max_count`/`max_bytes` from the `.llmwiki.txn` sidecar
+the driver wrote at `begin`. Pass the `origin` the orchestrator gave you (`fe_b` or
+`fe_b_prime`) as the second argument — the verb maps it (`fe_b` → `"source"`,
 `fe_b_prime` → `"derived"`) to the `WriteSession` origin.
 
+Build the page manifest as a JSON array `[{"rel_path": ..., "content": ...}]` (one
+entry per proposed page; a derived-origin page targets `wiki/derived/...` only) and
+pipe it to the verb on STDIN. The verb stages every page through one
+`write_tool.WriteSession` and commits it, writing page FILES to disk under the lock
+the orchestrator holds (each write is journaled) — there is no git commit; the
+single central finalize is the orchestrator's, after the join (D23):
+
 ```bash
-uv run python - "$WIKI_ROOT" "$ORIGIN" <<'PY'
-import sys, json
-from pathlib import Path
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-from write_tool import WriteSession, WriteRejected
-root = sys.argv[1]
-# origin passed by the orchestrator from begin's JSON: fe_b -> source, fe_b_prime -> derived.
-fe_origin = sys.argv[2]
-ws_origin = "derived" if fe_origin == "fe_b_prime" else "source"
-# budget comes from the sidecar (driver-owned state), never threaded by the prompt:
-txn = json.loads((Path(root) / ".llmwiki.txn").read_text(encoding="utf-8"))
-sess = WriteSession(root, max_count=int(txn["max_count"]),
-                    max_bytes=int(txn["max_bytes"]), origin=ws_origin)
-try:
-    sess.add("wiki/derived/<page>.md", "<authored content>")   # derived → wiki/derived/ only
-    # ... one .add per proposed page ...
-    written = sess.commit()    # writes page FILES to disk; lock held by orchestrator.
-    # This is NOT a git commit — it is the write_tool file write. The single git
-    # commit is the orchestrator's, after the join (D23). Do not git-commit here.
-    print("written:", written)
-except WriteRejected as e:
-    print("REJECTED", e.gate, e.reason)
-    raise
-PY
+printf '%s' "$MANIFEST_JSON" \
+  | uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki ingest-apply "$WIKI_ROOT" "$ORIGIN"
 ```
 
-Gate handling (`WriteRejected.gate`):
+`$MANIFEST_JSON` is the JSON array of `{rel_path, content}` page objects; `$ORIGIN`
+is the `fe_b`/`fe_b_prime` value from the orchestrator. On success the verb prints
+`written: <list>` (the written `rel_path`s); on a rejected write it prints
+`REJECTED <gate> <reason>` and re-raises. There is no git; do not attempt any commit here.
+
+Gate handling (`REJECTED <gate>` — the `WriteRejected.gate`):
 
 - `cross_namespace` — a derived-origin edit targeted outside `wiki/derived/`
   (D20). Fix the target to `wiki/derived/...`; do not promote (that is
@@ -88,7 +80,7 @@ Return ONLY the list of written `rel_path` STRINGS (and any budget/gate signal) 
 the orchestrator — the `WriteSession` object itself does NOT cross back across the
 subagent boundary and is not serialized; the orchestrator's join is over these
 returned path lists, not over a shared session object. Do NOT touch `index.md` or
-`log.md` — the orchestrator regenerates the index, appends the log, runs self-lint,
-and performs the single git commit centrally after the fan-out join (D23). You only
-write page files (already on disk via your `WriteSession.commit`, under the held
-lock); you never git-commit.
+`log.md` — the orchestrator regenerates the index, appends the log, and finalizes
+the single transaction centrally after the fan-out join (D23). You only
+write page files (already on disk via your `WriteSession.commit`, journaled, under the
+held lock); there is no git.

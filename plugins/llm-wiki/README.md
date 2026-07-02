@@ -4,9 +4,11 @@ A Claude Code plugin that maintains an **LLM-curated wiki**: it ingests sources 
 
 [日本語版 README はこちら](README_ja.md)
 
+> **New to llm-wiki?** Start with the **[User Guide](USER_GUIDE.md)** — a task-oriented walkthrough with diagrams. This README is the full reference (commands, settings, safety model, design rationale).
+
 ## What it solves
 
-Notes and decisions scatter across chats, command outputs, and session logs. llm-wiki normalizes any of those into immutable `raw/` artifacts, then has the LLM author and update wiki pages from them under hard code-enforced safety boundaries: untrusted source reading is separated from page writing, every write passes an allowlist gate, and the whole ingest runs as a single git transaction so a failure rolls the wiki back to its pre-ingest state.
+Notes and decisions scatter across chats, command outputs, and session logs. llm-wiki normalizes any of those into immutable `raw/` artifacts, then has the LLM author and update wiki pages from them under hard code-enforced safety boundaries: untrusted source reading is separated from page writing, every write passes an allowlist gate, and the whole ingest runs as a single file-journal transaction so a failure rolls the wiki back to its pre-ingest state.
 
 ## Installation (Claude Code)
 
@@ -23,11 +25,19 @@ Notes and decisions scatter across chats, command outputs, and session logs. llm
 claude --plugin-dir ./plugins/llm-wiki
 ```
 
-The plugin's deterministic scripts and hook run via `uv run python`. No separate `init` step is required to load the plugin; the `UserPromptSubmit` hook activates as soon as the plugin is enabled.
+The plugin's deterministic engine is a path-imported Python package (`llmwiki/`, no install) driven through three CLI entrypoints under `bin/`, launched with `uv run` (each declares its own deps via PEP 723):
+
+```bash
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki <verb> ...        # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|finish|abort|enumerate}
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve # markdown: local HTML viewer
+```
+
+The commands / skills / agents / hook are thin shims that invoke these entrypoints; the dep-free read path (`bin/llmwiki`) never pulls in `duckdb` or `markdown`. No separate `init` step is required to load the plugin; the `UserPromptSubmit` hook activates as soon as the plugin is enabled.
 
 ## Initializing a wiki
 
-Initialize a wiki with **`/wiki-init`**. It creates the wiki as a **nested independent git repo** (its own `git init` + initial commit) at a scope you select interactively:
+Initialize a wiki with **`/wiki-init`**. It creates the wiki as a **plain directory** (git-independent; the engine invokes no git) at a scope you select interactively:
 
 - **taskflow active and a project is assigned** — choose the **active pj** (`_projects/<project>/wiki/`), the **workspace** (`<workspace-root>/_llm-wiki/`), or **enter a path**.
 - **taskflow inactive or no project assigned** — **pick a project** (scanned from `$TASKFLOW_PROJECT_ROOTS`, else `_projects/`), the **workspace**, or **enter a path**.
@@ -38,7 +48,7 @@ Initialize a wiki with **`/wiki-init`**. It creates the wiki as a **nested indep
 /wiki-init --root ./path/to/wiki # explicit target root, skip selection
 ```
 
-The wiki is its own repo (so the ingest rollback's `git reset --hard` can never reach a parent repo). `/wiki-init` also detects the surrounding parent repo and registers the wiki-root's relative path in the **parent repo's `.git/info/exclude`** — repo-local and not committed, so the parent never tracks the wiki. Note: deleting a wiki later leaves its line in `.git/info/exclude`; trim it manually.
+The wiki is a plain directory; the engine never invokes git. The shipped `<wiki-root>/.gitignore` keeps a surrounding parent repo from tracking the wiki's churn if you choose to version it yourself.
 
 The wiki is initialized from the plugin's `templates/`:
 
@@ -51,13 +61,15 @@ The wiki is initialized from the plugin's `templates/`:
 
 ## Resolving the active wiki
 
-Operations resolve the active wiki by **existence**, top-down: **prompt `--root` > pj (`_projects/<project>/wiki/`) > workspace (`_llm-wiki/`) > CWD `.llmwiki`**. The pj scope is read one-way from taskflow (the most recent `_projects/_state/*.json` `project` field, resolved against `$TASKFLOW_PROJECT_ROOTS`); if there is no state file it is skipped cleanly. Because resolution no longer depends on the CWD alone, the operations work in the **VSCode extension without `cd`**. The marker hook shows `active wiki: <root> (scope: pj|workspace|cwd)` each turn so the resolved wiki is always visible.
+Operations resolve the active wiki by **existence**, top-down: **prompt `--root` > pj (`_projects/<project>/wiki/`) > workspace (`_llm-wiki/`) > CWD `.llmwiki`**. The pj scope is read one-way from taskflow, resolved against `$TASKFLOW_PROJECT_ROOTS`: the marker hook passes the turn's `session_id`, so the pj scope reads **this session's own** `_projects/_state/<session_id>.json` `project` field first — two sessions on different projects never resolve each other's wiki, even running concurrently. When that file is absent it falls back to the most recent `_projects/_state/*.json` (mtime); with no state file at all the pj scope is skipped cleanly. (The CLI carries no session context, so `resolve-root` keeps the mtime-latest behavior.) Because resolution no longer depends on the CWD alone, the operations work in the **VSCode extension without `cd`**. The marker hook shows `active wiki: <root> (scope: pj|workspace|cwd)` each turn so the resolved wiki is always visible.
 
 ## Usage
 
 A typical session:
 
-1. **Enter the wiki.** Resolution is automatic (see *Resolving the active wiki* above) — `cd` into a wiki root, or rely on the pj/workspace scope, or pass `--root <path>`. The scope hook injects `wiki-active` and the `active wiki:` line for that turn; when nothing resolves the plugin stays invisible.
+1. **Enter the wiki.** Resolution is automatic (see *Resolving the active wiki* above) — `cd` into a wiki root, or rely on the pj/workspace scope, or pass `--root <path>`. The scope hook injects `wiki-active`, the `active wiki:` line, and a `[wiki:on]` leading-line directive (mirroring taskflow's `[pj:…]`) for that turn; when the wiki resolved through the **pj** scope it also adds a wiki↔taskflow split guide (durable/cross-cutting knowledge → the wiki; task-execution context/progress → taskflow) plus a filing-proposal norm. When nothing resolves the plugin stays invisible.
+
+   **Toggle it per session — `wiki:on` / `wiki:off`.** The wiki is on by default whenever one resolves. Include `wiki:off` anywhere in a prompt to silence it for the current session: the hook suppresses the `wiki-active` / filing injection and emits only a minimal `[wiki:off]` notice (Claude leads its reply with `[wiki:off]` and leaves the wiki untouched). `wiki:on` restores it. The state is a per-session marker under the resolved wiki root (`.llmwiki.toggle.d/<session_id>.off`, existence = off), so it is **sticky within a session** and a **new session starts on**; for a permanent off use the wiki's `activation_scope` in `SCHEMA.md` instead. When no wiki resolves, `wiki:on|off` is ignored (nothing is emitted — same shape as an unassigned pj).
 
 2. **Ingest a source.**
 
@@ -76,7 +88,7 @@ A typical session:
 
    For a directory, only the text-type allowlist is picked up (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`); non-text files (e.g. images) are skipped. On a batch a per-file failure rolls back **just that file** and the run continues, then a summary `N total / M succeeded / K failed / S dedup-skipped` is reported; zero matches is an error.
 
-   Before anything is written you see the one-line resolved-value declaration (`[wiki] write_mode = explicit (default)` …). With the default `write_mode=explicit` you confirm before the Stage 2 pages are applied; the whole ingest is one git transaction (per file), so a failure or a decline rolls the wiki back to its pre-ingest state.
+   Before anything is written you see the one-line resolved-value declaration (`[wiki] write_mode = explicit (default)` …). With the default `write_mode=explicit` you confirm before the Stage 2 pages are applied; the whole ingest is one file-journal transaction (per file), so a failure or a decline rolls the wiki back to its pre-ingest state.
 
 3. **Ask questions.** Just ask in natural language — e.g. *"what did we decide about retry backoff?"* The `wiki-query` skill auto-activates, reads both `wiki/` and `wiki/derived/`, and cites each claim by page path (the path tells you whether it's source or derived tier). This is read-only.
 
@@ -89,57 +101,96 @@ A typical session:
    what did we decide about retry backoff? llm-wiki:file=retry-policy # fix the page name → wiki/derived/retry-policy.md
    ```
 
-   `llm-wiki:file=<page-slug>` fixes the page name to `wiki/derived/<page-slug>.md`; without a slug the LLM generates the page name from the answer. The marker is effective only inside a wiki (when `.llmwiki` is present). The safety envelope (redaction → write-tool location gate → single transaction) is unchanged — only the confirmation prompt is skipped.
+   `llm-wiki:file=<page-slug>` fixes the page name to `wiki/derived/<page-slug>.md`; without a slug the LLM generates the page name from the answer. The marker is effective only inside a wiki (when `.llmwiki` is present). The safety envelope (redaction → write-tool location gate → single transaction) is unchanged — only the confirmation prompt is skipped. (Filing is suppressed while the session is `wiki:off`; re-enable with `wiki:on` first.)
+
+   llm-wiki owns two prompt markers: `llm-wiki:file[=<slug>]` (this deterministic filing trigger) and `wiki:on|off` (the per-session toggle in step 1). Both fire only at a string start or after whitespace and are case-insensitive, so they never match mid-token.
 
 5. **Lint.** `/wiki-lint` runs the graph/index checks plus the transcript decision-floor and returns a prioritized "next questions" list. Read-only.
 
-6. **Browse the wiki.** `/wiki-view` starts a local HTML viewer at `http://127.0.0.1:17330/` that renders the wiki's `wiki/` + `wiki/derived/` pages and lets you click through `[[wikilinks]]`. Read-only; stop it with `pkill -f "generate_wiki_view.py --serve"`.
+6. **Browse the wiki.** `/wiki-view` starts a local HTML viewer at `http://127.0.0.1:17330/` that renders the wiki's `wiki/` + `wiki/derived/` pages and lets you click through `[[wikilinks]]`. Read-only; stop it with `pkill -f "llmwiki-view view --serve"`.
 
 7. **Promote.** When a `wiki/derived/` page has earned source tier: `/wiki-promote wiki/derived/retry-policy.md`. After an explicit approval and a contamination check it moves to `wiki/retry-policy.md` and rewrites inbound links. This is the only derived→source path.
 
-**Recovery.** If an ingest is interrupted (the process is killed mid-run), a stale `.llmwiki.lock` can remain. Clear it manually — this rolls back to the pre-ingest checkpoint and releases the lock:
+**Recovery.** If an ingest is interrupted (the process is killed mid-run), a stale `.llmwiki.lock` and the `.llmwiki.txn.d/` journal dir can remain. A **bare** stale lock — one left by a dead process with NO open transaction (no journal dir, no sidecar) — is reclaimed automatically on the next ingest (the recorded owner pid is liveness-checked; fail-closed on any doubt, so a still-running ingest is never reclaimed). A lock left alongside a journal or sidecar (an interrupted transaction) is **not** auto-reclaimed — recover it explicitly with the `abort` verb, which rolls the wiki back to its pre-ingest state (replaying the journal, removing any orphan `raw/` artifact) and releases the lock. It recovers even when the crash happened before the transaction sidecar was written (it keys on the journal / lock, not only the sidecar):
 
 ```bash
-uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/ingest_driver.py" abort <wiki-root>
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort <wiki-root>
 ```
 
 ## Operations
 
-Run all operations from the wiki root (the directory holding `.llmwiki`).
+Operations resolve the active wiki multi-scope (prompt>pj>workspace>cwd), so they work without `cd` into the wiki; pass `--root <path>` to target a specific wiki explicitly.
 
 ### Scope detection
 
-`activation_scope: scoped` is implemented as a `UserPromptSubmit` hook (`hooks/wiki_marker_inject.py`): each turn it checks the CWD for a `.llmwiki` marker and, when present, injects a `wiki-active` context. When no marker is present it exits silently and injects nothing — outside a wiki, the plugin is invisible. The injected context plus the `wiki-query` skill description is what auto-activates query; the write-bearing operations are explicit commands and do not depend on the hook.
+`activation_scope: scoped` is implemented as a `UserPromptSubmit` hook (`hooks/wiki_marker_inject.py`): each turn it resolves the active wiki multi-scope (prompt>pj>workspace>cwd, via `wiki_root_resolver`), passing the turn's `session_id` so the pj scope reads this session's own state file first (see *Resolving the active wiki*). When one resolves, it injects a `wiki-active` context (including the resolved root + scope, so the wiki is visible even when the CWD is not it — e.g. in the VSCode extension), the `[wiki:on]` leading-line directive, and — pj scope only — the wiki↔taskflow split/filing guide. When no wiki resolves in any scope it exits silently and injects nothing — outside a wiki, the plugin is invisible. The injected context plus the `wiki-query` skill description is what auto-activates query; the write-bearing operations are explicit commands and do not depend on the hook.
+
+The hook also honors the `wiki:on|off` toggle: a `wiki:on`/`wiki:off` marker in the prompt sets a per-session flag (kept as `.llmwiki.toggle.d/<session_id>.off`, existence = off, under the resolved wiki root, alongside `.llmwiki.lock` / `.cc-turn-ledger.jsonl`; managed by `llmwiki/core/wiki_toggle.py`, best-effort with mtime pruning of abandoned sessions). While off, the whole `wiki-active` / filing block is suppressed and only a minimal `[wiki:off]` notice is injected. The toggle is honored only when a wiki resolves (nothing is emitted otherwise); it is session-sticky and defaults on (a new session starts on). The toggle dir is force-excluded from ingest (`.llmwiki.toggle.d` in the self-ingestion guard), like `.llmwiki.txn.d`.
 
 ### Ingest — `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`
 
-Ingests a 3rd-party source (FE-B) or a Claude Code session jsonl (FE-B') through the 2-stage `extract → apply` core inside one git transaction. The argument may be a single file, a **quoted glob** (`"./docs/**/*.md"`), or a **directory** (`./docs/`): the driver expands it in Python (never the shell), force-excludes wiki-internal paths, and — for a directory — restricts to the text-type allowlist (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`). A glob/directory is ingested **one file per transaction**; a per-file failure rolls back only that file and the run continues, then a `N total / M succeeded / K failed / S dedup-skipped` summary is reported (zero matches is an error).
+Ingests a 3rd-party source (FE-B) or a Claude Code session jsonl (FE-B') through the 2-stage `extract → apply` core inside one file-journal transaction. The argument may be a single file, a **quoted glob** (`"./docs/**/*.md"`), or a **directory** (`./docs/`): the driver expands it in Python (never the shell), force-excludes wiki-internal paths, and — for a directory — restricts to the text-type allowlist (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`). A glob/directory is ingested **one file per transaction**; a per-file failure rolls back only that file and the run continues, then a `N total / M succeeded / K failed / S dedup-skipped` summary is reported (zero matches is an error).
 
 - **Stage 1 (extract)** — the `wiki-ingest-extract` subagent reads the redacted, untrusted raw source with **no write tool by construction** and emits proposed edits only.
-- **Stage 2 (apply)** — the `wiki-ingest-apply` subagent authors page updates and stages every write **only** through the allowlist write tool (`scripts/write_tool.py`), which confines writes to `wiki/` and `wiki/derived/`, rejects `SCHEMA.md` / `.llmwiki` / `raw/` / absolute paths / traversal, and gates on budget. On more than `apply_fanout_k` touched pages, Stage 2 fans out one apply worker per cluster; index / log / commit are centralized after the join.
+- **Stage 2 (apply)** — the `wiki-ingest-apply` subagent authors page updates and stages every write **only** through the allowlist write tool (`llmwiki/write/write_tool.py`, invoked as `llmwiki ingest-apply`), which confines writes to `wiki/` and `wiki/derived/`, rejects `SCHEMA.md` / `.llmwiki` / `raw/` / absolute paths / traversal, and gates on budget. On more than `apply_fanout_k` touched pages, Stage 2 fans out one apply worker per cluster; index / log / commit are centralized after the join. The total proposed touched-page set is first gated against `max_count`: an ingest proposing more pages than that escalates to the human gate instead of fanning out, so the per-worker write budget can't be silently multiplied by the cluster count.
 
-cc-log (FE-B') input is pinned to `doc_type=transcript` with a deterministic decision floor (`scripts/transcript_floor.py`): a claim is recorded as a decision only with an explicit affirmative token; silence is non-affirmation.
+cc-log (FE-B') input is pinned to `doc_type=transcript` with a deterministic decision floor (`llmwiki/ingest/transcript_floor.py`, invoked as `llmwiki floor-check`): a claim is recorded as a decision only with an explicit affirmative token; silence is non-affirmation.
+
+FE-B' extraction is **fork-aware**: instead of a single-file read it projects a session (`session_id`) — including its agent/fork children, which carry the parent's `session_id` — out of the vendored DuckDB views (`llmwiki/ingest/cc_views.sql`, a byte-for-byte vendored copy of the `inspect-cc-log` skill's `views.sql`, kept in sync and guarded by a contract test) via the projector `llmwiki/ingest/cc_log_project.py`. Injected boilerplate is stripped and turns are deduped **exact and length-independent** by a content hash `md5(nfc_normalize(role) ‖ 0x1F ‖ nfc_normalize(text))` (thinking blocks excluded at the SQL level). A wiki-local **turn ledger** (`.cc-turn-ledger.jsonl`, written by `llmwiki/ingest/ledger.py`) records each owned turn's hash on the first ingest, so re-ingesting a session — or the same shared prefix across sessions — files each turn **only once** (first-ingested-owns; cross-path and cross-rerun idempotent). The ledger diff is journaled inside the transaction, so a failed session leaves nothing owned and the next session re-files the shared prefix (no gap). The dedup/ledger unit is the **CC record** (`record_uuid`), not a conversation turn: a synthesized replay record (one record embedding many `USER:`/`ASSISTANT:` blocks) is treated as one unit; splitting into conversation grain is a non-goal.
+
+### Ingest a whole project — `/wiki-ingest-project [--pj <name>] [--root <wiki>]`
+
+Path B ingests **every cc-log session of the current project** in one command. It resolves the session set — when a taskflow project is assigned, from `_projects/_state/*.json` filtered by `project == <name>`; otherwise from the CC project directory of the running session (ground-truth: the directory holding the current session's `<sid>.jsonl`) — orders the session ids by session-start timestamp ascending, then loops the existing per-transaction ingest cycle **one session per transaction** (failure-continue, same `N total / M succeeded / K failed / S dedup-skipped` summary as the glob loop). Because dedup is ledger-driven, re-running as the project grows is **incremental**: already-owned turns are skipped, and the summary also reports the resolved session count and the number of **ledger-skipped turns** so an incremental re-run is never silently a no-op. Zero matches / an unresolvable project directory is an explicit error (fail-closed).
+
+The `--pj <name>` scope covers **only sessions taskflow registered** (`_projects/_state/*.json` with `project == <name>`) — not the whole CC directory; a session with no `_state` file is not in the `--pj` set. To ingest every CC session of the project, omit `--pj` (the driver resolves the CC directory as ground truth). To avoid re-scanning the whole `~/.claude/projects` corpus once per session (N sessions → N scans), a read-only `project-batch` verb extracts all sessions' turns in **one** scan before the loop (writing per-session turn files to a temp dir the loop cleans up); each `begin` then consumes its pre-extracted turns via `--turns` and runs only the cheap per-session dedup + ledger diff, keeping the ledger read-after-write sequential.
 
 ### Query — the `wiki-query` skill
 
-Description-driven auto-activation when a wiki is active. It reads **both** `wiki/` and `wiki/derived/` and cites every claim by page path, where the path encodes the trust tier (`wiki/` = source, `wiki/derived/` = derived). Read-only by default; it files an answer back into the wiki only on an explicit filing trigger — either a natural-language ask (LLM-judged) or the deterministic, hook-detected marker `llm-wiki:file[=<page-slug>]` included anywhere in the question. The marker forces filing without confirmation; with a slug the page name is fixed to `wiki/derived/<page-slug>.md`, without one the LLM generates it. Only the confirmation is skipped — the redaction → write-tool gate → single-transaction envelope is unchanged.
+Description-driven auto-activation when a wiki is active **and not toggled off** (`wiki:off` suppresses the activating injection for the session). It reads **both** `wiki/` and `wiki/derived/` and cites every claim by page path, where the path encodes the trust tier (`wiki/` = source, `wiki/derived/` = derived). Read-only by default; it files an answer back into the wiki only on an explicit filing trigger — either a natural-language ask (LLM-judged) or the deterministic, hook-detected marker `llm-wiki:file[=<page-slug>]` included anywhere in the question. The marker forces filing without confirmation; with a slug the page name is fixed to `wiki/derived/<page-slug>.md`, without one the LLM generates it. Only the confirmation is skipped — the redaction → write-tool gate → single-transaction envelope is unchanged.
+
+### Search backend (optional external) — qmd
+
+By default the query path is `index`: `wiki-query` enumerates all pages
+(`llmwiki search <root> --q …` returning the same set as `scan-pages`) and the LLM
+selects what to read — **no external dependency, byte-identical to prior
+behavior**. For large wikis you can opt in to **qmd (Quick
+Markdown Search)** — an external on-device full-text engine (installed
+separately; ~GB models). Set `search_backend: qmd` in the wiki's `SCHEMA.md`
+config; the `search` verb then dispatches internally to qmd and returns a ranked
+top-k of the most relevant pages instead of the full enumeration.
+
+- **Opt-in and isolated.** qmd is never bundled and adds no Python dependency (the
+  `read/` layer shells out to the `qmd` CLI). All qmd state lives under
+  `<wiki-root>/.qmd/` (project-local; the `wiki/` subtree only — `raw/` is never
+  indexed). The two code gates (write allowlist, ingest transaction) are untouched;
+  qmd only reads pages.
+- **Correctness boundary.** Every qmd hit is filtered through `scan_pages` (the
+  single page-ness authority), so `raw/` and `wiki/README.md` are never cited and
+  the tier is still decided by path (D22) — never by qmd.
+- **Build it with `/wiki-reindex`.** Run it once (and after large ingests) to build
+  / refresh the project-local index (`qmd init` → `collection add wiki/` → `embed`
+  → `update`). It writes only under `.qmd/`, is idempotent, and is a **no-op when
+  `search_backend` is not `qmd` or qmd is not installed** (announce + exit, no
+  crash). If qmd is unavailable at query time, `search` loud-announces one line and
+  degrades to the index path — the same one-line degrade also covers a qmd error
+  mid-query or an empty result (e.g. an index that was never built).
 
 ### Lint — `/wiki-lint`
 
-Read-only. Runs the deterministic link / index graph checks (`scripts/link_lint.py`, `scripts/wiki_index.py`) plus the transcript-only type-specific lint (v1), and reports a prioritized "next questions" list. Never writes.
+Read-only. Runs the deterministic link / index graph checks (`llmwiki/lint/link_lint.py`, `llmwiki/core/wiki_index.py`, invoked as `llmwiki lint`) plus the transcript-only type-specific lint (v1), and reports a prioritized "next questions" list. Never writes.
 
 ### Promote — `/wiki-promote <wiki/derived/X.md>`
 
-Promotes a derived synthesis page to source tier (`wiki/derived/X.md → wiki/X.md`) as a code-driven move plus inbound link-rewrite (`scripts/promote.py`), gated on explicit human approval and a contamination check. The only path from derived to source tier.
+Promotes a derived synthesis page to source tier (`wiki/derived/X.md → wiki/X.md`) as a code-driven move plus inbound link-rewrite (`llmwiki/write/promote.py`), gated on explicit human approval and a contamination check. The flow is split across read-only and write verbs: `llmwiki declare` (Step 1 resolved-value declaration), read-only `llmwiki promote-check` (Step 2 pre-approval contamination preview, no move), then `llmwiki promote` (Step 3 move, only after approval). The only path from derived to source tier.
 
 ### View — `/wiki-view`
 
-Starts a local HTML viewer for the active wiki — a `127.0.0.1`-bound HTTP server on port `17330` (`scripts/generate_wiki_view.py --serve`, never externally reachable) that renders the wiki's Markdown pages to HTML on demand and turns `[[wikilinks]]` into navigable links between page views. Read-only — it does not write to the wiki. The wiki-root is resolved by the multi-scope resolver (`--root` > pj > workspace > CWD), so it no longer needs the CWD to be the wiki root; pass `--root <path>` to target one explicitly.
+Starts a local HTML viewer for the active wiki — a `127.0.0.1`-bound HTTP server on port `17330` (`llmwiki-view view --serve`, wrapping `llmwiki/view/generate_wiki_view.py`, never externally reachable) that renders the wiki's Markdown pages to HTML on demand and turns `[[wikilinks]]` into navigable links between page views. Read-only — it does not write to the wiki. The wiki-root is resolved by the multi-scope resolver (`--root` > pj > workspace > CWD), so it no longer needs the CWD to be the wiki root; pass `--root <path>` to target one explicitly.
 
 - Serves `wiki/` + `wiki/derived/` only; `raw/` is **not** exposed.
 - Each page shows a tier badge (**source** / **derived**), and pages are **tier-distinct**: a same-name `wiki/X.md` and `wiki/derived/X.md` are separate pages. A `[[X]]` whose basename resolves to both renders **both** as tier-labelled links (`X (source)` / `X (derived)`).
 - A `[[link]]` with no target page is shown as a distinct, non-navigable "missing" link.
-- On start it prints the URL + page count (`[wiki-view] serving <N> pages at http://127.0.0.1:17330/ ...`). Stop it with `pkill -f "generate_wiki_view.py --serve"`.
+- On start it prints the URL + page count (`[wiki-view] serving <N> pages at http://127.0.0.1:17330/ ...`). Stop it with `pkill -f "llmwiki-view view --serve"`.
 
 ## Configuration & defaults (D3–D5)
 
@@ -150,11 +201,16 @@ Config lives in `SCHEMA.md` frontmatter (wiki-local) and is read by the plugin's
 | `activation_scope` | `scoped` | Activate only inside a `.llmwiki` wiki root (D3) |
 | `read_grounding` | `implicit` | Query grounds in the wiki without being asked (D3) |
 | `write_mode` | `explicit` | Confirm before applying writes (D3); `implicit` skips confirmation with a loud session-start notice |
-| `write_autocommit` | `auto` | Forced `true` when `write_mode=implicit` (floor, D5) |
+| `write_autocommit` | `auto` | INERT — the engine invokes no git; retained for config stability |
 | `override_scope` | `operation` | A prompt override applies to one operation; `session` makes it sticky |
 | `apply_fanout_k` | `10` | ≤K touched pages inline; >K fans out per-cluster (D23) |
+| `max_count` | `100` | Write-count budget: the per-apply-worker page limit, and the ingest-grain gate — a touched set larger than this escalates to the human gate (F2) |
+| `max_bytes` | `10485760` | Write-size budget per write session (10 MiB); overflow escalates to the human gate |
+| `search_backend` | `index` | Query read path: `index` (default, no external dep) or `qmd` (opt-in external full-text backend) |
+| `qmd_bin` | `qmd` | qmd binary resolved via PATH (used only when `search_backend=qmd`) |
+| `qmd_page_threshold` | `100` | Use qmd only when the wiki holds more than this many pages (below it, index-direct) |
 
-The ingest git checkpoint is taken on every run regardless of `write_mode` (D14): `write_mode` controls only whether a confirmation precedes applying writes, not whether the wiki is committed.
+The ingest journal checkpoint is taken on every run (D14): `write_mode` controls only whether a confirmation precedes applying writes. The engine never commits to git.
 
 ## File layout
 
@@ -165,22 +221,39 @@ plugins/llm-wiki/
     hooks.json                 # UserPromptSubmit -> wiki_marker_inject.py
     wiki_marker_inject.py      # resolve active wiki -> inject "wiki-active" + "active wiki:" line; silent when dormant
   commands/
-    wiki-ingest.md             # /wiki-ingest  (ingest orchestrator)
+    wiki-ingest.md             # /wiki-ingest  (ingest orchestrator; single file / glob / directory)
+    wiki-ingest-project.md     # /wiki-ingest-project  (Path B: ingest a whole project's cc-log sessions)
     wiki-lint.md               # /wiki-lint    (read-only lint dispatch)
     wiki-promote.md            # /wiki-promote (derived -> source)
+    wiki-reindex.md            # /wiki-reindex (rebuild the optional qmd search index; .qmd/ only)
   agents/
     wiki-ingest-extract.md     # Stage1 extract (tools: Read; no write tool)
     wiki-ingest-apply.md       # Stage2 apply (writes only via allowlist tool)
     wiki-lint.md               # read-centric lint subagent
   skills/
-    wiki-init/SKILL.md         # /wiki-init (interactive scope select -> wiki_init.py)
+    wiki-init/SKILL.md         # /wiki-init (interactive scope select -> llmwiki init)
     wiki-query/SKILL.md        # query skill (description-driven auto-trigger)
     wiki-view/SKILL.md         # /wiki-view (start the local HTML page viewer)
-  scripts/                     # deterministic engine (uv-runnable)
-    config_resolver.py marker.py redaction.py content_hash.py frontends.py
-    extract_cc_log.py wiki_log.py wiki_index.py link_lint.py write_tool.py
-    transaction.py promote.py transcript_floor.py generate_wiki_view.py
-    wiki_root_resolver.py wiki_init.py
+  llmwiki/                     # path-imported package (no install); deterministic engine
+    __init__.py                # version + public re-exports
+    cli.py                     # verb dispatch (branch-local lazy imports enforce the read-only profile)
+    core/                      # single-authority, dep-free
+      wiki_index.py marker.py config_resolver.py wiki_root_resolver.py wiki_log.py content_hash.py wiki_toggle.py   # wiki_toggle: per-session wiki:on|off state
+    write/                     # allowlist write gates + promote
+      write_tool.py transaction.py promote.py
+    ingest/                    # duckdb
+      ingest_driver.py frontends.py redaction.py transcript_floor.py
+      cc_log_project.py ledger.py cc_views.sql   # fork-aware cc-log projector + turn-hash dedup ledger + vendored SQL views
+    read/                      # dep-free read paths (qmd is an external CLI shell-out, not a Python dep)
+      query.py qmd_search.py
+    lint/   link_lint.py       # graph/index lint
+    view/   generate_wiki_view.py  # local HTML viewer (markdown)
+    init/   wiki_init.py       # wiki initializer
+  bin/                         # CLI entrypoints (PEP 723 dep decls; uv run)
+    llmwiki                    # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
+    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|finish|abort|enumerate}
+    llmwiki-view               # markdown: view --serve
+  pyproject.toml               # version / requires-python / extras(doc); runtime is not installed
   templates/                   # what a new wiki instance is initialized from
     .llmwiki SCHEMA.md index.md log.md raw/ wiki/
 ```

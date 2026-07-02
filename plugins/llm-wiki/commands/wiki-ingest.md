@@ -1,7 +1,7 @@
 ---
 description: Ingest a 3rd-party source (FE-B) or a cc-log jsonl (FE-B') into the active wiki via the 2-stage extract→apply core. Accepts a single file OR a glob / directory (expanded by the driver, ingested one file per transaction). Explicit write-bearing command (hook-independent). Usage `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`.
 disable-model-invocation: true
-allowed-tools: Bash(uv run python *) Agent AskUserQuestion
+allowed-tools: Bash(uv run *) Agent AskUserQuestion
 ---
 
 # /wiki-ingest
@@ -10,8 +10,8 @@ Arguments: `$ARGUMENTS`
 
 You are the ingest **orchestrator**. You do NOT run the deterministic envelope
 step-by-step yourself — the `ingest_driver.py` CLI owns it (config resolution, the
-single git transaction, the normalization front-end, redaction, dedup, the central
-join, index/log, self-lint). Your job is to call the driver's verbs in order and to
+single file-journal transaction, the normalization front-end, redaction, dedup, the
+central join, index/log). Your job is to call the driver's verbs in order and to
 dispatch the two LLM stages to subagents in between. You NEVER write wiki pages
 yourself — all page writes happen inside the Stage2 apply-worker through the
 allowlist write tool.
@@ -51,7 +51,7 @@ pass the glob/dir token **double-quoted** (as in the code block below) so the sh
 not glob-expand or word-split it; the literal pattern reaches the driver intact.
 
 ```bash
-uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/ingest_driver.py" enumerate \
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest enumerate \
   "$WIKI_ROOT" "$GLOB"
 ```
 
@@ -76,8 +76,9 @@ no sidecar).
 
 For **each** `rel_path` in `files`, run the full per-file cycle Steps 1–5 with that
 `rel_path` as `$SOURCE`. Each iteration is a **complete, independent transaction**:
-`begin` acquires `.llmwiki.lock` and checkpoints, the stages run, and `finish` commits
-or rolls back and releases the lock for **that one file**. The transaction is owned
+`begin` acquires `.llmwiki.lock` and checkpoints (opens the journal), the stages run,
+and `finish` commits (discards the journal) or rolls back (replays it) and releases the
+lock for **that one file**. The transaction is owned
 entirely by the driver via the `.llmwiki.txn` sidecar (the ONE INVARIANT below) — you
 thread NO transaction state across files, and you do NOT wrap the loop in a single
 spanning transaction. The loop is N independent driver transactions, one per file (G-c).
@@ -107,18 +108,20 @@ in the glob/dir case you run them once per enumerated file. They are identical e
 
 ## THE ONE UN-DROPPABLE INVARIANT (read first, never bypass)
 
-> The whole ingest is ONE git transaction, and that transaction is owned **entirely
-> by `ingest_driver.py`**, not by you. `begin` records the checkpoint and
-> `acquire_lock`s `.llmwiki.lock` BEFORE the front-end (D21); `finish` performs
-> exactly ONE `commit` (success) or `rollback` (fail) and always `release_lock`s.
-> Between them the transaction state lives on disk in the `.llmwiki.txn` sidecar —
-> you NEVER thread the checkpoint sha, stash flag, budget, lock handle, or fe-hash
-> yourself; you pass the driver only the opaque `<root>` (plus `<source>` to `begin`
-> and the `success|fail` outcome to `finish`). Every byte still passes through
-> `write_tool.WriteSession` inside the Stage2 apply-worker, and Stage1 — which alone
-> reads the untrusted raw source — has **no write tool at all** (`tools: Read`).
-> Trust is decided by *location* (`wiki/` vs `wiki/derived/`), not by the LLM.
-> (driver-plan §2/§3; design D17/D19/D20/D21/D23.)
+> The whole ingest is ONE file-journal transaction (git-independent; supersedes
+> D21), and that transaction is owned **entirely by `ingest_driver.py`**, not by
+> you. `begin` `acquire_lock`s `.llmwiki.lock` THEN checkpoints (opens the
+> write-ahead undo journal `.llmwiki.txn.d/`) BEFORE the front-end; `finish`
+> performs exactly ONE `commit` (discard the journal, success) or `rollback`
+> (replay it, fail) and always `release_lock`s. Between them the transaction state
+> lives on disk in the `.llmwiki.txn` sidecar — you NEVER thread the journal dir,
+> budget, lock handle, or fe-hash yourself; you pass the driver only the opaque
+> `<root>` (plus `<source>` to `begin` and the `success|fail` outcome to `finish`).
+> Every byte still passes through `write_tool.WriteSession` inside the Stage2
+> apply-worker (which journals each write), and Stage1 — which alone reads the
+> untrusted raw source — has **no write tool at all** (`tools: Read`). Trust is
+> decided by *location* (`wiki/` vs `wiki/derived/`), not by the LLM. No git is
+> invoked anywhere. (driver-plan §2/§3; design D17/D19/D20/D23; gitless-journal-transaction.md.)
 
 If any step would write a wiki page outside the Stage2 allowlist tool, or would have
 you thread transaction state by hand, STOP and report
@@ -133,20 +136,10 @@ out of `$ARGUMENTS` first (it is NOT a `key=value` axis — strip it before the
 Step 0 source/axis parse); pass it as `prompt_root`, else pass nothing:
 
 ```bash
-WIKI_ROOT="$(uv run python - "${ROOT_OVERRIDE:-}" <<'PY'
-import sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-import wiki_root_resolver
-arg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
-res = wiki_root_resolver.resolve(arg)
-if res is None:
-    print("NO-WIKI", file=sys.stderr); raise SystemExit(2)
-print(f"{res.root}\t{res.scope}")
-PY
-)"
+WIKI_ROOT="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"})"
 ```
 
-The script prints `<root>\t<scope>` on stdout (split on the tab to get
+The `resolve-root` verb prints `<root>\t<scope>` on stdout (split on the tab to get
 `WIKI_ROOT` and the scope). If it exits non-zero (`NO-WIKI`), no wiki resolved —
 report that this command requires an active wiki (pass `--root <path>` or run
 from a wiki root) and STOP. **Before acting, show the user the resolved root and
@@ -157,9 +150,11 @@ still enforces the marker and errors with "not a wiki root" if absent.
 
 Call the driver's `begin` verb once for THIS file. It detects the marker,
 resolves+declares every config axis (D5), validates the consistency invariant,
-checkpoints HEAD and acquires the lock BEFORE the front-end (D21), runs the matching
+acquires the lock then checkpoints (opens the journal) BEFORE the front-end, runs the matching
 front-end (FE-B for a 3rd-party source file/text; FE-B' for a cc-log jsonl, which it
-extracts then pins `doc_type:transcript`), runs redaction + content-hash dedup, writes
+**projects** fork-aware from the `session_id` — via `cc_log_project.project_owned` over the
+vendored DuckDB views, deduping turns by content-hash against the turn ledger — then pins
+`doc_type:transcript`), runs redaction + content-hash dedup, writes
 the raw artifact (unless a dedup no-op), writes the `.llmwiki.txn` sidecar, and prints
 the contract JSON on stdout. `$SOURCE` is this cycle's source — the single-file token in
 the single-file case, or one `rel_path` from the `enumerate` `files` list in the
@@ -168,7 +163,7 @@ glob/dir loop (Step 0b). The axis overrides (`write_mode=...`, `apply_fanout_k=.
 identically to every file in the loop.
 
 ```bash
-uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/ingest_driver.py" begin \
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest begin \
   "$WIKI_ROOT" "$SOURCE" \
   ${KIND:+--kind="$KIND"} \
   ${DOC_TYPE:+--doc_type="$DOC_TYPE"} \
@@ -227,7 +222,7 @@ Count the affected pages in the Stage1 proposal and compare to `apply_fanout_k` 
 driver rather than splitting by hand (F6 — clustering is code, not LLM):
 
 ```bash
-uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/ingest_driver.py" plan-fanout \
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest plan-fanout \
   "$WIKI_ROOT" "$STAGE1_TOUCHED_JSON"
 ```
 
@@ -258,12 +253,12 @@ are the `expected_pages` you confirm in `finish`.
 
 Call the driver's `finish` verb once. The driver reconstructs the lock handle and
 checkpoint from the sidecar (you thread no state), confirms the expected pages are on
-disk, regenerates the index, appends the log (FE-dispatched prefix), runs the
-self-lint, and then performs exactly ONE `commit` (success) or `rollback` (fail),
-releasing the lock and deleting the sidecar on every path.
+disk, regenerates the index, appends the log (FE-dispatched prefix), and then performs
+exactly ONE `commit` (success) or `rollback` (fail), releasing the lock and deleting the
+sidecar on every path.
 
 ```bash
-uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/ingest_driver.py" finish \
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest finish \
   "$WIKI_ROOT" "$OUTCOME" \
   ${EXPECTED_PAGES:+--expected_pages="$EXPECTED_PAGES"} \
   ${TITLE:+--title="$TITLE"}
@@ -273,12 +268,12 @@ uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/ingest_driver.py" finish \
   `fail` on any failure (Stage2 error, budget gate, `dedup_noop` short-circuit from
   Step 1, or anything raised after `begin`). On `success` pass `$EXPECTED_PAGES` as
   the comma-joined `rel_path` list collected in Step 4.
-- `success` → the driver prints `{"committed_sha": ...}`. Report the commit sha and
-  the self-lint findings to the user.
-- `fail` → the driver prints `{"rolled_back_to": ...}` (reset to the checkpoint +
-  orphan-raw cleanup). Report the rollback.
+- `success` → the driver prints `{"committed": true}` (the journal was discarded).
+  Report success to the user.
+- `fail` → the driver prints `{"rolled_back": true}` (journal replayed: created
+  files incl. orphan raw removed, modified files restored). Report the rollback.
 
-This is the single git transaction the invariant promises **for this one file**:
+This is the single file-journal transaction the invariant promises **for this one file**:
 `begin` opened it before the front-end, the lock was held across both LLM stages and the
 page writes, and `finish` performs exactly one of `commit` / `rollback` before
 `release_lock` — all inside the driver, with no transaction state ever threaded by you.
@@ -288,6 +283,7 @@ transaction spanning the batch — after which you return to Step 0b for the nex
 emit the final summary.
 
 (If the run is aborted mid-way and a stale `.llmwiki.lock` / `.llmwiki.txn` is left
-behind, recovery is the operator running `ingest_driver.py abort "$WIKI_ROOT"`
+behind, recovery is the operator running
+`uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort "$WIKI_ROOT"`
 manually — see the driver's `abort` verb; the orchestrator does not invoke it
 automatically.)

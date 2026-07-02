@@ -1,7 +1,7 @@
 ---
 description: Lint the active LLM wiki — deterministic graph/index checks plus a transcript-only type-specific lint (v1), reported as a prioritized "next questions" list. Read-only; never writes. Usage `/wiki-lint [--root <path>]`.
 disable-model-invocation: true
-allowed-tools: Bash(uv run python *) Agent Read
+allowed-tools: Bash(uv run *) Agent Read
 ---
 
 # /wiki-lint
@@ -18,20 +18,10 @@ The wiki root is **resolved**, not assumed to be the CWD. Resolve it via
 out of `$ARGUMENTS` first; pass it as `prompt_root`, else pass nothing:
 
 ```bash
-WIKI_ROOT="$(uv run python - "${ROOT_OVERRIDE:-}" <<'PY'
-import sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-import wiki_root_resolver
-arg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
-res = wiki_root_resolver.resolve(arg)
-if res is None:
-    print("NO-WIKI", file=sys.stderr); raise SystemExit(2)
-print(f"{res.root}\t{res.scope}")
-PY
-)"
+WIKI_ROOT="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"})"
 ```
 
-The script prints `<root>\t<scope>` (split on the tab). If it exits non-zero
+The `resolve-root` verb prints `<root>\t<scope>` (split on the tab). If it exits non-zero
 (`NO-WIKI`), no wiki resolved — report that this command requires an active wiki
 (pass `--root <path>` or run from a wiki root) and STOP. **Before acting, show
 the user the resolved root and scope** (`active wiki: <root> (scope: ...)`).

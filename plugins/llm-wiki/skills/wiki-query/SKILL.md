@@ -28,44 +28,44 @@ as `prompt_root`, else pass nothing. Do this **before any `$WIKI_ROOT` use**
 below (Steps 1–3) — including the read-enumeration in Step 1:
 
 ```bash
-WIKI_ROOT="$(uv run python - "${ROOT_OVERRIDE:-}" <<'PY'
-import sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-import wiki_root_resolver
-arg = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
-res = wiki_root_resolver.resolve(arg)
-if res is None:
-    print("NO-WIKI", file=sys.stderr); raise SystemExit(2)
-print(f"{res.root}\t{res.scope}")
-PY
-)"
+WIKI_ROOT="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"})"
 ```
 
-The script prints `<root>\t<scope>` on stdout (split on the tab to get
+The `resolve-root` verb prints `<root>\t<scope>` on stdout (split on the tab to get
 `WIKI_ROOT` and the scope). If it exits non-zero (`NO-WIKI`), no wiki resolved —
 report that this skill requires an active wiki (pass `--root <path>` or run from
 a wiki root) and STOP. The filing in Step 3 MUST write to this SAME resolved
 root — the marker hook keyed its directive off this active wiki, so binding
 `$WIKI_ROOT` here is what makes the filing land in the wiki the hook decided.
 
-## Step 1 — Read across BOTH namespaces (D22; 05-plan §2.1 step 1)
+## Step 1 — Retrieve pages across BOTH namespaces (D22; 05-plan §2.1 step 1)
 
 Ground every answer in BOTH `wiki/` (source tier) AND `wiki/derived/` (derived
-tier). Enumerate pages deterministically (tier comes from the path via code, never
-guessed):
+tier). Phrase the user's question into a short search query, then call the
+`search` verb — it prints candidate pages as `<tier> <rel_path>` per line (tier
+decided in code via `wiki_index.tier_of(path)`, never guessed):
 
 ```bash
-uv run python - "$WIKI_ROOT" <<'PY'
-import sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-import wiki_index
-root = sys.argv[1]
-for pe in wiki_index.scan_pages(root):     # covers wiki/ AND wiki/derived/
-    print(pe.tier, pe.rel_path)            # tier = wiki_index.tier_of(path), code-decided
-PY
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki search "$WIKI_ROOT" --q "<your phrased query>"
 ```
 
-Read `index.md` and the relevant pages under both directories with the Read tool.
+`search` dispatches the backend INTERNALLY (DEC-3), so you always call this one
+verb regardless of config:
+
+- **`search_backend=index` (default):** returns the FULL page set across `wiki/`
+  and `wiki/derived/` — identical to the old `scan-pages` enumeration (the `--q`
+  is accepted but not used for ranking). Select the relevant pages yourself, as
+  before.
+- **`search_backend=qmd` (opt-in, large wikis):** returns a RANKED top-k of the
+  most relevant pages (external qmd full-text backend; optional-search-qmd.md).
+  A one-line `[search] …` notice on stderr means qmd was unavailable/degraded and
+  the verb fell back to the index enumeration — treat the output as the index
+  case. The FIRST qmd-backed query builds the index + embeddings inline (one-time,
+  ~GB models); run `/wiki-reindex` beforehand to front-load that cost.
+
+Either way the output shape and the read-only invariant are the same. Read
+`index.md` and the returned pages under both directories with the Read tool (for
+the qmd case the returned list is already the ranked shortlist to read).
 
 ## Step 2 — Answer with path-citations; the path IS the tier (D22)
 
@@ -117,28 +117,23 @@ the marker trigger (only the confirmation is skipped, not the safety envelope;
 plan §0 M-d, §3 B-3) — THEN write. For the marker trigger with a fixed slug, use
 that slug as `<page>`; otherwise generate `<page>` from the answer:
 
+The `file` verb performs the whole FE-A filing path: it FIRST emits the D5
+resolved-value declaration line, then runs FE-A on the answer text (redaction +
+content-hash dedup, `provenance:derived`); on a content-hash dedup hit it prints
+`dedup no-op` and exits without writing; otherwise, inside a single transaction, it
+writes the `raw/derived/<hash>.md` provenance snapshot AND the **redacted** page
+(origin `derived`, landing under `wiki/derived/`), surfaces any `redaction-flags`
+for the human gate, regenerates the index, and appends the log. Pass `<page>` (the
+resolved `wiki/derived/<slug>.md` for the marker trigger,
+else the page name you generated from the answer) and `<title>`; pipe the answer
+page content on STDIN:
+
 ```bash
-uv run python - "$WIKI_ROOT" <<'PY'
-import sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/scripts")
-import marker, config_resolver as cr, frontends, transaction, wiki_index, wiki_log
-from write_tool import WriteSession, WriteRejected
-root = sys.argv[1]
-m = marker.detect(root)
-res = cr.resolve_all({}, cr.load_config(m.schema_path))
-print(cr.declare(res["write_mode"]))   # REQUIRED before any write (D5)
-# Filing = FE-A on the answer text, then write inside the transaction:
-#   fe = frontends.fe_a(root, answer_text)          # provenance:derived
-#   if fe.exists: print("dedup no-op"); raise SystemExit(0)
-#   with transaction.transaction(root, "file|derived | <Title>"):
-#       sess = WriteSession(root, origin="derived")
-#       sess.add("wiki/derived/<page>.md", "<answer page content>")
-#       sess.commit()
-#       wiki_index.regenerate(root)
-#       op, tag = wiki_log.header_for_fe_a()         # ("file","derived")
-#       wiki_log.append(root + "/log.md", op, tag, "<Title>")
-PY
+printf '%s' "$ANSWER_CONTENT" \
+  | uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki file "$WIKI_ROOT" "wiki/derived/<page>.md" "<Title>"
 ```
 
-Honor `WriteRejected` exactly as the ingest apply-worker does (budget → human
-gate; cross_namespace → keep it under `wiki/derived/`). Never promote here.
+The verb echoes the `[wiki] write_mode = <value> (<source>)` line first (D5). It
+honors `WriteRejected` exactly as the ingest apply-worker does — on rejection it
+prints `REJECTED <gate> <reason>` and re-raises (budget → route to the human
+gate; cross_namespace → keep the target under `wiki/derived/`). Never promote here.

@@ -34,7 +34,7 @@ orchestrator can log it.
 
 **cc-log (FE-B') floor — honor the pinned type, skip classify.** When the
 orchestrator passes `doc_type=transcript` for cc-log input, the front-end already
-pinned `doc_type:"transcript"` in code (`frontends.py`:114; design §4 :129 / D11
+pinned `doc_type:"transcript"` in code (`frontends.py`:115; design §4 :129 / D11
 FE-B' floor). Do **not** re-classify — honor the pinned `transcript` profile.
 This is the resolved `fe_b_prime` divergence: the prompt aligns to the code +
 design floor (D11/§4) rather than re-deriving the type. (05-plan §0, §1.3 O3.)
