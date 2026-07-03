@@ -14,3 +14,8 @@ dependencies = []
 # `doc` extra: documentation-build tooling group. Declared per spec; contents
 # are added when the doc build is wired up.
 doc = []
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

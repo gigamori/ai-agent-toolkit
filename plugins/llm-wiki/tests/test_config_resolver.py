@@ -11,8 +11,13 @@ import pytest
 
 from llmwiki.core import config_resolver as cr
 
-_REPO = Path(__file__).resolve().parents[3]
-_SCHEMA = _REPO / "plugins" / "llm-wiki" / "templates" / "SCHEMA.md"
+# Resolve SCHEMA.md package-relative so the test is harness-agnostic: parents[1]
+# from tests/ is the package root (the dir holding templates/ and pyproject.toml)
+# in BOTH the CC plugin tree (ai-agent-toolkit/plugins/llm-wiki/) and the pi
+# package tree (pi-extensions/packages/llm-wiki/). Avoids the CC-only parents[3]
+# repo-root assumption.
+_PKG = Path(__file__).resolve().parents[1]
+_SCHEMA = _PKG / "templates" / "SCHEMA.md"
 
 
 def test_load_config_from_template_schema():

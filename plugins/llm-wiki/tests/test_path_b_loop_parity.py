@@ -190,3 +190,65 @@ def test_project_batch_empty_sids_fails_closed(tmp_path):
     _init_wiki(tmp_path)
     with pytest.raises(drv.DriverError, match="at least one sid"):
         drv.project_batch(str(tmp_path), [])
+
+
+# --------------------------------------------------------------------------- #
+# OI-1 S3(c) Path B (pi): project-batch(kind=fe_pi_log) stamps "origin" ->
+# begin --turns(kind=fe_pi_log) consumes it -> finish. Synthetic pi-log
+# fixture (tmp_path + PI_CODING_AGENT_DIR override), real pi_log_project (no
+# monkeypatch) so the round trip exercises the actual extract_turns_batch /
+# project_from_turns split, not a stub.
+# --------------------------------------------------------------------------- #
+def _pi_msg(entry_id, parent_id, role, ts, text):
+    return {
+        "type": "message", "id": entry_id, "parentId": parent_id,
+        "timestamp": ts,
+        "message": {"role": role, "content": [{"type": "text", "text": text}]},
+    }
+
+
+def _write_pi_session(session_dir, sid, ts_prefix, entries, cwd="/synthetic/cwd"):
+    session_dir.mkdir(parents=True, exist_ok=True)
+    path = session_dir / f"{ts_prefix}_{sid}.jsonl"
+    header = {"type": "session", "version": 1, "id": sid, "cwd": cwd}
+    path.write_text(
+        "\n".join(json.dumps(l) for l in ([header] + entries)) + "\n",
+        encoding="utf-8")
+    return path
+
+
+def test_project_batch_fe_pi_log_stamps_origin_then_begin_turns_consumes_it(
+        tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    from llmwiki.ingest import pi_log_project
+
+    agent_dir = tmp_path / "agentdir"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    session_dir = pi_log_project._session_dir() / "--proj--"
+    sids = ["p0000000-0000-0000-0000-000000000001",
+            "p0000000-0000-0000-0000-000000000002"]
+    for i, sid in enumerate(sids):
+        _write_pi_session(
+            session_dir, sid, f"2026-07-02T09-0{i}-00-000Z",
+            [_pi_msg(f"e{i}", None, "user", f"2026-07-02T09:0{i}:00.000Z",
+                     f"hello from {sid}")])
+
+    wiki_root = tmp_path / "wiki_root"
+    wiki_root.mkdir()
+    _init_wiki(wiki_root)
+
+    batch = drv.project_batch(str(wiki_root), sids, kind="fe_pi_log")
+    assert batch["scanned"] == 2
+    for sid in sids:
+        turns_path = batch["turns"][sid]
+        stamped = json.loads(Path(turns_path).read_text(encoding="utf-8"))
+        assert stamped["origin"] == "fe_pi_log"
+
+        out = drv.begin(str(wiki_root), sid, kind="fe_pi_log", turns=turns_path)
+        assert out["origin"] == "fe_pi_log"
+        assert f"hello from {sid}" in out["redacted_body"]
+        drv.finish(str(wiki_root), "success", expected_pages=[], title=sid)
+
+    # cleanup parity with the cc Path B loop: the temp dir is outside the wiki
+    # root (the loop owns deletion).
+    assert not Path(batch["out_dir"]).is_relative_to(wiki_root)

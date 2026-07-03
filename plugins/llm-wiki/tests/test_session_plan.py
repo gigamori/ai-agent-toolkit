@@ -208,3 +208,151 @@ def test_order_sids_by_started_ts_ascending(monkeypatch):
         ["sid-late", "sid-early", "sid-mid", "sid-none"])
     # ascending by started; sid-none (no row) sorts LAST but is not dropped.
     assert ordered == ["sid-early", "sid-mid", "sid-late", "sid-none"]
+
+
+# --------------------------------------------------------------------------- #
+# OI-1 S3(e) F-13: session-plan's cc-path threads --sid arg-over-env — an
+# explicit sid resolves via the ARG (not env), and omitting --sid preserves
+# the EXACT pre-existing 0-argument call shape into
+# `_cc_project_dir_from_running_session` (S2 report §2 change-point-9,
+# formalized here as a pytest call-arity assertion).
+# --------------------------------------------------------------------------- #
+def test_cc_path_sid_arg_over_env_call_arity(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    calls = []
+
+    def _capture(*args):
+        calls.append(args)
+        return None  # force the fallback so session_plan doesn't need a real dir
+
+    monkeypatch.setattr(drv, "_cc_project_dir_from_running_session", _capture)
+    cc_dir = tmp_path / "cc-project"
+    cc_dir.mkdir()
+    (cc_dir / "sidX.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(drv, "_cc_project_dir_from_cwd", lambda cwd=None: cc_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    # sid OMITTED -> byte-identical 0-argument call (pre-existing shape).
+    drv.session_plan(str(tmp_path), pj=None)
+    assert calls[-1] == ()
+
+    # sid GIVEN -> arg-over-env, the arg is threaded through as the sole arg.
+    drv.session_plan(str(tmp_path), pj=None, sid="EXPLICIT_SID")
+    assert calls[-1] == ("EXPLICIT_SID",)
+
+
+# --------------------------------------------------------------------------- #
+# OI-1 S3(d): session-plan pi (--kind=fe_pi_log) path — synthetic session dir
+# fixtures (`--<slug>--/<ts>_<sid>.jsonl`, tmp_path + PI_CODING_AGENT_DIR
+# override; the exact encoding is pi_log_project._encode_cwd, re-verified
+# against session-manager.ts by S1 — session_dir_for_cwd/sids_in_session_dir
+# are exercised here for real, not re-derived by hand).
+# --------------------------------------------------------------------------- #
+def _pi_msg(entry_id, parent_id, role, ts, text):
+    return {
+        "type": "message", "id": entry_id, "parentId": parent_id,
+        "timestamp": ts,
+        "message": {"role": role, "content": [{"type": "text", "text": text}]},
+    }
+
+
+def _write_pi_session(session_dir, sid, ts_prefix, cwd="/synthetic/cwd"):
+    session_dir.mkdir(parents=True, exist_ok=True)
+    path = session_dir / f"{ts_prefix}_{sid}.jsonl"
+    header = {"type": "session", "version": 1, "id": sid, "cwd": cwd}
+    entry = _pi_msg("e1", None, "user", "2026-07-02T09:00:00.000Z", "hi")
+    path.write_text(
+        "\n".join(json.dumps(l) for l in (header, entry)) + "\n",
+        encoding="utf-8")
+    return path
+
+
+def _use_pi_agent_dir(tmp_path, monkeypatch):
+    from llmwiki.ingest import pi_log_project
+    agent_dir = tmp_path / "agentdir"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    return pi_log_project._session_dir()
+
+
+def test_pi_cwd_sid_primary_resolves_running_session_dir(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    sessions_dir = _use_pi_agent_dir(tmp_path, monkeypatch)
+    proj_dir = sessions_dir / "--proj--"
+    sid_target = "10000000-0000-0000-0000-000000000001"
+    _write_pi_session(proj_dir, sid_target, "2026-07-02T09-00-00-000Z")
+
+    out = drv.session_plan(str(tmp_path), kind="fe_pi_log", sid=sid_target)
+    assert out["scope"] == "cwd"
+    assert out["sids"] == [sid_target]
+    assert out["pattern"] == str(proj_dir)
+    assert out["filtered_out"] == 0
+
+
+def test_pi_cwd_sid_not_found_falls_back_to_cwd_dir(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    from llmwiki.ingest import pi_log_project
+    _use_pi_agent_dir(tmp_path, monkeypatch)
+    # sid does not resolve (no matching session file anywhere) -> None -> the
+    # cwd fallback dir is used instead (F-6 primary->fallback chain).
+    fallback_dir = tmp_path / "fallback-dir"
+    sid_fallback = "20000000-0000-0000-0000-000000000002"
+    _write_pi_session(fallback_dir, sid_fallback, "2026-07-02T10-00-00-000Z")
+    monkeypatch.setattr(pi_log_project, "session_dir_for_cwd",
+                        lambda cwd: fallback_dir)
+
+    out = drv.session_plan(str(tmp_path), kind="fe_pi_log", sid="no-such-sid")
+    assert out["scope"] == "cwd"
+    assert out["sids"] == [sid_fallback]
+    assert out["pattern"] == str(fallback_dir)
+
+
+def test_pi_cwd_zero_match_is_fail_closed_error(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    from llmwiki.ingest import pi_log_project
+    _use_pi_agent_dir(tmp_path, monkeypatch)
+    empty_dir = tmp_path / "empty-session-dir"
+    empty_dir.mkdir()
+    monkeypatch.setattr(pi_log_project, "session_dir_for_cwd",
+                        lambda cwd: empty_dir)
+
+    with pytest.raises(drv.DriverError) as ei:
+        drv.session_plan(str(tmp_path), kind="fe_pi_log")
+    assert "session-plan" in str(ei.value) or "pi session dir" in str(ei.value)
+
+
+def test_pi_pj_locality_filter_and_filtered_out(tmp_path, monkeypatch):
+    """F-2: pj-path enumeration (_sids_for_pj, harness-neutral) is intersected
+    with sids that actually have a pi session file; the taskflow state may
+    list a foreign-harness sid with no pi session file — it is excluded and
+    counted, not silently dropped."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "sid-early", "p")
+    _write_state(state_dir, "sid-late", "p")
+    _write_state(state_dir, "sid-foreign", "p")  # no pi session file for this
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+
+    sessions_dir = _use_pi_agent_dir(tmp_path, monkeypatch)
+    proj_dir = sessions_dir / "--proj--"
+    _write_pi_session(proj_dir, "sid-late", "2026-07-02T12-00-00-000Z")
+    _write_pi_session(proj_dir, "sid-early", "2026-07-02T09-00-00-000Z")
+    # sid-foreign deliberately has NO session file.
+
+    out = drv.session_plan(str(tmp_path), pj="p", kind="fe_pi_log")
+    assert out["scope"] == "pj"
+    assert out["sids"] == ["sid-early", "sid-late"]  # ts-ascending, foreign excluded
+    assert out["filtered_out"] == 1
+
+
+def test_pi_ts_ascending_order_cwd_path(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    sessions_dir = _use_pi_agent_dir(tmp_path, monkeypatch)
+    proj_dir = sessions_dir / "--proj--"
+    sid_late = "30000000-0000-0000-0000-000000000003"
+    sid_early = "40000000-0000-0000-0000-000000000004"
+    _write_pi_session(proj_dir, sid_late, "2026-07-02T15-00-00-000Z")
+    _write_pi_session(proj_dir, sid_early, "2026-07-02T09-00-00-000Z")
+
+    out = drv.session_plan(str(tmp_path), kind="fe_pi_log", sid=sid_early)
+    assert out["scope"] == "cwd"
+    assert out["sids"] == [sid_early, sid_late]  # ts-ascending, not insertion order

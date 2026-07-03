@@ -15,7 +15,7 @@ Verbs (the four transaction verbs below + the read-only `enumerate`,
 verbs honor plan R-f's verb budget <=4 — the read-only helpers are OUTSIDE that
 budget, opening no transaction):
 
-  begin <root> <source> [--kind=auto|fe_b|fe_b_prime] [--write_mode=..]
+  begin <root> <source> [--kind=auto|fe_b|fe_b_prime|fe_pi_log] [--write_mode=..]
         [--apply_fanout_k=..] [--doc_type=..] [--external=..] [--turns=<path>]
     marker.detect -> config_resolver.resolve_all + declare_all
     -> config_resolver.check_consistency (raises ConfigInconsistency) BEFORE
@@ -35,6 +35,17 @@ budget, opening no transaction):
     <path> (from `project-batch`) instead of re-scanning the corpus — begin then
     runs only the cheap per-sid projection half (project_from_turns). Path A
     omits it (begin extracts the one sid itself via project_owned).
+    `--kind=fe_pi_log` dispatches to `pi_log_project` instead of `cc_log_project`
+    for BOTH Path A (project_owned) and Path B (project_from_turns) — same call
+    shape, table-dispatched (design B / OI-1). F-14: for `--kind=fe_pi_log`,
+    `<source>` MUST be a bare sid, never a file path — pi session filenames are
+    `<ts>_<sid>.jsonl` (NOT `<sid>.jsonl` like cc), so `Path(source).stem` on a
+    pi filename would extract the wrong value. A path passed by mistake fails
+    closed as a pi ProjectionError (file-not-found for the bogus "sid") -> exit 3.
+    F-1: when `--turns` is given, the turns JSON's `"origin"` is checked against
+    the resolved `--kind`; a mismatch is a fail-closed DriverError (a missing
+    `"origin"` key, from older project-batch output, is treated as `fe_b_prime`
+    for backward compatibility).
 
   plan-fanout <root> <stage1_proposal_path_or_json>
     touched <= k -> one cluster; touched > k -> ceil(touched/k) clusters each
@@ -64,38 +75,75 @@ budget, opening no transaction):
     an explicit error. No lock / checkpoint / write — pure enumeration. Print
     {files: [rel_path,...], excluded: <count>, pattern: <effective glob>}.
 
-  session-plan <root> [--pj <name>]   (read-only Path B resolver, T6 / F1-b/F2-B)
-    Resolve the SET of cc-log session ids for a Path B project ingest and return
-    them ORDERED BY session-start ts ASCENDING — and nothing else. It does NOT
+  session-plan <root> [--pj <name>] [--kind=auto|fe_b_prime|fe_pi_log]
+        [--sid <sid>]   (read-only Path B resolver, T6 / F1-b/F2-B, design C)
+    Resolve the SET of session ids for a Path B project ingest and return them
+    ORDERED BY session-start ts ASCENDING — and nothing else. It does NOT
     partition ownership / emit an owned-turn manifest (F1-b/F2-B: ownership is
     decided per-begin by the ledger diff); it does NOT open a transaction (read
     only, outside the verb budget).
-      - --pj <name> given: filter `_projects/_state/*.json` (the taskflow state
-        dir under the process CWD, exactly as wiki_root_resolver locates it) by
-        `project == <name>`; the matching state files' filename STEMS are the
-        sids (state file is `<sid>.json`, `{"project": ...}`).
-      - --pj omitted: resolve the CC project dir from the RUNNING session's own
-        log location as ground truth (U3) — find `~/.claude/projects/*/<current-
-        sid>.jsonl` (current-sid = $CLAUDE_SESSION_ID) and take its PARENT dir
-        (CC-internal-encoding independent), then the sids are that dir's
-        `*.jsonl` stems. SECONDARY fallback only: reverse-generate the slug from
-        the CWD (path separators + the drive colon -> `-`).
-    ts to sort by = each sid's earliest record timestamp (`cc_session.started` =
-    min(ts) in the vendored views) — the authoritative in-log event clock, not
-    file mtime (mtime drifts on copy/resume/fork/checkout). Zero matches is an
-    explicit error (fail-closed, like `enumerate`). Print {sids: [sid,...],
-    scope: "pj"|"cwd", pattern: <state-glob or project-dir>}.
+    `--kind` (default `auto` -> `fe_b_prime`, same "auto->fe_b_prime 既定" as
+    project-batch below; this verb is projection-only so FE-B has no meaning
+    here): `auto`/`fe_b_prime` resolves the CC-log session set (unchanged from
+    before this flag existed); `fe_pi_log` resolves the pi-log session set
+    instead (pi_log_project-backed).
+      - `--kind=auto|fe_b_prime`:
+        - --pj <name> given: filter `_projects/_state/*.json` (the taskflow state
+          dir under the process CWD, exactly as wiki_root_resolver locates it) by
+          `project == <name>`; the matching state files' filename STEMS are the
+          sids (state file is `<sid>.json`, `{"project": ...}`).
+        - --pj omitted: resolve the CC project dir from the RUNNING session's own
+          log location as ground truth (U3) — find `~/.claude/projects/*/<current-
+          sid>.jsonl` (current-sid = $CLAUDE_SESSION_ID, or `--sid` if given —
+          F-13: an explicit `--sid` takes priority over the env var) and take its
+          PARENT dir (CC-internal-encoding independent), then the sids are that
+          dir's `*.jsonl` stems. SECONDARY fallback only: reverse-generate the
+          slug from the CWD (path separators + the drive colon -> `-`).
+        ts to sort by = each sid's earliest record timestamp (`cc_session.started`
+        = min(ts) in the vendored views) — the authoritative in-log event clock,
+        not file mtime (mtime drifts on copy/resume/fork/checkout).
+      - `--kind=fe_pi_log`:
+        - --pj <name> given: same `_sids_for_pj` enumeration (harness-neutral),
+          then F-2 locality filter — intersect with the sids that actually have a
+          pi session file (from the same directory walk used for ordering below);
+          filtered-out sids (present in taskflow state but with no pi session
+          file, e.g. a foreign harness's sid) are counted and reported as
+          `filtered_out: <n>` (never silently dropped).
+        - --pj omitted: primary `--sid <sid>` (F-13, pi has no env fallback,
+          arg-only) -> `pi_log_project.session_dir_for_sid(sid)`; if that is
+          `None` (not found, F-6) or `--sid` was omitted, fallback to
+          `pi_log_project.session_dir_for_cwd(cwd)`. If the fallback dir also
+          does not exist, DriverError (fail-closed, mirroring the CC path's
+          zero-match message shape).
+        ts to sort by = the session filename's `<ts>_<sid>.jsonl` prefix
+        ASCENDING (no DuckDB; design fact 11) — NOT `cc_session.started`
+        (pi sids are not in the cc corpus).
+    `--sid <sid>` (F-13): an explicit override for the cwd-path's "current
+    session" resolution, taking priority over the env var. Omitted, both kinds'
+    cwd-path behavior is unchanged from before this flag existed (env-only for
+    cc; `session_dir_for_cwd` fallback only for pi).
+    Zero matches is an explicit error (fail-closed, like `enumerate`). Print
+    {sids: [sid,...], scope: "pj"|"cwd", pattern: <state-glob or project-dir>,
+    filtered_out: <n>} (`filtered_out` is present for the `fe_pi_log` pj-path;
+    0 for every other path).
 
-  project-batch <root> <sid> [<sid>...]   (read-only Path B scan-collapse; R1/F-H1)
-    Extract the turns for ALL given sids in ONE corpus scan
-    (cc_log_project.extract_turns_batch) so Path B does not re-scan
-    ~/.claude/projects once per begin (N sids -> N scans). Writes each sid's
-    extracted turns (boilerplate-stripped, F5-hash-carrying) to a per-sid JSON
-    file under a fresh temp dir OUTSIDE the wiki root (never journaled / never
-    enumerated), and prints {out_dir, turns: {sid: <path>}, scanned}. The Path B
-    loop passes each begin `--turns=<path>` so begin runs only the cheap per-sid
-    half (project_from_turns) — the ledger read-after-write (F3) stays sequential.
-    Opens NO transaction (outside the R-f verb budget). The loop owns temp cleanup.
+  project-batch <root> <sid> [<sid>...] [--kind=auto|fe_b_prime|fe_pi_log]
+        (read-only Path B scan-collapse; R1/F-H1)
+    Extract the turns for ALL given sids in ONE scan
+    (`cc_log_project.extract_turns_batch` for `auto`/`fe_b_prime`,
+    `pi_log_project.extract_turns_batch` for `fe_pi_log`; default `auto` ->
+    `fe_b_prime` since this verb is projection-only, same "auto->fe_b_prime
+    既定" as session-plan above) so Path B does not re-scan the corpus once per
+    begin (N sids -> N scans). Writes each sid's extracted turns (boilerplate-
+    stripped, F5-hash-carrying) to a per-sid JSON file under a fresh temp dir
+    OUTSIDE the wiki root (never journaled / never enumerated); each file also
+    carries `"origin": <resolved --kind>` (F-1) so the paired `begin --turns`
+    can verify it was extracted under the SAME kind (fail-closed on mismatch).
+    Prints {out_dir, turns: {sid: <path>}, scanned}. The Path B loop passes
+    each begin `--turns=<path>` (and the SAME `--kind`) so begin runs only the
+    cheap per-sid half (project_from_turns) — the ledger read-after-write (F3)
+    stays sequential. Opens NO transaction (outside the R-f verb budget). The
+    loop owns temp cleanup.
 
 Sidecar `.llmwiki.txn` (JSON, beside `.llmwiki.lock`):
   {journal_dir, origin, doc_type, max_count, max_bytes,
@@ -133,15 +181,38 @@ from llmwiki.ingest import frontends
 from llmwiki.core import wiki_index
 from llmwiki.core import wiki_log
 from llmwiki.ingest import cc_log_project
+from llmwiki.ingest import pi_log_project
 from llmwiki.ingest import ledger
 
 
 SIDECAR_NAME = ".llmwiki.txn"
 
 # Front-end origins (log prefix dispatch keys). FE-B = 3rd-party source,
-# FE-B' = cc-log jsonl transcript (design §4).
+# FE-B' = cc-log jsonl transcript, fe_pi_log = pi-log jsonl transcript
+# (design §4 / OI-1 design B).
 ORIGIN_FE_B = "fe_b"
 ORIGIN_FE_B_PRIME = "fe_b_prime"
+ORIGIN_FE_PI_LOG = "fe_pi_log"
+
+# Projection-origin dispatch tables (OI-1 design B, 案Y). Membership in
+# `_PROJECTOR_BY_ORIGIN` also DOUBLES as "is this a projection origin"
+# (change point 5: `origin in _PROJECTOR_BY_ORIGIN` replaces the old
+# `origin == ORIGIN_FE_B_PRIME` gates now that fe_pi_log is a second
+# projection origin).
+_PROJECTOR_BY_ORIGIN = {
+    ORIGIN_FE_B_PRIME: cc_log_project,
+    ORIGIN_FE_PI_LOG: pi_log_project,
+}
+_FE_BY_ORIGIN = {
+    ORIGIN_FE_B_PRIME: frontends.fe_b_prime,
+    ORIGIN_FE_PI_LOG: frontends.fe_pi_log,
+}
+_LOG_HEADER_BY_ORIGIN = {
+    ORIGIN_FE_B: wiki_log.header_for_fe_b,
+    ORIGIN_FE_B_PRIME: wiki_log.header_for_fe_b_prime,
+    ORIGIN_FE_PI_LOG: wiki_log.header_for_fe_pi_log,
+}
+_PROJECTION_ERRORS = (cc_log_project.ProjectionError, pi_log_project.ProjectionError)
 
 
 class DriverError(Exception):
@@ -196,7 +267,9 @@ def _resolve_kind(kind: str) -> str:
         return ORIGIN_FE_B
     if kind == "fe_b_prime":
         return ORIGIN_FE_B_PRIME
-    raise DriverError(f"unknown --kind: {kind!r} (auto|fe_b|fe_b_prime)")
+    if kind == "fe_pi_log":
+        return ORIGIN_FE_PI_LOG
+    raise DriverError(f"unknown --kind: {kind!r} (auto|fe_b|fe_b_prime|fe_pi_log)")
 
 
 def begin(wiki_root: str, source: str, *, kind: str = "auto",
@@ -243,20 +316,26 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
             raise DriverError(
                 f"source is not UTF-8 text (binary?): {source}") from exc
         fe_b_ext = Path(source).suffix.lstrip(".") or "txt"
-    else:  # FE-B'
-        # Normalize the source to a session id. Path A surface: `source` is a CC
-        # session jsonl path whose filename stem IS the sid (empirically
+    else:  # FE-B' / fe_pi_log (projection origins; table-dispatched, design B)
+        # Normalize the source to a session id. Path A surface: `source` is a
+        # session jsonl path whose filename stem IS the sid for cc (empirically
         # `<sid>.jsonl`, 100%). Path B's session-plan sid (T6) reuses this branch
         # by passing the sid as the source (its stem is the sid too, so the same
-        # derivation holds). The projector (T2) projects that sid (+ agent
-        # children) out of the vendored DuckDB views, strips boilerplate,
-        # length-independent exact-dedups, diffs the turn ledger (T4) and renders
-        # FE-B'-compatible markdown of the NOVEL turns.
+        # derivation holds). F-14: for `--kind=fe_pi_log` `source` MUST be a bare
+        # sid (never a path) — pi session filenames are `<ts>_<sid>.jsonl`, so
+        # `Path(source).stem` on a pi filename would extract the wrong value
+        # (`<ts>_<sid>`, not `<sid>`); this is NOT satisfied by the cc-filename
+        # convention this line was originally written for. The projector
+        # projects that sid (+ agent/fork children, per-origin) out of its
+        # backing store, strips boilerplate, length-independent exact-dedups,
+        # diffs the turn ledger (T4) and renders the shared markdown shape of
+        # the NOVEL turns.
         sid = Path(source).stem
+        projector = _PROJECTOR_BY_ORIGIN[origin]
         if turns is not None:
             # Path B scan-collapse (R1/F-H1): the turns were already extracted by
-            # the read-only `project-batch` verb in ONE corpus scan before the
-            # loop; `--turns` is the path to this sid's turn-JSON. begin does NOT
+            # the read-only `project-batch` verb in ONE scan before the loop;
+            # `--turns` is the path to this sid's turn-JSON. begin does NOT
             # re-scan — it only runs the cheap per-sid half (dedup + ledger diff +
             # markdown) so the ledger read-after-write (F3) stays sequential.
             turns_path = Path(turns)
@@ -270,18 +349,34 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
             # session's turns). The batch file records its sid under "sid"; each
             # turn's provenance also carries the owning sid on the first entry.
             turns_sid = extracted.get("sid") if isinstance(extracted, dict) else None
+            turns_origin = (extracted.get("origin") if isinstance(extracted, dict)
+                            else None)
             turn_list = (extracted.get("turns") if isinstance(extracted, dict)
                          else extracted)
             if turns_sid is not None and turns_sid != sid:
                 raise DriverError(
                     f"--turns sid mismatch: file is for {turns_sid!r} but source "
                     f"resolves to {sid!r}")
+            # F-1: cross-origin --turns must fail closed. A flag drop/mixup
+            # between session-plan -> project-batch -> begin would otherwise let
+            # a cc-extracted turn dict (key `projected_text`) reach the pi
+            # projector's `project_from_turns` (which reads `turn["text"]`),
+            # silently skipping every turn as textless -> an empty "successful"
+            # ingest. A missing "origin" key (older project-batch output,
+            # pre-dating this field) is treated as `fe_b_prime` (backward-compat
+            # default; F-1 design note / R-OI1-11).
+            effective_turns_origin = (
+                turns_origin if turns_origin is not None else ORIGIN_FE_B_PRIME)
+            if effective_turns_origin != origin:
+                raise DriverError(
+                    f"--turns origin mismatch: file is for "
+                    f"{effective_turns_origin!r} but --kind resolves to "
+                    f"{origin!r} (fail-closed, F-1)")
             if not isinstance(turn_list, list):
                 raise DriverError("--turns JSON must be a list or {sid, turns:[...]}")
-            proj = cc_log_project.project_from_turns(
-                root, sid, turn_list, ledger=ledger)
+            proj = projector.project_from_turns(root, sid, turn_list, ledger=ledger)
         else:
-            proj = cc_log_project.project_owned(root, sid, ledger=ledger)
+            proj = projector.project_owned(root, sid, ledger=ledger)
 
     # 4) acquire_lock THEN checkpoint (lock-first). Only the lock holder ever
     #    creates/touches the fixed-path journal dir, so a second ingest that fails
@@ -302,15 +397,16 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         if origin == ORIGIN_FE_B:
             fe = frontends.fe_b(root, fe_b_content, fe_b_ext,
                                 external_locator=external)
-        else:  # FE-B': fe_b_prime over the projected novel-turn markdown.
-            fe = frontends.fe_b_prime(root, proj.markdown)
+        else:  # projection origins: table-dispatched FE over the projected
+               # novel-turn markdown (fe_b_prime for cc, fe_pi_log for pi).
+            fe = _FE_BY_ORIGIN[origin](root, proj.markdown)
 
-        # doc_type: FE-B' floor fixes transcript; FE-B takes the prompt value or
-        # the FE-provided frontmatter doc_type if any.
+        # doc_type: the projection-origin floor fixes transcript; FE-B takes the
+        # prompt value or the FE-provided frontmatter doc_type if any.
         resolved_doc_type = (
             fe.frontmatter.get("doc_type")
             or doc_type
-            or ("transcript" if origin == ORIGIN_FE_B_PRIME else "")
+            or ("transcript" if origin in _PROJECTOR_BY_ORIGIN else "")
         )
 
         max_count = int(resolutions["max_count"].value)
@@ -346,10 +442,11 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
             "fe_hash": fe.hash,
             "pid": handle_pid(handle),
             "lock_token": handle.token,
-            # FE-B' carries the projector's novel turn-content-hash entries;
-            # FE-B has no projection so it emits none.
+            # Projection origins (fe_b_prime, fe_pi_log) carry the projector's
+            # novel turn-content-hash entries; FE-B has no projection so it
+            # emits none.
             "pending_ledger_entries": (
-                proj.novel_entries if origin == ORIGIN_FE_B_PRIME else []
+                proj.novel_entries if origin in _PROJECTOR_BY_ORIGIN else []
             ),
         })
     except Exception:
@@ -376,10 +473,10 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         # were dropped because a prior ingest already owns them (turn-content-hash
         # ledger diff). Surfaced so the Path B loop (wiki-ingest-project.md) can sum
         # it across sids and report it — an incremental re-run must not look like a
-        # silent no-op (RS-d). Gated to FE-B' exactly like pending_ledger_entries;
-        # FE-B has no projection so it is 0.
+        # silent no-op (RS-d). Gated to the projection origins exactly like
+        # pending_ledger_entries; FE-B has no projection so it is 0.
         "ledger_skipped": (
-            proj.ledger_skipped if origin == ORIGIN_FE_B_PRIME else 0
+            proj.ledger_skipped if origin in _PROJECTOR_BY_ORIGIN else 0
         ),
     }
     return out
@@ -461,11 +558,10 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
 # verb: finish
 # --------------------------------------------------------------------------- #
 def _log_header_for_origin(origin: str) -> tuple[str, str]:
-    if origin == ORIGIN_FE_B:
-        return wiki_log.header_for_fe_b()
-    if origin == ORIGIN_FE_B_PRIME:
-        return wiki_log.header_for_fe_b_prime()
-    raise DriverError(f"unknown origin in sidecar: {origin!r}")
+    header_fn = _LOG_HEADER_BY_ORIGIN.get(origin)
+    if header_fn is None:
+        raise DriverError(f"unknown origin in sidecar: {origin!r}")
+    return header_fn()
 
 
 def finish(wiki_root: str, outcome: str, *,
@@ -742,22 +838,25 @@ def _sids_for_pj(project: str, cwd: "Path | None" = None) -> list[str]:
     return sids
 
 
-def _cc_project_dir_from_running_session() -> "Path | None":
+def _cc_project_dir_from_running_session(sid: "str | None" = None) -> "Path | None":
     """U3 PRIMARY: the CC project dir of the RUNNING session, as ground truth.
 
-    Find `~/.claude/projects/*/<current-sid>.jsonl` (current-sid =
-    $CLAUDE_SESSION_ID) and return its PARENT dir — the CC-internal-encoding of
-    the dir name is irrelevant because we locate the dir by the session file that
-    lives in it, never by reconstructing the slug. Returns None if the env var is
-    unset or no such jsonl exists (the caller then tries the fallback).
+    Find `~/.claude/projects/*/<current-sid>.jsonl` (current-sid = the `sid`
+    argument if given, else $CLAUDE_SESSION_ID — F-13 arg-over-env: an explicit
+    `sid` takes priority over the env var, but the DEFAULT no-arg call is
+    byte-identical to before this parameter existed) and return its PARENT dir
+    — the CC-internal-encoding of the dir name is irrelevant because we locate
+    the dir by the session file that lives in it, never by reconstructing the
+    slug. Returns None if no sid is resolved (arg absent + env unset) or no
+    such jsonl exists (the caller then tries the fallback).
     """
-    sid = os.environ.get(_CURRENT_SID_ENV)
-    if not sid:
+    effective_sid = sid or os.environ.get(_CURRENT_SID_ENV)
+    if not effective_sid:
         return None
     root = Path(os.path.expanduser(_CC_PROJECTS_DIR))
     if not root.is_dir():
         return None
-    matches = sorted(root.rglob(f"{sid}.jsonl"))
+    matches = sorted(root.rglob(f"{effective_sid}.jsonl"))
     if not matches:
         return None
     return matches[0].parent
@@ -835,29 +934,151 @@ def _order_sids_by_started_ts(sids: list[str]) -> list[str]:
     )
 
 
-def session_plan(wiki_root: str, *, pj: "str | None" = None) -> dict:
+def _resolve_projection_kind(kind: str) -> str:
+    """Resolve --kind for the projection-only verbs (session-plan/project-batch).
+
+    These verbs have no FE-B raw-source origin (they operate purely on
+    projector session ids), so unspecified/`auto` defaults to
+    `ORIGIN_FE_B_PRIME` rather than `begin`'s `ORIGIN_FE_B` default (change
+    point 7/9, design B/C "auto->fe_b_prime 既定"). Reuses `_resolve_kind` for
+    the actual vocabulary/validation (1-vocabulary principle) then remaps the
+    FE-B result.
+    """
+    resolved = _resolve_kind(kind)
+    return ORIGIN_FE_B_PRIME if resolved == ORIGIN_FE_B else resolved
+
+
+def _pi_walk_ts_by_sid() -> "dict[str, str]":
+    """ONE walk under the pi session dir -> {sid: ts_prefix} (design C, F-2).
+
+    Reuses `pi_log_project`'s internal batch-walk helper (the same single-walk
+    contract `extract_turns_batch` uses, R1) so the pj-path locality filter and
+    the fe_pi_log ordering below share this one walk's cost (the plan's "追加
+    walk コストはゼロ"; mirrors this module's existing cross-module reuse of
+    `cc_log_project._VIEWS_SQL`). Multiple files matching one sid use the most
+    recent by mtime (same tie-break as `pi_log_project.extract_turns_batch`).
+    """
+    by_sid = pi_log_project._walk_all_session_files()
+    ts_by_sid: "dict[str, str]" = {}
+    for sid, matches in by_sid.items():
+        chosen = max(matches, key=lambda p: p.stat().st_mtime)
+        parsed = pi_log_project._parse_session_stem(chosen.stem)
+        if parsed is not None:
+            ts_by_sid[sid] = parsed[0]
+    return ts_by_sid
+
+
+def _order_sids(sids, kind: str) -> list[str]:
+    """Dispatch session ordering by kind (design C, change point 9).
+
+    `auto`/`fe_b_prime` (cc): `sids` is a bare sid list; delegates UNCHANGED to
+    `_order_sids_by_started_ts` (pure delegation, no logic change — R-OI1-10,
+    non-regression is confirmed by the existing cc-ordering pytest staying
+    green).
+    `fe_pi_log`: `sids` is a list of `(ts, sid)` pairs (design fact 11) —
+    session filenames are `<ts>_<sid>.jsonl` and the ts prefix is the pi
+    ground-truth clock (no DuckDB corpus to query, unlike cc). Orders by ts
+    ASCENDING, then the sid string as the tie-break (mirrors the cc None-last/
+    ts/sid tie-break shape; the F-2 locality filter already excludes ts-less
+    sids upstream, so there is no None case to handle here).
+    """
+    if kind == ORIGIN_FE_PI_LOG:
+        return [sid for _ts, sid in sorted(sids, key=lambda pair: (pair[0], pair[1]))]
+    return _order_sids_by_started_ts(sids)
+
+
+def session_plan(wiki_root: str, *, pj: "str | None" = None,
+                 kind: str = "auto", sid: "str | None" = None) -> dict:
     """Resolve the Path B session-id SET, ordered by session-start ts ascending.
 
     Read-only (no lock / checkpoint / write / transaction). Ownership is NOT
     partitioned here (F1-b/F2-B): each begin decides ownership dynamically via
     the ledger diff. `wiki_root` is accepted for surface parity with the other
-    verbs and to confirm it is a wiki root, but the state dir and CC log dir are
-    resolved off the process CWD / $HOME (not under the wiki root).
+    verbs and to confirm it is a wiki root, but the state dir and session-log
+    dir are resolved off the process CWD / $HOME (not under the wiki root).
+
+    `kind` (design C, OI-1 change point 9): `auto`/`fe_b_prime` resolves cc-log
+    sids — this verb's historical behavior, UNCHANGED (`_resolve_projection_kind`
+    defaults unspecified/`auto` to `fe_b_prime`, this verb being projection-
+    only). `fe_pi_log` resolves pi-log sids instead (pi_log_project-backed).
+
+    `sid` (F-13, arg-over-env): an explicit override for the cwd-path's
+    "current session" resolution. cc path: takes priority over
+    $CLAUDE_SESSION_ID (passed down to `_cc_project_dir_from_running_session`);
+    OMITTED, behavior is byte-identical to before this parameter existed
+    (env-only, same zero-arg call). pi path: arg-only (no env fallback, F-13
+    "写像表") — `pi_log_project.session_dir_for_sid(sid)` primary, falling back
+    to `session_dir_for_cwd` if `sid` is omitted or not found (F-6).
 
     Resolution:
-      - pj given  -> `_projects/_state/*.json` filtered by `project == pj`;
-                     scope "pj".
-      - pj omitted-> the running session's CC project dir (U3 primary), else the
-                     cwd-reverse-generated dir (U3 secondary); scope "cwd".
+      - kind cc, pj given  -> `_projects/_state/*.json` filtered by
+                     `project == pj`; scope "pj".
+      - kind cc, pj omitted-> the running session's CC project dir (U3
+                     primary, `sid` override or env), else the cwd-reverse-
+                     generated dir (U3 secondary); scope "cwd".
+      - kind pi, pj given  -> the same `_sids_for_pj` enumeration (harness-
+                     neutral) intersected with the sids that actually have a
+                     pi session file (F-2 locality filter, via the single
+                     `_pi_walk_ts_by_sid` walk); filtered-out sids are counted,
+                     not silently dropped; scope "pj".
+      - kind pi, pj omitted-> `session_dir_for_sid(sid)` primary (if `sid`
+                     given) else/on not-found `session_dir_for_cwd(cwd)`
+                     fallback (F-6); scope "cwd".
     Zero matches -> DriverError (fail-closed, like enumerate).
 
-    Output: {sids: [sid,...], scope: "pj"|"cwd", pattern: <state-glob|dir>}.
+    Output: {sids: [sid,...], scope: "pj"|"cwd", pattern: <state-glob|dir>,
+             filtered_out: <n>}. `filtered_out` counts sids present in
+             taskflow state but with no discoverable pi session file (only
+             possible on the `fe_pi_log` pj-path); it is 0 on every other path.
     """
     root = Path(wiki_root)
     mk = marker.detect(root)
     if mk is None:
         raise DriverError(f"no .llmwiki marker at {wiki_root} (not a wiki root)")
 
+    origin = _resolve_projection_kind(kind)
+
+    if origin == ORIGIN_FE_PI_LOG:
+        filtered_out = 0
+        if pj:
+            candidate_sids = _sids_for_pj(pj)
+            scope = "pj"
+            pattern = str(_state_dir()) + os.sep + "*.json"
+            ts_by_sid = _pi_walk_ts_by_sid()
+            pairs = [(ts_by_sid[s], s) for s in candidate_sids if s in ts_by_sid]
+            filtered_out = len(candidate_sids) - len(pairs)
+            if not pairs:
+                raise DriverError(
+                    f"session-plan matched zero sessions for --pj {pj!r} "
+                    f"(no _projects/_state/*.json with project=={pj!r} "
+                    "having a discoverable pi session file)")
+        else:
+            primary = pi_log_project.session_dir_for_sid(sid) if sid else None
+            if primary is not None:
+                session_dir = primary
+                source = "sid"
+            else:
+                session_dir = pi_log_project.session_dir_for_cwd(Path.cwd())
+                source = "cwd-fallback"
+            if not session_dir.is_dir():
+                raise DriverError(
+                    "session-plan could not resolve the pi session dir: "
+                    + (f"--sid {sid!r} did not locate a session file, and "
+                       if sid else "")
+                    + f"the cwd session dir {session_dir} does not exist "
+                    "(fail-closed)")
+            pairs = pi_log_project.sids_in_session_dir(session_dir)
+            scope = "cwd"
+            pattern = str(session_dir)
+            if not pairs:
+                raise DriverError(
+                    f"session-plan matched zero sessions in pi session dir "
+                    f"{session_dir} (resolved via {source})")
+        ordered = _order_sids(pairs, origin)
+        return {"sids": ordered, "scope": scope, "pattern": pattern,
+                "filtered_out": filtered_out}
+
+    # kind cc (auto/fe_b_prime): UNCHANGED from before kind/sid existed.
     if pj:
         sids = _sids_for_pj(pj)
         scope = "pj"
@@ -867,7 +1088,8 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None) -> dict:
                 f"session-plan matched zero sessions for --pj {pj!r} "
                 f"(no _projects/_state/*.json with project=={pj!r})")
     else:
-        project_dir = _cc_project_dir_from_running_session()
+        project_dir = (_cc_project_dir_from_running_session(sid) if sid
+                       else _cc_project_dir_from_running_session())
         source = "running-session"
         if project_dir is None:
             project_dir = _cc_project_dir_from_cwd()
@@ -886,8 +1108,9 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None) -> dict:
                 f"session-plan matched zero sessions in CC project dir "
                 f"{project_dir} (resolved via {source})")
 
-    ordered = _order_sids_by_started_ts(sids)
-    return {"sids": ordered, "scope": scope, "pattern": pattern}
+    ordered = _order_sids(sids, origin)
+    return {"sids": ordered, "scope": scope, "pattern": pattern,
+            "filtered_out": 0}
 
 
 # --------------------------------------------------------------------------- #
@@ -904,15 +1127,25 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None) -> dict:
 _BATCH_TURNS_PREFIX = "llmwiki-turns-"
 
 
-def project_batch(wiki_root: str, sids: "list[str]") -> dict:
+def project_batch(wiki_root: str, sids: "list[str]", *,
+                  kind: str = "auto") -> dict:
     """Extract turns for ALL sids in one scan; write per-sid JSON; return the map.
 
     Read-only (no lock / checkpoint / write to the wiki / transaction). The turn
     files are written OUTSIDE the wiki root (a temp dir), so they are never
     journaled and never enumerated; the Path B loop owns their cleanup.
 
+    `kind` (change point 7, design B): resolved via `_resolve_projection_kind`
+    (unspecified/`auto` defaults to `fe_b_prime` — this verb is projection-only,
+    "auto->fe_b_prime 既定"). Dispatches to
+    `_PROJECTOR_BY_ORIGIN[resolved].extract_turns_batch` — cc_log_project for
+    `fe_b_prime`, pi_log_project for `fe_pi_log` (same call shape, table B).
+
     Output: {out_dir: <temp dir>, turns: {sid: <per-sid turn-json path>},
-             scanned: <sid count>}.
+             scanned: <sid count>}. Each per-sid JSON file is
+             `{"sid":..., "origin": <resolved kind>, "turns":[...]}` — the
+             `"origin"` stamp (F-1) lets the paired `begin --turns` verify it
+             was extracted under the SAME kind (fail-closed on mismatch).
     """
     root = Path(wiki_root)
     mk = marker.detect(root)
@@ -921,20 +1154,25 @@ def project_batch(wiki_root: str, sids: "list[str]") -> dict:
     if not sids:
         raise DriverError("project-batch requires at least one sid")
 
-    # One corpus scan for all sids (the expensive half; R1). ledger is the hash
-    # single source of truth — the extracted turns carry their F5 hash so begin's
+    origin = _resolve_projection_kind(kind)
+    projector = _PROJECTOR_BY_ORIGIN[origin]
+
+    # One scan for all sids (the expensive half; R1). ledger is the hash single
+    # source of truth — the extracted turns carry their F5 hash so begin's
     # project_from_turns agrees on the dedup/ledger key without re-hashing.
-    extracted = cc_log_project.extract_turns_batch(sids, ledger=ledger)
+    extracted = projector.extract_turns_batch(sids, ledger=ledger)
 
     out_dir = Path(tempfile.mkdtemp(prefix=_BATCH_TURNS_PREFIX))
     turns_map: dict[str, str] = {}
     for sid in sids:
         turn_list = extracted.get(sid, [])
         out_path = out_dir / f"{sid}.json"
-        # Record the owning sid alongside the turns so begin's --turns path can
-        # guard the sid<->file pairing (fail-closed on mismatch).
+        # Record the owning sid + origin alongside the turns so begin's --turns
+        # path can guard the sid<->file pairing AND the origin pairing
+        # (fail-closed on mismatch, F-1).
         out_path.write_text(
-            json.dumps({"sid": sid, "turns": turn_list}, ensure_ascii=False),
+            json.dumps({"sid": sid, "origin": origin, "turns": turn_list},
+                      ensure_ascii=False),
             encoding="utf-8",
         )
         turns_map[sid] = str(out_path)
@@ -1008,11 +1246,13 @@ def main(argv: "list[str] | None" = None) -> int:
             pj_val = opts.get("pj")
             if "pj" in opts and not pj_val and len(pos) >= 2:
                 pj_val = pos[1]
-            result = session_plan(pos[0], pj=pj_val or None)
+            result = session_plan(pos[0], pj=pj_val or None,
+                                  kind=opts.get("kind", "auto"),
+                                  sid=opts.get("sid"))
         elif verb == "project-batch":
             if len(pos) < 2:
                 raise DriverError("project-batch requires <root> <sid> [<sid>...]")
-            result = project_batch(pos[0], pos[1:])
+            result = project_batch(pos[0], pos[1:], kind=opts.get("kind", "auto"))
         else:
             print(f"unknown verb: {verb!r} "
                   "(begin|plan-fanout|finish|abort|enumerate|session-plan|"
@@ -1022,7 +1262,7 @@ def main(argv: "list[str] | None" = None) -> int:
     except config_resolver.ConfigInconsistency as e:
         print(f"config-inconsistency: {e}", file=sys.stderr)
         return 2
-    except cc_log_project.ProjectionError as e:
+    except _PROJECTION_ERRORS as e:
         print(f"extract: {e}", file=sys.stderr)
         return 3
     except transaction.StaleJournal as e:

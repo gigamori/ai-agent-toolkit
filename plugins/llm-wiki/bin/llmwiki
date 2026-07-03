@@ -12,7 +12,7 @@ here (and the sibling bins) — never in `cli.py` or the migrated modules.
 
 Verbs (dep-free, D-2 read-profile preserved by cli.py's branch-local imports):
     resolve-root scan-pages search marker-detect file declare promote-check
-    promote lint init ingest-apply floor-check reindex
+    promote lint init ingest-apply floor-check reindex toggle
 
 `ingest` (duckdb) and `view` (markdown) live in the sibling entrypoints
 (`llmwiki-ingest`, `llmwiki-view`) so a missing native dep never blocks the read

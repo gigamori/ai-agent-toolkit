@@ -118,3 +118,24 @@ def fe_b_prime(wiki_root: "str | Path", markdown: str) -> FEResult:
         hash=h, rel_path=status.rel_path, exists=status.exists,
         redaction_flags=red.flags, frontmatter=fm, body=red.text,
     )
+
+
+def fe_pi_log(wiki_root: "str | Path", markdown: str) -> FEResult:
+    """FE-pi-log: pi-log jsonl markdown -> raw/derived/<hash>.md, derived origin:pi-log.
+
+    `markdown` is the output of pi_log_project.project_owned (text + tool_use).
+    Mirrors fe_b_prime but for the pi session log format (DEC-C(a)/DEC-F, R-3).
+    Redaction (D16) is mandatory here (same lowest-supervision quadrant as FE-B').
+    """
+    red = _redact(markdown)
+    h = ch.content_hash(red.text)
+    status = ch.dedup_status(wiki_root, RAW_DERIVED_DIR, h, "md")
+    fm = {
+        "provenance": "derived",
+        "derived_origin": "pi-log",
+        "doc_type": "transcript",   # floor: doc_type fixed to transcript (same as FE-B')
+    }
+    return FEResult(
+        hash=h, rel_path=status.rel_path, exists=status.exists,
+        redaction_flags=red.flags, frontmatter=fm, body=red.text,
+    )

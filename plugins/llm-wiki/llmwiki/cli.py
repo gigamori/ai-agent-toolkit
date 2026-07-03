@@ -403,6 +403,45 @@ def _floor_check(argv: list[str]) -> int:
     return 0
 
 
+def _toggle(argv: list[str]) -> int:
+    # toggle verb: set or get the per-session wiki on/off state (F3/DEC-F).
+    # Usage:
+    #   toggle set <root> <session_id> on|off  -> set state, print "on" or "off"
+    #   toggle get <root> <session_id>         -> print "on" or "off"
+    # Branch-local import (D-2): wiki_toggle is under core (no write/ingest closure).
+    from llmwiki.core import wiki_toggle as wt
+
+    if len(argv) < 1:
+        print("usage: toggle set <root> <session_id> on|off", file=sys.stderr)
+        print("       toggle get <root> <session_id>", file=sys.stderr)
+        return 2
+
+    sub = argv[0]
+    if sub == "set":
+        if len(argv) < 4:
+            print("usage: toggle set <root> <session_id> on|off", file=sys.stderr)
+            return 2
+        root, session_id, state = argv[1], argv[2], argv[3]
+        if state not in ("on", "off"):
+            print(f"toggle set: state must be 'on' or 'off', got {state!r}",
+                  file=sys.stderr)
+            return 2
+        wt.set_state(root, session_id, on=(state == "on"))
+        print(state)
+        return 0
+    elif sub == "get":
+        if len(argv) < 3:
+            print("usage: toggle get <root> <session_id>", file=sys.stderr)
+            return 2
+        root, session_id = argv[1], argv[2]
+        print("on" if wt.is_on(root, session_id) else "off")
+        return 0
+    else:
+        print(f"toggle: unknown sub-command {sub!r}; expected 'set' or 'get'",
+              file=sys.stderr)
+        return 2
+
+
 def _reindex(argv: list[str]) -> int:
     # optional-search maintenance verb (S5 /wiki-reindex): builds/refreshes the
     # qmd index under <root>/.qmd/ ONLY — it never touches wiki pages, so it is
@@ -454,11 +493,12 @@ _VERBS = {
     "ingest-apply": _ingest_apply,
     "floor-check": _floor_check,
     "reindex": _reindex,
+    "toggle": _toggle,
 }
 
 _USAGE = (
     "usage: llmwiki <resolve-root|scan-pages|search|marker-detect|file|declare|"
-    "promote-check|promote|lint|init|ingest-apply|floor-check|reindex> ..."
+    "promote-check|promote|lint|init|ingest-apply|floor-check|reindex|toggle> ..."
 )
 
 

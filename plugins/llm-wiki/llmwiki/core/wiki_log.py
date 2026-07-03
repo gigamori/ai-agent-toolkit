@@ -12,6 +12,7 @@ Front-end dispatch (design §4 :127-128):
     ## [YYYY-MM-DD] ingest|source | <Title>   (FE-B)
     ## [YYYY-MM-DD] file|derived  | <Title>   (FE-A)
     ## [YYYY-MM-DD] file|cc-log    | <Title>  (FE-B')
+    ## [YYYY-MM-DD] file|pi-log    | <Title>  (fe_pi_log)
 
 I/O contract:
     format_header(date, op, tag, title) -> str
@@ -32,6 +33,7 @@ Front-end -> (op, tag) helpers:
     header_for_fe_a()       -> ("file", "derived")
     header_for_fe_b()       -> ("ingest", "source")
     header_for_fe_b_prime() -> ("file", "cc-log")
+    header_for_fe_pi_log()  -> ("file", "pi-log")
 """
 
 from __future__ import annotations
@@ -105,3 +107,7 @@ def header_for_fe_b() -> tuple[str, str]:
 
 def header_for_fe_b_prime() -> tuple[str, str]:
     return ("file", "cc-log")
+
+
+def header_for_fe_pi_log() -> tuple[str, str]:
+    return ("file", "pi-log")

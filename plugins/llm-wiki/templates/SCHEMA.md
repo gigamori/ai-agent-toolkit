@@ -118,8 +118,8 @@ Pages and sources are tagged on three orthogonal axes. The trust boundary is
   external_locator?: <url|permalink> }`. Carries the citation form and re-fetch
   handle. Medium is derived from the locator (not enumerated). `raw_path` is
   ALWAYS relative; absolute paths are forbidden (secret).
-- **derived origin** (derived-side origin, D12) — closed set, fixed two values:
-  `conversation` / `cc-log`.
+- **derived origin** (derived-side origin, D12) — closed set, three values:
+  `conversation` / `cc-log` / `pi-log`.
 - **doc_type** — one of: transcript, article, paper, spec, runbook, incident,
   policy, guide (unknown -> `default`, D13). Selects the extraction profile and
   the type-specific lint.
@@ -166,11 +166,13 @@ Examples (front-end dispatch):
 ## [YYYY-MM-DD] ingest|source | <Title>
 ## [YYYY-MM-DD] file|derived  | <Title>
 ## [YYYY-MM-DD] file|cc-log    | <Title>
+## [YYYY-MM-DD] file|pi-log    | <Title>
 ```
 
 - `ingest|source` = 3rd-party source ingest (FE-B).
 - `file|derived` = conversation/filing snapshot (FE-A).
 - `file|cc-log` = cc-log jsonl snapshot (FE-B').
+- `file|pi-log` = pi-log jsonl snapshot (fe_pi_log).
 
 ## 5. SCHEMA.md maintenance
 

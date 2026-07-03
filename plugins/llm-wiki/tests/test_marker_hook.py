@@ -9,9 +9,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _HOOK = (
     Path(__file__).resolve().parents[1] / "hooks" / "wiki_marker_inject.py"
 )
+
+# hooks/ is a CC-only asset (pi maps activation to TS and does not copy hooks/).
+# Skip the whole module when the hook file is absent so this passes in CC and
+# skips harmlessly in a pi-style harness. Keeps the copy bit-for-bit.
+if not _HOOK.exists():
+    pytest.skip(
+        "hooks/wiki_marker_inject.py is CC-only; not present in this harness",
+        allow_module_level=True,
+    )
 
 
 def _run(cwd: Path, prompt: str = "hello", session_id: str = "", env=None):
