@@ -101,6 +101,7 @@ nomode norole — mode:plan と mode:execute の違いは何ですか？
 | `mode:execute` | `implement` | 計画を厳密に適用、scope 拡張禁止 |
 | `mode:debug` | `verify` | 根本原因分析、早すぎる修正は禁止 |
 | `mode:review` | | プロセス評価と教訓抽出 |
+| `mode:review-design` | | システム設計を品質次元に照らして構造的にレビューしたい |
 
 各 mode の `NEVER` / `DO` ルール全文は [`prompts/modes/`](prompts/modes/) を参照。
 
@@ -120,6 +121,7 @@ nomode norole — mode:plan と mode:execute の違いは何ですか？
 - DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming), refuse-[BLOCKED]-on-violation
 
 Include `[Mode: current_mode]` on its own line before the main body.
+Mode is per-turn: apply the `[Mode:]` line and all mode rules only when a `mode:` is declared this turn; with no declaration, emit no `[Mode:]` line and do not infer or carry a mode (baseline).
 ```
 
 `_meta.md`（framework ヘッダ。任意の active slug と必ず一緒に注入される。三段階の優先順位 `Mode > User-instruction > Role` と `[BLOCKED: mode-rule <name>]` 自己宣言ルールを含む）。
@@ -164,6 +166,7 @@ plugins/role-mode/
     execute.md
     debug.md
     review.md
+    review-design.md
 ```
 
 各 `<mode>.md` は `Basic Behavior` / `NEVER` / `DO` の 3 行が必須。加えて任意セクションが 2 種:
@@ -179,7 +182,7 @@ plugins/role-mode/
 
 Claude Code 上で両プラグインとも `UserPromptSubmit` hook を使う。完全に独立で、taskflow はプロジェクト状態を、role-mode は mode ルールを注入する。Claude Code は hook 順序を保証しないが、2 つの出力は連結されるだけで合成されないので順序非依存。
 
-`Plan` mode 定義は taskflow の `_projects/<project>/` scaffold 更新と意図的に共存可能：`NEVER: generate-final-deliverables` は design / process document の作成を許可しており、`progress.md` や `handoff/` 更新がこれに該当する。
+`Plan` mode 定義は taskflow の `_projects/<project>/` scaffold 更新と意図的に共存可能：`NEVER: generate-target-artifacts` は design / process document の作成を許可しており、`progress.md` や `handoff/` 更新がこれに該当する。
 
 ### rule-inject との併用
 

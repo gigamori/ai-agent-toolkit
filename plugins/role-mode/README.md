@@ -101,6 +101,7 @@ nomode norole — how does mode:plan differ from mode:execute?
 | `mode:execute` | `implement` | You want the plan applied strictly, no scope expansion |
 | `mode:debug` | `verify` | You want root-cause analysis, no premature fixes |
 | `mode:review` | | You want process evaluation and lessons learned |
+| `mode:review-design` | | You want a structured system-design review against quality dimensions |
 
 The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/modes/).
 
@@ -120,6 +121,7 @@ The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/m
 - DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming), refuse-[BLOCKED]-on-violation
 
 Include `[Mode: current_mode]` on its own line before the main body.
+Mode is per-turn: apply the `[Mode:]` line and all mode rules only when a `mode:` is declared this turn; with no declaration, emit no `[Mode:]` line and do not infer or carry a mode (baseline).
 ```
 
 `_meta.md` framework header (always paired with any active slug; defines the three-level precedence chain `Mode > User-instruction > Role` and the `[BLOCKED: mode-rule <name>]` self-report rule).
@@ -164,6 +166,7 @@ plugins/role-mode/
     execute.md
     debug.md
     review.md
+    review-design.md
 ```
 
 Each `<mode>.md` has three required lines — `Basic Behavior`, `NEVER`, `DO` — plus two optional sections:
@@ -179,7 +182,7 @@ The `mode: <name>` header is generated dynamically by the hook and is not stored
 
 Both plugins use `UserPromptSubmit` hooks on Claude Code. They are independent — taskflow injects project state, role-mode injects mode rules. Hook order is unspecified by Claude Code but the two outputs are concatenated, not merged, so order does not matter for correctness.
 
-The `Plan` mode definition is intentionally compatible with taskflow's `_projects/<project>/` scaffold updates: `NEVER: generate-final-deliverables` permits design / process documents (which is what `progress.md` and `handoff/` updates are).
+The `Plan` mode definition is intentionally compatible with taskflow's `_projects/<project>/` scaffold updates: `NEVER: generate-target-artifacts` permits design / process documents (which is what `progress.md` and `handoff/` updates are).
 
 ### With rule-inject
 
