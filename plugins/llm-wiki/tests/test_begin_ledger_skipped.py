@@ -10,9 +10,10 @@ driver's begin-JSON surface:
   - the key is gated to FE-B' exactly like `pending_ledger_entries`.
 
 The FE-B' projector reads the live cc store (DuckDB), which is not hermetic, so
-`cc_log_project.project_owned` is monkeypatched to return a controlled
-`ProjectionResult` — this test targets the driver's begin-JSON plumbing (the F6
-wiring point), not the projector's own counting (covered in
+the projector seam begin actually uses (#19 two-phase: `extract_owned` before
+the lock, `project_from_turns` inside it) is monkeypatched to return a
+controlled `ProjectionResult` — this test targets the driver's begin-JSON
+plumbing (the F6 wiring point), not the projector's own counting (covered in
 test_cc_log_project.py). frontends.fe_b_prime runs for real over the injected
 markdown (unchanged FE-B' contract).
 """
@@ -47,14 +48,19 @@ def _init_wiki(tmp_path):
     (tmp_path / "log.md").write_text("# Log\n", encoding="utf-8")
 
 
-def _fake_projection(markdown, novel_entries, ledger_skipped):
-    def _stub(root, sid, *, ledger):
+def _patch_projection(monkeypatch, markdown, novel_entries, ledger_skipped):
+    """Patch begin's projector seam (#19 two-phase): a no-op pre-lock extract
+    plus an in-lock project_from_turns returning the controlled result."""
+    monkeypatch.setattr(cc_log_project, "extract_owned",
+                        lambda sid, *, ledger: [])
+
+    def _stub(root, sid, turns, *, ledger):
         return cc_log_project.ProjectionResult(
             markdown=markdown,
             novel_entries=list(novel_entries),
             ledger_skipped=ledger_skipped,
         )
-    return _stub
+    monkeypatch.setattr(cc_log_project, "project_from_turns", _stub)
 
 
 # --------------------------------------------------------------------------- #
@@ -62,11 +68,11 @@ def _fake_projection(markdown, novel_entries, ledger_skipped):
 # --------------------------------------------------------------------------- #
 def test_fe_b_prime_ledger_skipped_zero_first_ingest(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
-    monkeypatch.setattr(
-        cc_log_project, "project_owned",
-        _fake_projection("# CC Session transcript\n\n## Turn 1 [t]\n\n**Human**: hi\n",
-                         [{"hash": "h1", "first_sid": "s", "first_uuid": "u", "first_ts": "t"}],
-                         0),
+    _patch_projection(
+        monkeypatch,
+        "# CC Session transcript\n\n## Turn 1 [t]\n\n**Human**: hi\n",
+        [{"hash": "h1", "first_sid": "s", "first_uuid": "u", "first_ts": "t"}],
+        0,
     )
     out = drv.begin(str(tmp_path), "somesid.jsonl", kind="fe_b_prime")
     assert out["origin"] == drv.ORIGIN_FE_B_PRIME
@@ -81,10 +87,7 @@ def test_fe_b_prime_ledger_skipped_zero_first_ingest(tmp_path, monkeypatch):
 def test_fe_b_prime_ledger_skipped_positive_on_rerun(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     # Simulate the re-run: the projector dropped 62 already-owned turns.
-    monkeypatch.setattr(
-        cc_log_project, "project_owned",
-        _fake_projection("# CC Session transcript\n", [], 62),
-    )
+    _patch_projection(monkeypatch, "# CC Session transcript\n", [], 62)
     out = drv.begin(str(tmp_path), "somesid.jsonl", kind="fe_b_prime")
     assert out["origin"] == drv.ORIGIN_FE_B_PRIME
     assert out["ledger_skipped"] == 62      # surfaced from ProjectionResult (F6)

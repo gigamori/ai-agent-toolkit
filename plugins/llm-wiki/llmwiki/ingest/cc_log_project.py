@@ -592,13 +592,30 @@ def project_from_turns(wiki_root: "str | Path", sid: str, turns: "list[dict]",
                             ledger_skipped=ledger_skipped)
 
 
+def extract_owned(sid: str, *, ledger) -> "list[dict]":
+    """Extract ONE sid's turns (the EXPENSIVE half of Path A; read-only).
+
+    ``project_owned``'s extraction step factored out so begin can run it BEFORE
+    acquiring the transaction lock (#19 in-lock ledger diff): it opens DuckDB
+    and reads the session corpus but touches NO wiki state — ``ledger`` is used
+    solely for ``compute_hash`` (F5), never for the seen-set. The ledger DIFF
+    (the read side of the ledger read-modify-write) lives in
+    ``project_from_turns``, which begin runs INSIDE the lock.
+    """
+    return [_turn_to_dict(t, ledger=ledger) for t in _fetch_turns(sid)]
+
+
 def project_owned(wiki_root: "str | Path", sid: str, *, ledger) -> ProjectionResult:
     """Project one sid to novel-turn markdown + the ledger-entry channel (Path A).
 
-    The composition of the two halves for a SINGLE sid (Path A / /wiki-ingest):
-    extract this one sid's turns (one DuckDB scan — fine for one sid), then
-    project them. Path B does NOT call this — it batch-extracts all sids once
-    (``extract_turns_batch``) then calls ``project_from_turns`` per sid.
+    The composition of the two halves for a SINGLE sid: ``extract_owned`` (one
+    DuckDB scan — fine for one sid), then ``project_from_turns``. NOTE: begin
+    no longer calls this composition directly — it runs ``extract_owned``
+    before the lock and ``project_from_turns`` inside the lock (#19), so this
+    stays as the one-shot composition for ``main()`` / manual inspection (and
+    as the behavioral spec the split halves must agree with). Path B does NOT
+    call this either — it batch-extracts all sids once (``extract_turns_batch``)
+    then calls ``project_from_turns`` per sid.
 
     Steps: project blocks -> group turns (thinking excluded) -> boilerplate strip
     -> within-sid exact dedup -> ledger diff (drop already-seen) -> markdown.
@@ -612,8 +629,8 @@ def project_owned(wiki_root: "str | Path", sid: str, *, ledger) -> ProjectionRes
     Returns:
         ProjectionResult(markdown, novel_entries, ledger_skipped).
     """
-    turns = [_turn_to_dict(t, ledger=ledger) for t in _fetch_turns(sid)]
-    return project_from_turns(wiki_root, sid, turns, ledger=ledger)
+    return project_from_turns(wiki_root, sid, extract_owned(sid, ledger=ledger),
+                              ledger=ledger)
 
 
 def main() -> None:  # pragma: no cover - thin CLI wrapper for manual inspection
@@ -621,6 +638,14 @@ def main() -> None:  # pragma: no cover - thin CLI wrapper for manual inspection
     import sys
 
     from llmwiki.ingest import ledger as _ledger
+
+    # Fix stdio to UTF-8 regardless of the host locale (S1; same idiom as
+    # cli.py:main — subsumes the old stdout-only reconfigure below).
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     ap = argparse.ArgumentParser(
         description="Project a single cc-log sid to novel-turn markdown (T2).")
@@ -637,7 +662,6 @@ def main() -> None:  # pragma: no cover - thin CLI wrapper for manual inspection
         Path(args.output).write_text(res.markdown, encoding="utf-8")
         print(f"{len(res.novel_entries)} novel turns -> {args.output}", file=sys.stderr)
     else:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(res.markdown)
 
 

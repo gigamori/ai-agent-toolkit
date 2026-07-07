@@ -22,9 +22,11 @@ budget, opening no transaction):
        locking (plan §3 / D-c: violation surfaces before any side effect)
     -> transaction.acquire_lock THEN transaction.checkpoint (lock-first, so only
        the lock holder ever creates the fixed-path journal dir; F1 fix)
-    -> front-end (FE-B: frontends.fe_b ; FE-B': cc_log_project.project_owned
-       then frontends.fe_b_prime). The FE runs redaction/secret-scan + content-
-       hash dedup itself.
+    -> front-end (FE-B: frontends.fe_b ; FE-B': cc_log_project.extract_owned
+       BEFORE the lock, then project_from_turns IN-LOCK (#19: the ledger diff
+       is the read side of a read-modify-write and must not race a concurrent
+       finish), then frontends.fe_b_prime). The FE runs redaction/secret-scan +
+       content-hash dedup itself.
     -> write the raw artifact (unless dedup no-op) + write the sidecar
     -> print JSON {declaration[], redacted_body, origin, doc_type, max_count,
        max_bytes, apply_fanout_k, dedup_noop, redaction_flags[], ledger_skipped}.
@@ -33,10 +35,11 @@ budget, opening no transaction):
     discard the journal (the raw rollback is a harmless no-op).
     `--turns=<path>` (FE-B' Path B, R1/F-H1): use the pre-extracted turns at
     <path> (from `project-batch`) instead of re-scanning the corpus — begin then
-    runs only the cheap per-sid projection half (project_from_turns). Path A
-    omits it (begin extracts the one sid itself via project_owned).
+    runs only the cheap per-sid projection half (project_from_turns, in-lock).
+    Path A omits it (begin extracts the one sid itself via extract_owned before
+    the lock; the diff+render half is the same in-lock project_from_turns).
     `--kind=fe_pi_log` dispatches to `pi_log_project` instead of `cc_log_project`
-    for BOTH Path A (project_owned) and Path B (project_from_turns) — same call
+    for BOTH Path A (extract_owned) and Path B (project_from_turns) — same call
     shape, table-dispatched (design B / OI-1). F-14: for `--kind=fe_pi_log`,
     `<source>` MUST be a bare sid, never a file path — pi session filenames are
     `<ts>_<sid>.jsonl` (NOT `<sid>.jsonl` like cc), so `Path(source).stem` on a
@@ -325,11 +328,10 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         # sid (never a path) — pi session filenames are `<ts>_<sid>.jsonl`, so
         # `Path(source).stem` on a pi filename would extract the wrong value
         # (`<ts>_<sid>`, not `<sid>`); this is NOT satisfied by the cc-filename
-        # convention this line was originally written for. The projector
-        # projects that sid (+ agent/fork children, per-origin) out of its
-        # backing store, strips boilerplate, length-independent exact-dedups,
-        # diffs the turn ledger (T4) and renders the shared markdown shape of
-        # the NOVEL turns.
+        # convention this line was originally written for. Here (pre-lock) the
+        # projector only EXTRACTS that sid (+ agent/fork children, per-origin)
+        # out of its backing store and strips boilerplate — the dedup + turn-
+        # ledger diff (T4) + markdown render run IN-LOCK below (#19).
         sid = Path(source).stem
         projector = _PROJECTOR_BY_ORIGIN[origin]
         if turns is not None:
@@ -374,9 +376,15 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
                     f"{origin!r} (fail-closed, F-1)")
             if not isinstance(turn_list, list):
                 raise DriverError("--turns JSON must be a list or {sid, turns:[...]}")
-            proj = projector.project_from_turns(root, sid, turn_list, ledger=ledger)
         else:
-            proj = projector.project_owned(root, sid, ledger=ledger)
+            # Path A: run ONLY the extract half here (read-only: DuckDB / session
+            # walk; NO wiki state — `ledger` is used solely for compute_hash).
+            # The ledger DIFF moves INSIDE the lock below (#19): reading
+            # read_seen_hashes before acquire_lock was a TOCTOU — a concurrent
+            # ingest could finish() between our diff and our lock, leaving this
+            # begin to re-file turns the other ingest now owns (duplicate pages
+            # + last-wins first_sid corruption in the ledger).
+            turn_list = projector.extract_owned(sid, ledger=ledger)
 
     # 4) acquire_lock THEN checkpoint (lock-first). Only the lock holder ever
     #    creates/touches the fixed-path journal dir, so a second ingest that fails
@@ -391,6 +399,17 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         raise
 
     try:
+        # 4b) projection cheap half IN-LOCK (#19): within-sid exact dedup ->
+        #     ledger diff -> markdown. The seen-set read (`read_seen_hashes`
+        #     inside project_from_turns) now happens strictly AFTER acquire_lock,
+        #     so begin's diff can no longer race a concurrent ingest's finish
+        #     (its ledger append is ordered before our read by the lock). Path A
+        #     and Path B share this single in-lock code path; a failure here is
+        #     cleaned up by the except below (rollback + release + sidecar).
+        if origin != ORIGIN_FE_B:
+            proj = projector.project_from_turns(root, sid, turn_list,
+                                                ledger=ledger)
+
         # 5) run the matching front-end (the source was already read in 3b; the
         #    front-end assembly is pure: redaction/secret-scan + content-hash
         #    dedup, no source read). frontends.py owns redact-before-hash (D16/D18).
@@ -427,11 +446,11 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         #    the ownership token so finish/abort can refuse a foreign txn (DEC-R1=D).
         #    `pending_ledger_entries` carries the novel turn-content-hash entries
         #    (S8-b / T4) from begin to finish on-disk (ZERO LLM-threaded state);
-        #    finish(success) journals + appends them to the turn ledger. The FE-B'
-        #    projector (cc_log_project.project_owned) populates this at projection
-        #    time (it diffs each projected turn's hash against
-        #    ledger.read_seen_hashes and emits the novel LedgerEntry list); the
-        #    FE-B path has no projection, so it emits none.
+        #    finish(success) journals + appends them to the turn ledger. The
+        #    projector's in-lock cheap half (project_from_turns, 4b above)
+        #    populates this at projection time (it diffs each projected turn's
+        #    hash against ledger.read_seen_hashes and emits the novel
+        #    LedgerEntry list); the FE-B path has no projection, so it emits none.
         _write_sidecar(root, {
             "journal_dir": cp.journal_dir,
             "origin": origin,
@@ -1195,6 +1214,15 @@ def _parse_opts(argv: list[str]) -> tuple[list[str], dict[str, str]]:
 
 
 def main(argv: "list[str] | None" = None) -> int:
+    # Fix stdio to UTF-8 regardless of the host locale (S1; same idiom as
+    # cli.py:main). This subsumes the old stdout-only reconfigure that sat just
+    # before the JSON print: stdin is STRICT (fail fast on corrupted input),
+    # stdout/stderr replace (reporting never crashes). Wins over PYTHONIOENCODING.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print("usage: ingest_driver.py "
@@ -1272,7 +1300,6 @@ def main(argv: "list[str] | None" = None) -> int:
         print(str(e), file=sys.stderr)
         return 2
 
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

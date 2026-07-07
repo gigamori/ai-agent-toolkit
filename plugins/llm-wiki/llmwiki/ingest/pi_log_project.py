@@ -467,14 +467,36 @@ def project_from_turns(wiki_root: "str | Path", sid: str, turns: "list[dict]",
     )
 
 
+def extract_owned(sid: str, *, ledger) -> "list[dict]":
+    """Extract ONE pi session's turns (the EXPENSIVE half of Path A; read-only).
+
+    ``project_owned``'s extraction step factored out so begin can run it BEFORE
+    acquiring the transaction lock (#19 in-lock ledger diff). Touches NO wiki
+    state — ``ledger`` is used solely for hash assignment (F5), never for the
+    seen-set. Keeps Path A's F-14 fail-closed surface: a missing session file
+    raises ProjectionError (unlike ``extract_turns_batch``, whose
+    missing-sid-is-empty-list semantics serve the Path B planner).
+
+    Raises:
+        ProjectionError on file-not-found or parse failure.
+    """
+    session_file = _find_session_file(sid)
+    raw_turns = _load_and_project(session_file, sid)
+    active = _active_path(raw_turns)
+    return [_assign_hash(turn, ledger=ledger) for turn in active]
+
+
 def project_owned(wiki_root: "str | Path", sid: str, *, ledger) -> ProjectionResult:
     """Project one pi session to novel-turn markdown + the ledger-entry channel.
 
     The composition of the two halves for a SINGLE sid (Path A):
-    ``_find_session_file`` -> ``_load_and_project`` -> ``_active_path`` ->
-    hash assignment -> ``project_from_turns``. External behavior (markdown,
+    ``extract_owned`` -> ``project_from_turns``. External behavior (markdown,
     novel_entries, ledger_skipped) is identical to the pre-refactor inline
-    implementation for the same input (S1 non-regression criterion).
+    implementation for the same input (S1 non-regression criterion). NOTE:
+    begin no longer calls this composition directly — it runs ``extract_owned``
+    before the lock and ``project_from_turns`` inside the lock (#19), so this
+    stays as the one-shot composition for ``main()`` / manual inspection (and
+    as the behavioral spec the split halves must agree with).
 
     Args:
         wiki_root: the wiki root (to read ledger.read_seen_hashes).
@@ -487,11 +509,8 @@ def project_owned(wiki_root: "str | Path", sid: str, *, ledger) -> ProjectionRes
     Raises:
         ProjectionError on file-not-found or parse failure.
     """
-    session_file = _find_session_file(sid)
-    raw_turns = _load_and_project(session_file, sid)
-    active = _active_path(raw_turns)
-    turns = [_assign_hash(turn, ledger=ledger) for turn in active]
-    return project_from_turns(wiki_root, sid, turns, ledger=ledger)
+    return project_from_turns(wiki_root, sid, extract_owned(sid, ledger=ledger),
+                              ledger=ledger)
 
 
 def main() -> None:  # pragma: no cover - thin CLI wrapper for manual inspection
@@ -499,6 +518,14 @@ def main() -> None:  # pragma: no cover - thin CLI wrapper for manual inspection
     import sys
 
     from llmwiki.ingest import ledger as _ledger
+
+    # Fix stdio to UTF-8 regardless of the host locale (S1; same idiom as
+    # cli.py:main — subsumes the old stdout-only reconfigure below).
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     ap = argparse.ArgumentParser(
         description="Project a single pi-log sid to novel-turn markdown.")
@@ -517,7 +544,6 @@ def main() -> None:  # pragma: no cover - thin CLI wrapper for manual inspection
         print(f"{len(res.novel_entries)} novel turns -> {args.output}",
               file=sys.stderr)
     else:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(res.markdown)
 
 

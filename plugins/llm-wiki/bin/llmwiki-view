@@ -1,13 +1,13 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["markdown"]
+# dependencies = ["markdown", "nh3"]
 # ///
 """llmwiki-view — markdown CLI entrypoint (DEC-1=(b); bin/ shim).
 
-The view area-entrypoint. It declares the `markdown` runtime dep via PEP 723 so
-the read path (dep-free `llmwiki`) is never coupled to markdown (failure
-isolation, DEC-1(b)). T-layer bootstrap (single `sys.path` insert) so
+The view area-entrypoint. It declares the `markdown` + `nh3` runtime deps via
+PEP 723 (nh3 sanitizes untrusted page HTML, #21) so the read path (dep-free
+`llmwiki`) is never coupled to them (failure isolation, DEC-1(b)). T-layer bootstrap (single `sys.path` insert) so
 `import llmwiki` resolves under path-import (no-install), then subordinates the
 existing `generate_wiki_view` argv-CLI verbatim:
 

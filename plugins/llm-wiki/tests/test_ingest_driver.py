@@ -500,3 +500,51 @@ def test_begin_turns_origin_absent_rejected_by_fe_pi_log(tmp_path):
     # no lock / sidecar is ever created (fail-closed, no side effects).
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
+
+
+# --------------------------------------------------------------------------- #
+# #19: begin's ledger diff runs INSIDE the lock (no TOCTOU vs a concurrent
+# finish). A ledger append landing AT lock-acquisition time (i.e. after the
+# old pre-lock diff point) MUST be visible to begin's diff: the appended turn
+# is skipped, not re-filed (no duplicate page turn, no first_sid steal).
+# --------------------------------------------------------------------------- #
+def test_begin_ledger_diff_runs_inside_lock(tmp_path, monkeypatch):
+    from llmwiki.ingest import ledger as ld
+
+    _init_wiki(tmp_path)
+    h1 = ld.compute_hash("user", "hello")
+    h2 = ld.compute_hash("assistant", "world")
+    turns = [
+        {"role": "user", "uuid": "u1", "ts": "2026-07-07T00:00:00",
+         "projected_text": "hello", "hash": h1, "tool_uses": []},
+        {"role": "assistant", "uuid": "u2", "ts": "2026-07-07T00:00:01",
+         "projected_text": "world", "hash": h2, "tool_uses": []},
+    ]
+    tf = tmp_path.parent / "race-turns.json"
+    tf.write_text(json.dumps({"sid": "sid-a", "origin": drv.ORIGIN_FE_B_PRIME,
+                              "turns": turns}), encoding="utf-8")
+
+    real_acquire = tx.acquire_lock
+
+    def racing_acquire(root):
+        handle = real_acquire(root)
+        # Simulate a concurrent ingest whose finish appended h1 between the OLD
+        # pre-lock diff point and our lock acquisition (the exact TOCTOU window).
+        ld.append_entries(tmp_path, [ld.LedgerEntry(
+            hash=h1, first_sid="other-sid", first_uuid="ux",
+            first_ts="2026-07-06T23:59:59")])
+        return handle
+
+    monkeypatch.setattr(drv.transaction, "acquire_lock", racing_acquire)
+
+    out = drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
+    # The in-lock diff observed the concurrent append: h1 skipped, h2 novel.
+    assert out["ledger_skipped"] == 1
+    sidecar = json.loads((tmp_path / drv.SIDECAR_NAME).read_text(
+        encoding="utf-8"))
+    pending_hashes = [e["hash"] for e in sidecar["pending_ledger_entries"]]
+    assert pending_hashes == [h2]
+    # Cleanup: terminal path releases the lock and removes the sidecar.
+    drv.finish(str(tmp_path), "fail")
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+    assert not (tmp_path / tx.LOCK_NAME).exists()

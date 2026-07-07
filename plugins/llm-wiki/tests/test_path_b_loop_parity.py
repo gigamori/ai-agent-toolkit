@@ -10,7 +10,8 @@ must be PARITY with /wiki-ingest's glob/dir loop:
      begin FAILS leaves NO lock / sidecar / journal (G-f), so the NEXT sid's
      transaction proceeds cleanly (the failing sid does not wedge the loop).
 
-The projector reads the live cc store (not hermetic), so `project_owned` is
+The projector reads the live cc store (not hermetic), so begin's projector seam
+(#19 two-phase: `extract_owned` pre-lock, `project_from_turns` in-lock) is
 monkeypatched; this test targets the loop/transaction PARITY (the begin/finish
 contract each sid runs through), not the projection itself. A real
 begin->finish is driven per sid over a minimal `.llmwiki` wiki (like the sibling
@@ -71,9 +72,15 @@ def test_path_b_loop_failure_continue_independent_transactions(tmp_path, monkeyp
     _init_wiki(tmp_path)
     sids = ["sid-ok-1", "sid-boom", "sid-ok-2"]
 
-    def _project(root, sid, *, ledger):
+    # #19 two-phase seam: the failing sid raises in the PRE-LOCK extract half
+    # (so the loop's "no lock / no sidecar / no journal" invariant holds), the
+    # healthy sids flow through the in-lock project_from_turns.
+    def _extract(sid, *, ledger):
         if sid == "sid-boom":
             raise cc_log_project.ProjectionError(f"projection failed for {sid}")
+        return []
+
+    def _project(root, sid, turns, *, ledger):
         # A minimal FE-B'-compatible transcript for the healthy sids.
         return cc_log_project.ProjectionResult(
             markdown=f"# CC Session transcript\n\n## Turn 1 [t]\n\n**Human**: {sid}\n",
@@ -81,7 +88,8 @@ def test_path_b_loop_failure_continue_independent_transactions(tmp_path, monkeyp
                             "first_uuid": "u", "first_ts": "t"}],
             ledger_skipped=0,
         )
-    monkeypatch.setattr(cc_log_project, "project_owned", _project)
+    monkeypatch.setattr(cc_log_project, "extract_owned", _extract)
+    monkeypatch.setattr(cc_log_project, "project_from_turns", _project)
 
     succeeded, failed = [], []
     for sid in sids:
@@ -116,13 +124,15 @@ def test_path_b_loop_accumulates_ledger_skipped(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     skip_by_sid = {"s1": 0, "s2": 5, "s3": 7}
 
-    def _project(root, sid, *, ledger):
+    def _project(root, sid, turns, *, ledger):
         return cc_log_project.ProjectionResult(
             markdown="# CC Session transcript\n",
             novel_entries=[],
             ledger_skipped=skip_by_sid[sid],
         )
-    monkeypatch.setattr(cc_log_project, "project_owned", _project)
+    monkeypatch.setattr(cc_log_project, "extract_owned",
+                        lambda sid, *, ledger: [])
+    monkeypatch.setattr(cc_log_project, "project_from_turns", _project)
 
     total_skipped = 0
     for sid in ["s1", "s2", "s3"]:

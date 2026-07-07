@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["markdown"]
+# dependencies = ["markdown", "nh3"]
 # ///
 """generate_wiki_view.py — local wiki page viewer (md display + wikilink traversal).
 
@@ -47,10 +47,37 @@ from llmwiki.core import wiki_index  # REUSE scan_pages / tier_of
 from llmwiki.core import wiki_root_resolver  # REUSE resolve() (multi-scope wiki-root)
 
 import markdown    # (PEP723 inline dep)
+import nh3         # (PEP723 inline dep) — HTML sanitizer (stored-XSS hardening)
 
 
 SERVE_HOST = "127.0.0.1"   # never 0.0.0.0 — not externally reachable (plan §5-Q1 / R-3)
 DEFAULT_PORT = 17330       # proposal (plan §1-A); --port overrides
+
+# Loopback Host allowlist (DNS-rebinding hardening). 127.0.0.1 binding keeps the
+# socket off the network, but a rebinding attacker points THEIR hostname at
+# 127.0.0.1 and reads the wiki through the victim's browser — the Host header is
+# the only place that attack is visible, so any other Host value is refused.
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+# Page bodies are untrusted (FE-A files conversation text verbatim; FE-B ingests
+# third-party documents; redaction strips secrets/paths, NOT markup), and
+# python-markdown passes raw inline HTML through. Belt: nh3 strips active
+# content (script/event handlers/js: URLs). Suspenders: the CSP below keeps
+# even a sanitizer miss inert (no script eval, no external fetch, no forms).
+CSP_POLICY = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:"
+
+# nh3 attribute allowlist: defaults + the viewer's own styling hooks. linkify()
+# injects anchors/spans carrying class/title BEFORE the markdown pass, so the
+# sanitizer must keep them (href stays default-allowed on <a>; javascript: is
+# not an allowed scheme, relative /page?path=... URLs pass through).
+NH3_ATTRIBUTES = {
+    "*": {"class", "title"},
+    "a": {"href", "class", "title"},
+    "img": {"src", "alt", "class", "title"},
+    # markdown's "toc" extension stamps heading ids (in-page anchors).
+    "h1": {"id"}, "h2": {"id"}, "h3": {"id"},
+    "h4": {"id"}, "h5": {"id"}, "h6": {"id"},
+}
 
 
 # ── markdown frontmatter (dependency-light, top-level scalars only) ──────────
@@ -180,6 +207,11 @@ def render_page_html(root: Path, rel_path: str, pages: dict[str, str]) -> str:
     html_body = markdown.markdown(
         linked, extensions=["tables", "fenced_code", "toc"]
     )
+    # Sanitize AFTER the md->HTML pass: page bodies are untrusted and
+    # python-markdown passes raw inline HTML through (stored XSS). nh3 strips
+    # scripts / event handlers / javascript: URLs while keeping the viewer's
+    # own linkify() markup (see NH3_ATTRIBUTES). CSP is the second layer.
+    html_body = nh3.clean(html_body, attributes=NH3_ATTRIBUTES)
 
     tier = wiki_index.tier_of(rel_path)
     name = link_lint.page_name(rel_path)
@@ -292,6 +324,23 @@ ul.page-list li{padding:5px 0;border-bottom:1px solid #edf2f7;display:flex;
 
 # ── server ───────────────────────────────────────────────────────────────────
 
+class ExclusiveHTTPServer(HTTPServer):
+    """HTTPServer that refuses to co-bind an in-use port.
+
+    ``socketserver.TCPServer`` defaults ``allow_reuse_address = True`` (sets
+    ``SO_REUSEADDR``), which on Windows lets a SECOND viewer bind the SAME
+    ``127.0.0.1:PORT`` as a still-running one. Two servers then listen on the
+    fixed default port and the OS routes each browser connection to one of them
+    non-deterministically — so a stale viewer left over from another wiki
+    silently serves the WRONG wiki (observed in E2E: the top page showed an
+    unrelated wiki's pages). Disabling reuse makes a second bind fail cleanly
+    with ``OSError`` so ``main`` reports "port in use — retry with --port"
+    instead of masquerading as the active wiki.
+    """
+
+    allow_reuse_address = False
+
+
 def build_app(root: Path):
     """Construct the request handler bound to a wiki root. Pure factory — does
     not bind a socket (server smoke can call this without serving)."""
@@ -304,6 +353,20 @@ def build_app(root: Path):
 
     class WikiViewHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            # DNS-rebinding hardening: the ONLY legitimate way to reach this
+            # 127.0.0.1-bound server is via a loopback hostname. A rebinding
+            # attack arrives with the attacker's Host header — refuse it before
+            # touching any wiki state. urlsplit lowercases, strips the port and
+            # the [] of a bracketed IPv6 literal; a missing Host fails closed.
+            from urllib.parse import urlsplit
+            raw_host = self.headers.get("Host") or ""
+            try:
+                hostname = urlsplit(f"//{raw_host}").hostname
+            except ValueError:
+                hostname = None
+            if hostname not in ALLOWED_HOSTS:
+                self._respond(403, b"forbidden: bad Host")
+                return
             parsed = urlparse(self.path)
             if parsed.path in ("/", ""):
                 self._html(render_index_html(root, viewable()))
@@ -327,6 +390,9 @@ def build_app(root: Path):
             body = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            # Second XSS layer (belt = nh3 in render_page_html): even a
+            # sanitizer miss cannot run script, fetch out, or submit forms.
+            self.send_header("Content-Security-Policy", CSP_POLICY)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -355,6 +421,13 @@ def open_browser(url: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Fix stdio to UTF-8 regardless of the host locale (S1; same idiom as
+    # cli.py:main — non-ASCII roots/paths print on stderr).
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Serve a local llm-wiki viewer.")
     parser.add_argument(
         "--serve", action="store_true",
@@ -392,12 +465,14 @@ def main(argv: list[str] | None = None) -> int:
 
     handler = build_app(root)
     try:
-        server = HTTPServer((SERVE_HOST, args.port), handler)
+        server = ExclusiveHTTPServer((SERVE_HOST, args.port), handler)
     except OSError as e:
         print(
             f"error: cannot bind {SERVE_HOST}:{args.port} ({e}). "
-            f"Port may be in use — retry with --port <other> "
-            f"(e.g. --port {args.port + 1}).",
+            f"The port is already in use — most likely a wiki-view server is "
+            f"still running (possibly for a DIFFERENT wiki). Stop it "
+            f"(`pkill -f \"llmwiki-view view --serve\"`) or retry with "
+            f"--port <other> (e.g. --port {args.port + 1}).",
             file=sys.stderr,
         )
         return 2

@@ -1,7 +1,7 @@
 ---
 description: Ingest a 3rd-party source (FE-B) or a cc-log jsonl (FE-B') into the active wiki via the 2-stage extract→apply core. Accepts a single file OR a glob / directory (expanded by the driver, ingested one file per transaction). Explicit write-bearing command (hook-independent). Usage `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`.
 disable-model-invocation: true
-allowed-tools: Bash(uv run *) Agent AskUserQuestion
+allowed-tools: Bash(uv run *) Agent AskUserQuestion Write
 ---
 
 # /wiki-ingest
@@ -12,9 +12,10 @@ You are the ingest **orchestrator**. You do NOT run the deterministic envelope
 step-by-step yourself — the `ingest_driver.py` CLI owns it (config resolution, the
 single file-journal transaction, the normalization front-end, redaction, dedup, the
 central join, index/log). Your job is to call the driver's verbs in order and to
-dispatch the two LLM stages to subagents in between. You NEVER write wiki pages
-yourself — all page writes happen inside the Stage2 apply-worker through the
-allowlist write tool.
+dispatch the two LLM stages to subagents in between. You NEVER author wiki page
+content yourself — the Stage2 apply-worker authors it and returns a page manifest;
+YOU pass that manifest through the driver's `ingest-apply` verb, where the allowlist
+write tool (`write_tool.WriteSession`) gates every page write.
 
 The source argument may be **one file** or a **glob / directory**. A glob / directory
 is expanded by the driver into a list of files, and **each file is ingested in its own
@@ -117,11 +118,14 @@ in the glob/dir case you run them once per enumerated file. They are identical e
 > lives on disk in the `.llmwiki.txn` sidecar — you NEVER thread the journal dir,
 > budget, lock handle, or fe-hash yourself; you pass the driver only the opaque
 > `<root>` (plus `<source>` to `begin` and the `success|fail` outcome to `finish`).
-> Every byte still passes through `write_tool.WriteSession` inside the Stage2
-> apply-worker (which journals each write), and Stage1 — which alone reads the
-> untrusted raw source — has **no write tool at all** (`tools: Read`). Trust is
-> decided by *location* (`wiki/` vs `wiki/derived/`), not by the LLM. No git is
-> invoked anywhere. (driver-plan §2/§3; design D17/D19/D20/D23; gitless-journal-transaction.md.)
+> Every byte still passes through `write_tool.WriteSession` inside the
+> `ingest-apply` verb YOU run over each worker's returned manifest (the verb
+> journals each write); NEITHER LLM stage has a write tool — the Stage2
+> apply-worker authors a manifest only (`tools: Read`), and Stage1 — which alone
+> reads the untrusted raw source — likewise has **no write tool at all**
+> (`tools: Read`). Trust is decided by *location* (`wiki/` vs `wiki/derived/`),
+> not by the LLM. No git is invoked anywhere. (driver-plan §2/§3; design
+> D17/D19/D20/D23; gitless-journal-transaction.md.)
 
 If any step would write a wiki page outside the Stage2 allowlist tool, or would have
 you thread transaction state by hand, STOP and report
@@ -231,23 +235,46 @@ of touched `rel_path`s or `{"touched": [rel_path, ...]}`. The driver reads K fro
 sidecar and prints `{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K. If the
 touched count is ≤ K you may skip this call and dispatch a single apply-worker.
 
-## Step 4 — Stage2 APPLY (allowlist write tool only; untrusted NOT re-exposed)
+## Step 4 — Stage2 APPLY (worker authors; orchestrator runs the allowlist verb)
 
 Dispatch the `wiki-ingest-apply` subagent (one per cluster on fan-out, else one).
-This is **pure dispatch — there is NO write code in this prompt.** The worker authors
-each page's content and writes it ONLY through the allowlist write tool
-(`write_tool.WriteSession`), reading its budget (`max_count`/`max_bytes`) from the
-`.llmwiki.txn` sidecar. Its ONLY input is the Stage1 proposed-edits blob (or one
-cluster of it) — **never the raw untrusted source** (the quarantine seam, D17).
+The worker has **no write tool** (`tools: Read`): it authors each page's content and
+returns — as its **final response text, and nothing else** — a page manifest, a JSON
+array `[{"rel_path": ..., "content": ...}]` (`[]` if there is nothing to write). Its
+ONLY input is the Stage1 proposed-edits blob (or one cluster of it) — **never the
+raw untrusted source** (the quarantine seam, D17). You do not author page content
+yourself; YOU run the write verb below over the worker's manifest.
 
 Pass each apply-worker: the proposed-edits blob (or its cluster), the `origin` from
 `begin`'s JSON (`fe_b` → source tier, `fe_b_prime` → derived tier), and the
-`$WIKI_ROOT`. The worker returns ONLY the list of written `rel_path` strings (and any
-budget/gate signal). If a worker returns a `budget` gate signal, route it to a human
-gate — do NOT retry around it.
+`$WIKI_ROOT`, instructing it that its reply must be the manifest JSON array only.
 
-Collect the returned `rel_path` lists across all workers (deduping overlaps); these
-are the `expected_pages` you confirm in `finish`.
+For EACH worker's returned manifest: save it to a temporary file (outside the wiki
+root), then run the driver's `ingest-apply` verb with that file on STDIN. The verb
+reads the budget (`max_count`/`max_bytes`) from the `.llmwiki.txn` sidecar, maps the
+origin (`fe_b` → `"source"`, `fe_b_prime` → `"derived"`), and stages every page
+through one `write_tool.WriteSession`, committing it under the held lock (each write
+journaled):
+
+```bash
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki ingest-apply "$WIKI_ROOT" "$ORIGIN" < "$MANIFEST_FILE"
+```
+
+`$ORIGIN` is the `fe_b`/`fe_b_prime` value from `begin`'s JSON; `$MANIFEST_FILE` is
+the temporary file holding that worker's manifest JSON array. On success the verb
+prints `written: <list>` (the written `rel_path`s). Collect these across all workers
+(deduping overlaps); they are the `expected_pages` you confirm in `finish`.
+
+On a rejected write the verb prints `REJECTED <gate> <reason>` and exits non-zero.
+Route by gate — NEVER bypass or retry around the code gate:
+
+- `budget` — count or total-size budget exceeded → **the human gate**: report the
+  budget signal and call `finish` with outcome `fail` (Step 5); do NOT split
+  silently or retry around it.
+- `cross_namespace` / `path` / `protected` / `absolute` / `traversal` — the target
+  is illegal (a derived-origin edit outside `wiki/derived/` (D20), a target outside
+  `wiki/`, `SCHEMA.md`/`.llmwiki`/`raw/`, or an absolute/`..` path). Report the
+  rejection and call `finish` with outcome `fail` (Step 5); never bypass.
 
 ## Step 5 — `finish`: central join, single commit OR rollback, always release
 
@@ -264,10 +291,11 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest finish \
   ${TITLE:+--title="$TITLE"}
 ```
 
-- `$OUTCOME` is `success` when the Stage2 worker(s) wrote their pages cleanly;
-  `fail` on any failure (Stage2 error, budget gate, `dedup_noop` short-circuit from
-  Step 1, or anything raised after `begin`). On `success` pass `$EXPECTED_PAGES` as
-  the comma-joined `rel_path` list collected in Step 4.
+- `$OUTCOME` is `success` when every worker's manifest was applied cleanly (each
+  `ingest-apply` verb call printed `written:`); `fail` on any failure (Stage2
+  error, a `REJECTED` gate, `dedup_noop` short-circuit from Step 1, or anything
+  raised after `begin`). On `success` pass `$EXPECTED_PAGES` as the comma-joined
+  `rel_path` list collected in Step 4.
 - `success` → the driver prints `{"committed": true}` (the journal was discarded).
   Report success to the user.
 - `fail` → the driver prints `{"rolled_back": true}` (journal replayed: created

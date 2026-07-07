@@ -10,6 +10,8 @@ Covers (traced to plan §/Q):
 """
 import socket
 
+import pytest
+
 from llmwiki.core import wiki_index
 from llmwiki.view import generate_wiki_view as gwv
 
@@ -190,3 +192,111 @@ def test_marker_absent_errors(tmp_path, monkeypatch):
 
 # ensure socket import is used (avoids unused-import lint in some runners)
 assert socket is not None
+
+
+# ── #21: Host validation (DNS rebinding) + CSP + nh3 sanitize ────────────────
+
+import threading
+from http.client import HTTPConnection
+from http.server import HTTPServer
+
+
+def _serve(tmp_path):
+    """Bind build_app's handler on an ephemeral loopback port in a thread."""
+    handler = gwv.build_app(tmp_path)
+    server = HTTPServer((gwv.SERVE_HOST, 0), handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    return server
+
+
+def test_rebinding_host_refused_403(tmp_path):
+    _make(tmp_path, {"wiki/index.md": "hi"})
+    server = _serve(tmp_path)
+    try:
+        port = server.server_address[1]
+        conn = HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/", headers={"Host": "evil.example"})
+        resp = conn.getresponse()
+        assert resp.status == 403
+        conn.close()
+        # A request WITHOUT a Host header fails closed too.
+        conn2 = HTTPConnection("127.0.0.1", port, timeout=10)
+        conn2.putrequest("GET", "/", skip_host=True)
+        conn2.endheaders()
+        resp2 = conn2.getresponse()
+        assert resp2.status == 403
+        conn2.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_loopback_host_200_with_csp_header(tmp_path):
+    _make(tmp_path, {"wiki/index.md": "hi"})
+    server = _serve(tmp_path)
+    try:
+        port = server.server_address[1]
+        conn = HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/")   # Host: 127.0.0.1:<port> (auto)
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.getheader("Content-Security-Policy") == gwv.CSP_POLICY
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_script_in_page_body_is_sanitized_but_wikilinks_survive(tmp_path):
+    _make(tmp_path, {
+        "wiki/index.md": (
+            "before\n\n"
+            "<script>fetch('http://attacker.example/')</script>\n\n"
+            '<img src="x" onerror="alert(1)">\n\n'
+            "see [[Target]] after\n"
+        ),
+        "wiki/Target.md": "target body",
+    })
+    server = _serve(tmp_path)
+    try:
+        port = server.server_address[1]
+        conn = HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/page?path=wiki/index.md")
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8")
+        assert resp.status == 200
+        # nh3 stripped active content…
+        assert "<script" not in body
+        assert "onerror" not in body
+        assert "attacker.example" not in body
+        # …while the viewer's own linkify() markup survived the sanitizer.
+        assert 'class="wikilink"' in body
+        assert gwv.page_url("wiki/Target.md") in body
+        # CSP rides on the page response as the second layer.
+        assert resp.getheader("Content-Security-Policy") == gwv.CSP_POLICY
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# ── exclusive bind: a second viewer must NOT co-bind an in-use port ───────────
+
+def test_exclusive_server_refuses_second_bind_on_same_port(tmp_path):
+    """Two viewers must not silently share 127.0.0.1:PORT (which would serve two
+    different wikis on the same port, browser-routed non-deterministically). The
+    second bind of an in-use port raises OSError."""
+    _make(tmp_path, {"wiki/index.md": "hi"})
+    handler = gwv.build_app(tmp_path)
+    first = gwv.ExclusiveHTTPServer((gwv.SERVE_HOST, 0), handler)
+    try:
+        port = first.server_address[1]
+        with pytest.raises(OSError):
+            gwv.ExclusiveHTTPServer((gwv.SERVE_HOST, port), handler)
+    finally:
+        first.server_close()
+
+
+def test_exclusive_server_disables_address_reuse():
+    assert gwv.ExclusiveHTTPServer.allow_reuse_address is False

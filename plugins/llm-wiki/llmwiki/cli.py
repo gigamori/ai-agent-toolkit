@@ -371,8 +371,13 @@ def _ingest_apply(argv: list[str]) -> int:
         print("REFUSED no-journal: ingest-apply requires an open transaction "
               "(run `begin` first)", file=sys.stderr)
         return 2
-    # origin: fe_b -> source, fe_b_prime -> derived (orchestrator passes it).
-    ws_origin = "derived" if fe_origin == "fe_b_prime" else "source"
+    # origin mapping (trust by location): projection origins carry UNTRUSTED
+    # transcript content and may target ONLY wiki/derived/ — fe_b_prime (cc)
+    # AND fe_pi_log (pi) both map to "derived". Only fe_b (3rd-party source
+    # file, explicitly ingested) maps to the "source" tier. Previously
+    # fe_pi_log fell through to "source", letting an untrusted pi transcript
+    # write outside wiki/derived/ (D20 violation).
+    ws_origin = "derived" if fe_origin in ("fe_b_prime", "fe_pi_log") else "source"
     manifest = json.loads(sys.stdin.read())
     # budget comes from the sidecar (driver-owned state), never threaded:
     txn = json.loads((Path(root) / ".llmwiki.txn").read_text(encoding="utf-8"))
@@ -503,6 +508,18 @@ _USAGE = (
 
 
 def main(argv: "list[str] | None" = None) -> int:
+    # Fix stdio to UTF-8 regardless of the host locale (S1). On Windows, piped
+    # stdio defaults to the ANSI codepage (e.g. cp932 on Japanese systems),
+    # which rejects or corrupts UTF-8 page content flowing through the write
+    # verbs (`file`, `ingest-apply` read STDIN; every verb prints paths).
+    # stdin stays STRICT so corrupted input fails fast instead of silently
+    # mangling a page; stdout/stderr use replace so reporting never crashes.
+    # reconfigure takes precedence over PYTHONIOENCODING (contract-tested).
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(_USAGE, file=sys.stderr)
