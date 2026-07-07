@@ -131,6 +131,13 @@ If any step would write a wiki page outside the Stage2 allowlist tool, or would 
 you thread transaction state by hand, STOP and report
 `[BLOCKED: write outside transaction/allowlist]`.
 
+> **Model requirement — do not run on a lightweight/minimal model.** This command is a
+> multi-stage orchestration (`begin` → Stage1 extract subagent → Stage2 apply subagent →
+> `finish`). A lightweight or minimal model tends to drop the Stage2 apply dispatch, or
+> mistake the raw Stage1 blob for finished pages, or skip the `finish` call — any of which
+> leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages
+> written; see the stuck-transaction recovery note at the end). Run it on a capable model.
+
 ### Resolve `WIKI_ROOT` (multi-scope; do NOT hardcode the CWD)
 
 The wiki root is **resolved**, not assumed to be the CWD. Resolve it via
@@ -310,8 +317,13 @@ once per enumerated file, yielding N independent per-file transactions — NOT o
 transaction spanning the batch — after which you return to Step 0b for the next file or
 emit the final summary.
 
-(If the run is aborted mid-way and a stale `.llmwiki.lock` / `.llmwiki.txn` is left
-behind, recovery is the operator running
-`uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort "$WIKI_ROOT"`
-manually — see the driver's `abort` verb; the orchestrator does not invoke it
-automatically.)
+**Stuck-transaction recovery (symptom → abort).** Symptom of a transaction left
+**open** — a run interrupted before `finish` (e.g. a lightweight model dropped the
+Stage2 dispatch or skipped `finish`): a stale `.llmwiki.lock`, `.llmwiki.txn`, and/or
+`.llmwiki.txn.d/` remain in the wiki root while `wiki/` has **no new pages**. Recovery is
+the operator running the driver's `abort` verb manually (the orchestrator does NOT invoke
+it automatically), which releases the lock and rolls back the open journal:
+
+```bash
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort "$WIKI_ROOT"
+```

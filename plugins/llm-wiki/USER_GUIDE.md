@@ -202,8 +202,11 @@ lets you click through `[[wikilinks]]`. Each page shows a **source / derived** b
 It only serves your `wiki/` pages — your `raw/` sources are never exposed. Stop it with:
 
 ```
-pkill -f "llmwiki-view view --serve"
+/wiki-view-stop
 ```
+
+That dedicated skill frees the port (17330) and works on both POSIX and Windows. Pass
+`--port <n>` if you started the viewer on a non-default port.
 
 ### Promote a page — `/wiki-promote`
 
@@ -334,6 +337,12 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort <wiki-root
 This returns the wiki to its state *before* the interrupted import (removing any
 half-written source) and releases the lock. It's safe to run even if the import was
 interrupted very early.
+
+**An import stalled — a lock remains but no pages were written.**
+`/wiki-ingest` (and `/wiki-ingest-project`) runs as a multi-step orchestration. On a very
+small/fast model it can drop a step partway — leaving the transaction open, just like an
+interrupted import. Prefer a capable model for imports; to clear a stuck one, use the same
+`abort` shown above.
 
 **An import was rejected as "too large."**
 A single import that would write more pages than the configured limit (`max_count`, 100

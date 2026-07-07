@@ -11,10 +11,15 @@ Serve a local HTML viewer for the active llm-wiki. Renders wiki/ + wiki/derived/
 
 ## Step 1 — Start the wiki viewer server
 
+Write the background log to a **workspace-relative** file (`.llm-wiki-view.log`
+in the current directory), NOT `/tmp`: on Windows Git Bash `/tmp` resolves to
+`C:\tmp` — outside the workspace — which can trip path/permission constraints,
+whereas a relative path stays inside the (allowed) cwd.
+
 ```bash
-nohup uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve > /tmp/llm-wiki-view.log 2>&1 &
+nohup uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve > .llm-wiki-view.log 2>&1 &
 sleep 2
-grep "serving" /tmp/llm-wiki-view.log | tail -1
+grep "serving" .llm-wiki-view.log | tail -1
 ```
 
 This starts an HTTP server on `http://127.0.0.1:17330/` in the background and returns the server summary line. Pass `--root <path>` after `--serve` to target a specific wiki root.
@@ -28,7 +33,12 @@ Extract the page count from the server summary line (`[wiki-view] serving <N> pa
 ```
 wiki-view: http://127.0.0.1:17330/ — <N> pages
 
-To stop: pkill -f "llmwiki-view view --serve"
+To stop: run /wiki-view-stop
 ```
 
-Do not add further commentary. Always include the stop command.
+Always tell the user the stop command is `/wiki-view-stop` (a dedicated skill
+that kills the port-17330 listener cross-platform). Do NOT inline a raw kill
+command in the reply: the viewer runs as native `uv`/`python` processes that
+MSYS `pkill` cannot terminate on Windows, and a raw shell one-liner containing
+`$` gets mangled when relayed as prose — `/wiki-view-stop` encapsulates the
+correct `$`-free, per-OS command. Do not add further commentary.

@@ -49,6 +49,14 @@ If any step would write a wiki page outside the Stage2 allowlist tool, or would 
 thread transaction state by hand, STOP and report
 `[BLOCKED: write outside transaction/allowlist]`.
 
+> **Model requirement — do not run on a lightweight/minimal model.** This command is a
+> multi-stage orchestration run once **per session** (`begin` → Stage1 extract subagent →
+> Stage2 apply subagent → `finish`). A lightweight or minimal model tends to drop the
+> Stage2 apply dispatch, or mistake the raw Stage1 blob for finished pages, or skip the
+> `finish` call — any of which leaves that session's transaction **open** (a stale
+> `.llmwiki.lock` / `.llmwiki.txn` with no pages written; see the stuck-transaction
+> recovery note at the end) and stalls the whole per-session loop. Run it on a capable model.
+
 The turn ledger makes Path B **idempotent and incremental**: a turn already owned by a
 prior ingest (Path A or a previous Path B run) is dropped at projection time by the
 projector's ledger diff, so a re-run files only the novel turns. Because that dedup is
@@ -389,8 +397,14 @@ you. The loop (Step 3) repeats this whole `begin → … → finish` cycle once 
 yielding N independent per-session transactions — NOT one transaction spanning the
 batch — after which you return to Step 3 for the next sid or emit the final summary.
 
-(If a run is aborted mid-way and a stale `.llmwiki.lock` / `.llmwiki.txn` is left behind,
-recovery is the operator running
-`uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort "$WIKI_ROOT"`
-manually — see the driver's `abort` verb; the orchestrator does not invoke it
-automatically.)
+**Stuck-transaction recovery (symptom → abort).** Symptom of a session's transaction left
+**open** — a per-session cycle interrupted before `finish` (e.g. a lightweight model dropped
+the Stage2 dispatch or skipped `finish`): a stale `.llmwiki.lock`, `.llmwiki.txn`, and/or
+`.llmwiki.txn.d/` remain in the wiki root while `wiki/` has **no new pages** for that
+session. Recovery is the operator running the driver's `abort` verb manually (the
+orchestrator does NOT invoke it automatically), which releases the lock and rolls back the
+open journal:
+
+```bash
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort "$WIKI_ROOT"
+```

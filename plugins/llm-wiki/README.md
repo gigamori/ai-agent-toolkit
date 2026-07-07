@@ -107,7 +107,7 @@ A typical session:
 
 5. **Lint.** `/wiki-lint` runs the graph/index checks plus the transcript decision-floor and returns a prioritized "next questions" list. Read-only.
 
-6. **Browse the wiki.** `/wiki-view` starts a local HTML viewer at `http://127.0.0.1:17330/` that renders the wiki's `wiki/` + `wiki/derived/` pages (sanitized, CSP-protected, loopback-Host-only) and lets you click through `[[wikilinks]]`. Read-only; refuses to start while another viewer holds the port. Stop it with `pkill -f "llmwiki-view view --serve"` (POSIX; on Windows kill the port-17330 PID with `taskkill` — see the `/wiki-view` section).
+6. **Browse the wiki.** `/wiki-view` starts a local HTML viewer at `http://127.0.0.1:17330/` that renders the wiki's `wiki/` + `wiki/derived/` pages (sanitized, CSP-protected, loopback-Host-only) and lets you click through `[[wikilinks]]`. Read-only; refuses to start while another viewer holds the port. Stop it with **`/wiki-view-stop`** — a dedicated skill that frees port 17330 cross-platform (see the `/wiki-view` section).
 
 7. **Promote.** When a `wiki/derived/` page has earned source tier: `/wiki-promote wiki/derived/retry-policy.md`. After an explicit approval and a contamination check it moves to `wiki/retry-policy.md` and rewrites inbound links. This is the only derived→source path.
 
@@ -132,6 +132,8 @@ The hook also honors the `wiki:on|off` toggle: a `wiki:on`/`wiki:off` marker in 
 ### Ingest — `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`
 
 Ingests a 3rd-party source (FE-B) or a Claude Code session jsonl (FE-B') through the 2-stage `extract → apply` core inside one file-journal transaction. The argument may be a single file, a **quoted glob** (`"./docs/**/*.md"`), or a **directory** (`./docs/`): the driver expands it in Python (never the shell), force-excludes wiki-internal paths, and — for a directory — restricts to the text-type allowlist (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`). A glob/directory is ingested **one file per transaction**; a per-file failure rolls back only that file and the run continues, then a `N total / M succeeded / K failed / S dedup-skipped` summary is reported (zero matches is an error).
+
+`/wiki-ingest` (and `/wiki-ingest-project`) is a multi-stage orchestration (`begin` → Stage 1 subagent → Stage 2 subagent → `finish`), so run it on a **capable model**: a lightweight/minimal model tends to drop the Stage 2 apply dispatch or skip `finish`, which leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages written — clear it with the `abort` verb; see *Recovery* above).
 
 - **Stage 1 (extract)** — the `wiki-ingest-extract` subagent reads the redacted, untrusted raw source with **no write tool by construction** and emits proposed edits only.
 - **Stage 2 (apply)** — the `wiki-ingest-apply` subagent authors page updates with **no write tool by construction** and returns them as a page manifest; the orchestrator pipes that manifest through the allowlist write tool (`llmwiki/write/write_tool.py`, invoked as `llmwiki ingest-apply`), which confines writes to `wiki/` and `wiki/derived/`, rejects `SCHEMA.md` / `.llmwiki` / `raw/` / absolute paths / traversal, and gates on budget. On more than `apply_fanout_k` touched pages, Stage 2 fans out one apply worker per cluster; index / log / commit are centralized after the join. The total proposed touched-page set is first gated against `max_count`: an ingest proposing more pages than that escalates to the human gate instead of fanning out, so the per-worker write budget can't be silently multiplied by the cluster count.
@@ -194,7 +196,7 @@ Starts a local HTML viewer for the active wiki — a `127.0.0.1`-bound HTTP serv
 - A `[[link]]` with no target page is shown as a distinct, non-navigable "missing" link.
 - **Hardened against untrusted page content**: page bodies are ingested from untrusted sources, so the rendered HTML is sanitized with `nh3` (scripts / event handlers / `javascript:` URLs stripped, wikilink markup preserved) and every response carries a strict `Content-Security-Policy` (`default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:`) as the second layer. Requests whose `Host` header is not a loopback name (`127.0.0.1` / `localhost` / `::1`) are refused with 403 (DNS-rebinding hardening).
 - **Exclusive port bind**: the server refuses to start when the port is already in use (`allow_reuse_address` is disabled) instead of silently co-binding with a stale viewer for a *different* wiki — a stale server would otherwise answer some browser connections and show the wrong wiki. The bind error tells you to stop the old viewer or pass `--port <other>`.
-- On start it prints the URL + page count (`[wiki-view] serving <N> pages at http://127.0.0.1:17330/ ...`). Stop it with `pkill -f "llmwiki-view view --serve"` (POSIX). On Windows/Git Bash MSYS `pkill` cannot terminate the native `uv`/`python` processes — kill by port instead: `netstat -ano | grep ":17330 " | grep LISTENING | tr -d "\r" | sed "s/.* //" | sort -u | xargs -r -I{} taskkill //F //PID {}`.
+- On start it prints the URL + page count (`[wiki-view] serving <N> pages at http://127.0.0.1:17330/ ...`). Stop it with the dedicated **`/wiki-view-stop`** skill, which kills the port-17330 listener cross-platform: on POSIX it runs `pkill -f "llmwiki-view view --serve"`; on Windows/Git Bash — where MSYS `pkill` cannot terminate the native `uv`/`python` processes — it kills by port with `netstat -ano | grep ":17330 " | grep LISTENING | tr -d "\r" | sed "s/.* //" | sort -u | xargs -r -I{} taskkill //F //PID {}`. Pass `--port <n>` to `/wiki-view-stop` if the viewer was started on a non-default port.
 
 ## Configuration & defaults (D3–D5)
 
@@ -238,6 +240,7 @@ plugins/llm-wiki/
     wiki-init/SKILL.md         # /wiki-init (interactive scope select -> llmwiki init)
     wiki-query/SKILL.md        # query skill (description-driven auto-trigger)
     wiki-view/SKILL.md         # /wiki-view (start the local HTML page viewer)
+    wiki-view-stop/SKILL.md    # /wiki-view-stop (stop the viewer; frees port 17330 cross-platform)
   llmwiki/                     # path-imported package (no install); deterministic engine
     __init__.py                # version + public re-exports
     cli.py                     # verb dispatch (branch-local lazy imports enforce the read-only profile)

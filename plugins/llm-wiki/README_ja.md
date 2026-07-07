@@ -107,7 +107,7 @@ wiki はプラグインの `templates/` から初期化される：
 
 5. **Lint。** `/wiki-lint` がグラフ / index 検査と transcript の decision floor を実行し、優先順位付きの「next questions」リストを返す。read-only。
 
-6. **wiki を閲覧する。** `/wiki-view` がローカル HTML ビューア（`http://127.0.0.1:17330/`）を起動し、wiki の `wiki/` + `wiki/derived/` ページをレンダリング（サニタイズ済・CSP 付与・loopback Host のみ）して `[[wikilinks]]` をクリックで辿れるようにする。read-only。別 viewer がポートを保持中は起動を拒否する。停止は `pkill -f "llmwiki-view view --serve"`（POSIX。Windows ではポート 17330 の PID を `taskkill` — `/wiki-view` 節参照）。
+6. **wiki を閲覧する。** `/wiki-view` がローカル HTML ビューア（`http://127.0.0.1:17330/`）を起動し、wiki の `wiki/` + `wiki/derived/` ページをレンダリング（サニタイズ済・CSP 付与・loopback Host のみ）して `[[wikilinks]]` をクリックで辿れるようにする。read-only。別 viewer がポートを保持中は起動を拒否する。停止は専用の **`/wiki-view-stop`** — ポート 17330 をクロスプラットフォームに解放する停止スキル（`/wiki-view` 節参照）。
 
 7. **Promote。** `wiki/derived/` のページが source tier に値する時：`/wiki-promote wiki/derived/retry-policy.md`。明示的な承認と contamination チェックの後、`wiki/retry-policy.md` へ move し inbound link を rewrite する。derived→source の唯一の経路。
 
@@ -132,6 +132,8 @@ hook は `wiki:on|off` トグルも扱う：プロンプト中の `wiki:on`/`wik
 ### Ingest — `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`
 
 3rd-party ソース（FE-B）または Claude Code セッション jsonl（FE-B'）を、2 段 `extract → apply` core を通して単一のファイルジャーナル・トランザクション内で ingest する。引数は単一ファイルのほか、**クォートした glob**（`"./docs/**/*.md"`）や**ディレクトリ**（`./docs/`）も指定できる：driver が（シェルではなく）Python で展開し、wiki 内部パスを強制除外し、ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）に限定する。glob/ディレクトリは**1 ファイル 1 トランザクション**で ingest し、1 ファイルの失敗はそのファイルだけロールバックして続行、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する（0 件マッチはエラー）。
+
+`/wiki-ingest`（および `/wiki-ingest-project`）は多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり `finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
 
 - **Stage 1（extract）** — `wiki-ingest-extract` subagent が redaction 済み・untrusted の raw ソースを**構造的に書込ツールなし**で読み、提案編集のみを出力する。
 - **Stage 2（apply）** — `wiki-ingest-apply` subagent が**構造的に書込ツールなし**でページ更新を執筆し、page manifest として返す。orchestrator がその manifest を allowlist write ツール（`llmwiki/write/write_tool.py`、`llmwiki ingest-apply` として起動）に通す。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。index / log / commit は join 後に中央集約される。提案された touch ページ集合の総数はまず `max_count` でゲートされる：これを超える ingest は fan-out せず human gate へエスカレートするため、per-worker の書込 budget が cluster 数だけ暗黙に乗算されることはない。
@@ -190,7 +192,7 @@ active な wiki のローカル HTML ビューアを起動する — `127.0.0.1`
 - 対象ページが存在しない `[[link]]` は、区別される navigable でない「missing」リンクとして表示する。
 - **untrusted なページ内容への防御**: ページ本文は untrusted なソースから ingest されるため、レンダリング後の HTML を `nh3` でサニタイズし（script / イベントハンドラ / `javascript:` URL を除去、wikilink markup は温存）、第二層として全応答に厳格な `Content-Security-Policy`（`default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:`）を付与する。`Host` ヘッダが loopback 名（`127.0.0.1` / `localhost` / `::1`）でないリクエストは 403 で拒否する（DNS rebinding 対策）。
 - **排他的ポート bind**: ポートが使用中の場合は起動を拒否する（`allow_reuse_address` 無効）— 別 wiki を配信する stale な viewer に静かに相乗りせず、bind エラーで「旧 viewer を停止するか `--port <other>` を指定せよ」と明示する（相乗りするとブラウザ接続の一部を stale 側が応答し、誤った wiki が表示される）。
-- 起動時に URL ＋ ページ数を出力する（`[wiki-view] serving <N> pages at http://127.0.0.1:17330/ ...`）。停止は `pkill -f "llmwiki-view view --serve"`（POSIX）。Windows/Git Bash では MSYS の `pkill` は native な `uv`/`python` プロセスを終了できない — ポート起点で kill する: `netstat -ano | grep ":17330 " | grep LISTENING | tr -d "\r" | sed "s/.* //" | sort -u | xargs -r -I{} taskkill //F //PID {}`。
+- 起動時に URL ＋ ページ数を出力する（`[wiki-view] serving <N> pages at http://127.0.0.1:17330/ ...`）。停止は専用の **`/wiki-view-stop`** スキルで行い、ポート 17330 の listener をクロスプラットフォームに kill する：POSIX では `pkill -f "llmwiki-view view --serve"`、Windows/Git Bash では MSYS の `pkill` が native な `uv`/`python` プロセスを終了できないため `netstat -ano | grep ":17330 " | grep LISTENING | tr -d "\r" | sed "s/.* //" | sort -u | xargs -r -I{} taskkill //F //PID {}` でポート起点に kill する。非既定ポートで起動した場合は `/wiki-view-stop` に `--port <n>` を渡す。
 
 ## 設定とデフォルト（D3–D5）
 
@@ -234,6 +236,7 @@ plugins/llm-wiki/
     wiki-init/SKILL.md         # /wiki-init（対話的に scope 選択 -> llmwiki init）
     wiki-query/SKILL.md        # query skill（description 駆動の自動起動）
     wiki-view/SKILL.md         # /wiki-view（ローカル HTML ページビューアを起動）
+    wiki-view-stop/SKILL.md    # /wiki-view-stop（ビューア停止。ポート 17330 をクロスプラットフォームに解放）
   llmwiki/                     # path-import されるパッケージ（install 不要）。決定的エンジン
     __init__.py                # version ＋ 公開 re-export
     cli.py                     # verb dispatch（branch-local lazy import で read-only profile を強制）
