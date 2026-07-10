@@ -133,7 +133,7 @@ hook は `wiki:on|off` トグルも扱う：プロンプト中の `wiki:on`/`wik
 
 3rd-party ソース（FE-B）または Claude Code セッション jsonl（FE-B'）を、2 段 `extract → apply` core を通して単一のファイルジャーナル・トランザクション内で ingest する。引数は単一ファイルのほか、**クォートした glob**（`"./docs/**/*.md"`）や**ディレクトリ**（`./docs/`）も指定できる：driver が（シェルではなく）Python で展開し、wiki 内部パスを強制除外し、ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）に限定する。glob/ディレクトリは**1 ファイル 1 トランザクション**で ingest し、1 ファイルの失敗はそのファイルだけロールバックして続行、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する（0 件マッチはエラー）。
 
-`/wiki-ingest`（および `/wiki-ingest-project`）は多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり `finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
+`/wiki-ingest`（および `/wiki-ingest-sessions`）は多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり `finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
 
 - **Stage 1（extract）** — `wiki-ingest-extract` subagent が redaction 済み・untrusted の raw ソースを**構造的に書込ツールなし**で読み、提案編集のみを出力する。
 - **Stage 2（apply）** — `wiki-ingest-apply` subagent が**構造的に書込ツールなし**でページ更新を執筆し、page manifest として返す。orchestrator がその manifest を allowlist write ツール（`llmwiki/write/write_tool.py`、`llmwiki ingest-apply` として起動）に通す。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。index / log / commit は join 後に中央集約される。提案された touch ページ集合の総数はまず `max_count` でゲートされる：これを超える ingest は fan-out せず human gate へエスカレートするため、per-worker の書込 budget が cluster 数だけ暗黙に乗算されることはない。
@@ -142,11 +142,11 @@ cc-log（FE-B'）入力は `doc_type=transcript` に pin され、決定的な d
 
 FE-B' の抽出は **fork 対応**：単一ファイル読み取りではなく、セッション（`session_id`）を — その agent/fork 子（親の `session_id` を持つ）を含めて — vendored DuckDB views（`llmwiki/ingest/cc_views.sql`。`inspect-cc-log` skill の `views.sql` を byte 単位で vendor したコピーで、sync され contract test で drift ガードされる）から projector `llmwiki/ingest/cc_log_project.py` で投影する。注入された boilerplate を除去し、turn は content hash `md5(nfc_normalize(role) ‖ 0x1F ‖ nfc_normalize(text))` で **exact かつ長さ非依存**に dedup する（thinking ブロックは SQL レベルで除外）。wiki-local な **turn ledger**（`.cc-turn-ledger.jsonl`、`llmwiki/ingest/ledger.py` が書く）が各 owned turn の hash を初回 ingest で記録するため、同じセッションの再取り込み — またはセッション間で共有される prefix — でも各 turn は **1 回だけ** file される（first-ingested-owns、path 跨ぎ・再実行跨ぎで冪等）。ledger 差分はトランザクション内で journal され、さらに diff 自体が**トランザクションロック内**で走る：`begin` は turn 抽出をロック前（read-only）に行うが、seen-set の読み取りと owned turn の drop は `.llmwiki.lock` 保持後にのみ行うため、並行 ingest の `finish` が diff とロックの間に append で割り込めない（重複 file・first-owner 競合なし）。失敗したセッションは何も所有せず、次のセッションが共有 prefix を file し直す（欠落なし）。dedup/ledger の単位は **CC record**（`record_uuid`）であって会話 turn ではない：合成された replay record（1 record に複数の `USER:`/`ASSISTANT:` ブロックを埋め込んだもの）は 1 単位として扱い、会話粒度への分解は non-goal。
 
-### プロジェクト全体を ingest — `/wiki-ingest-project [--pj <name>] [--root <wiki>]`
+### セッション集合を ingest — `/wiki-ingest-sessions [--workspace | --pj <name>] [--root <wiki>]`
 
-Path B は**現在のプロジェクトの全 cc-log セッション**を 1 コマンドで ingest する。セッション集合を解決し — taskflow プロジェクトが割り当てられていれば `_projects/_state/*.json` を `project == <name>` で filter、そうでなければ実行中セッションの CC プロジェクトディレクトリ（ground-truth：現在のセッションの `<sid>.jsonl` を含むディレクトリ）から — session id をセッション開始タイムスタンプの昇順に並べ、既存の per-transaction ingest サイクルを **1 セッション 1 トランザクション**でループする（failure-continue、glob ループと同じ `N total / M succeeded / K failed / S dedup-skipped` サマリ）。dedup は ledger 駆動なので、プロジェクトの成長に伴う再実行は **incremental**：既に所有された turn は skip され、サマリは解決したセッション数と **ledger-skipped turn 数**も報告するため、incremental な再実行が無音の no-op になることはない。0 件マッチ / プロジェクトディレクトリ解決不能は明示的エラー（fail-closed）。
+Path B は**解決されたセッション集合の全 cc-log セッション**を 1 コマンドで ingest する。セッション集合は次の優先順で解決する — 明示 `--workspace`（workspace 全体の `_projects/_state/*.json` を project filter なしで union）；なければ明示 `--pj <name>`（`_projects/_state/*.json` を `project == <name>` で filter）；なければ no-args で解決済み wiki scope（`resolve-root` の `WIKI_SCOPE`）に追従する：scope `workspace` は同じ workspace 全体 union、scope `pj`/`prompt` はこのセッション自身の taskflow-applied project（`_projects/_state/<sid>.json`）を解決し、未解決なら `--pj <name>` を促して fail-closed、scope `cwd`（不変・legacy/standalone）は実行中セッションの CC プロジェクトディレクトリ（ground-truth：現在のセッションの `<sid>.jsonl` を含むディレクトリ）を解決する。その後 session id をセッション開始タイムスタンプの昇順に並べ、既存の per-transaction ingest サイクルを **1 セッション 1 トランザクション**でループする（failure-continue、glob ループと同じ `N total / M succeeded / K failed / S dedup-skipped` サマリ）。dedup は ledger 駆動なので、プロジェクトの成長に伴う再実行は **incremental**：既に所有された turn は skip され、サマリは解決したセッション数と **ledger-skipped turn 数**も報告するため、incremental な再実行が無音の no-op になることはない。0 件マッチ / セッション集合解決不能は明示的エラー（fail-closed）。
 
-`--pj <name>` スコープは **taskflow が登録したセッションのみ**（`_projects/_state/*.json` の `project == <name>`）を対象にし、CC ディレクトリ全体ではない：`_state` ファイルの無いセッションは `--pj` 集合に入らない。プロジェクトの全 CC セッションを対象にするには `--pj` を省く（ドライバが CC ディレクトリを ground truth として解決する）。`~/.claude/projects` corpus 全体をセッションごとに再スキャンする（N セッション → N スキャン）のを避けるため、read-only の `project-batch` verb がループ前に全セッションの turn を **1 回**のスキャンで抽出する（per-session の turn ファイルを temp dir に書き、ループが cleanup する）。各 `begin` は `--turns` で抽出済み turn を受け取り、安価な per-session の dedup + ledger 差分のみを実行するので、ledger の read-after-write が逐次に保たれる。
+`--pj <name>` スコープ（および no-args の `pj`/`prompt` 解決）は **taskflow が登録したセッションのみ**（`_projects/_state/*.json` の `project == <name>`）を対象にし、CC ディレクトリ全体ではない：`_state` ファイルの無いセッションは `--pj` 集合に入らない。`--workspace`（および workspace-scoped wiki での no-args）はこれを project 制限なしの全登録セッションに拡げる — あくまで taskflow が登録した範囲であり、CC ディレクトリ全体ではない。standalone/legacy リポジトリの全 CC セッションを対象にするには、cwd-scoped wiki で両フラグを省く（ドライバが CC ディレクトリを ground truth として解決する）。`~/.claude/projects` corpus 全体をセッションごとに再スキャンする（N セッション → N スキャン）のを避けるため、read-only の `project-batch` verb がループ前に全セッションの turn を **1 回**のスキャンで抽出する（per-session の turn ファイルを temp dir に書き、ループが cleanup する）。各 `begin` は `--turns` で抽出済み turn を受け取り、安価な per-session の dedup + ledger 差分のみを実行するので、ledger の read-after-write が逐次に保たれる。
 
 ### Query — `wiki-query` skill
 
@@ -222,21 +222,20 @@ plugins/llm-wiki/
   hooks/
     hooks.json                 # UserPromptSubmit -> wiki_marker_inject.py
     wiki_marker_inject.py      # active wiki を解決 -> "wiki-active" ＋ "active wiki:" 行を注入。dormant 時は silent
-  commands/
-    wiki-ingest.md             # /wiki-ingest  （ingest オーケストレータ。単一ファイル / glob / ディレクトリ）
-    wiki-ingest-project.md     # /wiki-ingest-project  （Path B：プロジェクト全体の cc-log セッションを ingest）
-    wiki-lint.md               # /wiki-lint    （read-only lint ディスパッチ）
-    wiki-promote.md            # /wiki-promote （derived -> source）
-    wiki-reindex.md            # /wiki-reindex （任意の qmd 検索 index を再構築。.qmd/ のみ）
   agents/
     wiki-ingest-extract.md     # Stage1 extract（tools: Read。書込ツールなし）
     wiki-ingest-apply.md       # Stage2 apply（page manifest を執筆・書込ツールなし）
     wiki-lint.md               # read 中心の lint subagent
-  skills/
-    wiki-init/SKILL.md         # /wiki-init（対話的に scope 選択 -> llmwiki init）
-    wiki-query/SKILL.md        # query skill（description 駆動の自動起動）
-    wiki-view/SKILL.md         # /wiki-view（ローカル HTML ページビューアを起動）
-    wiki-view-stop/SKILL.md    # /wiki-view-stop（ビューア停止。ポート 17330 をクロスプラットフォームに解放）
+  skills/                      # ユーザー向けエントリは全て skill（bare /wiki-*。plugin 名前空間 prefix なし）
+    wiki-ingest/SKILL.md          # /wiki-ingest  （ingest オーケストレータ。単一ファイル / glob / ディレクトリ）
+    wiki-ingest-sessions/SKILL.md # /wiki-ingest-sessions （Path B：解決されたセッション集合の cc-log セッションを ingest）
+    wiki-init/SKILL.md            # /wiki-init（対話的に scope 選択 -> llmwiki init）
+    wiki-lint/SKILL.md            # /wiki-lint（read-only lint ディスパッチ）
+    wiki-promote/SKILL.md         # /wiki-promote（derived -> source）
+    wiki-query/SKILL.md           # query skill（description 駆動の自動起動）
+    wiki-reindex/SKILL.md         # /wiki-reindex（任意の qmd 検索 index を再構築。.qmd/ のみ）
+    wiki-view/SKILL.md            # /wiki-view（ローカル HTML ページビューアを起動）
+    wiki-view-stop/SKILL.md       # /wiki-view-stop（ビューア停止。ポート 17330 をクロスプラットフォームに解放）
   llmwiki/                     # path-import されるパッケージ（install 不要）。決定的エンジン
     __init__.py                # version ＋ 公開 re-export
     cli.py                     # verb dispatch（branch-local lazy import で read-only profile を強制）

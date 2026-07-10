@@ -344,6 +344,199 @@ def test_pi_pj_locality_filter_and_filtered_out(tmp_path, monkeypatch):
     assert out["filtered_out"] == 1
 
 
+# --------------------------------------------------------------------------- #
+# D5: `_CURRENT_SID_ENV` must read the env var CC actually sets, not the
+# harness prompt-template substitution name it was previously conflated with
+# (workspace-session-ingest.md D5; probe 2026-07-10: `CLAUDE_SESSION_ID` UNSET /
+# `CLAUDE_CODE_SESSION_ID` SET len=36).
+# --------------------------------------------------------------------------- #
+def test_current_sid_env_is_the_real_cc_env_var_name():
+    assert drv._CURRENT_SID_ENV == "CLAUDE_CODE_SESSION_ID"
+
+
+def test_running_session_dir_reads_the_fixed_env_var(tmp_path, monkeypatch):
+    """`_cc_project_dir_from_running_session` (env-only, no `sid` arg) must read
+    `$CLAUDE_CODE_SESSION_ID` — the stale `$CLAUDE_SESSION_ID` name silently
+    always returned None (D5's diagnosed root cause)."""
+    cc_dir = tmp_path / "cc-project"
+    cc_dir.mkdir()
+    sid = "env-resolved-sid"
+    (cc_dir / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(drv, "_CC_PROJECTS_DIR", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+
+    resolved = drv._cc_project_dir_from_running_session()
+    assert resolved == cc_dir
+
+
+# --------------------------------------------------------------------------- #
+# D2/D3/D4: the no-args scope tree + explicit --workspace (workspace-session-
+# ingest.md). `workspace`/`scope` are new session_plan kwargs; kind defaults to
+# cc (fe_b_prime) — D3's workspace path is cc-only.
+# --------------------------------------------------------------------------- #
+def test_explicit_workspace_flag_unions_all_state_sids_no_project_filter(
+        tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "sid-proj-a", "project-a")
+    _write_state(state_dir, "sid-proj-b", "project-b")
+    _write_state(state_dir, "sid-proj-a-2", "project-a")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), workspace=True)
+    assert out["scope"] == "workspace"
+    assert out["sids"] == ["sid-proj-a", "sid-proj-a-2", "sid-proj-b"]
+    assert out["pattern"].endswith("*.json")
+
+
+def test_explicit_workspace_zero_state_files_is_error(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+
+    with pytest.raises(drv.DriverError) as ei:
+        drv.session_plan(str(tmp_path), workspace=True)
+    assert "workspace" in str(ei.value)
+
+
+def test_no_args_scope_workspace_matches_explicit_workspace(tmp_path, monkeypatch):
+    """D2 A-follow: no-args with the caller's resolved scope == "workspace" must
+    take the SAME `_sids_workspace` union path as explicit --workspace."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "sid-x", "proj-x")
+    _write_state(state_dir, "sid-y", "proj-y")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), scope="workspace")
+    assert out["scope"] == "workspace"
+    assert out["sids"] == ["sid-x", "sid-y"]
+
+
+def test_no_args_scope_cwd_default_unchanged_when_scope_omitted(tmp_path, monkeypatch):
+    """D4: no-args with `scope` omitted (None) must still hit the pre-existing
+    cwd-slug resolution byte-identically (back-compat for callers that do not
+    thread --scope yet)."""
+    _init_wiki(tmp_path)
+    cc_dir = tmp_path / "cc-project"
+    cc_dir.mkdir()
+    (cc_dir / "sidQ.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(drv, "_cc_project_dir_from_running_session", lambda: cc_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path))     # scope omitted entirely
+    assert out["scope"] == "cwd"
+    assert out["sids"] == ["sidQ"]
+
+
+def test_no_args_scope_cwd_explicit_same_as_omitted(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    cc_dir = tmp_path / "cc-project"
+    cc_dir.mkdir()
+    (cc_dir / "sidR.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(drv, "_cc_project_dir_from_running_session", lambda: cc_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), scope="cwd")
+    assert out["scope"] == "cwd"
+    assert out["sids"] == ["sidR"]
+
+
+def test_no_args_scope_pj_resolves_active_project_via_sid(tmp_path, monkeypatch):
+    """D2: no-args, scope pj/prompt -> the taskflow-APPLIED project for THIS
+    session (`_state/<sid>.json`.project), NOT a name derived from the wiki
+    path, then the same `_sids_for_pj` enumeration."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "running-sid", "active-proj")
+    _write_state(state_dir, "sid-a1", "active-proj")
+    _write_state(state_dir, "sid-a2", "active-proj")
+    _write_state(state_dir, "sid-other", "other-proj")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), scope="pj", sid="running-sid")
+    assert out["scope"] == "pj"
+    assert out["sids"] == ["running-sid", "sid-a1", "sid-a2"]
+
+
+def test_no_args_scope_prompt_same_resolution_as_pj_provisional(tmp_path, monkeypatch):
+    """D2 Follow-ups: `prompt` scope's no-args set is PROVISIONALLY folded into
+    the same active-project resolution as `pj`."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "running-sid", "active-proj")
+    _write_state(state_dir, "sid-a1", "active-proj")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), scope="prompt", sid="running-sid")
+    assert out["scope"] == "pj"
+    assert out["sids"] == ["running-sid", "sid-a1"]
+
+
+def test_no_args_scope_pj_fails_closed_without_active_project(tmp_path, monkeypatch):
+    """D2: no active taskflow project for this session -> fail closed with
+    guidance to pass --pj, NOT a silent fall-back to the narrow cwd-slug set
+    (the diagnosed symptom)."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    # Even if a cwd dir WOULD resolve, the pj/prompt branch must not fall
+    # through to it — assert it's never even consulted.
+    def _boom():
+        raise AssertionError("no-args scope=pj must not consult the cwd path")
+    monkeypatch.setattr(drv, "_cc_project_dir_from_running_session", _boom)
+
+    with pytest.raises(drv.DriverError) as ei:
+        drv.session_plan(str(tmp_path), scope="pj", sid="no-such-sid")
+    assert "--pj" in str(ei.value)
+
+
+def test_no_args_scope_pj_no_sid_fails_closed(tmp_path, monkeypatch):
+    """D2: no `sid` at all (e.g. --sid never threaded) also fails closed on the
+    pj/prompt no-args branch — `_active_project_for_sid(None)` is None."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "some-other-sid", "some-proj")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+
+    with pytest.raises(drv.DriverError) as ei:
+        drv.session_plan(str(tmp_path), scope="prompt")
+    assert "--pj" in str(ei.value)
+
+
+def test_explicit_workspace_wins_over_scope_param(tmp_path, monkeypatch):
+    """`workspace=True` is an explicit override and wins even if `scope` (the
+    caller's resolved WIKI_SCOPE) says something else, e.g. "cwd"."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "sid-w", "any-proj")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), workspace=True, scope="cwd")
+    assert out["scope"] == "workspace"
+    assert out["sids"] == ["sid-w"]
+
+
+def test_explicit_pj_wins_over_scope_param(tmp_path, monkeypatch):
+    """An explicit `--pj` overrides `scope` too (unchanged precedence)."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "sid-p", "target-proj")
+    _write_state(state_dir, "sid-q", "other-proj")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), pj="target-proj", scope="workspace")
+    assert out["scope"] == "pj"
+    assert out["sids"] == ["sid-p"]
+
+
 def test_pi_ts_ascending_order_cwd_path(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     sessions_dir = _use_pi_agent_dir(tmp_path, monkeypatch)

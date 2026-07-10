@@ -30,9 +30,10 @@ budget, opening no transaction):
     -> write the raw artifact (unless dedup no-op) + write the sidecar
     -> print JSON {declaration[], redacted_body, origin, doc_type, max_count,
        max_bytes, apply_fanout_k, dedup_noop, redaction_flags[], ledger_skipped}.
-    If dedup_noop, the raw already existed so it was NOT written; the caller
-    still skips the stages and calls finish(fail) to release the lock and
-    discard the journal (the raw rollback is a harmless no-op).
+    If dedup_noop, the raw already existed so it was NOT written and NO sidecar
+    was written; begin auto-closes the transaction itself (rollback +
+    release_lock, C1) and returns `auto_closed: true`, so the caller only reports
+    and does NOT call finish (there is no sidecar to finish).
     `--turns=<path>` (FE-B' Path B, R1/F-H1): use the pre-extracted turns at
     <path> (from `project-batch`) instead of re-scanning the corpus — begin then
     runs only the cheap per-sid projection half (project_from_turns, in-lock).
@@ -78,8 +79,10 @@ budget, opening no transaction):
     an explicit error. No lock / checkpoint / write — pure enumeration. Print
     {files: [rel_path,...], excluded: <count>, pattern: <effective glob>}.
 
-  session-plan <root> [--pj <name>] [--kind=auto|fe_b_prime|fe_pi_log]
-        [--sid <sid>]   (read-only Path B resolver, T6 / F1-b/F2-B, design C)
+  session-plan <root> [--pj <name>] [--workspace] [--scope <scope>]
+        [--kind=auto|fe_b_prime|fe_pi_log] [--sid <sid>]
+        (read-only Path B resolver, T6 / F1-b/F2-B, design C; D2/D3/D4/D5/D6
+        workspace-session-ingest.md)
     Resolve the SET of session ids for a Path B project ingest and return them
     ORDERED BY session-start ts ASCENDING — and nothing else. It does NOT
     partition ownership / emit an owned-turn manifest (F1-b/F2-B: ownership is
@@ -91,21 +94,38 @@ budget, opening no transaction):
     before this flag existed); `fe_pi_log` resolves the pi-log session set
     instead (pi_log_project-backed).
       - `--kind=auto|fe_b_prime`:
-        - --pj <name> given: filter `_projects/_state/*.json` (the taskflow state
-          dir under the process CWD, exactly as wiki_root_resolver locates it) by
-          `project == <name>`; the matching state files' filename STEMS are the
-          sids (state file is `<sid>.json`, `{"project": ...}`).
-        - --pj omitted: resolve the CC project dir from the RUNNING session's own
-          log location as ground truth (U3) — find `~/.claude/projects/*/<current-
-          sid>.jsonl` (current-sid = $CLAUDE_SESSION_ID, or `--sid` if given —
-          F-13: an explicit `--sid` takes priority over the env var) and take its
-          PARENT dir (CC-internal-encoding independent), then the sids are that
-          dir's `*.jsonl` stems. SECONDARY fallback only: reverse-generate the
+        - --workspace (explicit, D3), OR --pj/--workspace both omitted AND
+          --scope=workspace (no-args A-follow, D2): union EVERY sid in
+          `_projects/_state/*.json`, NO `project` filter (`_sids_workspace`) —
+          harness-neutral, sidesteps the lossy CC slug reverse-mapping
+          entirely; scope "workspace".
+        - --pj <name> given (explicit, unchanged): filter `_projects/_state/*.json`
+          (the taskflow state dir under the process CWD, exactly as
+          wiki_root_resolver locates it) by `project == <name>`; the matching
+          state files' filename STEMS are the sids (state file is `<sid>.json`,
+          `{"project": ...}`).
+        - --pj/--workspace both omitted, --scope in (pj, prompt) (no-args,
+          D2): resolve THIS session's taskflow-APPLIED project via
+          `_active_project_for_sid(--sid)` (`_projects/_state/<sid>.json`
+          `project` field, NOT a name derived from the wiki path), then the
+          same `--pj`-style enumeration; unresolvable -> DriverError guiding
+          the caller to `--pj <name>` (fail-closed, NOT a silent narrow-to-cwd
+          fall-back — that silent narrowing was the diagnosed symptom).
+        - --pj/--workspace both omitted, --scope in (None, cwd) (D4,
+          UNCHANGED from before kind/sid/scope existed): resolve the CC
+          project dir from the RUNNING session's own log location as ground
+          truth (U3) — find `~/.claude/projects/*/<current-
+          sid>.jsonl` (current-sid = $CLAUDE_CODE_SESSION_ID — D5 fix, was
+          the wrong env name — or `--sid` if given — F-13: an explicit `--sid`
+          takes priority over the env var) and take its PARENT dir
+          (CC-internal-encoding independent), then the sids are that dir's
+          `*.jsonl` stems. SECONDARY fallback only: reverse-generate the
           slug from the CWD (path separators + the drive colon -> `-`).
         ts to sort by = each sid's earliest record timestamp (`cc_session.started`
         = min(ts) in the vendored views) — the authoritative in-log event clock,
         not file mtime (mtime drifts on copy/resume/fork/checkout).
-      - `--kind=fe_pi_log`:
+      - `--kind=fe_pi_log` (UNCHANGED — D3's workspace path is cc-only for now,
+        see the module's Follow-ups):
         - --pj <name> given: same `_sids_for_pj` enumeration (harness-neutral),
           then F-2 locality filter — intersect with the sids that actually have a
           pi session file (from the same directory walk used for ordering below);
@@ -122,13 +142,20 @@ budget, opening no transaction):
         ASCENDING (no DuckDB; design fact 11) — NOT `cc_session.started`
         (pi sids are not in the cc corpus).
     `--sid <sid>` (F-13): an explicit override for the cwd-path's "current
-    session" resolution, taking priority over the env var. Omitted, both kinds'
-    cwd-path behavior is unchanged from before this flag existed (env-only for
-    cc; `session_dir_for_cwd` fallback only for pi).
+    session" resolution, taking priority over the env var; it ALSO feeds the
+    no-args `--scope pj|prompt` active-project resolution (D2, cc kind only).
+    Omitted, both kinds' cwd-path behavior is unchanged from before this flag
+    existed (env-only for cc; `session_dir_for_cwd` fallback only for pi), and
+    the no-args pj/prompt branch cannot resolve (fails closed).
+    `--workspace` (D3, cc kind only, explicit; a `--pj`-independent boolean
+    flag) and `--scope <scope>` (D2, the caller's resolved WIKI_SCOPE — one of
+    `prompt|pj|workspace|cwd` — used ONLY in the no-args case, i.e. `--pj` and
+    `--workspace` both absent) together implement the no-args scope tree; an
+    explicit `--pj` or `--workspace` always overrides `--scope`.
     Zero matches is an explicit error (fail-closed, like `enumerate`). Print
-    {sids: [sid,...], scope: "pj"|"cwd", pattern: <state-glob or project-dir>,
-    filtered_out: <n>} (`filtered_out` is present for the `fe_pi_log` pj-path;
-    0 for every other path).
+    {sids: [sid,...], scope: "pj"|"workspace"|"cwd", pattern: <state-glob or
+    project-dir>, filtered_out: <n>} (`filtered_out` is present for the
+    `fe_pi_log` pj-path; 0 for every other path).
 
   project-batch <root> <sid> [<sid>...] [--kind=auto|fe_b_prime|fe_pi_log]
         (read-only Path B scan-collapse; R1/F-H1)
@@ -146,7 +173,16 @@ budget, opening no transaction):
     each begin `--turns=<path>` (and the SAME `--kind`) so begin runs only the
     cheap per-sid half (project_from_turns) — the ledger read-after-write (F3)
     stays sequential. Opens NO transaction (outside the R-f verb budget). The
-    loop owns temp cleanup.
+    loop hands the temp dir to `project-batch-cleanup` (C3).
+
+  project-batch-cleanup <out_dir>   (C3 step 1: code owns temp-dir deletion)
+    Delete a `project-batch` temp dir — replaces the orchestrator prompt's bare
+    `rm -rf "$OUT_DIR"`. REFUSES (DriverError, no deletion) unless <out_dir>'s
+    basename starts with `_BATCH_TURNS_PREFIX` AND its parent is
+    `tempfile.gettempdir()` (the two properties `project-batch`'s mkdtemp
+    guarantees), then `shutil.rmtree(ignore_errors=True)`. As a backstop
+    (C3 step 2 / F3: the temp turn JSON is pre-redaction) `project-batch` also
+    prunes stale (>24h) `llmwiki-turns-*` dirs at its start. Opens NO transaction.
 
 Sidecar `.llmwiki.txn` (JSON, beside `.llmwiki.lock`):
   {journal_dir, origin, doc_type, max_count, max_bytes,
@@ -172,8 +208,10 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import tempfile
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -433,17 +471,22 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         k = int(resolutions["apply_fanout_k"].value)
 
         # 6) write the raw artifact (FE does not write). On dedup no-op the raw
-        #    already exists, so skip the write; the caller will finish(fail).
-        #    Journal the create BEFORE writing so a failed finish/abort removes the
-        #    orphan raw (required for D18 dedup correctness).
+        #    already exists, so skip the write AND the sidecar; begin auto-closes
+        #    the transaction itself below (C1) — the caller no longer runs
+        #    finish(fail) to reclaim the lock. Journal the create BEFORE writing so
+        #    a failed finish/abort removes the orphan raw (required for D18 dedup
+        #    correctness).
         if not fe.exists:
             transaction.journal_before_write(root, [fe.rel_path])
             raw_path = root / Path(fe.rel_path)
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_text(fe.body, encoding="utf-8")
 
-        # 7) write the sidecar (on-disk transaction state). `lock_token` records
-        #    the ownership token so finish/abort can refuse a foreign txn (DEC-R1=D).
+        # 7) write the sidecar (on-disk transaction state) ONLY when a raw was
+        #    actually written (skip on dedup no-op — C1: begin auto-closes the txn
+        #    below, so there is no transaction to hand to a finish and thus no
+        #    sidecar to persist). `lock_token` records the ownership token so
+        #    finish/abort can refuse a foreign txn (DEC-R1=D).
         #    `pending_ledger_entries` carries the novel turn-content-hash entries
         #    (S8-b / T4) from begin to finish on-disk (ZERO LLM-threaded state);
         #    finish(success) journals + appends them to the turn ledger. The
@@ -451,23 +494,24 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         #    populates this at projection time (it diffs each projected turn's
         #    hash against ledger.read_seen_hashes and emits the novel
         #    LedgerEntry list); the FE-B path has no projection, so it emits none.
-        _write_sidecar(root, {
-            "journal_dir": cp.journal_dir,
-            "origin": origin,
-            "doc_type": resolved_doc_type,
-            "max_count": max_count,
-            "max_bytes": max_bytes,
-            "apply_fanout_k": k,
-            "fe_hash": fe.hash,
-            "pid": handle_pid(handle),
-            "lock_token": handle.token,
-            # Projection origins (fe_b_prime, fe_pi_log) carry the projector's
-            # novel turn-content-hash entries; FE-B has no projection so it
-            # emits none.
-            "pending_ledger_entries": (
-                proj.novel_entries if origin in _PROJECTOR_BY_ORIGIN else []
-            ),
-        })
+        if not fe.exists:
+            _write_sidecar(root, {
+                "journal_dir": cp.journal_dir,
+                "origin": origin,
+                "doc_type": resolved_doc_type,
+                "max_count": max_count,
+                "max_bytes": max_bytes,
+                "apply_fanout_k": k,
+                "fe_hash": fe.hash,
+                "pid": handle_pid(handle),
+                "lock_token": handle.token,
+                # Projection origins (fe_b_prime, fe_pi_log) carry the projector's
+                # novel turn-content-hash entries; FE-B has no projection so it
+                # emits none.
+                "pending_ledger_entries": (
+                    proj.novel_entries if origin in _PROJECTOR_BY_ORIGIN else []
+                ),
+            })
     except Exception:
         # Any failure after locking: replay the journal (removes the just-written
         # raw, if any) and release the lock so begin does not strand the wiki. The
@@ -476,6 +520,17 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         transaction.release_lock(handle)
         _delete_sidecar(root)
         raise
+
+    # 7b) C1 dedup no-op auto-close: on `fe.exists` begin wrote no raw, no
+    #     sidecar, and appended no ledger entries — there is no transaction to
+    #     hand back, so close it here with finish(fail)'s exact terminal effect:
+    #     transaction.rollback (a no-op journal replay — dedup journaled nothing)
+    #     THEN transaction.release_lock. This removes the LLM dependency where a
+    #     missed `finish fail` stranded the lock (LockHeld / F2). A non-dedup
+    #     begin still hands a held lock + sidecar to the caller's finish.
+    if fe.exists:
+        transaction.rollback(root, cp)
+        transaction.release_lock(handle)
 
     # 8) print the JSON contract (plan §3).
     out = {
@@ -487,10 +542,13 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         "max_bytes": max_bytes,
         "apply_fanout_k": k,
         "dedup_noop": fe.exists,
+        # C1: begin auto-closed the txn on a dedup no-op (rollback + release_lock
+        # above), so the caller must NOT run finish — true iff dedup_noop.
+        "auto_closed": fe.exists,
         "redaction_flags": [asdict(f) for f in fe.redaction_flags],
         # FE-B' per-run ledger-skipped TURN count (F6): how many projected turns
         # were dropped because a prior ingest already owns them (turn-content-hash
-        # ledger diff). Surfaced so the Path B loop (wiki-ingest-project.md) can sum
+        # ledger diff). Surfaced so the Path B loop (wiki-ingest-sessions.md) can sum
         # it across sids and report it — an incremental re-run must not look like a
         # silent no-op (RS-d). Gated to the projection origins exactly like
         # pending_ledger_entries; FE-B has no projection so it is 0.
@@ -570,6 +628,14 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
     else:
         num = math.ceil(n / k)
         clusters = [touched[i * k:(i + 1) * k] for i in range(num)]
+    # C2 (Option C): persist the planned cluster set so `finish` can prove every
+    # cluster was dispatched. The 0-based ordinal is the list INDEX of each
+    # cluster in `planned_clusters`; `ingest-apply` appends that ordinal to
+    # `applied_clusters` per run, and finish checks the ordinal set is covered.
+    # Read-modify-write the sidecar begin already wrote (do NOT clobber its
+    # transaction keys — journal_dir, lock_token, pending_ledger_entries, ...).
+    state["planned_clusters"] = clusters
+    _write_sidecar(root, state)
     return {"clusters": clusters}
 
 
@@ -619,11 +685,35 @@ def finish(wiki_root: str, outcome: str, *,
             # of commit / rollback before release_lock (wiki-ingest.md §finish),
             # symmetric with begin's post-lock except.
             try:
-                # join: confirm the expected pages are on disk (D23 central join).
-                missing = [p for p in (expected_pages or [])
-                           if not (root / Path(p)).exists()]
-                if missing:
-                    raise DriverError(f"expected pages missing on disk: {missing}")
+                # join (D23 central). Two modes:
+                #  - explicit `expected_pages` (a list, incl. empty []): the
+                #    current on-disk page check — backward compatible with the
+                #    caller-supplied LLM-collected written set.
+                #  - `expected_pages` omitted (None): C2 (Option C) cluster-receipt
+                #    check. Every planned cluster (plan-fanout persisted, 0-based
+                #    ordinal = index in `planned_clusters`) MUST carry an
+                #    ingest-apply receipt in `applied_clusters`. A missing ordinal
+                #    is a whole cluster that was never dispatched -> rollback. A
+                #    cluster whose apply committed an empty manifest still has a
+                #    receipt (present, empty written), so a legitimately empty
+                #    manifest is NOT a false positive. No plan-fanout (dedup / no
+                #    clusters) -> planned empty -> no check (current-equivalent).
+                if expected_pages is not None:
+                    missing = [p for p in expected_pages
+                               if not (root / Path(p)).exists()]
+                    if missing:
+                        raise DriverError(
+                            f"expected pages missing on disk: {missing}")
+                else:
+                    planned = state.get("planned_clusters") or []
+                    applied = set(state.get("applied_clusters") or [])
+                    missing_clusters = [i for i in range(len(planned))
+                                        if i not in applied]
+                    if missing_clusters:
+                        raise DriverError(
+                            "cluster(s) never dispatched (no ingest-apply "
+                            f"receipt): ordinals {missing_clusters} "
+                            f"(planned {len(planned)}, applied {sorted(applied)})")
                 # central index/log regenerate + append (inside the single tx).
                 # Journal index.md/log.md AND the turn ledger before the central
                 # writers mutate them (raw + pages were already journaled by
@@ -817,10 +907,15 @@ _STATE_SUBPATH = ("_projects", "_state")
 _CC_PROJECTS_DIR = "~/.claude/projects"
 
 # The env var that exposes the RUNNING session's id to a runtime script.
-# Verified against real source: skills/revert/scripts/revert_cc_log_extract.py
-# (`os.environ.get("CLAUDE_SESSION_ID")`) and skills/create-skill/advanced-mode.md
-# (`${CLAUDE_SESSION_ID}` = "Current session ID"). NOT guessed.
-_CURRENT_SID_ENV = "CLAUDE_SESSION_ID"
+# D5 fix (workspace-session-ingest.md): the OS process env var Claude Code
+# actually sets for a `uv run --script` bin is `CLAUDE_CODE_SESSION_ID` (probe,
+# 2026-07-10: `CLAUDE_SESSION_ID` UNSET / `CLAUDE_CODE_SESSION_ID` SET len=36).
+# `${CLAUDE_SESSION_ID}` in skills/create-skill/advanced-mode.md's "String
+# Substitutions" table is a DIFFERENT thing — a harness PROMPT-template
+# substitution (replaced in the .md text before the model sees it), NOT an OS
+# process env var; the two were previously conflated (the old comment cited
+# that table as authority for the env var name, which it is not).
+_CURRENT_SID_ENV = "CLAUDE_CODE_SESSION_ID"
 
 
 def _state_dir(cwd: "Path | None" = None) -> Path:
@@ -857,11 +952,65 @@ def _sids_for_pj(project: str, cwd: "Path | None" = None) -> list[str]:
     return sids
 
 
+def _sids_workspace(cwd: "Path | None" = None) -> list[str]:
+    """D3: the union of every sid under `_projects/_state/*.json`, NO project filter.
+
+    A `project`-filter-free variant of `_sids_for_pj` (same state-dir glob, same
+    malformed-file skip) used for the `workspace` scope (D2/D3/--workspace): a
+    workspace whose sub-projects were launched from different directories is
+    still fully covered, because this enumerates taskflow's harness-neutral
+    `_state` records rather than reconstructing a CC project-dir slug per
+    launch-dir (sidesteps the lossy `re.sub` slug reverse-mapping entirely).
+    """
+    state_dir = _state_dir(cwd)
+    sids: list[str] = []
+    try:
+        candidates = sorted(p for p in state_dir.glob("*.json") if p.is_file())
+    except OSError:
+        candidates = []
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            sids.append(path.stem)
+    return sids
+
+
+def _active_project_for_sid(sid: "str | None", cwd: "Path | None" = None) -> "str | None":
+    """D2: THIS session's taskflow-applied project (`_state/<sid>.json`.`project`).
+
+    Reads ONLY the exact per-session state file taskflow's session_init.py
+    writes — no mtime-latest fallback (that would silently resolve a DIFFERENT
+    concurrent session's project, reintroducing the cross-talk D6/P1 closes).
+    Returns None (never raises) when `sid` is falsy, the file is absent /
+    unreadable / not a JSON object, or it has no non-empty `project` field — the
+    caller (session_plan's no-args pj/prompt branch) treats None as "fail closed,
+    ask for --pj".
+    """
+    if not sid:
+        return None
+    state_file = _state_dir(cwd) / f"{sid}.json"
+    if not state_file.is_file():
+        return None
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    project = data.get("project")
+    if not isinstance(project, str) or not project.strip():
+        return None
+    return project.strip()
+
+
 def _cc_project_dir_from_running_session(sid: "str | None" = None) -> "Path | None":
     """U3 PRIMARY: the CC project dir of the RUNNING session, as ground truth.
 
     Find `~/.claude/projects/*/<current-sid>.jsonl` (current-sid = the `sid`
-    argument if given, else $CLAUDE_SESSION_ID — F-13 arg-over-env: an explicit
+    argument if given, else $CLAUDE_CODE_SESSION_ID (D5) — F-13 arg-over-env: an explicit
     `sid` takes priority over the env var, but the DEFAULT no-arg call is
     byte-identical to before this parameter existed) and return its PARENT dir
     — the CC-internal-encoding of the dir name is irrelevant because we locate
@@ -1007,7 +1156,9 @@ def _order_sids(sids, kind: str) -> list[str]:
 
 
 def session_plan(wiki_root: str, *, pj: "str | None" = None,
-                 kind: str = "auto", sid: "str | None" = None) -> dict:
+                 kind: str = "auto", sid: "str | None" = None,
+                 workspace: bool = False,
+                 scope: "str | None" = None) -> dict:
     """Resolve the Path B session-id SET, ordered by session-start ts ascending.
 
     Read-only (no lock / checkpoint / write / transaction). Ownership is NOT
@@ -1023,18 +1174,44 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
 
     `sid` (F-13, arg-over-env): an explicit override for the cwd-path's
     "current session" resolution. cc path: takes priority over
-    $CLAUDE_SESSION_ID (passed down to `_cc_project_dir_from_running_session`);
-    OMITTED, behavior is byte-identical to before this parameter existed
+    $CLAUDE_CODE_SESSION_ID (passed down to `_cc_project_dir_from_running_session`,
+    D5); OMITTED, behavior is byte-identical to before this parameter existed
     (env-only, same zero-arg call). pi path: arg-only (no env fallback, F-13
     "写像表") — `pi_log_project.session_dir_for_sid(sid)` primary, falling back
-    to `session_dir_for_cwd` if `sid` is omitted or not found (F-6).
+    to `session_dir_for_cwd` if `sid` is omitted or not found (F-6). `sid` also
+    feeds `_active_project_for_sid` on the no-args scope-`pj`/`prompt` cc branch
+    below (D2).
 
-    Resolution:
-      - kind cc, pj given  -> `_projects/_state/*.json` filtered by
-                     `project == pj`; scope "pj".
-      - kind cc, pj omitted-> the running session's CC project dir (U3
-                     primary, `sid` override or env), else the cwd-reverse-
-                     generated dir (U3 secondary); scope "cwd".
+    `workspace` (D2/D3, explicit `--workspace`, cc-only for now — see the
+    module's fe_pi_log Follow-up) and `scope` (D2, the caller's resolved
+    `WIKI_SCOPE` — "prompt"|"pj"|"workspace"|"cwd"|None — threaded for the
+    no-args case) together implement the no-args scope tree (D2) so a
+    workspace-scoped wiki's Path B set follows the resolved wiki scope instead
+    of narrowing to one cwd-slug dir. `workspace=True` is an explicit override
+    (like `pj`) and wins over `scope`.
+
+    Resolution (kind cc; kind pi UNCHANGED, see below — D3's workspace path is
+    cc-only):
+      - `workspace=True` (explicit `--workspace`, D2/D3) OR
+        (workspace omitted, pj omitted, `scope == "workspace"`, A-follow) ->
+                     `_sids_workspace()`: every sid in `_projects/_state/*.json`,
+                     NO project filter (D3); scope "workspace".
+      - `pj` given (explicit, unchanged) -> `_projects/_state/*.json` filtered
+                     by `project == pj`; scope "pj".
+      - workspace/pj both omitted, `scope in (None, "cwd")` (D4, UNCHANGED from
+                     before kind/sid/scope existed) -> the running session's CC
+                     project dir (U3 primary, `sid` override or env), else the
+                     cwd-reverse-generated dir (U3 secondary); scope "cwd".
+      - workspace/pj both omitted, `scope in ("pj", "prompt")` (D2; `prompt` is
+                     PROVISIONALLY treated like `pj`, see the module's
+                     Follow-ups) -> resolve THIS session's taskflow-applied
+                     project via `_active_project_for_sid(sid)` (the
+                     `_projects/_state/<sid>.json` `project` field, NOT a name
+                     derived from the wiki path), then `_sids_for_pj(project)`;
+                     scope "pj". Unresolvable (`sid` missing, no state file, no
+                     `project` field) -> DriverError guiding the caller to
+                     `--pj <name>` (fail-closed, NOT a silent fall-back to the
+                     narrow cwd-slug set).
       - kind pi, pj given  -> the same `_sids_for_pj` enumeration (harness-
                      neutral) intersected with the sids that actually have a
                      pi session file (F-2 locality filter, via the single
@@ -1097,16 +1274,52 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
         return {"sids": ordered, "scope": scope, "pattern": pattern,
                 "filtered_out": filtered_out}
 
-    # kind cc (auto/fe_b_prime): UNCHANGED from before kind/sid existed.
-    if pj:
+    # kind cc: extended with the no-args scope tree + explicit --workspace
+    # (D2/D3/D4). `scope_out` is the LOCAL result-scope var (kept distinct from
+    # the `scope` PARAMETER — the caller's resolved WIKI_SCOPE — so the no-args
+    # branch can read its input while building its own output).
+    state_pattern = str(_state_dir()) + os.sep + "*.json"
+    if workspace or (not pj and scope == "workspace"):
+        # D3: explicit --workspace, or no-args follow of a workspace-scoped wiki.
+        sids = _sids_workspace()
+        scope_out = "workspace"
+        pattern = state_pattern
+        if not sids:
+            raise DriverError(
+                "session-plan matched zero sessions for the workspace scope "
+                f"(no _projects/_state/*.json under {_state_dir()})")
+    elif pj:
         sids = _sids_for_pj(pj)
-        scope = "pj"
-        pattern = str(_state_dir()) + os.sep + "*.json"
+        scope_out = "pj"
+        pattern = state_pattern
         if not sids:
             raise DriverError(
                 f"session-plan matched zero sessions for --pj {pj!r} "
                 f"(no _projects/_state/*.json with project=={pj!r})")
+    elif scope in ("pj", "prompt"):
+        # D2 no-args pj/prompt: the taskflow-APPLIED project for THIS session
+        # (never a name derived from the wiki path); unresolvable -> fail
+        # closed with guidance, NOT a silent narrow-to-cwd-slug fall-back
+        # (that silent narrowing was the symptom D2 fixes). `prompt` is
+        # PROVISIONALLY folded into this branch (see module Follow-ups).
+        project = _active_project_for_sid(sid)
+        if project is None:
+            raise DriverError(
+                "session-plan could not resolve an active taskflow project "
+                f"for scope {scope!r} (no _projects/_state/<sid>.json "
+                "project for this session); specify --pj <name>")
+        sids = _sids_for_pj(project)
+        scope_out = "pj"
+        pattern = state_pattern
+        if not sids:
+            raise DriverError(
+                f"session-plan matched zero sessions for the active project "
+                f"{project!r} (no _projects/_state/*.json with "
+                f"project=={project!r})")
     else:
+        # D4, UNCHANGED from before kind/sid/scope existed: no-args with
+        # scope in (None, "cwd") — the running session's CC project dir (U3
+        # primary), else the cwd-reverse-generated slug dir (U3 secondary).
         project_dir = (_cc_project_dir_from_running_session(sid) if sid
                        else _cc_project_dir_from_running_session())
         source = "running-session"
@@ -1120,7 +1333,7 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
                 f"{_CC_PROJECTS_DIR}, and the cwd-reverse-generated slug dir "
                 "does not exist (fail-closed)")
         sids = _sids_in_project_dir(project_dir)
-        scope = "cwd"
+        scope_out = "cwd"
         pattern = str(project_dir)
         if not sids:
             raise DriverError(
@@ -1128,7 +1341,7 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
                 f"{project_dir} (resolved via {source})")
 
     ordered = _order_sids(sids, origin)
-    return {"sids": ordered, "scope": scope, "pattern": pattern,
+    return {"sids": ordered, "scope": scope_out, "pattern": pattern,
             "filtered_out": 0}
 
 
@@ -1144,6 +1357,42 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
 # + markdown), keeping the ledger read-after-write (F3) sequential. Opens NO
 # transaction (outside the R-f verb budget), exactly like enumerate/session-plan.
 _BATCH_TURNS_PREFIX = "llmwiki-turns-"
+
+# Backstop prune threshold (C3 step 2 / F4): a `llmwiki-turns-*` temp dir older
+# than this is removed at the next project-batch. 24h is deliberately long so a
+# still-running concurrent batch's live dir is never deleted mid-flight —
+# project_batch is intentionally lock-free (R-f), so age is the only safe
+# liveness signal available here.
+_BATCH_STALE_PRUNE_SECONDS = 24 * 60 * 60
+
+
+def _prune_stale_batch_dirs(now: "float | None" = None) -> int:
+    """Remove stale `llmwiki-turns-*` temp dirs under `tempfile.gettempdir()`.
+
+    C3 step 2 backstop: `project-batch-cleanup` is the primary deletion path (the
+    temp turn JSON is pre-redaction, F3), but a crashed / interrupted Path B loop
+    can still leave a batch dir behind. Any such dir whose mtime is older than
+    `_BATCH_STALE_PRUNE_SECONDS` (24h) is `rmtree`'d here at the next
+    project-batch. The long threshold avoids deleting a concurrently-running
+    batch's live dir (project_batch is intentionally lock-free, F4). Best-effort:
+    unreadable / racing entries are skipped, never fatal. Returns the count pruned.
+    """
+    cutoff = (time.time() if now is None else now) - _BATCH_STALE_PRUNE_SECONDS
+    tmp_root = Path(tempfile.gettempdir())
+    pruned = 0
+    try:
+        candidates = sorted(tmp_root.glob(f"{_BATCH_TURNS_PREFIX}*"))
+    except OSError:
+        return 0
+    for d in candidates:
+        try:
+            if not d.is_dir() or d.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        pruned += 1
+    return pruned
 
 
 def project_batch(wiki_root: str, sids: "list[str]", *,
@@ -1173,6 +1422,10 @@ def project_batch(wiki_root: str, sids: "list[str]", *,
     if not sids:
         raise DriverError("project-batch requires at least one sid")
 
+    # C3 step 2 backstop: prune stale (>24h) llmwiki-turns-* temp dirs left by a
+    # crashed / interrupted prior loop before creating this run's dir (F4-safe).
+    _prune_stale_batch_dirs()
+
     origin = _resolve_projection_kind(kind)
     projector = _PROJECTOR_BY_ORIGIN[origin]
 
@@ -1196,6 +1449,36 @@ def project_batch(wiki_root: str, sids: "list[str]", *,
         )
         turns_map[sid] = str(out_path)
     return {"out_dir": str(out_dir), "turns": turns_map, "scanned": len(sids)}
+
+
+# --------------------------------------------------------------------------- #
+# verb: project-batch-cleanup  (C3 step 1: code owns the temp-dir deletion)
+# --------------------------------------------------------------------------- #
+def project_batch_cleanup(out_dir: str) -> dict:
+    """Delete a `project-batch` temp dir — code owns the deletion (C3 step 1).
+
+    Replaces the orchestrator prompt's bare `rm -rf "$OUT_DIR"`. Deletion is
+    bounded by TWO guards checked BEFORE any removal (either failing is a REFUSED
+    DriverError with NO deletion): the basename must start with
+    `_BATCH_TURNS_PREFIX` (the prefix `project-batch`'s mkdtemp stamped) AND the
+    parent dir must be `tempfile.gettempdir()` (where that mkdtemp places it). So
+    the verb refuses any path the driver did not itself create as a batch dir —
+    it never trusts the caller-supplied `<out_dir>` blindly the way `rm -rf` did.
+    On a validated dir: `shutil.rmtree(ignore_errors=True)`. The parent match is
+    over resolved paths (symlinked temp roots, e.g. macOS /var -> /private/var).
+    """
+    target = Path(out_dir)
+    if not target.name.startswith(_BATCH_TURNS_PREFIX):
+        raise DriverError(
+            f"project-batch-cleanup REFUSED: {out_dir!r} basename does not start "
+            f"with {_BATCH_TURNS_PREFIX!r} (not a project-batch temp dir)")
+    tmp_root = Path(tempfile.gettempdir())
+    if target.resolve().parent != tmp_root.resolve():
+        raise DriverError(
+            f"project-batch-cleanup REFUSED: {out_dir!r} is not directly under "
+            f"the system temp dir {str(tmp_root)!r} (refusing to delete)")
+    shutil.rmtree(target, ignore_errors=True)
+    return {"cleaned": str(target)}
 
 
 # --------------------------------------------------------------------------- #
@@ -1227,7 +1510,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if not argv:
         print("usage: ingest_driver.py "
               "<begin|plan-fanout|finish|abort|enumerate|session-plan|"
-              "project-batch> ...",
+              "project-batch|project-batch-cleanup> ...",
               file=sys.stderr)
         return 2
     verb, rest = argv[0], argv[1:]
@@ -1267,24 +1550,34 @@ def main(argv: "list[str] | None" = None) -> int:
             result = enumerate_files(pos[0], pos[1])
         elif verb == "session-plan":
             if len(pos) < 1:
-                raise DriverError("session-plan requires <root> [--pj <name>]")
+                raise DriverError(
+                    "session-plan requires <root> [--pj <name>] [--workspace] "
+                    "[--scope <scope>]")
             # Accept both `--pj=name` and the spec's space form `--pj name`.
             # In the space form the parser leaves `--pj` as an empty-value opt and
             # the name lands as the next positional (pos[1]); use it as the pj name.
             pj_val = opts.get("pj")
             if "pj" in opts and not pj_val and len(pos) >= 2:
                 pj_val = pos[1]
+            # `--workspace` (D3) is a bare boolean flag (no value); `_parse_opts`
+            # records it as opts["workspace"] = "" either way.
             result = session_plan(pos[0], pj=pj_val or None,
                                   kind=opts.get("kind", "auto"),
-                                  sid=opts.get("sid"))
+                                  sid=opts.get("sid"),
+                                  workspace="workspace" in opts,
+                                  scope=opts.get("scope"))
         elif verb == "project-batch":
             if len(pos) < 2:
                 raise DriverError("project-batch requires <root> <sid> [<sid>...]")
             result = project_batch(pos[0], pos[1:], kind=opts.get("kind", "auto"))
+        elif verb == "project-batch-cleanup":
+            if len(pos) < 1:
+                raise DriverError("project-batch-cleanup requires <out_dir>")
+            result = project_batch_cleanup(pos[0])
         else:
             print(f"unknown verb: {verb!r} "
                   "(begin|plan-fanout|finish|abort|enumerate|session-plan|"
-                  "project-batch)",
+                  "project-batch|project-batch-cleanup)",
                   file=sys.stderr)
             return 2
     except config_resolver.ConfigInconsistency as e:

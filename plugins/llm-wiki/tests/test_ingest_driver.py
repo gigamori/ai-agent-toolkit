@@ -17,6 +17,10 @@ No git — the transaction is a file journal.
 """
 import json
 import os
+import shutil
+import tempfile
+import time
+from pathlib import Path
 
 import pytest
 
@@ -202,13 +206,53 @@ def test_dedup_noop_path(tmp_path):
     drv.finish(str(tmp_path), "success", title="first")
 
     # Second ingest of identical content -> dedup_noop True (raw already exists).
+    # C1: begin now auto-closes the txn itself (rollback + release_lock), so it
+    # also returns auto_closed True and leaves NO sidecar/lock residue. The caller
+    # must NOT run finish (there is no sidecar to finish; a finish would error).
     out = drv.begin(str(tmp_path), str(src), kind="fe_b")
     assert out["dedup_noop"] is True
-    # Per the contract the caller now finish(fail) to roll back (nothing new was
-    # written) and release.
-    drv.finish(str(tmp_path), "fail")
+    assert out["auto_closed"] is True
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
+
+
+# --------------------------------------------------------------------------- #
+# C1 / F5: a dedup begin auto-closes with NO lock/sidecar residue and does NOT
+# destroy the legitimately committed raw.
+#
+# Structural premise (spec ingest-llm-dep-fixes.md :24 — "dedup_noop => orphan
+# raw non-survival"): a dedup can only ever match a COMMITTED raw, never a half-
+# written orphan. While a lock is held the *next* begin fails with LockHeld
+# BEFORE it reaches the dedup check, and abort's journal replay removes any
+# orphan raw. So auto-close's rollback (here a no-op journal replay — a dedup
+# begin journals nothing) leaves both the released lock and the committed raw
+# clean, and the caller never needs to run finish to reclaim the lock.
+# --------------------------------------------------------------------------- #
+def test_dedup_begin_auto_closes_without_residue(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("owned third-party content", encoding="utf-8")
+
+    # Commit a raw so the content is a legitimately owned (committed) artifact.
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
+    drv.finish(str(tmp_path), "success", title="owned")
+
+    # begin against already-owned content: dedup no-op, auto-closed, no residue.
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b")
+    assert out["dedup_noop"] is True
+    assert out["auto_closed"] is True
+    # Caller runs NO finish, yet the lock + sidecar are already gone.
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+
+    # The lock was genuinely released (not stranded): a subsequent begin proceeds
+    # instead of raising LockHeld — and it STILL sees the committed raw (auto-
+    # close's rollback did not remove the legitimate raw), so it dedups again.
+    again = drv.begin(str(tmp_path), str(src), kind="fe_b")
+    assert again["dedup_noop"] is True
+    assert again["auto_closed"] is True
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -548,3 +592,176 @@ def test_begin_ledger_diff_runs_inside_lock(tmp_path, monkeypatch):
     drv.finish(str(tmp_path), "fail")
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
+
+
+# --------------------------------------------------------------------------- #
+# C3: project-batch-cleanup — code owns the temp-dir deletion (two guards), and
+# project-batch prunes stale llmwiki-turns-* dirs as a backstop.
+#
+# Guard 1: basename must start with `_BATCH_TURNS_PREFIX`.
+# Guard 2: parent (resolved) must be `tempfile.gettempdir()`.
+# Either failing => REFUSED DriverError with NO deletion (never trusts the
+# caller-supplied out_dir the way the old bare `rm -rf "$OUT_DIR"` did).
+# --------------------------------------------------------------------------- #
+def test_project_batch_cleanup_refuses_wrong_prefix():
+    """A dir directly under the temp root but WITHOUT the llmwiki-turns- prefix
+    is REFUSED and left untouched (guard 1)."""
+    d = Path(tempfile.mkdtemp(prefix="notmine-"))
+    try:
+        with pytest.raises(drv.DriverError, match="REFUSED"):
+            drv.project_batch_cleanup(str(d))
+        assert d.is_dir()        # not deleted
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_project_batch_cleanup_refuses_outside_temp(tmp_path):
+    """A dir with the right prefix but NOT directly under gettempdir (here a
+    nested pytest tmp_path subdir) is REFUSED and left untouched (guard 2)."""
+    d = tmp_path / "sub" / f"{drv._BATCH_TURNS_PREFIX}fake"
+    d.mkdir(parents=True)
+    with pytest.raises(drv.DriverError, match="REFUSED"):
+        drv.project_batch_cleanup(str(d))
+    assert d.is_dir()            # not deleted
+
+
+def test_project_batch_cleanup_deletes_valid_dir():
+    """A genuine project-batch temp dir (llmwiki-turns-* directly under the
+    system temp dir) is deleted by the verb (both guards pass)."""
+    d = Path(tempfile.mkdtemp(prefix=drv._BATCH_TURNS_PREFIX))
+    (d / "sid.json").write_text("{}", encoding="utf-8")   # a per-sid turn file
+    assert d.is_dir()
+    res = drv.project_batch_cleanup(str(d))
+    assert Path(res["cleaned"]) == d
+    assert not d.exists()
+
+
+def test_project_batch_prunes_stale_turn_dirs(tmp_path, monkeypatch):
+    """C3 step 2 backstop: project-batch prunes a stale (>24h) llmwiki-turns-*
+    temp dir at its start, while a fresh one (younger than the threshold) stays."""
+    _init_wiki(tmp_path)
+    stale = Path(tempfile.mkdtemp(prefix=drv._BATCH_TURNS_PREFIX))
+    fresh = Path(tempfile.mkdtemp(prefix=drv._BATCH_TURNS_PREFIX))
+    old = time.time() - (drv._BATCH_STALE_PRUNE_SECONDS + 3600)   # ~25h ago
+    os.utime(stale, (old, old))
+
+    # Stub the one expensive scan (default kind=auto -> fe_b_prime -> cc_log_project).
+    monkeypatch.setattr(cc_log_project, "extract_turns_batch",
+                        lambda sids, *, ledger: {s: [] for s in sids})
+
+    out = None
+    try:
+        out = drv.project_batch(str(tmp_path), ["sidX"])
+        assert not stale.exists()   # pruned (mtime older than the 24h threshold)
+        assert fresh.exists()       # retained (fresh, under the threshold)
+    finally:
+        shutil.rmtree(fresh, ignore_errors=True)
+        if out is not None:
+            shutil.rmtree(out["out_dir"], ignore_errors=True)
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
+# C2 (Option C): per-dispatch cluster receipt. `plan-fanout` persists the
+# planned cluster set (0-based ordinal = list index); `ingest-apply` appends a
+# receipt per run (applied_clusters); `finish` (expected_pages OMITTED) checks
+# every planned ordinal has a receipt -> a whole-cluster drop rolls back, while
+# a legitimately empty manifest (receipt present, written empty) is NOT a false
+# positive. Explicit expected_pages keeps the current on-disk page check.
+# --------------------------------------------------------------------------- #
+def _apply_cluster(monkeypatch, root, origin, ordinal, manifest) -> int:
+    """Run the real `ingest-apply` verb (cli) with a cluster ordinal so it writes
+    a dispatch receipt to the sidecar — mirrors the orchestrator's per-cluster
+    apply call (wiki-ingest.md Step 4)."""
+    import io
+    from llmwiki import cli
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(manifest)))
+    return cli._ingest_apply([str(root), origin, str(ordinal)])
+
+
+def test_c2_cluster_drop_finish_rolls_back(tmp_path, monkeypatch):
+    """(1) A cluster that was never dispatched (no ingest-apply receipt) is
+    caught by finish (expected_pages omitted) -> rollback."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("c2 cluster drop", encoding="utf-8")
+
+    drv.begin(str(tmp_path), str(src), kind="fe_b", apply_fanout_k="1")
+    # k=1 so two touched pages split into two clusters (ordinals 0 and 1).
+    out = drv.plan_fanout(str(tmp_path), json.dumps(["wiki/a.md", "wiki/b.md"]))
+    assert len(out["clusters"]) == 2
+    sidecar = json.loads((tmp_path / drv.SIDECAR_NAME).read_text(encoding="utf-8"))
+    assert sidecar["planned_clusters"] == [["wiki/a.md"], ["wiki/b.md"]]
+
+    # Dispatch ONLY cluster 0; cluster 1 is dropped (its apply never runs).
+    rc = _apply_cluster(monkeypatch, tmp_path, "fe_b", 0,
+                        [{"rel_path": "wiki/a.md", "content": "# A"}])
+    assert rc == 0
+
+    with pytest.raises(drv.DriverError, match="never dispatched"):
+        drv.finish(str(tmp_path), "success")   # expected_pages OMITTED
+    # Rolled back: sidecar/lock/journal cleared, cluster-0 page removed too.
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / tx.JOURNAL_DIR).exists()
+    assert not (tmp_path / "wiki" / "a.md").exists()
+
+
+def test_c2_empty_manifest_cluster_is_not_false_positive(tmp_path, monkeypatch):
+    """(2) A cluster whose apply legitimately wrote nothing still recorded its
+    receipt -> finish(success) commits (no false positive)."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("c2 empty manifest", encoding="utf-8")
+
+    drv.begin(str(tmp_path), str(src), kind="fe_b", apply_fanout_k="1")
+    out = drv.plan_fanout(str(tmp_path), json.dumps(["wiki/a.md"]))
+    assert len(out["clusters"]) == 1
+
+    # The single cluster's apply commits an EMPTY manifest (written == []).
+    rc = _apply_cluster(monkeypatch, tmp_path, "fe_b", 0, [])
+    assert rc == 0
+    sidecar = json.loads((tmp_path / drv.SIDECAR_NAME).read_text(encoding="utf-8"))
+    assert sidecar["applied_clusters"] == [0]      # receipt present
+    assert sidecar["applied_written"] == []        # but wrote nothing
+
+    res = drv.finish(str(tmp_path), "success")     # expected_pages OMITTED
+    assert res == {"committed": True}
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+
+
+def test_c2_explicit_expected_pages_backward_compat(tmp_path):
+    """(3) Explicit expected_pages keeps the on-disk page check and BYPASSES the
+    cluster-receipt check (backward compat): planned clusters with NO receipts do
+    not block a finish that supplied an on-disk-satisfied expected_pages."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("c2 explicit expected", encoding="utf-8")
+
+    drv.begin(str(tmp_path), str(src), kind="fe_b", apply_fanout_k="1")
+    # Two planned clusters, but NEITHER receipt recorded -> the cluster check
+    # WOULD fail; explicit expected_pages must take the on-disk branch instead.
+    drv.plan_fanout(str(tmp_path), json.dumps(["wiki/a.md", "wiki/b.md"]))
+    (tmp_path / "wiki").mkdir(exist_ok=True)
+    (tmp_path / "wiki" / "page.md").write_text("# Page", encoding="utf-8")
+
+    res = drv.finish(str(tmp_path), "success", expected_pages=["wiki/page.md"])
+    assert res == {"committed": True}
+
+
+def test_c2_single_cluster_unapplied_rolls_back(tmp_path):
+    """(4) D-COV: even a <= K single cluster (ordinal 0) that was never applied
+    is caught (plan-fanout is called for <= K too) -> finish rolls back."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("c2 single cluster drop", encoding="utf-8")
+
+    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 default (<= K path)
+    out = drv.plan_fanout(str(tmp_path), json.dumps(["wiki/a.md"]))
+    assert len(out["clusters"]) == 1                  # one cluster, ordinal 0
+    # No ingest-apply receipt for ordinal 0.
+    with pytest.raises(drv.DriverError, match="never dispatched"):
+        drv.finish(str(tmp_path), "success")          # expected_pages OMITTED
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / tx.JOURNAL_DIR).exists()

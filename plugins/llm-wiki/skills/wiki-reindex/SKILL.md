@@ -1,4 +1,5 @@
 ---
+name: wiki-reindex
 description: Rebuild the optional qmd full-text search index for the active LLM wiki (writes only under <root>/.qmd/; never touches wiki pages). No-op when search_backend is not qmd or qmd is absent. Usage `/wiki-reindex [--root <path>]`.
 disable-model-invocation: true
 allowed-tools: Bash(uv run *)
@@ -22,12 +23,23 @@ The wiki root is **resolved**, not assumed to be the CWD. Resolve it via
 `--root <path>` from `$ARGUMENTS` as the top override (Q4). Parse `--root <path>`
 out of `$ARGUMENTS` first; pass it as `prompt_root`, else pass nothing:
 
+Also capture the running session's own id as `SID` via the `${CLAUDE_SESSION_ID}`
+skill-template substitution (the harness replaces this placeholder with the literal
+session id before you see this text — it is NOT an OS env var) and thread it as `--sid`
+so the resolver's session-aware pj fast-path (`_projects/_state/<sid>.json` read first,
+D6) fires instead of degrading to a mtime-latest scan that can cross-talk between
+concurrent sessions on different projects:
+
 ```bash
-WIKI_ROOT="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"})"
+SID="${CLAUDE_SESSION_ID}"
+RESOLVED="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"} --sid "$SID")" \
+  || { echo "resolve-root failed (NO-WIKI or resolver error) — stop"; }
+IFS=$'\t' read -r WIKI_ROOT WIKI_SCOPE <<<"$RESOLVED"
 ```
 
-The `resolve-root` verb prints `<root>\t<scope>` (split on the tab). If it exits
-non-zero (`NO-WIKI`), no wiki resolved — report that this command requires an
+The `resolve-root` verb prints `<root>\t<scope>`; the block above splits it (`WIKI_ROOT`=root,
+`WIKI_SCOPE`=scope) so a stray tab never contaminates `$WIKI_ROOT`. If it exits
+non-zero (`NO-WIKI`), no wiki resolved — report that this skill requires an
 active wiki (pass `--root <path>` or run from a wiki root) and STOP. **Before
 acting, show the user the resolved root and scope** (`active wiki: <root> (scope:
 ...)`).

@@ -22,7 +22,7 @@ that `import llmwiki` resolves under path-import (no-install). `cli.py` assumes
 the package is already importable and only dispatches.
 
 Verbs (bin/llmwiki, dep-free):
-    resolve-root [--root R]   -> wiki_root_resolver.resolve
+    resolve-root [--root R] [--sid S] -> wiki_root_resolver.resolve
     scan-pages   <root>       -> wiki_index.scan_pages / tier_of
     search       <root> --q Q -> read.query (index) | read.qmd_search (qmd), internal dispatch
     marker-detect <dir>       -> marker.detect
@@ -49,24 +49,54 @@ from __future__ import annotations
 import json
 import sys
 
+# Exit-code contract (theme1 i:39). rc 0 = success. rc 2 = verb-specific SENTINEL
+# only — a state notice (NO-WIKI / NO-MARKER / NOT-A-WIKI / REFUSED) that callers
+# consume as data, NOT a failure. Usage / protocol errors (bad args, unknown verb)
+# return EX_USAGE so a contract drift (e.g. an upstream re-copy that changes a
+# verb's argv) surfaces as a hard failure instead of masquerading as a sentinel.
+# 64 = sysexits.h EX_USAGE.
+EX_USAGE = 64
+
 
 def _resolve_root(argv: list[str]) -> int:
     # read-path verb: import closure must stay clear of write/ingest (D-2).
     from llmwiki.core import wiki_root_resolver
 
-    # `resolve-root [--root R]`: the explicit override is the `--root` flag (the
-    # documented surface). An empty value falls through to existence-based
-    # resolution, mirroring the heredoc's `sys.argv[1] if ... else None`.
+    # `resolve-root [--root R] [--sid S]`: `--root` is the explicit root override
+    # (documented surface); `--sid` is the session id threaded to the resolver so
+    # the pj scope reads `_projects/_state/<sid>.json` first (theme1 i:63 — without
+    # it concurrent sessions on different pj cross-talk via mtime-latest). Both may
+    # also use `--flag=value`. A bare positional is still accepted as the root
+    # (back-compat). An empty value falls through to existence-based resolution.
     arg = None
-    if argv:
-        if argv[0] == "--root":
-            arg = argv[1] if len(argv) > 1 and argv[1] else None
-        elif argv[0].startswith("--root="):
-            val = argv[0][len("--root="):]
+    sid = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--root":
+            val = argv[i + 1] if i + 1 < len(argv) else None
             arg = val if val else None
-        elif argv[0]:
-            arg = argv[0]
-    res = wiki_root_resolver.resolve(arg)
+            i += 2
+            continue
+        if a.startswith("--root="):
+            val = a[len("--root="):]
+            arg = val if val else None
+            i += 1
+            continue
+        if a == "--sid":
+            val = argv[i + 1] if i + 1 < len(argv) else None
+            sid = val if val else None
+            i += 2
+            continue
+        if a.startswith("--sid="):
+            val = a[len("--sid="):]
+            sid = val if val else None
+            i += 1
+            continue
+        if arg is None and a:
+            arg = a
+        i += 1
+    res = wiki_root_resolver.resolve(arg, session_id=sid)
     if res is None:
         print("NO-WIKI", file=sys.stderr)
         return 2
@@ -76,12 +106,19 @@ def _resolve_root(argv: list[str]) -> int:
 
 def _scan_pages(argv: list[str]) -> int:
     # read-path verb (D-2).
-    from llmwiki.core import wiki_index
+    from llmwiki.core import marker, wiki_index
 
     if not argv:
         print("usage: scan-pages <root>", file=sys.stderr)
-        return 2
+        return EX_USAGE
     root = argv[0]
+    # Receiver-side validation (theme1 i:45): a missing/broken marker must fail
+    # CLOSED (NOT-A-WIKI sentinel), not enumerate an empty page set as if the wiki
+    # were merely empty. A tab+scope-contaminated root (the WIKI_ROOT tab-混入 bug)
+    # lands here and stops loudly instead of grounding the model on "empty wiki".
+    if marker.detect(root) is None:
+        print("NOT-A-WIKI", file=sys.stderr)
+        return 2
     for pe in wiki_index.scan_pages(root):     # covers wiki/ AND wiki/derived/
         print(pe.tier, pe.rel_path)            # tier = wiki_index.tier_of(path)
     return 0
@@ -131,11 +168,18 @@ def _search(argv: list[str]) -> int:
 
     if root is None or not q:
         print("usage: search <root> --q <phrased> [--k N]", file=sys.stderr)
-        return 2
+        return EX_USAGE
 
-    # Resolve the backend axes from the wiki-local config (defaults when no marker).
+    # Receiver-side validation (theme1 i:45): fail CLOSED on a missing/broken
+    # marker instead of silently continuing with the default config and returning
+    # an empty page set (which the model reads as "the wiki is empty"). Symmetric
+    # with the write verbs' NOT-A-WIKI fail-closed.
     m = marker.detect(root)
-    wiki_cfg = cr.load_config(m.schema_path) if m is not None else {}
+    if m is None:
+        print("NOT-A-WIKI", file=sys.stderr)
+        return 2
+    # Resolve the backend axes from the wiki-local config.
+    wiki_cfg = cr.load_config(m.schema_path)
     res = cr.resolve_all({}, wiki_cfg)
     backend = res["search_backend"].value
     qmd_bin = res["qmd_bin"].value
@@ -185,7 +229,7 @@ def _marker_detect(argv: list[str]) -> int:
 
     if not argv:
         print("usage: marker-detect <dir>", file=sys.stderr)
-        return 2
+        return EX_USAGE
     m = marker.detect(argv[0])
     if m is None:
         print("NO-MARKER", file=sys.stderr)
@@ -208,7 +252,7 @@ def _file(argv: list[str]) -> int:
     if len(argv) < 3:
         print("usage: file <root> <page> <title> (page content on STDIN)",
               file=sys.stderr)
-        return 2
+        return EX_USAGE
     root, page, title = argv[0], argv[1], argv[2]
     content = sys.stdin.read()
 
@@ -265,7 +309,7 @@ def _declare(argv: list[str]) -> int:
 
     if not argv:
         print("usage: declare <root>", file=sys.stderr)
-        return 2
+        return EX_USAGE
     root = argv[0]
     m = marker.detect(root)
     if m is None:
@@ -288,7 +332,7 @@ def _promote_check(argv: list[str]) -> int:
 
     if len(argv) < 2:
         print("usage: promote-check <root> <wiki/derived/X.md>", file=sys.stderr)
-        return 2
+        return EX_USAGE
     root, rel = argv[0], argv[1]
     text = (Path(root) / rel).read_text(encoding="utf-8")
     print("dest:", promote.derived_to_source_path(rel))
@@ -305,7 +349,7 @@ def _promote(argv: list[str]) -> int:
     if len(argv) < 2:
         print("usage: promote <root> <wiki/derived/X.md> [title]",
               file=sys.stderr)
-        return 2
+        return EX_USAGE
     root, rel = argv[0], argv[1]
     title = argv[2] if len(argv) > 2 else rel
     try:
@@ -330,7 +374,7 @@ def _lint(argv: list[str]) -> int:
 
     if not argv:
         print("usage: lint <root>", file=sys.stderr)
-        return 2
+        return EX_USAGE
     root = argv[0]
     lr = link_lint.lint(root)               # LintReport{missing, orphans}
     print("missing-crossrefs:", lr.missing)
@@ -346,7 +390,17 @@ def _init(argv: list[str]) -> int:
     # subordinate the existing wiki_init argv-CLI verbatim (root [--scope]).
     from llmwiki.init import wiki_init
 
-    return wiki_init.main(argv)
+    # wiki_init.main uses argparse, which raises SystemExit(2) on a bad argument.
+    # That collides with our rc2 SENTINEL contract (wiki_init's own
+    # WikiInitError -> return 2 is a genuine "wiki already exists" sentinel). Remap
+    # the argparse usage exit to EX_USAGE so a real usage error is not read as a
+    # sentinel; leave WikiInitError's own return 2 untouched. argparse also exits 0
+    # for --help; pass that through.
+    try:
+        return wiki_init.main(argv)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else EX_USAGE)
+        return EX_USAGE if code == 2 else code
 
 
 def _ingest_apply(argv: list[str]) -> int:
@@ -359,10 +413,23 @@ def _ingest_apply(argv: list[str]) -> int:
     from llmwiki.write.write_tool import WriteSession, WriteRejected
 
     if len(argv) < 2:
-        print("usage: ingest-apply <root> <origin> (manifest JSON on STDIN)",
-              file=sys.stderr)
-        return 2
+        print("usage: ingest-apply <root> <origin> [<cluster_ordinal>] "
+              "(manifest JSON on STDIN)", file=sys.stderr)
+        return EX_USAGE
     root, fe_origin = argv[0], argv[1]
+    # C2 (Option C): the OPTIONAL 3rd arg is the 0-based cluster ordinal that
+    # plan-fanout assigned to this cluster. When present, this run appends a
+    # dispatch receipt to the sidecar (below) so `finish` can prove the cluster
+    # ran; when absent, behavior is unchanged (single-file / non-clustered
+    # callers and the existing origin/utf8 tests pass no ordinal).
+    cluster_ordinal: "int | None" = None
+    if len(argv) >= 3 and argv[2] != "":
+        try:
+            cluster_ordinal = int(argv[2])
+        except ValueError:
+            print(f"ingest-apply: cluster ordinal must be an integer, got "
+                  f"{argv[2]!r}", file=sys.stderr)
+            return EX_USAGE
     # F3: refuse to write unjournaled. ingest-apply writes page files under the
     # orchestrator's lock but does NOT open a transaction; the journal dir must
     # already exist (the driver `begin` created it). Without it, page writes would
@@ -388,6 +455,18 @@ def _ingest_apply(argv: list[str]) -> int:
             sess.add(entry["rel_path"], entry["content"])
         written = sess.commit()    # writes page FILES to disk; lock held by orch.
         print("written:", written)
+        # C2 (Option C): append this cluster's dispatch receipt to the sidecar
+        # (driver-owned state, never LLM-threaded — same file the budget read
+        # above came from). `finish` (expected_pages omitted) checks every
+        # plan-fanout ordinal has a receipt. An empty manifest still records its
+        # ordinal (written may be []), so a legitimate empty apply is not read as
+        # a dropped cluster. Read-modify-write preserves the begin/plan-fanout
+        # keys already in the sidecar.
+        if cluster_ordinal is not None:
+            from llmwiki.ingest.ingest_driver import _write_sidecar
+            txn.setdefault("applied_clusters", []).append(cluster_ordinal)
+            txn.setdefault("applied_written", []).extend(written)
+            _write_sidecar(root, txn)
     except WriteRejected as e:
         print("REJECTED", e.gate, e.reason)
         raise
@@ -419,32 +498,32 @@ def _toggle(argv: list[str]) -> int:
     if len(argv) < 1:
         print("usage: toggle set <root> <session_id> on|off", file=sys.stderr)
         print("       toggle get <root> <session_id>", file=sys.stderr)
-        return 2
+        return EX_USAGE
 
     sub = argv[0]
     if sub == "set":
         if len(argv) < 4:
             print("usage: toggle set <root> <session_id> on|off", file=sys.stderr)
-            return 2
+            return EX_USAGE
         root, session_id, state = argv[1], argv[2], argv[3]
         if state not in ("on", "off"):
             print(f"toggle set: state must be 'on' or 'off', got {state!r}",
                   file=sys.stderr)
-            return 2
+            return EX_USAGE
         wt.set_state(root, session_id, on=(state == "on"))
         print(state)
         return 0
     elif sub == "get":
         if len(argv) < 3:
             print("usage: toggle get <root> <session_id>", file=sys.stderr)
-            return 2
+            return EX_USAGE
         root, session_id = argv[1], argv[2]
         print("on" if wt.is_on(root, session_id) else "off")
         return 0
     else:
         print(f"toggle: unknown sub-command {sub!r}; expected 'set' or 'get'",
               file=sys.stderr)
-        return 2
+        return EX_USAGE
 
 
 def _reindex(argv: list[str]) -> int:
@@ -458,7 +537,7 @@ def _reindex(argv: list[str]) -> int:
 
     if not argv:
         print("usage: reindex <root>", file=sys.stderr)
-        return 2
+        return EX_USAGE
     root = argv[0]
     m = marker.detect(root)
     if m is None:
@@ -523,12 +602,12 @@ def main(argv: "list[str] | None" = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(_USAGE, file=sys.stderr)
-        return 2
+        return EX_USAGE
     verb, rest = argv[0], argv[1:]
     handler = _VERBS.get(verb)
     if handler is None:
         print(f"unknown verb: {verb!r}\n{_USAGE}", file=sys.stderr)
-        return 2
+        return EX_USAGE
     return handler(rest)
 
 

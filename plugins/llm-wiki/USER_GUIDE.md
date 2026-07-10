@@ -129,15 +129,21 @@ flowchart TD
     READ -. "error at any step" .-> RB
 ```
 
-### Ingest a whole project's sessions — `/wiki-ingest-project`
+### Ingest a session set — `/wiki-ingest-sessions`
 
 `/wiki-ingest` takes one source at a time. When you want to pull in **every Claude Code
-session of the current project** at once, use its project-wide sibling:
+session of a resolved set** at once, use its session-set sibling:
 
 ```
-/wiki-ingest-project                 # every session of the current project
-/wiki-ingest-project --pj my-proj    # only sessions tagged to a named project
+/wiki-ingest-sessions                 # follows the resolved wiki scope (workspace/pj/cwd)
+/wiki-ingest-sessions --workspace     # every session registered anywhere in the workspace
+/wiki-ingest-sessions --pj my-proj    # only sessions tagged to a named project
 ```
+
+With no flags, the session set **follows the active wiki's resolved scope** — a
+workspace-scoped wiki unions every session the workspace's projects registered; a
+pj-scoped wiki resolves this session's own active project; a standalone/legacy
+cwd-scoped wiki keeps resolving the current project's session directory directly.
 
 It finds the session set, ingests each session **one at a time** (each in its own
 transaction, so one bad session never sinks the others), and prints a
@@ -149,12 +155,14 @@ Two things worth knowing:
 - **It's incremental and safe to re-run.** Each turn is remembered the first time it's
   filed (in a small ledger), so running it again as the project grows only files the
   *new* turns — the same turn is never filed twice, even across `/wiki-ingest` and
-  `/wiki-ingest-project`. The summary's **ledger-skipped turns** count tells you how much
+  `/wiki-ingest-sessions`. The summary's **ledger-skipped turns** count tells you how much
   was already there, so a re-run is never a silent no-op.
-- **`--pj` covers only what taskflow tagged.** With `--pj <name>`, the scope is the
-  sessions taskflow registered for that project — not every session on disk. To sweep in
-  *every* session of the current project, omit `--pj` and let it resolve the project's
-  session directory itself.
+- **`--pj` (and `--workspace`) cover only what taskflow tagged.** With `--pj <name>`, the
+  scope is the sessions taskflow registered for that project; `--workspace` widens that
+  to every project's registered sessions — neither is *every* session on disk. To sweep
+  in every CC session of a standalone/legacy project regardless of taskflow, run on a
+  cwd-scoped wiki with no flags and let it resolve the project's session directory
+  itself.
 
 ### Ask questions — just ask
 
@@ -280,14 +288,14 @@ newly-resolved wiki appears on, and switching back restores your earlier off. (F
 *permanent* off, set the wiki's `activation_scope` in `SCHEMA.md` instead.) If no wiki
 resolves at all, `wiki:on|off` does nothing — there's nothing to toggle.
 
-### Keep the wiki current — re-run `/wiki-ingest-project` at milestones
+### Keep the wiki current — re-run `/wiki-ingest-sessions` at milestones
 
 The pj link makes Claude *read* the wiki automatically, but sessions aren't filed into it
 until you ask. At natural milestones (end of a work chunk, before a handoff), sweep the
 project's sessions in:
 
 ```
-/wiki-ingest-project --pj <project>
+/wiki-ingest-sessions --pj <project>
 ```
 
 It's incremental and safe to re-run — the turn ledger means only *new* turns are filed,
@@ -339,7 +347,7 @@ half-written source) and releases the lock. It's safe to run even if the import 
 interrupted very early.
 
 **An import stalled — a lock remains but no pages were written.**
-`/wiki-ingest` (and `/wiki-ingest-project`) runs as a multi-step orchestration. On a very
+`/wiki-ingest` (and `/wiki-ingest-sessions`) runs as a multi-step orchestration. On a very
 small/fast model it can drop a step partway — leaving the transaction open, just like an
 interrupted import. Prefer a capable model for imports; to clear a stuck one, use the same
 `abort` shown above.

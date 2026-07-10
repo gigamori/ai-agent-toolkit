@@ -1,7 +1,8 @@
 ---
+name: wiki-lint
 description: Lint the active LLM wiki — deterministic graph/index checks plus a transcript-only type-specific lint (v1), reported as a prioritized "next questions" list. Read-only; never writes. Usage `/wiki-lint [--root <path>]`.
 disable-model-invocation: true
-allowed-tools: Bash(uv run *) Agent Read Write
+allowed-tools: Bash(uv run *), Agent, Read, Write
 ---
 
 # /wiki-lint
@@ -17,12 +18,23 @@ The wiki root is **resolved**, not assumed to be the CWD. Resolve it via
 `--root <path>` from `$ARGUMENTS` as the top override (Q4). Parse `--root <path>`
 out of `$ARGUMENTS` first; pass it as `prompt_root`, else pass nothing:
 
+Also capture the running session's own id as `SID` via the `${CLAUDE_SESSION_ID}`
+skill-template substitution (the harness replaces this placeholder with the literal
+session id before you see this text — it is NOT an OS env var) and thread it as `--sid`
+so the resolver's session-aware pj fast-path (`_projects/_state/<sid>.json` read first,
+D6) fires instead of degrading to a mtime-latest scan that can cross-talk between
+concurrent sessions on different projects:
+
 ```bash
-WIKI_ROOT="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"})"
+SID="${CLAUDE_SESSION_ID}"
+RESOLVED="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"} --sid "$SID")" \
+  || { echo "resolve-root failed (NO-WIKI or resolver error) — stop"; }
+IFS=$'\t' read -r WIKI_ROOT WIKI_SCOPE <<<"$RESOLVED"
 ```
 
-The `resolve-root` verb prints `<root>\t<scope>` (split on the tab). If it exits non-zero
-(`NO-WIKI`), no wiki resolved — report that this command requires an active wiki
+The `resolve-root` verb prints `<root>\t<scope>`; the block above splits it (`WIKI_ROOT`=root,
+`WIKI_SCOPE`=scope) so a stray tab never contaminates `$WIKI_ROOT`. If it exits non-zero
+(`NO-WIKI`), no wiki resolved — report that this skill requires an active wiki
 (pass `--root <path>` or run from a wiki root) and STOP. **Before acting, show
 the user the resolved root and scope** (`active wiki: <root> (scope: ...)`).
 
@@ -43,7 +55,9 @@ Capture the verb's stdout **verbatim** as `$LINT_OUTPUT` (`missing-crossrefs:`,
 
 ## Step 2 — Dispatch the read-only lint subagent
 
-Invoke the Agent tool with `subagent_type: wiki-lint`, passing the resolved
+Invoke the Agent tool with `subagent_type: llm-wiki:wiki-lint` (the `llm-wiki:`
+namespace is REQUIRED — a bare `wiki-lint` can shadow-resolve to an incompatible
+user-level agent), passing the resolved
 `WIKI_ROOT` and the full `$LINT_OUTPUT` verbatim as its input. The subagent
 interprets the findings, isolates the transcript decision-floor candidates, and
 returns its "next questions" report containing a `---CANDIDATES---` block (a JSON

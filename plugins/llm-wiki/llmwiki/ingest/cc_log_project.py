@@ -47,7 +47,7 @@ consistent; we hash the projected text. The hash is delegated to
 Two projection entry points (R1 / F-H1 — Path B scan-collapse, case A):
     Path A (single session, /wiki-ingest) uses ``project_owned`` — one DuckDB
     scan is fine for one sid.
-    Path B (whole project, /wiki-ingest-project) must NOT re-scan the whole
+    Path B (whole project, /wiki-ingest-sessions) must NOT re-scan the whole
     ~/.claude/projects corpus once per sid. So the EXPENSIVE part (the DuckDB
     scan + block grouping + boilerplate strip + hash) is factored into
     ``extract_turns_batch`` (ONE scan for ALL sids, run once by the read-only

@@ -29,7 +29,7 @@ scan-collapse; pi mirror is filesystem-walk-collapse, not DuckDB-scan-
 collapse, since each pi session is its own file, not a shared corpus):
     Path A (single session, /wiki-ingest) uses ``project_owned`` — one
     session file load is fine for one sid.
-    Path B (whole project, /wiki-ingest-project) must NOT re-walk the whole
+    Path B (whole project, /wiki-ingest-sessions) must NOT re-walk the whole
     session directory tree once per sid. So the EXPENSIVE part (the
     directory walk + per-file DuckDB load + hash) is factored into
     ``extract_turns_batch`` (ONE filesystem walk for ALL sids, run once by

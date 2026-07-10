@@ -1,6 +1,6 @@
 """Tests: Path B loop / glob-loop parity (T6/T7, T9 E2E coverage).
 
-The Path B command (wiki-ingest-project.md) loops the `session-plan` sid list
+The Path B command (wiki-ingest-sessions.md) loops the `session-plan` sid list
 one-sid-per-transaction, passing each bare `sid` to `begin` as `$SOURCE`. This
 must be PARITY with /wiki-ingest's glob/dir loop:
   1. a bare `sid` and a `<sid>.jsonl` path derive the SAME sid via
@@ -55,7 +55,7 @@ def _init_wiki(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_bare_sid_and_jsonl_path_derive_same_sid():
     sid = "025c2fff-572d-4aff-8487-853a9719ad9f"
-    # /wiki-ingest (Path A) passes `<sid>.jsonl`; wiki-ingest-project (Path B)
+    # /wiki-ingest (Path A) passes `<sid>.jsonl`; wiki-ingest-sessions (Path B)
     # passes the bare `sid`. Both go through `Path(source).stem` in begin.
     assert Path(f"{sid}.jsonl").stem == sid
     assert Path(sid).stem == sid
@@ -138,7 +138,13 @@ def test_path_b_loop_accumulates_ledger_skipped(tmp_path, monkeypatch):
     for sid in ["s1", "s2", "s3"]:
         out = drv.begin(str(tmp_path), sid, kind="fe_b_prime")
         total_skipped += out["ledger_skipped"]
-        drv.finish(str(tmp_path), "success", expected_pages=[], title=sid)
+        # C1: s2/s3 dedup-no-op (identical markdown -> same raw hash). A dedup
+        # begin auto-closes the txn itself (no sidecar), and the Path B loop
+        # (wiki-ingest-sessions.md, F2) reports only — it must NOT call finish
+        # (doing so raises "nothing to finish"). ledger_skipped is surfaced on
+        # the begin regardless, so the per-sid sum is unaffected.
+        if not out["auto_closed"]:
+            drv.finish(str(tmp_path), "success", expected_pages=[], title=sid)
 
     assert total_skipped == 12   # 0 + 5 + 7 (surfaced per sid, summed by the loop)
 
@@ -200,6 +206,56 @@ def test_project_batch_empty_sids_fails_closed(tmp_path):
     _init_wiki(tmp_path)
     with pytest.raises(drv.DriverError, match="at least one sid"):
         drv.project_batch(str(tmp_path), [])
+
+
+# --------------------------------------------------------------------------- #
+# D2/D3: workspace-scope parity — a `session_plan(workspace=True)`-resolved sid
+# set (D3's `_sids_workspace` union, no project filter) must run through the
+# EXACT SAME per-sid begin->finish loop as any other scope's sid list — the
+# scope-tree only widens the SET (D2), it introduces no special-casing in the
+# per-sid transaction cycle itself (workspace-session-ingest.md Tests §).
+# --------------------------------------------------------------------------- #
+def test_workspace_resolved_sids_run_the_same_per_sid_loop(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    # Two DIFFERENT taskflow projects registered in the same workspace — the
+    # scenario D3 exists for (sub-projects launched from different dirs).
+    for sid, project in (("sid-proj-a", "project-a"), ("sid-proj-b", "project-b")):
+        (state_dir / f"{sid}.json").write_text(
+            json.dumps({"project": project}), encoding="utf-8")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    plan = drv.session_plan(str(tmp_path), workspace=True)
+    assert plan["scope"] == "workspace"
+    assert plan["sids"] == ["sid-proj-a", "sid-proj-b"]
+
+    def _extract(sid, *, ledger):
+        return []
+
+    def _project(root, sid, turns, *, ledger):
+        return cc_log_project.ProjectionResult(
+            markdown=f"# CC Session transcript\n\n## Turn 1 [t]\n\n**Human**: {sid}\n",
+            novel_entries=[{"hash": f"h-{sid}", "first_sid": sid,
+                            "first_uuid": "u", "first_ts": "t"}],
+            ledger_skipped=0,
+        )
+    monkeypatch.setattr(cc_log_project, "extract_owned", _extract)
+    monkeypatch.setattr(cc_log_project, "project_from_turns", _project)
+
+    # The SAME per-sid begin->finish cycle every other scope's sid list runs
+    # through (no workspace-specific branch anywhere in the transaction path).
+    succeeded = []
+    for sid in plan["sids"]:
+        drv.begin(str(tmp_path), sid, kind="fe_b_prime")
+        res = drv.finish(str(tmp_path), "success", expected_pages=[], title=sid)
+        assert res == {"committed": True}
+        succeeded.append(sid)
+
+    assert succeeded == ["sid-proj-a", "sid-proj-b"]
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+    assert not (tmp_path / tx.LOCK_NAME).exists()
 
 
 # --------------------------------------------------------------------------- #

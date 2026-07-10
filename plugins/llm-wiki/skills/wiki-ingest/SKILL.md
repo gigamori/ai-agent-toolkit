@@ -1,7 +1,8 @@
 ---
-description: Ingest a 3rd-party source (FE-B) or a cc-log jsonl (FE-B') into the active wiki via the 2-stage extract→apply core. Accepts a single file OR a glob / directory (expanded by the driver, ingested one file per transaction). Explicit write-bearing command (hook-independent). Usage `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`.
+name: wiki-ingest
+description: Ingest a 3rd-party source (FE-B) or a cc-log jsonl (FE-B') into the active wiki via the 2-stage extract→apply core. Accepts a single file OR a glob / directory (expanded by the driver, ingested one file per transaction). Explicit write-bearing skill (hook-independent). Usage `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`.
 disable-model-invocation: true
-allowed-tools: Bash(uv run *) Agent AskUserQuestion Write
+allowed-tools: Bash(uv run *), Agent, AskUserQuestion, Write
 ---
 
 # /wiki-ingest
@@ -87,8 +88,10 @@ spanning transaction. The loop is N independent driver transactions, one per fil
 Maintain four counters across the loop: `total` (= len(files)), `succeeded`, `failed`,
 `dedup_skipped`.
 
-- A file whose `begin` reports `dedup_noop: true` → call `finish fail` for THAT file
-  (Step 1's dedup branch), count it as `dedup_skipped`, and continue to the next file.
+- A file whose `begin` reports `dedup_noop: true` (it also returns `auto_closed: true`)
+  → the driver already closed that file's transaction (rolled back + released the lock);
+  report the no-op only, do NOT call `finish` (there is no sidecar to finish). Count it as
+  `dedup_skipped` and continue to the next file (Step 1's dedup branch).
 - A file that completes Steps 1–5 with a `success` `finish` → count `succeeded`.
 - **Failure-continue (G-f):** if ANY step for a file fails (a `begin` error after the
   marker check, a Stage error, a budget gate, or a non-success `finish`), roll back
@@ -131,7 +134,7 @@ If any step would write a wiki page outside the Stage2 allowlist tool, or would 
 you thread transaction state by hand, STOP and report
 `[BLOCKED: write outside transaction/allowlist]`.
 
-> **Model requirement — do not run on a lightweight/minimal model.** This command is a
+> **Model requirement — do not run on a lightweight/minimal model.** This skill is a
 > multi-stage orchestration (`begin` → Stage1 extract subagent → Stage2 apply subagent →
 > `finish`). A lightweight or minimal model tends to drop the Stage2 apply dispatch, or
 > mistake the raw Stage1 blob for finished pages, or skip the `finish` call — any of which
@@ -146,13 +149,23 @@ The wiki root is **resolved**, not assumed to be the CWD. Resolve it via
 out of `$ARGUMENTS` first (it is NOT a `key=value` axis — strip it before the
 Step 0 source/axis parse); pass it as `prompt_root`, else pass nothing:
 
+Also capture the running session's own id as `SID` via the `${CLAUDE_SESSION_ID}`
+skill-template substitution (the harness replaces this placeholder with the literal
+session id before you see this text — it is NOT an OS env var) and thread it as `--sid`
+so the resolver's session-aware pj fast-path (`_projects/_state/<sid>.json` read first,
+D6) fires instead of degrading to a mtime-latest scan that can cross-talk between
+concurrent sessions on different projects:
+
 ```bash
-WIKI_ROOT="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"})"
+SID="${CLAUDE_SESSION_ID}"
+RESOLVED="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"} --sid "$SID")" \
+  || { echo "resolve-root failed (NO-WIKI or resolver error) — stop"; }
+IFS=$'\t' read -r WIKI_ROOT WIKI_SCOPE <<<"$RESOLVED"
 ```
 
-The `resolve-root` verb prints `<root>\t<scope>` on stdout (split on the tab to get
-`WIKI_ROOT` and the scope). If it exits non-zero (`NO-WIKI`), no wiki resolved —
-report that this command requires an active wiki (pass `--root <path>` or run
+The `resolve-root` verb prints `<root>\t<scope>` on stdout; the block above splits it
+(`WIKI_ROOT`=root, `WIKI_SCOPE`=scope) so a stray tab never contaminates `$WIKI_ROOT`. If it exits non-zero (`NO-WIKI`), no wiki resolved —
+report that this skill requires an active wiki (pass `--root <path>` or run
 from a wiki root) and STOP. **Before acting, show the user the resolved root and
 scope** (e.g. `active wiki: <root> (scope: pj|workspace|cwd|prompt)`). The driver
 still enforces the marker and errors with "not a wiki root" if absent.
@@ -199,11 +212,12 @@ Then:
 - **Surface `redaction_flags`** to the user so the human gate sees what the FE
   redacted.
 - **If `dedup_noop` is `true`:** report "already ingested (content-hash dedup
-  no-op)", then call `finish` with outcome `fail` (Step 5) to roll back the
-  just-written raw and release the lock, and STOP. Do NOT dispatch the stages.
+  no-op)" and STOP. `begin` also returned `auto_closed: true` — it already rolled
+  back and released the lock itself, so do NOT call `finish` (no sidecar was
+  written; a `finish` would error). Do NOT dispatch the stages.
 
 If `begin` exits non-zero, report its stderr and stop:
-- "not a wiki root" → this command requires an active wiki.
+- "not a wiki root" → this skill requires an active wiki.
 - `config-inconsistency:` → the consistency invariant (`apply_fanout_k ≤ max_count`)
   was violated; nothing was locked or written. Report and stop.
 - a lock-held error → another ingest holds `.llmwiki.lock`; report and stop (the
@@ -212,9 +226,11 @@ If `begin` exits non-zero, report its stderr and stop:
 ## Step 2 — Stage1 EXTRACT (no write tool; untrusted read)
 
 Dispatch the `wiki-ingest-extract` subagent (declared in `agents/`) via the Agent
-tool with `subagent_type: wiki-ingest-extract`. It is the ONLY place the untrusted
-raw body is read, and it has **no write tool** (`tools: Read`) — it emits proposed
-edits as text only.
+tool with `subagent_type: llm-wiki:wiki-ingest-extract` (the `llm-wiki:` namespace is
+REQUIRED — a bare `wiki-ingest-extract` can shadow-resolve to an incompatible user-level
+agent that holds no working tools, silently yielding a `tool_uses: 0` extraction). It is
+the ONLY place the untrusted raw body is read, and it has **no write tool** (`tools:
+Read`) — it emits proposed edits as text only.
 
 Pass it the `redacted_body` and the `doc_type` from `begin`'s JSON:
 
@@ -229,8 +245,9 @@ Capture its **proposed-edits blob** — the only artifact that crosses into Stag
 ## Step 3 — Decide fan-out (touch-count vs K; D23)
 
 Count the affected pages in the Stage1 proposal and compare to `apply_fanout_k` from
-`begin`'s JSON. If the touched-page count may exceed K, get the clusters from the
-driver rather than splitting by hand (F6 — clustering is code, not LLM):
+`begin`'s JSON. ALWAYS get the clusters from the driver rather than splitting by hand
+(F6 — clustering is code, not LLM) — call this even when the touched count is ≤ K (D-COV:
+a single-cluster run still needs its ordinal for the C2 dispatch check):
 
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest plan-fanout \
@@ -239,13 +256,17 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest plan-fanout \
 
 `$STAGE1_TOUCHED_JSON` is either a path to a JSON file or inline JSON — either a list
 of touched `rel_path`s or `{"touched": [rel_path, ...]}`. The driver reads K from the
-sidecar and prints `{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K. If the
-touched count is ≤ K you may skip this call and dispatch a single apply-worker.
+sidecar and prints `{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K (a ≤ K
+touched set yields a single cluster). Always call it: the 0-based INDEX of each cluster in
+the returned list is that cluster's ORDINAL, which you pass to `ingest-apply` (Step 4) so
+`finish` can prove every cluster was dispatched (C2 cluster-drop guard).
 
 ## Step 4 — Stage2 APPLY (worker authors; orchestrator runs the allowlist verb)
 
-Dispatch the `wiki-ingest-apply` subagent (one per cluster on fan-out, else one).
-The worker has **no write tool** (`tools: Read`): it authors each page's content and
+Dispatch the `wiki-ingest-apply` subagent via the Agent tool with
+`subagent_type: llm-wiki:wiki-ingest-apply` (the `llm-wiki:` namespace is REQUIRED — a bare
+name can shadow-resolve to an incompatible user-level agent), one per cluster on fan-out,
+else one. The worker has **no write tool** (`tools: Read`): it authors each page's content and
 returns — as its **final response text, and nothing else** — a page manifest, a JSON
 array `[{"rel_path": ..., "content": ...}]` (`[]` if there is nothing to write). Its
 ONLY input is the Stage1 proposed-edits blob (or one cluster of it) — **never the
@@ -264,13 +285,18 @@ through one `write_tool.WriteSession`, committing it under the held lock (each w
 journaled):
 
 ```bash
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki ingest-apply "$WIKI_ROOT" "$ORIGIN" < "$MANIFEST_FILE"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki ingest-apply "$WIKI_ROOT" "$ORIGIN" "$CLUSTER_ORDINAL" < "$MANIFEST_FILE"
 ```
 
-`$ORIGIN` is the `fe_b`/`fe_b_prime` value from `begin`'s JSON; `$MANIFEST_FILE` is
-the temporary file holding that worker's manifest JSON array. On success the verb
-prints `written: <list>` (the written `rel_path`s). Collect these across all workers
-(deduping overlaps); they are the `expected_pages` you confirm in `finish`.
+`$ORIGIN` is the `fe_b`/`fe_b_prime` value from `begin`'s JSON; `$CLUSTER_ORDINAL` is
+this cluster's 0-based index in the plan-fanout `clusters` list (`0` for the
+single-cluster case); `$MANIFEST_FILE` is the temporary file holding that worker's
+manifest JSON array. Passing the ordinal makes the verb append a dispatch receipt to the
+sidecar so `finish` can confirm every planned cluster ran (C2). On success the verb
+prints `written: <list>` (the written `rel_path`s) — the per-cluster success signal (a
+cluster that printed `written:` was applied and its dispatch receipt recorded in the
+sidecar). `finish` confirms completeness from those receipts (C2), so you do NOT pass
+`expected_pages`.
 
 On a rejected write the verb prints `REJECTED <gate> <reason>` and exits non-zero.
 Route by gate — NEVER bypass or retry around the code gate:
@@ -286,23 +312,24 @@ Route by gate — NEVER bypass or retry around the code gate:
 ## Step 5 — `finish`: central join, single commit OR rollback, always release
 
 Call the driver's `finish` verb once. The driver reconstructs the lock handle and
-checkpoint from the sidecar (you thread no state), confirms the expected pages are on
-disk, regenerates the index, appends the log (FE-dispatched prefix), and then performs
+checkpoint from the sidecar (you thread no state), confirms every planned cluster was
+dispatched (via the sidecar dispatch receipts, C2), regenerates the index, appends the
+log (FE-dispatched prefix), and then performs
 exactly ONE `commit` (success) or `rollback` (fail), releasing the lock and deleting the
 sidecar on every path.
 
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest finish \
   "$WIKI_ROOT" "$OUTCOME" \
-  ${EXPECTED_PAGES:+--expected_pages="$EXPECTED_PAGES"} \
   ${TITLE:+--title="$TITLE"}
 ```
 
 - `$OUTCOME` is `success` when every worker's manifest was applied cleanly (each
-  `ingest-apply` verb call printed `written:`); `fail` on any failure (Stage2
-  error, a `REJECTED` gate, `dedup_noop` short-circuit from Step 1, or anything
-  raised after `begin`). On `success` pass `$EXPECTED_PAGES` as the comma-joined
-  `rel_path` list collected in Step 4.
+  `ingest-apply` verb call printed `written:`, recording its cluster dispatch receipt);
+  `fail` on any failure (Stage2 error, a `REJECTED` gate, `dedup_noop` short-circuit from
+  Step 1, or anything raised after `begin`). Do NOT pass `expected_pages`: `finish`
+  verifies every planned cluster ran from the receipts (C2). (The `--expected_pages` flag
+  remains for direct/legacy callers only.)
 - `success` → the driver prints `{"committed": true}` (the journal was discarded).
   Report success to the user.
 - `fail` → the driver prints `{"rolled_back": true}` (journal replayed: created

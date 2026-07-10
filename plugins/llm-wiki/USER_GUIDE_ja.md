@@ -123,15 +123,21 @@ flowchart TD
     READ -. "いずれかで失敗" .-> RB
 ```
 
-### プロジェクトの全セッションを取り込む — `/wiki-ingest-project`
+### セッション集合を取り込む — `/wiki-ingest-sessions`
 
-`/wiki-ingest` は一度に 1 ソースを扱います。**現在のプロジェクトの全 Claude Code セッション**を
-まとめて取り込みたいときは、そのプロジェクト全体版の姉妹コマンドを使います：
+`/wiki-ingest` は一度に 1 ソースを扱います。**解決されたセッション集合の全 Claude Code セッション**を
+まとめて取り込みたいときは、そのセッション集合版の姉妹コマンドを使います：
 
 ```
-/wiki-ingest-project                 # 現在のプロジェクトの全セッション
-/wiki-ingest-project --pj my-proj    # 名前付きプロジェクトに紐づくセッションのみ
+/wiki-ingest-sessions                 # 解決済み wiki scope（workspace/pj/cwd）に追従
+/wiki-ingest-sessions --workspace     # workspace のどこかに登録された全セッション
+/wiki-ingest-sessions --pj my-proj    # 名前付きプロジェクトに紐づくセッションのみ
 ```
+
+フラグ無しでは、セッション集合は**active な wiki の解決済み scope に追従**します —
+workspace-scoped wiki なら workspace の各プロジェクトが登録した全セッションを union、
+pj-scoped wiki ならこのセッション自身の active project を解決、standalone/legacy な
+cwd-scoped wiki は従来どおり現在プロジェクトのセッションディレクトリを直接解決します。
 
 セッション集合を解決し、各セッションを **1 つずつ** 取り込み（それぞれ独立したトランザクション
 なので、1 つの不良セッションが他を巻き込むことはありません）、`成功 / 失敗 / スキップ` のサマリに
@@ -141,13 +147,14 @@ flowchart TD
 
 - **incremental で、再実行しても安全です。** 各 turn は初回に file した時点で（小さな台帳＝ledger に）
   記憶されるので、プロジェクトの成長に伴って再実行しても *新しい* turn だけが file されます — 同じ
-  turn が 2 度 file されることはなく、`/wiki-ingest` と `/wiki-ingest-project` を跨いでも同じです。
+  turn が 2 度 file されることはなく、`/wiki-ingest` と `/wiki-ingest-sessions` を跨いでも同じです。
   サマリの **ledger-skipped turns** 数が既に取り込み済みだった分を教えてくれるので、再実行が無音の
   no-op になることはありません。
-- **`--pj` は taskflow がタグ付けした分だけが対象です。** `--pj <name>` を付けると、スコープは
-  taskflow がそのプロジェクトに登録したセッション — ディスク上の全セッションではありません。
-  プロジェクトの *全* セッションを取り込むには `--pj` を省き、プロジェクトのセッションディレクトリを
-  自動解決させます。
+- **`--pj`（および `--workspace`）は taskflow がタグ付けした分だけが対象です。** `--pj <name>` を
+  付けると、スコープは taskflow がそのプロジェクトに登録したセッション。`--workspace` はこれを
+  全プロジェクトの登録セッションに拡げます — いずれもディスク上の全セッションではありません。
+  taskflow に依らず standalone/legacy プロジェクトの全 CC セッションを取り込むには、cwd-scoped
+  wiki でフラグ無しにし、プロジェクトのセッションディレクトリを自動解決させます。
 
 ### 質問する — ただ尋ねる
 
@@ -272,14 +279,14 @@ off の間、Claude は返答の冒頭に `[wiki:off]` を出し、wiki には�
 `activation_scope` を設定してください。）wiki が一切解決されない場合、`wiki:on|off` は
 何もしません — 切り替える対象が無いからです。
 
-### 節目で `/wiki-ingest-project` を回して wiki を最新に保つ
+### 節目で `/wiki-ingest-sessions` を回して wiki を最新に保つ
 
 pj 連携により Claude は wiki を自動で *読み* ますが、セッションが wiki に *書き込まれる*
 のは指示したときだけです。自然な節目（作業の区切り、ハンドオフの前）で、プロジェクトの
 セッションを取り込みます：
 
 ```
-/wiki-ingest-project --pj <project>
+/wiki-ingest-sessions --pj <project>
 ```
 
 インクリメンタルで再実行安全です — ターン台帳により *新しい* ターンだけが filing される
@@ -328,7 +335,7 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort <wiki-root
 します。取り込みがごく早い段階で中断されていても安全に実行できます。
 
 **取り込みが途中で止まり、ロックが残ったのにページが書かれていない。**
-`/wiki-ingest`（および `/wiki-ingest-project`）は多段のオーケストレーションで実行されます。とても
+`/wiki-ingest`（および `/wiki-ingest-sessions`）は多段のオーケストレーションで実行されます。とても
 小さい/高速なモデルでは途中のステップを取りこぼし、中断された取り込みと同様にトランザクションが
 open のまま残ることがあります。取り込みには能力の高いモデルを使い、止まった取り込みの解消は上記と
 同じ `abort` を使ってください。

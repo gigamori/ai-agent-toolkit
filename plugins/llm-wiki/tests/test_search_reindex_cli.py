@@ -52,9 +52,11 @@ def test_search_index_equals_scan_pages(tmp_path):
 
 
 def test_search_requires_query(tmp_path):
+    # A usage error is a contract violation, not a sentinel: it returns EX_USAGE
+    # (64), NOT rc2 (theme1 i:39 exit-code split).
     root = _make_wiki(tmp_path, backend="index")
     rc, _, err = _run(["search", root])
-    assert rc == 2 and "usage: search" in err
+    assert rc == cli.EX_USAGE and "usage: search" in err
 
 
 def test_search_qmd_selected_but_binary_absent_falls_back_loud(tmp_path):

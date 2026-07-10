@@ -1,16 +1,18 @@
 ---
-description: Ingest EVERY cc-log session of the current project (Path B) into the active wiki via the same 2-stage extract→apply core as /wiki-ingest. Resolves the session-id SET with the driver's read-only `session-plan` verb (ts-ascending), then ingests each session in its OWN independent transaction (one sid = one begin→finish, `--kind=fe_b_prime`). Explicit write-bearing command (hook-independent). Usage `/wiki-ingest-project [--pj <name>] [--root <path>] [doc_type=...] [write_mode=...] [apply_fanout_k=...]`.
+name: wiki-ingest-sessions
+description: Ingest EVERY cc-log session of the active wiki's resolved scope (Path B) into the wiki via the same 2-stage extract→apply core as /wiki-ingest. Resolves the session-id SET with the driver's read-only `session-plan` verb (ts-ascending; the set follows `--workspace` / `--pj <name>` / the resolved wiki scope), then ingests each session in its OWN independent transaction (one sid = one begin→finish, `--kind=fe_b_prime`). Explicit write-bearing skill (hook-independent). Usage `/wiki-ingest-sessions [--workspace | --pj <name>] [--root <path>] [doc_type=...] [write_mode=...] [apply_fanout_k=...]`.
 disable-model-invocation: true
-allowed-tools: Bash(uv run *) Bash(rm -rf *) Agent AskUserQuestion Write
+allowed-tools: Bash(uv run *), Bash(rm -rf *), Agent, AskUserQuestion, Write
 ---
 
-# /wiki-ingest-project
+# /wiki-ingest-sessions
 
 Arguments: `$ARGUMENTS`
 
-You are the Path B ingest **orchestrator**. This is the project-wide sibling of
+You are the Path B ingest **orchestrator**. This is the session-set-wide sibling of
 `/wiki-ingest`: instead of one source token, you ingest **every cc-log session of the
-current project**. You do NOT run the deterministic envelope yourself — the
+resolved set** (workspace union, a taskflow project, or the current project — see Step 2).
+You do NOT run the deterministic envelope yourself — the
 `ingest_driver.py` CLI owns it (config resolution, the single file-journal transaction
 per session, the FE-B' projector front-end, redaction, the turn-content-hash ledger
 dedup, the central join, index/log). Your job is to (1) resolve the wiki root, (2) call
@@ -49,7 +51,7 @@ If any step would write a wiki page outside the Stage2 allowlist tool, or would 
 thread transaction state by hand, STOP and report
 `[BLOCKED: write outside transaction/allowlist]`.
 
-> **Model requirement — do not run on a lightweight/minimal model.** This command is a
+> **Model requirement — do not run on a lightweight/minimal model.** This skill is a
 > multi-stage orchestration run once **per session** (`begin` → Stage1 extract subagent →
 > Stage2 apply subagent → `finish`). A lightweight or minimal model tends to drop the
 > Stage2 apply dispatch, or mistake the raw Stage1 blob for finished pages, or skip the
@@ -60,44 +62,61 @@ thread transaction state by hand, STOP and report
 The turn ledger makes Path B **idempotent and incremental**: a turn already owned by a
 prior ingest (Path A or a previous Path B run) is dropped at projection time by the
 projector's ledger diff, so a re-run files only the novel turns. Because that dedup is
-silent per-turn, this command MUST surface the **ledger-skipped turn count** in the
+silent per-turn, this skill MUST surface the **ledger-skipped turn count** in the
 summary (see Step 3) so an incremental re-run is never a silent no-op.
 
 ## Step 0 — Parse arguments (deterministic, do NOT guess)
 
 Parse `$ARGUMENTS` into:
 
+- `--workspace` — OPTIONAL explicit selector (D3, a bare boolean flag, no value). When
+  present, EVERY sid registered across the whole workspace's `_projects/_state/*.json`
+  is planned (no project filter) — mutually exclusive with `--pj` (pass at most one of
+  the two; if both are given, `--workspace` wins, mirroring the driver).
 - `--pj <name>` — OPTIONAL project selector (space form `--pj <name>` or `--pj=<name>`).
-  When present, only the sessions assigned to `<name>` are planned; when ABSENT, the
-  driver resolves the current project's CC session directory itself (do NOT pass a
-  project name from the CWD — the driver's ground-truth resolution owns that).
+  When present, only the sessions assigned to `<name>` are planned; when BOTH `--pj` and
+  `--workspace` are ABSENT, the driver follows the resolved wiki scope (`$WIKI_SCOPE` from
+  Step 1) — do NOT pass a project name from the CWD or guess a scope yourself, the
+  driver's `session-plan` verb owns that resolution (Step 2).
 - `--root <path>` — OPTIONAL top-override for the wiki root (Q4). It is NOT a `key=value`
   axis — strip it out first, before the axis parse.
 - axis overrides (`doc_type=...`, `write_mode=...`, `apply_fanout_k=...`, `external=...`)
   — the same axes `/wiki-ingest` accepts; they apply identically to every session in the
   loop.
 
-Do NOT auto-sniff or invent a project name. If neither `--pj` nor a resolvable current
-project is available, the driver's `session-plan` verb fails closed (Step 2) — surface
-that error, do not guess a fallback.
+Do NOT auto-sniff or invent a project name, and do NOT decide the session SET yourself —
+that decision is made in code by the driver (D2: determinism stays in the driver, never
+the LLM). If `--pj`/`--workspace` are both absent and the resolved scope's session set is
+unresolvable (e.g. scope `pj`/`prompt` with no active taskflow project for this session),
+the driver's `session-plan` verb fails closed (Step 2) with guidance to pass `--pj <name>`
+— surface that error, do not guess a fallback.
 
 ## Step 1 — Resolve `WIKI_ROOT` (multi-scope; do NOT hardcode the CWD)
 
 The wiki root is **resolved**, not assumed to be the CWD. Resolve it via
 `wiki_root_resolver` (scopes: prompt>pj>workspace>cwd), honoring an explicit
 `--root <path>` from Step 0 as the top override (Q4). Pass it as `prompt_root`, else pass
-nothing (identical mechanism/wording to `/wiki-ingest`):
+nothing (identical mechanism/wording to `/wiki-ingest`). Also capture the running
+session's own id as `SID` via the `${CLAUDE_SESSION_ID}` skill-template substitution (the
+harness replaces this placeholder with the literal session id before you see this text —
+it is NOT an OS env var) and thread it as `--sid` so the resolver's session-aware pj
+fast-path (`_projects/_state/<sid>.json` read first, D6) fires instead of degrading to a
+mtime-latest scan that can cross-talk between concurrent sessions on different projects:
 
 ```bash
-WIKI_ROOT="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"})"
+SID="${CLAUDE_SESSION_ID}"
+RESOLVED="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"} --sid "$SID")" \
+  || { echo "resolve-root failed (NO-WIKI or resolver error) — stop"; }
+IFS=$'\t' read -r WIKI_ROOT WIKI_SCOPE <<<"$RESOLVED"
 ```
 
-The `resolve-root` verb prints `<root>\t<scope>` on stdout (split on the tab to get
-`WIKI_ROOT` and the scope). If it exits non-zero (`NO-WIKI`), no wiki resolved — report
-that this command requires an active wiki (pass `--root <path>` or run from a wiki root)
+The `resolve-root` verb prints `<root>\t<scope>` on stdout; the block above splits it
+(`WIKI_ROOT`=root, `WIKI_SCOPE`=scope) so a stray tab never contaminates `$WIKI_ROOT`. If it exits non-zero (`NO-WIKI`), no wiki resolved — report
+that this skill requires an active wiki (pass `--root <path>` or run from a wiki root)
 and STOP. **Before acting, show the user the resolved root and scope** (e.g.
 `active wiki: <root> (scope: pj|workspace|cwd|prompt)`). The driver still enforces the
-marker and errors with "not a wiki root" if absent.
+marker and errors with "not a wiki root" if absent. `$WIKI_SCOPE` also feeds Step 2's
+no-args session-set resolution (D2) — do not discard it.
 
 ## Step 2 — `session-plan`: resolve the session-id set (read-only, ts-ascending)
 
@@ -107,33 +126,52 @@ that, under the first-ingested-owns ledger, the earliest session normally owns a
 prefix). This verb opens NO transaction (no lock, no checkpoint, no sidecar) — it only
 reads.
 
+Pass exactly ONE selector, chosen from Step 0/Step 1's inputs, plus always `--sid "$SID"`
+(from Step 1 — required for the no-args `pj`/`prompt`-scope active-project resolution, D2,
+and for the cwd-scope running-session ground truth, D4, unchanged):
+
+- Step 0's `--workspace` flag was given → pass `--workspace`.
+- else Step 0's `--pj <name>` was given → pass `--pj "$PJ"`.
+- else (both absent — the no-args case, D2) → pass `--scope "$WIKI_SCOPE"` (from Step 1)
+  so the driver follows the resolved wiki scope.
+
 ```bash
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan \
-  "$WIKI_ROOT" ${PJ:+--pj "$PJ"}
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --workspace --sid "$SID"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --pj "$PJ" --sid "$SID"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --scope "$WIKI_SCOPE" --sid "$SID"
 ```
 
-Here `$PJ` is the `--pj <name>` value from Step 0 (omit the flag entirely when absent).
-The driver prints JSON `{"sids": [<sid>...], "scope": "pj"|"cwd", "pattern": <str>}`:
+Here `$PJ` is the `--pj <name>` value from Step 0. The driver prints JSON
+`{"sids": [<sid>...], "scope": "pj"|"workspace"|"cwd", "pattern": <str>}`:
 
 - `sids` — the session ids to ingest, **ts-ascending** (novel-turn ownership is NOT
   decided here — each `begin`'s ledger diff decides it). These are the per-session
   sources for the loop. Capture `len(sids)` as the **resolved sid count** for the summary.
-- `scope` — `"pj"` (resolved from `--pj <name>`) or `"cwd"` (resolved from the current
-  project's CC session directory); echo it so the user sees which resolution fired.
-- `pattern` — the provenance of the resolve (the `_projects/_state` glob for `pj`, or the
-  CC project dir for `cwd`); echo it to the user so the expansion is visible.
+- `scope` — `"workspace"` (explicit `--workspace`, or no-args following a
+  workspace-scoped wiki), `"pj"` (explicit `--pj <name>`, or no-args resolving this
+  session's active taskflow project), or `"cwd"` (no-args, the current project's CC
+  session directory — D4, unchanged); echo it so the user sees which resolution fired.
+- `pattern` — the provenance of the resolve (the `_projects/_state` glob for `pj` /
+  `workspace`, or the CC project dir for `cwd`); echo it to the user so the expansion is
+  visible.
 
 If `session-plan` exits non-zero it means the set could not be resolved — zero matches
-(no `--pj` project, or an unresolvable current CC dir), or a non-wiki-root — and the
-driver raises this as an explicit fail-closed error. Report its stderr and stop; nothing
-was locked or written (`session-plan` is read-only).
+(no `--pj`/`--workspace` project set, or an unresolvable current CC dir), a no-args
+`pj`/`prompt`-scope session with no active taskflow project (report the driver's guidance
+to pass `--pj <name>` — do NOT silently retry with a guessed project), or a non-wiki-root —
+and the driver raises this as an explicit fail-closed error. Report its stderr and stop;
+nothing was locked or written (`session-plan` is read-only).
 
-**Scope note (`--pj` coverage limit):** the `--pj <name>` scope resolves the session set
-from taskflow's `_projects/_state/*.json` entries whose `project == <name>` — i.e. ONLY
-sessions that taskflow registered for that project. It is NOT the whole CC session
-directory: a session with no `_state` file (or one created by another tool) is not in the
-`--pj` set. To ingest EVERY CC session of the current project, omit `--pj` and let the
-driver resolve the current project's CC directory as ground truth (`scope: "cwd"`).
+**Scope note (`--pj` coverage limit):** the `--pj <name>` scope (and the no-args
+`pj`/`prompt`-scope resolution it also backs) resolves the session set from taskflow's
+`_projects/_state/*.json` entries whose `project == <name>` — i.e. ONLY sessions that
+taskflow registered for that project. It is NOT the whole CC session directory: a session
+with no `_state` file (or one created by another tool) is not in the `--pj` set. `--workspace`
+(and no-args on a workspace-scoped wiki) widens this to the UNION of every `_state`
+entry regardless of project (D3) — still bounded by what taskflow registered, but no
+longer filtered to one project. To ingest EVERY CC session of the current project
+regardless of taskflow registration, omit both flags on a cwd-scoped wiki and let the
+driver resolve the current project's CC directory as ground truth (`scope: "cwd"`, D4).
 
 ## Step 2b — `project-batch`: extract all sessions' turns in ONE scan (read-only, F-H1)
 
@@ -187,8 +225,10 @@ Maintain five counters across the loop: `total` (= len(sids)), `succeeded`, `fai
 `dedup_skipped`, and `ledger_skipped_turns` (sum of the `ledger_skipped` value from each
 `begin`'s JSON — Step 4).
 
-- A sid whose `begin` reports `dedup_noop: true` → call `finish fail` for THAT sid
-  (Step 4's dedup branch), count it as `dedup_skipped`, and continue to the next sid.
+- A sid whose `begin` reports `dedup_noop: true` (it also returns `auto_closed: true`)
+  → the driver already closed that sid's transaction (rolled back + released the lock);
+  report the no-op only, do NOT call `finish` (there is no sidecar to finish). Count it as
+  `dedup_skipped` and continue to the next sid (Step 4's dedup branch).
   (Still add that `begin`'s `ledger_skipped` to `ledger_skipped_turns` — an all-owned
   session is exactly the incremental case F6 must not hide.)
 - A sid that completes Steps 4–8 with a `success` `finish` → count `succeeded`.
@@ -222,8 +262,16 @@ all-failed), and report the deletion in one line (do not delete silently, and do
 it behind). It lives outside the wiki root, so removing it touches no wiki state.
 
 ```bash
-rm -rf "$OUT_DIR"   # the project-batch temp dir; report: "cleaned up <OUT_DIR>"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest project-batch-cleanup \
+  "$OUT_DIR"   # the project-batch temp dir; report: "cleaned up <OUT_DIR>"
 ```
+
+The driver-owned `project-batch-cleanup` verb (NOT a bare `rm -rf`) deletes the dir:
+it REFUSES unless `$OUT_DIR`'s basename is a `llmwiki-turns-*` temp dir directly under
+the system temp dir (the two properties `project-batch`'s mkdtemp guarantees), so a
+mistyped or drifted `$OUT_DIR` can never delete an unrelated path. A crashed loop that
+never reaches this line is caught by the driver's backstop prune (stale `llmwiki-turns-*`
+dirs are removed at the next `project-batch`).
 
 The Steps 4–8 below define ONE per-sid cycle — identical to `/wiki-ingest`'s per-file
 cycle, keyed on a sid rather than a file path.
@@ -277,10 +325,11 @@ Then:
 - **Surface `redaction_flags`** so the human gate sees what the FE redacted.
 - **Accumulate `ledger_skipped`** into `ledger_skipped_turns` (the summary must reflect
   every session's ledger skips, including dedup-no-op sessions).
-- **If `dedup_noop` is `true`:** report "already ingested (content-hash dedup no-op)",
-  then call `finish` with outcome `fail` (Step 8) to roll back the just-written raw and
-  release the lock, count the sid as `dedup_skipped`, and continue to the next sid. Do
-  NOT dispatch the stages.
+- **If `dedup_noop` is `true`:** report "already ingested (content-hash dedup no-op)".
+  `begin` also returned `auto_closed: true` — it already rolled back and released the
+  lock itself, so do NOT call `finish` (no sidecar was written; a `finish` would error).
+  Count the sid as `dedup_skipped`, and continue to the next sid. Do NOT dispatch the
+  stages.
 
 If `begin` exits non-zero, roll back this sid (Step 8 `finish fail` is not needed —
 `begin` already released its own checkpoint on failure), count it as `failed`, report its
@@ -295,9 +344,11 @@ stderr, and **continue the loop** (failure-continue):
 ## Step 5 — Stage1 EXTRACT (no write tool; untrusted read)
 
 Dispatch the `wiki-ingest-extract` subagent (declared in `agents/`) via the Agent tool
-with `subagent_type: wiki-ingest-extract`. It is the ONLY place the projected transcript
-is read, and it has **no write tool** (`tools: Read`) — it emits proposed edits as text
-only.
+with `subagent_type: llm-wiki:wiki-ingest-extract` (the `llm-wiki:` namespace is REQUIRED —
+a bare `wiki-ingest-extract` can shadow-resolve to an incompatible user-level agent that
+holds no working tools, silently yielding a `tool_uses: 0` extraction). It is the ONLY
+place the projected transcript is read, and it has **no write tool** (`tools: Read`) — it
+emits proposed edits as text only.
 
 Pass it the `redacted_body` and the `doc_type` from `begin`'s JSON. Path B input is
 always `origin: fe_b_prime`, so `begin` already pinned `doc_type: transcript` (the FE-B'
@@ -309,8 +360,9 @@ Capture its **proposed-edits blob** — the only artifact that crosses into Stag
 ## Step 6 — Decide fan-out (touch-count vs K; D23)
 
 Count the affected pages in the Stage1 proposal and compare to `apply_fanout_k` from
-`begin`'s JSON. If the touched-page count may exceed K, get the clusters from the driver
-rather than splitting by hand (clustering is code, not LLM):
+`begin`'s JSON. ALWAYS get the clusters from the driver rather than splitting by hand
+(clustering is code, not LLM) — call this even when the touched count is ≤ K (D-COV: a
+single-cluster run still needs its ordinal for the C2 dispatch check):
 
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest plan-fanout \
@@ -319,13 +371,17 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest plan-fanout \
 
 `$STAGE1_TOUCHED_JSON` is either a path to a JSON file or inline JSON — either a list of
 touched `rel_path`s or `{"touched": [rel_path, ...]}`. The driver reads K from the
-sidecar and prints `{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K. If the
-touched count is ≤ K you may skip this call and dispatch a single apply-worker.
+sidecar and prints `{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K (a ≤ K
+touched set yields a single cluster). Always call it: the 0-based INDEX of each cluster in
+the returned list is that cluster's ORDINAL, which you pass to `ingest-apply` (Step 7) so
+`finish` can prove every cluster was dispatched (C2 cluster-drop guard).
 
 ## Step 7 — Stage2 APPLY (worker authors; orchestrator runs the allowlist verb)
 
-Dispatch the `wiki-ingest-apply` subagent (one per cluster on fan-out, else one). The
-worker has **no write tool** (`tools: Read`): it authors each page's content and
+Dispatch the `wiki-ingest-apply` subagent via the Agent tool with
+`subagent_type: llm-wiki:wiki-ingest-apply` (the `llm-wiki:` namespace is REQUIRED — a bare
+name can shadow-resolve to an incompatible user-level agent), one per cluster on fan-out,
+else one. The worker has **no write tool** (`tools: Read`): it authors each page's content and
 returns — as its **final response text, and nothing else** — a page manifest, a JSON
 array `[{"rel_path": ..., "content": ...}]` (`[]` if there is nothing to write). Its ONLY
 input is the Stage1 proposed-edits blob (or one cluster of it) — **never the raw projected
@@ -343,13 +399,18 @@ budget (`max_count`/`max_bytes`) from the `.llmwiki.txn` sidecar, maps the origi
 `write_tool.WriteSession`, committing it under the held lock (each write journaled):
 
 ```bash
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki ingest-apply "$WIKI_ROOT" "$ORIGIN" < "$MANIFEST_FILE"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki ingest-apply "$WIKI_ROOT" "$ORIGIN" "$CLUSTER_ORDINAL" < "$MANIFEST_FILE"
 ```
 
-`$ORIGIN` is the `fe_b_prime` value from `begin`'s JSON; `$MANIFEST_FILE` is the
-temporary file holding that worker's manifest JSON array. On success the verb prints
-`written: <list>` (the written `rel_path`s). Collect these across all workers (deduping
-overlaps); they are the `expected_pages` you confirm in `finish`.
+`$ORIGIN` is the `fe_b_prime` value from `begin`'s JSON; `$CLUSTER_ORDINAL` is this
+cluster's 0-based index in the plan-fanout `clusters` list (`0` for the single-cluster
+case); `$MANIFEST_FILE` is the temporary file holding that worker's manifest JSON array.
+Passing the ordinal makes the verb append a dispatch receipt to the sidecar so `finish`
+can confirm every planned cluster ran (C2). On success the verb prints
+`written: <list>` (the written `rel_path`s) — the per-cluster success signal (a cluster
+that printed `written:` was applied and its dispatch receipt recorded in the sidecar).
+`finish` confirms completeness from those receipts (C2), so you do NOT pass
+`expected_pages`.
 
 On a rejected write the verb prints `REJECTED <gate> <reason>` and exits non-zero. Route
 by gate — NEVER bypass or retry around the code gate:
@@ -365,8 +426,9 @@ by gate — NEVER bypass or retry around the code gate:
 ## Step 8 — `finish`: central join, single commit OR rollback, always release
 
 Call the driver's `finish` verb once for THIS sid. The driver reconstructs the lock handle
-and checkpoint from the sidecar (you thread no state), confirms the expected pages are on
-disk, regenerates the index, appends the log (FE-B' prefix), appends the novel
+and checkpoint from the sidecar (you thread no state), confirms every planned cluster was
+dispatched (via the sidecar dispatch receipts, C2), regenerates the index, appends the
+log (FE-B' prefix), appends the novel
 turn-content-hash entries to the ledger LAST inside the same transaction, and then performs
 exactly ONE `commit` (success) or `rollback` (fail), releasing the lock and deleting the
 sidecar on every path.
@@ -374,15 +436,15 @@ sidecar on every path.
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest finish \
   "$WIKI_ROOT" "$OUTCOME" \
-  ${EXPECTED_PAGES:+--expected_pages="$EXPECTED_PAGES"} \
   ${TITLE:+--title="$TITLE"}
 ```
 
 - `$OUTCOME` is `success` when every worker's manifest was applied cleanly (each
-  `ingest-apply` verb call printed `written:`); `fail` on any failure (Stage2 error, a
-  `REJECTED` gate, `dedup_noop` short-circuit from Step 4, or anything raised after
-  `begin`). On `success` pass `$EXPECTED_PAGES` as the comma-joined `rel_path` list
-  collected in Step 7.
+  `ingest-apply` verb call printed `written:`, recording its cluster dispatch receipt);
+  `fail` on any failure (Stage2 error, a `REJECTED` gate, `dedup_noop` short-circuit from
+  Step 4, or anything raised after `begin`). Do NOT pass `expected_pages`: `finish`
+  verifies every planned cluster ran from the receipts (C2). (The `--expected_pages` flag
+  remains for direct/legacy callers only.)
 - `success` → the driver prints `{"committed": true}` (the journal was discarded, and the
   session's novel turns are now owned in the ledger). Count `succeeded`, report success.
 - `fail` → the driver prints `{"rolled_back": true}` (journal replayed: created files incl.

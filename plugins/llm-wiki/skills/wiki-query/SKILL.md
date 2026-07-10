@@ -25,14 +25,24 @@ SAME active wiki the marker hook keyed its filing directive off. Resolve it via
 `--root <path>` if the user passed one as the top override (Q4). Parse
 `--root <path>` out of the request first (it is NOT a `key=value` axis); pass it
 as `prompt_root`, else pass nothing. Do this **before any `$WIKI_ROOT` use**
-below (Steps 1–3) — including the read-enumeration in Step 1:
+below (Steps 1–3) — including the read-enumeration in Step 1.
+
+Also capture the running session's own id as `SID` via the `${CLAUDE_SESSION_ID}`
+skill-template substitution (the harness replaces this placeholder with the literal
+session id before you see this text — it is NOT an OS env var) and thread it as `--sid`
+so the resolver's session-aware pj fast-path (`_projects/_state/<sid>.json` read first,
+D6) fires instead of degrading to a mtime-latest scan that can cross-talk between
+concurrent sessions on different projects:
 
 ```bash
-WIKI_ROOT="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"})"
+SID="${CLAUDE_SESSION_ID}"
+RESOLVED="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"} --sid "$SID")" \
+  || { echo "resolve-root failed (NO-WIKI or resolver error) — stop"; }
+IFS=$'\t' read -r WIKI_ROOT WIKI_SCOPE <<<"$RESOLVED"
 ```
 
-The `resolve-root` verb prints `<root>\t<scope>` on stdout (split on the tab to get
-`WIKI_ROOT` and the scope). If it exits non-zero (`NO-WIKI`), no wiki resolved —
+The `resolve-root` verb prints `<root>\t<scope>` on stdout; the block above splits it
+(`WIKI_ROOT`=root, `WIKI_SCOPE`=scope) so a stray tab+scope never contaminates `$WIKI_ROOT`. If it exits non-zero (`NO-WIKI`), no wiki resolved —
 report that this skill requires an active wiki (pass `--root <path>` or run from
 a wiki root) and STOP. The filing in Step 3 MUST write to this SAME resolved
 root — the marker hook keyed its directive off this active wiki, so binding

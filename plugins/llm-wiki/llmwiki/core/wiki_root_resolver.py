@@ -199,8 +199,9 @@ def resolve(prompt_root: "str | None" = None,
         session_id: the CC session id (Phase 1 P1). When given, the pj scope
             reads `_projects/_state/<session_id>.json` first so concurrent
             sessions on different pj resolve their OWN wiki; absent/unreadable
-            falls back to mtime-latest. The CLI passes None (no session context),
-            preserving the legacy mtime-latest behavior.
+            falls back to mtime-latest. The CLI threads this through its
+            `resolve-root --sid S` flag (theme1 i:63); when `--sid` is omitted the
+            session context is None and the legacy mtime-latest behavior applies.
     """
     # 1) prompt — explicit override wins. Absolutize so a RELATIVE `--root` is
     #    stable regardless of the process CWD (the hook cwd and a command's shell

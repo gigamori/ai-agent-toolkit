@@ -1,6 +1,6 @@
 """Tests: begin's stdout-JSON `ledger_skipped` contract (T7/F6, T9 coverage).
 
-The Path B loop (wiki-ingest-project.md) must be able to SUM the per-run
+The Path B loop (wiki-ingest-sessions.md) must be able to SUM the per-run
 ledger-skipped TURN count across sids so an incremental re-run is not a silent
 no-op (RS-d). That count flows projector -> begin's stdout JSON. This asserts the
 driver's begin-JSON surface:
