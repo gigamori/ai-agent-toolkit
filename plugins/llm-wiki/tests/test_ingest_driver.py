@@ -68,7 +68,16 @@ def test_begin_finish_success_round_trip(tmp_path):
     assert out["origin"] == drv.ORIGIN_FE_B
     assert out["max_count"] == 100
     assert out["apply_fanout_k"] == 10
-    assert out["redacted_body"] == "third party content"
+    # E1 (D-1): begin stdout no longer carries the inline `redacted_body`; it
+    # carries the raw artifact's wiki-relative path (Read-able by a downstream
+    # stage) plus a short code-side declaration hash instead.
+    assert "redacted_body" not in out
+    assert out["raw_rel_path"].startswith("raw/")
+    assert out["raw_rel_path"].endswith(".txt")
+    assert (tmp_path / out["raw_rel_path"]).read_text(
+        encoding="utf-8") == "third party content"
+    assert isinstance(out["declaration_hash"], str)
+    assert len(out["declaration_hash"]) == 12
 
     # Simulate Stage2 having written a page (the driver does NOT author content).
     (tmp_path / "wiki").mkdir(exist_ok=True)
@@ -302,6 +311,82 @@ def test_plan_fanout_over_max_count_hits_human_gate(tmp_path):
     with pytest.raises(drv.DriverError) as ei:
         drv.plan_fanout(str(tmp_path), json.dumps(touched))
     assert "budget overflow" in str(ei.value)
+    drv.abort(str(tmp_path))
+
+
+# --------------------------------------------------------------------------- #
+# #1 follow-up: begin returns an ABSOLUTE stage1_blob_path (code-authored) so
+# the orchestrator never reconstructs a temp path across turns (a reconstructed
+# `AppData\Local\Temp\...` was resolved against the CWD on Windows). Under
+# `--out_dir` for Path B (rides project-batch-cleanup); system temp otherwise.
+# --------------------------------------------------------------------------- #
+def test_begin_stage1_blob_path_absolute_under_out_dir(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("x", encoding="utf-8")
+    out_dir = tmp_path / "batchtmp"
+    out_dir.mkdir()
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b", out_dir=str(out_dir))
+    blob = Path(out["stage1_blob_path"])
+    assert blob.is_absolute()
+    assert blob.parent == out_dir                       # placed under out_dir
+    assert blob.name == "stage1-input.json"             # keyed by source stem
+    drv.abort(str(tmp_path))
+
+
+def test_begin_stage1_blob_path_defaults_to_system_temp(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path / "doc.md"
+    src.write_text("y", encoding="utf-8")
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b")   # no out_dir
+    blob = Path(out["stage1_blob_path"])
+    assert blob.is_absolute()
+    assert blob.parent == Path(tempfile.gettempdir())
+    assert blob.name == "stage1-doc.json"
+    drv.abort(str(tmp_path))
+
+
+# --------------------------------------------------------------------------- #
+# #2 follow-up: plan-fanout enforces the derived tier for projection origins.
+# The derived-tier prefix is a deterministic function of origin (fe_b_prime /
+# fe_pi_log -> wiki/derived/, D20), so a Stage1 proposal that omits it is
+# rejected HERE (fail-closed, before planned_clusters or any write) rather than
+# surfacing only as a late apply-finish cluster_pageset REJECT.
+# --------------------------------------------------------------------------- #
+def _begin_fe_b_prime(tmp_path, monkeypatch, sid="sid-x"):
+    """Open a fe_b_prime transaction via a stubbed projection (no corpus scan)."""
+    tf = tmp_path.parent / f"tier-turns-{sid}.json"
+    tf.write_text(json.dumps({"sid": sid, "origin": drv.ORIGIN_FE_B_PRIME,
+                              "turns": []}), encoding="utf-8")
+
+    def _fake_project_from_turns(root, s, turn_list, *, ledger):
+        return cc_log_project.ProjectionResult(
+            markdown="# CC Session transcript\n", novel_entries=[],
+            ledger_skipped=0)
+    monkeypatch.setattr(cc_log_project, "project_from_turns",
+                        _fake_project_from_turns)
+    return drv.begin(str(tmp_path), sid, kind="fe_b_prime", turns=str(tf))
+
+
+def test_plan_fanout_derived_origin_rejects_base_tier(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    _begin_fe_b_prime(tmp_path, monkeypatch)
+    # fe_b_prime writes the derived tier: a base-tier `wiki/...` touched page is
+    # rejected before planned_clusters is persisted.
+    with pytest.raises(drv.DriverError, match="tier mismatch"):
+        drv.plan_fanout(str(tmp_path), json.dumps(["wiki/db-spec/foo.md"]))
+    sidecar = json.loads(
+        (tmp_path / drv.SIDECAR_NAME).read_text(encoding="utf-8"))
+    assert "planned_clusters" not in sidecar             # fail-closed, nothing written
+    drv.abort(str(tmp_path))
+
+
+def test_plan_fanout_derived_origin_accepts_derived_tier(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    _begin_fe_b_prime(tmp_path, monkeypatch)
+    touched = ["wiki/derived/db-spec/foo.md", "wiki/derived/db-spec/bar.md"]
+    out = drv.plan_fanout(str(tmp_path), json.dumps(touched))
+    assert out["clusters"] == [touched]
     drv.abort(str(tmp_path))
 
 

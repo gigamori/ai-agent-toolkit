@@ -184,9 +184,25 @@ def test_project_batch_then_begin_turns_no_rescan(tmp_path, monkeypatch):
 
     for sid in sids:
         turns_path = batch["turns"][sid]
-        out = drv.begin(str(tmp_path), sid, kind="fe_b_prime", turns=turns_path)
+        # #1: the real Path B threads project-batch's out_dir into begin
+        # (`--out_dir="$OUT_DIR"`) so the code-authored stage1 blob path lands
+        # under the batch temp dir (and rides project-batch-cleanup).
+        out = drv.begin(str(tmp_path), sid, kind="fe_b_prime", turns=turns_path,
+                        out_dir=batch["out_dir"])
         assert out["origin"] == "fe_b_prime"
-        assert f"hello from {sid}" in out["redacted_body"]
+        # E1/D-1: begin no longer inlines `redacted_body`; it returns
+        # `raw_rel_path`, the wiki-relative path of the raw artifact it wrote.
+        # Stage1 Reads the body from there — so the parity check reads the raw
+        # file off disk instead of the (removed) stdout field.
+        assert "redacted_body" not in out
+        # #1: begin hands back an ABSOLUTE stage1 blob path under out_dir, keyed
+        # by sid — the orchestrator uses it verbatim (never reconstructs it).
+        blob = Path(out["stage1_blob_path"])
+        assert blob.is_absolute()
+        assert blob.parent == Path(batch["out_dir"])
+        assert blob.name == f"stage1-{sid}.json"
+        raw = (tmp_path / out["raw_rel_path"]).read_text(encoding="utf-8")
+        assert f"hello from {sid}" in raw
         drv.finish(str(tmp_path), "success", expected_pages=[], title=sid)
 
     # cleanup parity: the temp dir is outside the wiki root (loop deletes it).
@@ -312,7 +328,11 @@ def test_project_batch_fe_pi_log_stamps_origin_then_begin_turns_consumes_it(
 
         out = drv.begin(str(wiki_root), sid, kind="fe_pi_log", turns=turns_path)
         assert out["origin"] == "fe_pi_log"
-        assert f"hello from {sid}" in out["redacted_body"]
+        # E1/D-1: raw body is read off disk via `raw_rel_path`, not from the
+        # (removed) inline `redacted_body` stdout field.
+        assert "redacted_body" not in out
+        raw = (wiki_root / out["raw_rel_path"]).read_text(encoding="utf-8")
+        assert f"hello from {sid}" in raw
         drv.finish(str(wiki_root), "success", expected_pages=[], title=sid)
 
     # cleanup parity with the cc Path B loop: the temp dir is outside the wiki

@@ -15,8 +15,9 @@ single file-journal transaction, the normalization front-end, redaction, dedup, 
 central join, index/log). Your job is to call the driver's verbs in order and to
 dispatch the two LLM stages to subagents in between. You NEVER author wiki page
 content yourself — the Stage2 apply-worker authors it and returns a page manifest;
-YOU pass that manifest through the driver's `ingest-apply` verb, where the allowlist
-write tool (`write_tool.WriteSession`) gates every page write.
+YOU pass every cluster's manifest through the driver's compound `apply-finish` verb
+(E3), where the allowlist write tool (`write_tool.WriteSession`) gates every page write
+and, on success, the same verb performs the central join + single commit.
 
 The source argument may be **one file** or a **glob / directory**. A glob / directory
 is expanded by the driver into a list of files, and **each file is ingested in its own
@@ -79,8 +80,9 @@ no sidecar).
 For **each** `rel_path` in `files`, run the full per-file cycle Steps 1–5 with that
 `rel_path` as `$SOURCE`. Each iteration is a **complete, independent transaction**:
 `begin` acquires `.llmwiki.lock` and checkpoints (opens the journal), the stages run,
-and `finish` commits (discards the journal) or rolls back (replays it) and releases the
-lock for **that one file**. The transaction is owned
+and `apply-finish` commits (discards the journal) on success — or, when a stage fails
+**before** apply, `finish fail` rolls back (replays it) — releasing the lock for **that one
+file**. The transaction is owned
 entirely by the driver via the `.llmwiki.txn` sidecar (the ONE INVARIANT below) — you
 thread NO transaction state across files, and you do NOT wrap the loop in a single
 spanning transaction. The loop is N independent driver transactions, one per file (G-c).
@@ -92,12 +94,14 @@ Maintain four counters across the loop: `total` (= len(files)), `succeeded`, `fa
   → the driver already closed that file's transaction (rolled back + released the lock);
   report the no-op only, do NOT call `finish` (there is no sidecar to finish). Count it as
   `dedup_skipped` and continue to the next file (Step 1's dedup branch).
-- A file that completes Steps 1–5 with a `success` `finish` → count `succeeded`.
-- **Failure-continue (G-f):** if ANY step for a file fails (a `begin` error after the
-  marker check, a Stage error, a budget gate, or a non-success `finish`), roll back
-  **just that file** by calling its own `finish fail` (Step 5) — never abort the other
-  files — count it as `failed`, and **continue the loop**. One file's failure must not
-  stop the batch (partial success is allowed).
+- A file that completes Steps 1–5 with a committed `apply-finish` → count `succeeded`.
+- **Failure-continue (G-f):** if ANY step for a file fails, roll back **just that file** —
+  never abort the other files — count it as `failed`, and **continue the loop**. Route by
+  where it failed (Step 5): a failure **before** apply (a `begin` error after the marker
+  check, a Stage1/Stage2 error, or a `plan-fanout` budget gate) → call its own `finish fail`
+  (Step 5); an `apply-finish` **REJECT** (a write gate or an F2 ordinal/page-set mismatch) →
+  `apply-finish` has ALREADY rolled that file back, so do NOT also call `finish`. One file's
+  failure must not stop the batch (partial success is allowed).
 
 After the loop, **always** report the summary line verbatim:
 
@@ -120,9 +124,10 @@ in the glob/dir case you run them once per enumerated file. They are identical e
 > (replay it, fail) and always `release_lock`s. Between them the transaction state
 > lives on disk in the `.llmwiki.txn` sidecar — you NEVER thread the journal dir,
 > budget, lock handle, or fe-hash yourself; you pass the driver only the opaque
-> `<root>` (plus `<source>` to `begin` and the `success|fail` outcome to `finish`).
+> `<root>` (plus `<source>` to `begin`, the per-cluster manifests to `apply-finish`,
+> and — only on a pre-apply stage failure — a `fail` outcome to `finish`).
 > Every byte still passes through `write_tool.WriteSession` inside the
-> `ingest-apply` verb YOU run over each worker's returned manifest (the verb
+> `apply-finish` verb YOU run over the workers' returned manifests (the verb
 > journals each write); NEITHER LLM stage has a write tool — the Stage2
 > apply-worker authors a manifest only (`tools: Read`), and Stage1 — which alone
 > reads the untrusted raw source — likewise has **no write tool at all**
@@ -136,8 +141,8 @@ you thread transaction state by hand, STOP and report
 
 > **Model requirement — do not run on a lightweight/minimal model.** This skill is a
 > multi-stage orchestration (`begin` → Stage1 extract subagent → Stage2 apply subagent →
-> `finish`). A lightweight or minimal model tends to drop the Stage2 apply dispatch, or
-> mistake the raw Stage1 blob for finished pages, or skip the `finish` call — any of which
+> `apply-finish`). A lightweight or minimal model tends to drop the Stage2 apply dispatch, or
+> mistake the raw Stage1 blob for finished pages, or skip the `apply-finish` call — any of which
 > leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages
 > written; see the stuck-transaction recovery note at the end). Run it on a capable model.
 
@@ -201,14 +206,25 @@ for a 3rd-party source. The driver also echoes the resolved-value declaration to
 stderr.)
 
 From the printed JSON capture: `declaration` (list of `[wiki] <axis> = <value>
-(<source>)` lines), `redacted_body`, `origin` (`fe_b`|`fe_b_prime`), `doc_type`,
+(<source>)` lines), `declaration_hash` (E1/E4 — the code-side short hash used for the
+per-file declaration-echo mitigation below), `raw_rel_path` (E1/E2 — the wiki-relative path
+of the raw artifact `begin` wrote; `begin` no longer inlines the body, so Stage1 Reads the
+raw from this path in Step 2), `stage1_blob_path` (#1 — the ABSOLUTE path to Write the
+Stage1 blob to in Step 2; code-authored under the system temp dir, so use it verbatim and
+never reconstruct a temp path yourself), `origin` (`fe_b`|`fe_b_prime`), `doc_type`,
 `max_count`, `max_bytes`, `apply_fanout_k`, `dedup_noop`, `redaction_flags`.
 
 Then:
 
-- **Echo every `declaration` line to the user verbatim** before doing anything else
-  (D5 — the resolved-value announcement precedes all stages). If `write_mode`
-  resolved to `implicit`, announce loudly that per-apply confirmation is skipped.
+- **Declaration echo — per-run mitigation (E4 / D-2 / F4).** For the **first** ingest in
+  this run (the single file, or the first file of a glob/dir loop), echo every `declaration`
+  line verbatim (D5 — the resolved-value announcement precedes all stages) and remember its
+  `declaration_hash`. For every **later** file in a loop, compare its `declaration_hash` to
+  the first's — an **equality check on the code-side hash only** (never re-derive or diff the
+  declaration text yourself, F4): if it is EQUAL, emit the single line
+  `declaration unchanged (= file 1)`; if it DIFFERS, echo that file's **full** `declaration`
+  plus a warning that the resolved config changed. If `write_mode` resolved to `implicit`,
+  announce loudly that per-apply confirmation is skipped.
 - **Surface `redaction_flags`** to the user so the human gate sees what the FE
   redacted.
 - **If `dedup_noop` is `true`:** report "already ingested (content-hash dedup
@@ -232,15 +248,34 @@ agent that holds no working tools, silently yielding a `tool_uses: 0` extraction
 the ONLY place the untrusted raw body is read, and it has **no write tool** (`tools:
 Read`) — it emits proposed edits as text only.
 
-Pass it the `redacted_body` and the `doc_type` from `begin`'s JSON:
+Instruct it to **Read the raw artifact at `$WIKI_ROOT/<raw_rel_path>`** — the
+`raw_rel_path` from `begin`'s JSON (Step 1). `begin` no longer inlines the body (E1); the
+raw was already journaled+written under the transaction, and Stage1 holds `tools: Read`, so
+it reads the untrusted raw body from that path itself (E2 — no write tool added). Pass the
+`doc_type` from `begin`'s JSON:
 
-- For FE-B input (`origin: fe_b`): pass `redacted_body` + the `doc_type` hint; the
-  subagent classifies `doc_type` (unmatched → `default`).
-- For FE-B' input (`origin: fe_b_prime`): `begin` already pinned
-  `doc_type: transcript` (the FE-B' code floor). Pass `doc_type=transcript` and
-  instruct the subagent to honor the pinned type and skip classification.
+- For FE-B input (`origin: fe_b`): the raw at `raw_rel_path` is the redacted source body;
+  pass the `doc_type` hint; the subagent classifies `doc_type` (unmatched → `default`).
+- For FE-B' input (`origin: fe_b_prime`): the raw at `raw_rel_path` is the projected
+  transcript, and `begin` already pinned `doc_type: transcript` (the FE-B' code floor). Pass
+  `doc_type=transcript` and instruct the subagent to honor the pinned type and skip
+  classification.
 
-Capture its **proposed-edits blob** — the only artifact that crosses into Stage2.
+**Tier (#2 — symmetric with the Stage2 worker in Step 4).** The output tier is a
+deterministic function of `origin`: instruct Stage1 to propose EVERY affected page's
+`rel_path` under `wiki/derived/…` for `origin: fe_b_prime` (derived tier), or under `wiki/…`
+(non-derived) for `origin: fe_b` (source tier). The driver enforces the derived case in
+code: for `fe_b_prime`, `plan-fanout` (Step 3) rejects a proposal whose touched pages are
+not under `wiki/derived/`, and the Stage2 write gate (D20) admits only `wiki/derived/`. So
+proposing the correct tier here is load-bearing, not cosmetic.
+
+Capture its **proposed-edits blob** and **Write it ONCE** to the ABSOLUTE path
+`stage1_blob_path` from `begin`'s JSON (Step 1) — **use it verbatim; do NOT reconstruct a
+temp path yourself** (#1: a hand-built `$TMPDIR/stage1-…` can be mis-resolved against the
+CWD). Call this path `$STAGE1_BLOB_PATH`; it is outside the wiki root (the system temp dir).
+From here on the blob is passed **by path only** (never re-inlined into your context): to
+`plan-fanout` (Step 3) and to each Stage2 worker (Step 4). It is the only artifact that
+crosses into Stage2.
 
 ## Step 3 — Decide fan-out (touch-count vs K; D23)
 
@@ -251,17 +286,20 @@ a single-cluster run still needs its ordinal for the C2 dispatch check):
 
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest plan-fanout \
-  "$WIKI_ROOT" "$STAGE1_TOUCHED_JSON"
+  "$WIKI_ROOT" "$STAGE1_BLOB_PATH"
 ```
 
-`$STAGE1_TOUCHED_JSON` is either a path to a JSON file or inline JSON — either a list
-of touched `rel_path`s or `{"touched": [rel_path, ...]}`. The driver reads K from the
-sidecar and prints `{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K (a ≤ K
-touched set yields a single cluster). Always call it: the 0-based INDEX of each cluster in
-the returned list is that cluster's ORDINAL, which you pass to `ingest-apply` (Step 4) so
-`finish` can prove every cluster was dispatched (C2 cluster-drop guard).
+`$STAGE1_BLOB_PATH` is the Stage1 proposed-edits blob file from Step 2 (a path — the driver
+accepts a path or inline JSON, and reads the touched-page set as a bare list of `rel_path`s
+or a `{"touched": [rel_path, ...]}` object). The driver reads K from the sidecar, persists
+the resulting cluster plan to the sidecar as `planned_clusters` (C2 basis), and prints
+`{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K (a ≤ K touched set yields a single
+cluster). Always call it: the 0-based INDEX of each cluster in the returned list is that
+cluster's ORDINAL. `apply-finish` (Step 5) proves every cluster was dispatched from that
+same `planned_clusters` (C2 cluster-drop guard), and the ORDER you pass the manifests to
+`apply-finish` IS the ordinal — so keep the workers and manifests in this cluster order.
 
-## Step 4 — Stage2 APPLY (worker authors; orchestrator runs the allowlist verb)
+## Step 4 — Stage2 APPLY (workers author manifests; you collect them per cluster)
 
 Dispatch the `wiki-ingest-apply` subagent via the Agent tool with
 `subagent_type: llm-wiki:wiki-ingest-apply` (the `llm-wiki:` namespace is REQUIRED — a bare
@@ -271,82 +309,89 @@ returns — as its **final response text, and nothing else** — a page manifest
 array `[{"rel_path": ..., "content": ...}]` (`[]` if there is nothing to write). Its
 ONLY input is the Stage1 proposed-edits blob (or one cluster of it) — **never the
 raw untrusted source** (the quarantine seam, D17). You do not author page content
-yourself; YOU run the write verb below over the worker's manifest.
+yourself; the workers' manifests are applied by the `apply-finish` verb YOU run in Step 5.
 
-Pass each apply-worker: the proposed-edits blob (or its cluster), the `origin` from
-`begin`'s JSON (`fe_b` → source tier, `fe_b_prime` → derived tier), and the
-`$WIKI_ROOT`, instructing it that its reply must be the manifest JSON array only.
+Pass each apply-worker: the **path** `$STAGE1_BLOB_PATH` (Step 2) plus this cluster's
+`rel_path` list from `plan-fanout` (Step 3), and the `origin` from `begin`'s JSON
+(`fe_b` → source tier, `fe_b_prime` → derived tier), instructing it to **Read** the blob
+from that path (it holds `tools: Read` — no write tool added, E2) and that its reply must be
+the manifest JSON array only, restricted to its cluster's `rel_path`s.
 
-For EACH worker's returned manifest: save it to a temporary file (outside the wiki
-root), then run the driver's `ingest-apply` verb with that file on STDIN. The verb
-reads the budget (`max_count`/`max_bytes`) from the `.llmwiki.txn` sidecar, maps the
-origin (`fe_b` → `"source"`, `fe_b_prime` → `"derived"`), and stages every page
-through one `write_tool.WriteSession`, committing it under the held lock (each write
-journaled):
+For EACH worker's returned manifest, in **plan-fanout cluster order (ordinal 0 first)**,
+save it to its own temp file **outside the wiki root**, e.g.
+`$TMPDIR/manifest-<source-stem>-<ordinal>.json`. Collect the ordered list of manifest file
+paths — one per cluster — and carry it to Step 5; their ORDER is the ordinal `apply-finish`
+verifies against `planned_clusters` (C2/F2). Do NOT apply any manifest here — the single
+`apply-finish` call in Step 5 applies them all.
 
-```bash
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki ingest-apply "$WIKI_ROOT" "$ORIGIN" "$CLUSTER_ORDINAL" < "$MANIFEST_FILE"
-```
+If a worker errors or fails to return a manifest, this file failed **before** apply: skip
+the `apply-finish` call and roll it back via `finish fail` (Step 5's failure path).
 
-`$ORIGIN` is the `fe_b`/`fe_b_prime` value from `begin`'s JSON; `$CLUSTER_ORDINAL` is
-this cluster's 0-based index in the plan-fanout `clusters` list (`0` for the
-single-cluster case); `$MANIFEST_FILE` is the temporary file holding that worker's
-manifest JSON array. Passing the ordinal makes the verb append a dispatch receipt to the
-sidecar so `finish` can confirm every planned cluster ran (C2). On success the verb
-prints `written: <list>` (the written `rel_path`s) — the per-cluster success signal (a
-cluster that printed `written:` was applied and its dispatch receipt recorded in the
-sidecar). `finish` confirms completeness from those receipts (C2), so you do NOT pass
-`expected_pages`.
+## Step 5 — `apply-finish`: apply every manifest + central join + single commit (or `finish fail` on a pre-apply error)
 
-On a rejected write the verb prints `REJECTED <gate> <reason>` and exits non-zero.
-Route by gate — NEVER bypass or retry around the code gate:
-
-- `budget` — count or total-size budget exceeded → **the human gate**: report the
-  budget signal and call `finish` with outcome `fail` (Step 5); do NOT split
-  silently or retry around it.
-- `cross_namespace` / `path` / `protected` / `absolute` / `traversal` — the target
-  is illegal (a derived-origin edit outside `wiki/derived/` (D20), a target outside
-  `wiki/`, `SCHEMA.md`/`.llmwiki`/`raw/`, or an absolute/`..` path). Report the
-  rejection and call `finish` with outcome `fail` (Step 5); never bypass.
-
-## Step 5 — `finish`: central join, single commit OR rollback, always release
-
-Call the driver's `finish` verb once. The driver reconstructs the lock handle and
-checkpoint from the sidecar (you thread no state), confirms every planned cluster was
-dispatched (via the sidecar dispatch receipts, C2), regenerates the index, appends the
-log (FE-dispatched prefix), and then performs
-exactly ONE `commit` (success) or `rollback` (fail), releasing the lock and deleting the
-sidecar on every path.
+When every cluster's worker returned a manifest (Step 4), run the driver's compound
+`apply-finish` verb ONCE for THIS file, passing one `--manifest` per cluster **in ordinal
+order**. The verb reads `planned_clusters` + the budget (`max_count`/`max_bytes`) from the
+`.llmwiki.txn` sidecar (you thread no state), maps the origin (`fe_b` → `"source"`,
+`fe_b_prime` → `"derived"`), verifies F2 (manifest count == planned cluster count, and each
+manifest's `rel_path`s ⊆ its planned cluster) BEFORE any write, then stages every manifest
+through `write_tool.WriteSession` under the held lock (each write journaled) and — on full
+success — performs the central join (index regenerate, log append with the FE-dispatched
+prefix) and the single `commit`, releasing the lock and deleting the sidecar:
 
 ```bash
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest finish \
-  "$WIKI_ROOT" "$OUTCOME" \
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest apply-finish \
+  "$WIKI_ROOT" "$ORIGIN" \
+  --manifest "$MANIFEST_0" --manifest "$MANIFEST_1" ... \
   ${TITLE:+--title="$TITLE"}
 ```
 
-- `$OUTCOME` is `success` when every worker's manifest was applied cleanly (each
-  `ingest-apply` verb call printed `written:`, recording its cluster dispatch receipt);
-  `fail` on any failure (Stage2 error, a `REJECTED` gate, `dedup_noop` short-circuit from
-  Step 1, or anything raised after `begin`). Do NOT pass `expected_pages`: `finish`
-  verifies every planned cluster ran from the receipts (C2). (The `--expected_pages` flag
-  remains for direct/legacy callers only.)
-- `success` → the driver prints `{"committed": true}` (the journal was discarded).
-  Report success to the user.
-- `fail` → the driver prints `{"rolled_back": true}` (journal replayed: created
-  files incl. orphan raw removed, modified files restored). Report the rollback.
+`$ORIGIN` is the `fe_b`/`fe_b_prime` value from `begin`'s JSON; each `--manifest` is a
+Step 4 manifest file, listed in cluster-ordinal order (`--manifest` position == ordinal). Do
+NOT pass `expected_pages`: `apply-finish` proves every planned cluster ran from
+`planned_clusters` (C2). `--title` threads into the log title exactly as the granular
+`finish --title` did.
+
+- **Success** (exit 0) → stdout `{"clusters":[{"ordinal":N,"written":[rel_path,...]},...],"committed":true}`
+  (the journal was discarded). Report success to the user.
+- **REJECT** (exit non-zero) → stderr `REJECTED <gate> <reason>` + stdout
+  `{"rolled_back":true}`. `apply-finish` has ALREADY rolled this file back (journal replayed:
+  created files incl. orphan raw removed, modified files restored) and released the lock — so
+  do NOT also call `finish`. Report the gate. NEVER bypass or retry around the code gate.
+  Gates: `budget` (count / total-size overflow → the human gate), `manifest_count` /
+  `cluster_pageset` (an F2 ordinal/page-set mismatch), or `cross_namespace` / `path` /
+  `protected` / `absolute` / `traversal` (an illegal target — a derived-origin edit outside
+  `wiki/derived/` (D20), a target outside `wiki/`, `SCHEMA.md`/`.llmwiki`/`raw/`, or an
+  absolute/`..` path).
+
+**Pre-apply failure path — `finish fail`.** When a file failed **before** you could run
+`apply-finish` (a `begin` error after the marker check — see Step 1 — a Stage1/Stage2 error,
+or a `plan-fanout` budget gate), the transaction is still open, so roll it back explicitly:
+
+```bash
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest finish \
+  "$WIKI_ROOT" fail
+```
+
+The driver prints `{"rolled_back": true}` (journal replayed, lock released, sidecar
+deleted). Report the rollback. (The granular `finish` verb — and its `--expected_pages`
+flag — remain for this failure path and for direct/legacy callers; the success/commit path
+is owned by `apply-finish`.)
 
 This is the single file-journal transaction the invariant promises **for this one file**:
 `begin` opened it before the front-end, the lock was held across both LLM stages and the
-page writes, and `finish` performs exactly one of `commit` / `rollback` before
+page writes, and the closing verb performs exactly one of `commit` (`apply-finish` success)
+/ `rollback` (`apply-finish` REJECT, or `finish fail` on a pre-apply error) before
 `release_lock` — all inside the driver, with no transaction state ever threaded by you.
-In the glob/dir case the loop (Step 0b) repeats this whole `begin → … → finish` cycle
+In the glob/dir case the loop (Step 0b) repeats this whole `begin → … → apply-finish` cycle
 once per enumerated file, yielding N independent per-file transactions — NOT one
 transaction spanning the batch — after which you return to Step 0b for the next file or
 emit the final summary.
 
 **Stuck-transaction recovery (symptom → abort).** Symptom of a transaction left
-**open** — a run interrupted before `finish` (e.g. a lightweight model dropped the
-Stage2 dispatch or skipped `finish`): a stale `.llmwiki.lock`, `.llmwiki.txn`, and/or
+**open** — a run interrupted before the closing `apply-finish`/`finish` (e.g. a lightweight
+model dropped the Stage2 dispatch or skipped the closing verb): a stale `.llmwiki.lock`,
+`.llmwiki.txn`, and/or
 `.llmwiki.txn.d/` remain in the wiki root while `wiki/` has **no new pages**. Recovery is
 the operator running the driver's `abort` verb manually (the orchestrator does NOT invoke
 it automatically), which releases the lock and rolls back the open journal:

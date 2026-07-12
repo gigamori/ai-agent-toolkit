@@ -29,7 +29,7 @@ claude --plugin-dir ./plugins/llm-wiki
 
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki <verb> ...        # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|finish|abort|enumerate}
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|apply-finish|finish|abort|enumerate}
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve # markdown: ローカル HTML ビューア
 ```
 
@@ -133,10 +133,10 @@ hook は `wiki:on|off` トグルも扱う：プロンプト中の `wiki:on`/`wik
 
 3rd-party ソース（FE-B）または Claude Code セッション jsonl（FE-B'）を、2 段 `extract → apply` core を通して単一のファイルジャーナル・トランザクション内で ingest する。引数は単一ファイルのほか、**クォートした glob**（`"./docs/**/*.md"`）や**ディレクトリ**（`./docs/`）も指定できる：driver が（シェルではなく）Python で展開し、wiki 内部パスを強制除外し、ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）に限定する。glob/ディレクトリは**1 ファイル 1 トランザクション**で ingest し、1 ファイルの失敗はそのファイルだけロールバックして続行、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する（0 件マッチはエラー）。
 
-`/wiki-ingest`（および `/wiki-ingest-sessions`）は多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり `finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
+`/wiki-ingest`（および `/wiki-ingest-sessions`）は多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり 最後の `apply-finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
 
 - **Stage 1（extract）** — `wiki-ingest-extract` subagent が redaction 済み・untrusted の raw ソースを**構造的に書込ツールなし**で読み、提案編集のみを出力する。
-- **Stage 2（apply）** — `wiki-ingest-apply` subagent が**構造的に書込ツールなし**でページ更新を執筆し、page manifest として返す。orchestrator がその manifest を allowlist write ツール（`llmwiki/write/write_tool.py`、`llmwiki ingest-apply` として起動）に通す。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。index / log / commit は join 後に中央集約される。提案された touch ページ集合の総数はまず `max_count` でゲートされる：これを超える ingest は fan-out せず human gate へエスカレートするため、per-worker の書込 budget が cluster 数だけ暗黙に乗算されることはない。
+- **Stage 2（apply）** — `wiki-ingest-apply` subagent が**構造的に書込ツールなし**でページ更新を執筆し、page manifest として返す。orchestrator がそれらの manifest を allowlist write ツール（`llmwiki/write/write_tool.py`）に複合 `apply-finish` verb 経由で通す。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。その後 `apply-finish` が各 cluster の manifest を適用し、index / log / commit を join 後に中央集約する。提案された touch ページ集合の総数はまず `max_count` でゲートされる：これを超える ingest は fan-out せず human gate へエスカレートするため、per-worker の書込 budget が cluster 数だけ暗黙に乗算されることはない。
 
 cc-log（FE-B'）入力は `doc_type=transcript` に pin され、決定的な decision floor（`llmwiki/ingest/transcript_floor.py`、`llmwiki floor-check` として起動）が掛かる：claim は明示的な affirmative token がある時のみ decision として記録され、沈黙は非承認として扱う。
 
@@ -253,7 +253,7 @@ plugins/llm-wiki/
     init/   wiki_init.py       # wiki 初期化
   bin/                         # CLI entrypoint（PEP 723 で依存宣言・uv run）
     llmwiki                    # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
-    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|finish|abort|enumerate}
+    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|apply-finish|finish|abort|enumerate}
     llmwiki-view               # markdown: view --serve
   pyproject.toml               # version / requires-python / extras(doc)。runtime は install しない
   templates/                   # 新しい wiki インスタンスの初期化元

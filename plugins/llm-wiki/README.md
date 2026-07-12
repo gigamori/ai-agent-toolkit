@@ -29,7 +29,7 @@ The plugin's deterministic engine is a path-imported Python package (`llmwiki/`,
 
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki <verb> ...        # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|finish|abort|enumerate}
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|apply-finish|finish|abort|enumerate}
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve # markdown: local HTML viewer
 ```
 
@@ -133,10 +133,10 @@ The hook also honors the `wiki:on|off` toggle: a `wiki:on`/`wiki:off` marker in 
 
 Ingests a 3rd-party source (FE-B) or a Claude Code session jsonl (FE-B') through the 2-stage `extract → apply` core inside one file-journal transaction. The argument may be a single file, a **quoted glob** (`"./docs/**/*.md"`), or a **directory** (`./docs/`): the driver expands it in Python (never the shell), force-excludes wiki-internal paths, and — for a directory — restricts to the text-type allowlist (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`). A glob/directory is ingested **one file per transaction**; a per-file failure rolls back only that file and the run continues, then a `N total / M succeeded / K failed / S dedup-skipped` summary is reported (zero matches is an error).
 
-`/wiki-ingest` (and `/wiki-ingest-sessions`) is a multi-stage orchestration (`begin` → Stage 1 subagent → Stage 2 subagent → `finish`), so run it on a **capable model**: a lightweight/minimal model tends to drop the Stage 2 apply dispatch or skip `finish`, which leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages written — clear it with the `abort` verb; see *Recovery* above).
+`/wiki-ingest` (and `/wiki-ingest-sessions`) is a multi-stage orchestration (`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`), so run it on a **capable model**: a lightweight/minimal model tends to drop the Stage 2 apply dispatch or skip the closing `apply-finish`, which leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages written — clear it with the `abort` verb; see *Recovery* above).
 
 - **Stage 1 (extract)** — the `wiki-ingest-extract` subagent reads the redacted, untrusted raw source with **no write tool by construction** and emits proposed edits only.
-- **Stage 2 (apply)** — the `wiki-ingest-apply` subagent authors page updates with **no write tool by construction** and returns them as a page manifest; the orchestrator pipes that manifest through the allowlist write tool (`llmwiki/write/write_tool.py`, invoked as `llmwiki ingest-apply`), which confines writes to `wiki/` and `wiki/derived/`, rejects `SCHEMA.md` / `.llmwiki` / `raw/` / absolute paths / traversal, and gates on budget. On more than `apply_fanout_k` touched pages, Stage 2 fans out one apply worker per cluster; index / log / commit are centralized after the join. The total proposed touched-page set is first gated against `max_count`: an ingest proposing more pages than that escalates to the human gate instead of fanning out, so the per-worker write budget can't be silently multiplied by the cluster count.
+- **Stage 2 (apply)** — the `wiki-ingest-apply` subagent authors page updates with **no write tool by construction** and returns them as a page manifest; the orchestrator pipes those manifests through the allowlist write tool (`llmwiki/write/write_tool.py`) via the compound `apply-finish` verb, which confines writes to `wiki/` and `wiki/derived/`, rejects `SCHEMA.md` / `.llmwiki` / `raw/` / absolute paths / traversal, and gates on budget. On more than `apply_fanout_k` touched pages, Stage 2 fans out one apply worker per cluster; `apply-finish` then applies every cluster's manifest and centralizes index / log / commit after the join. The total proposed touched-page set is first gated against `max_count`: an ingest proposing more pages than that escalates to the human gate instead of fanning out, so the per-worker write budget can't be silently multiplied by the cluster count.
 
 cc-log (FE-B') input is pinned to `doc_type=transcript` with a deterministic decision floor (`llmwiki/ingest/transcript_floor.py`, invoked as `llmwiki floor-check`): a claim is recorded as a decision only with an explicit affirmative token; silence is non-affirmation.
 
@@ -257,7 +257,7 @@ plugins/llm-wiki/
     init/   wiki_init.py       # wiki initializer
   bin/                         # CLI entrypoints (PEP 723 dep decls; uv run)
     llmwiki                    # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
-    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|finish|abort|enumerate}
+    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|apply-finish|finish|abort|enumerate}
     llmwiki-view               # markdown: view --serve
   pyproject.toml               # version / requires-python / extras(doc); runtime is not installed
   templates/                   # what a new wiki instance is initialized from

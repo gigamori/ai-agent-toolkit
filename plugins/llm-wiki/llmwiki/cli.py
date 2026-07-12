@@ -33,6 +33,10 @@ Verbs (bin/llmwiki, dep-free):
     lint         <root>       -> link_lint.{build_graph,lint} + wiki_index.check_integrity
     init         <root>       -> wiki_init.main (argv-CLI, subordinated)
     ingest-apply <root> <origin>  -> write_tool.WriteSession (STDIN JSON manifest)
+    apply-finish <root> <origin> --manifest <path>... [--title=<t>]
+                              -> llmwiki.ingest.apply_finish (E3: apply every
+                                 cluster manifest in ordinal order then central
+                                 finish; rollback on any REJECTED / F2 mismatch)
     floor-check               -> transcript_floor.check_decision_claim (STDIN JSON)
     reindex      <root>       -> qmd_search.ensure_collection/update (.qmd/ only; S5)
 
@@ -473,6 +477,19 @@ def _ingest_apply(argv: list[str]) -> int:
     return 0
 
 
+def _apply_finish(argv: list[str]) -> int:
+    # write-path compound verb (spec E3): apply every manifest in ordinal order
+    # via write_tool.WriteSession, then run the central finish (join / index /
+    # log / ledger / commit) — or roll the whole transaction back on any REJECTED
+    # / F2 mismatch. The whole implementation + its stdout/stderr contract lives
+    # in the shared `llmwiki.ingest.apply_finish` module (reused verbatim by the
+    # driver's `apply-finish` verb); this branch just forwards argv. Imported
+    # INSIDE the branch so the read verbs' import closure stays clear (D-2).
+    from llmwiki.ingest.apply_finish import run_apply_finish_cli
+
+    return run_apply_finish_cli(argv)
+
+
 def _floor_check(argv: list[str]) -> int:
     # ingest-layer (transcript_floor) but dep-free; imported INSIDE the branch.
     from llmwiki.ingest import transcript_floor as tf
@@ -575,6 +592,7 @@ _VERBS = {
     "lint": _lint,
     "init": _init,
     "ingest-apply": _ingest_apply,
+    "apply-finish": _apply_finish,
     "floor-check": _floor_check,
     "reindex": _reindex,
     "toggle": _toggle,
@@ -582,7 +600,8 @@ _VERBS = {
 
 _USAGE = (
     "usage: llmwiki <resolve-root|scan-pages|search|marker-detect|file|declare|"
-    "promote-check|promote|lint|init|ingest-apply|floor-check|reindex|toggle> ..."
+    "promote-check|promote|lint|init|ingest-apply|apply-finish|floor-check|"
+    "reindex|toggle> ..."
 )
 
 

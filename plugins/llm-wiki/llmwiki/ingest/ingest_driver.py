@@ -28,8 +28,13 @@ budget, opening no transaction):
        finish), then frontends.fe_b_prime). The FE runs redaction/secret-scan +
        content-hash dedup itself.
     -> write the raw artifact (unless dedup no-op) + write the sidecar
-    -> print JSON {declaration[], redacted_body, origin, doc_type, max_count,
-       max_bytes, apply_fanout_k, dedup_noop, redaction_flags[], ledger_skipped}.
+    -> print JSON {declaration[], raw_rel_path, declaration_hash,
+       stage1_blob_path, origin, doc_type, max_count, max_bytes, apply_fanout_k,
+       dedup_noop, redaction_flags[], ledger_skipped} (E1/D-1: `raw_rel_path`=
+       `fe.rel_path` + code-side `declaration_hash` REPLACE the old inline
+       `redacted_body`). `stage1_blob_path` (#1 follow-up) is the ABSOLUTE path the
+       caller Writes the Stage1 blob to (under `--out_dir` if given, else the system
+       temp dir) — code-authored so the LLM never reconstructs a temp path.
     If dedup_noop, the raw already existed so it was NOT written and NO sidecar
     was written; begin auto-closes the transaction itself (rollback +
     release_lock, C1) and returns `auto_closed: true`, so the caller only reports
@@ -217,6 +222,7 @@ from pathlib import Path
 
 from llmwiki.core import marker
 from llmwiki.core import config_resolver
+from llmwiki.core import content_hash
 from llmwiki.write import transaction
 from llmwiki.ingest import frontends
 from llmwiki.core import wiki_index
@@ -318,7 +324,8 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
           apply_fanout_k: "str | None" = None,
           doc_type: "str | None" = None,
           external: "str | None" = None,
-          turns: "str | None" = None) -> dict:
+          turns: "str | None" = None,
+          out_dir: "str | None" = None) -> dict:
     root = Path(wiki_root)
 
     # 1) marker.detect — the directory must be a wiki root (D8).
@@ -336,6 +343,13 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
     resolutions = config_resolver.resolve_all(prompt_values, wiki_config)
     declaration_block = config_resolver.declare_all(resolutions)
     declaration = declaration_block.splitlines() if declaration_block else []
+    # E1/E4 (D-2/F4): a short, code-side hash of the resolved-value declaration
+    # block. The Path B orchestrator echoes sid 1's declaration in full, then for
+    # later sids emits one line iff this hash matches sid 1's (an equality check
+    # only — the LLM never re-derives the declaration, avoiding a fail-open text
+    # compare). content_hash is the toolkit's canonical sha-256; truncated to the
+    # same 12-hex short form the log title already uses (fe_hash[:12]).
+    declaration_hash = content_hash.content_hash(declaration_block)[:12]
     # The resolved-value declaration is announced before any write op (D5).
     print(declaration_block, file=sys.stderr)
 
@@ -535,7 +549,30 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
     # 8) print the JSON contract (plan §3).
     out = {
         "declaration": declaration,
-        "redacted_body": fe.body,
+        # E1 (D-1): the raw artifact's wiki-relative path REPLACES the inline
+        # `redacted_body`. The raw was already journaled+written above (or already
+        # exists on a dedup no-op — `fe.rel_path` is always resolvable either way),
+        # so a downstream stage Reads `<WIKI_ROOT>/<raw_rel_path>` instead of the
+        # begin stdout carrying the whole body (keeps stdout at a few hundred bytes,
+        # so the harness never truncates it). Old `redacted_body` contract dropped.
+        "raw_rel_path": fe.rel_path,
+        # E1/E4: short declaration hash for the sid-to-sid "declaration unchanged"
+        # equality check (see the declaration_hash computation above).
+        "declaration_hash": declaration_hash,
+        # E1 follow-up (#1 stage1-blob path): the ABSOLUTE path where the
+        # orchestrator MUST Write the Stage1 proposed-edits blob, then pass verbatim
+        # to plan-fanout + each Stage2 worker. Code authors it so the LLM never
+        # reconstructs a temp path across turns — on Windows a reconstructed
+        # `AppData\Local\Temp\...` was resolved against the CWD (not %LOCALAPPDATA%),
+        # so the blob Read failed once per sid and drove an improvised recovery turn
+        # (the very cost E1/E2 remove). For Path B `--out_dir` is project-batch's
+        # out_dir (so the blob rides project-batch-cleanup); Path A omits it and
+        # falls back to the system temp dir. `Path(source).stem` keys it per sid /
+        # per source file exactly as the two SKILLs named it.
+        "stage1_blob_path": str(
+            Path(out_dir if out_dir else tempfile.gettempdir())
+            / f"stage1-{Path(source).stem}.json"
+        ),
         "origin": origin,
         "doc_type": resolved_doc_type,
         "max_count": max_count,
@@ -610,6 +647,26 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
     if k <= 0:
         raise DriverError(f"apply_fanout_k must be positive, got {k}")
     touched = _load_touched(stage1_proposal)
+    # #2 follow-up (tier enforcement in code, F2 principle): the derived-tier
+    # prefix is a DETERMINISTIC function of the origin — projection origins
+    # (fe_b_prime / fe_pi_log, the `_PROJECTOR_BY_ORIGIN` membership that also
+    # decides the WriteSession "derived" tier, D20) may only write under
+    # `wiki/derived/`. `_load_touched` takes the Stage1-proposed rel_paths verbatim,
+    # so a proposal that omits the `wiki/derived/` prefix produced `planned_clusters`
+    # the Stage2 workers (correctly told the derived tier) could never match —
+    # surfacing only as a late `apply-finish` cluster_pageset REJECT. Enforce the
+    # tier HERE, fail-closed, before persisting planned_clusters or any write, so the
+    # error is early + precise rather than a confusing downstream mismatch. Do NOT
+    # silently auto-prefix: rewriting paths next to the D20 gate risks mis-filing.
+    origin = state.get("origin")
+    if origin in _PROJECTOR_BY_ORIGIN:
+        mis = [t for t in touched
+               if not t.replace("\\", "/").startswith("wiki/derived/")]
+        if mis:
+            raise DriverError(
+                f"tier mismatch: origin {origin!r} writes the derived tier, so "
+                f"every Stage1 touched page must be under 'wiki/derived/'; "
+                f"got: {mis}")
     n = len(touched)
     # F2: max_count is the per-apply-worker WriteSession budget (write_tool.py);
     # fanout would otherwise multiply it (ceil(n/k) workers x max_count each), so
@@ -1509,11 +1566,20 @@ def main(argv: "list[str] | None" = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print("usage: ingest_driver.py "
-              "<begin|plan-fanout|finish|abort|enumerate|session-plan|"
-              "project-batch|project-batch-cleanup> ...",
+              "<begin|plan-fanout|finish|apply-finish|abort|enumerate|"
+              "session-plan|project-batch|project-batch-cleanup> ...",
               file=sys.stderr)
         return 2
     verb, rest = argv[0], argv[1:]
+    # E3 compound verb: `apply-finish` owns its own arg parsing (repeated
+    # `--manifest`, order = ordinal — the flat `_parse_opts` dict below would
+    # collapse repeats) AND its own dual-output contract (stdout `{"rolled_back":
+    # true}` + non-zero exit on a REJECTED, which the common tail's single JSON
+    # print cannot express). It is imported LAZILY here (never at module top) so
+    # `apply_finish`'s top-level `import ingest_driver` forms no load-time cycle.
+    if verb == "apply-finish":
+        from llmwiki.ingest.apply_finish import run_apply_finish_cli
+        return run_apply_finish_cli(rest)
     pos, opts = _parse_opts(rest)
     try:
         if verb == "begin":
@@ -1527,6 +1593,7 @@ def main(argv: "list[str] | None" = None) -> int:
                 doc_type=opts.get("doc_type"),
                 external=opts.get("external"),
                 turns=opts.get("turns"),
+                out_dir=opts.get("out_dir"),
             )
         elif verb == "plan-fanout":
             if len(pos) < 2:
@@ -1576,8 +1643,8 @@ def main(argv: "list[str] | None" = None) -> int:
             result = project_batch_cleanup(pos[0])
         else:
             print(f"unknown verb: {verb!r} "
-                  "(begin|plan-fanout|finish|abort|enumerate|session-plan|"
-                  "project-batch|project-batch-cleanup)",
+                  "(begin|plan-fanout|finish|apply-finish|abort|enumerate|"
+                  "session-plan|project-batch|project-batch-cleanup)",
                   file=sys.stderr)
             return 2
     except config_resolver.ConfigInconsistency as e:
