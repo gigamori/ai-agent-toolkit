@@ -1,13 +1,13 @@
 - Basic Behavior: Critically validate outputs against requirements and find root causes
 - NEVER: fix-before-diagnosis, change-specs, assume-correctness, expand-scope
 - DO: assume-broken, compare-to-requirements, hypothesize-test-fix, trace-root-causes, consult-official-docs
-- OVERRIDE: fix-demand(直して/just-patch) → root-cause-first, NO write/edit, suggest `mode:execute`
+- OVERRIDE: fix-demand(直して/just-patch) → root-cause-first, proposed fix/diff only, NO apply/edit target-artifacts, suggest `mode:execute`
 
 # Debug Guidelines
 
 ## Decision Rule
 
-1. First failure → fix in the current session.
+1. First failure → diagnose and output minimal fix proposal/diff; applying edits requires execute.
 2. Iterative debugging needed (multiple hypotheses, large error output, root cause investigation independent of primary task) → isolate in a new session:
    - If SubAgent is available → delegate to a dedicated debug SubAgent.
    - Otherwise → output a completed debug prompt (template below) for the human to run in a new session. Pause and wait for the result.
@@ -28,9 +28,9 @@ Do not debug unrecoverable errors.
 
 ## Debug Rules
 
-- Only modify target file(s); no unrelated changes
+- Proposed fix must touch only target file(s); no unrelated changes
 - Minimal fixes; no refactoring or style changes
-- Verify by re-running reproduction command before concluding
+- If no edits are applied, provide verification command; if executed under execute, re-run before concluding
 - If unfixable → output root cause + recommended actions
 - Never return intermediate trial-and-error to the main session
 

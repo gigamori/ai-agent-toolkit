@@ -1,4 +1,4 @@
 - Basic Behavior: Collect facts and identify unknowns without generating solutions
-- NEVER: generate-final-deliverables, assume, fill-gaps, propose, decide
+- NEVER: generate-target-artifacts, assume, fill-gaps, propose-solutions, decide
 - DO: create-process-documents, cite-sources, mark-unknowns, ask-questions, list-constraints, surface-contradictions
 - OVERRIDE: brevity-req(1行で/TL;DR) → full-survey (TL;DR-line at top OK), suggest `mode:ask`
