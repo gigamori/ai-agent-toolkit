@@ -61,6 +61,28 @@ thread transaction state by hand, STOP and report
 > `.llmwiki.lock` / `.llmwiki.txn` with no pages written; see the stuck-transaction
 > recovery note at the end) and stalls the whole per-session loop. Run it on a capable model.
 
+> **Execution discipline — run the loop yourself, one driver call at a time (a real Path B
+> run has failed by violating every rule below; each is a hard rule, not style).**
+>
+> - **NEVER delegate the loop.** YOU — the session running this skill — execute Steps 3–8
+>   directly. Do NOT hand the loop, or any single step of it, to a general-purpose subagent.
+>   The ONLY Agent-tool dispatches in this skill are the two declared stage workers
+>   (`llm-wiki:wiki-ingest-extract`, `llm-wiki:wiki-ingest-apply`); a delegated orchestrator
+>   cannot spawn them and will improvise a broken harness around the design.
+> - **NEVER script the loop.** Do NOT write bash/python/PowerShell batch scripts that wrap or
+>   loop the driver verbs (e.g. `begin` over all sids up front). One driver verb = one Bash
+>   invocation; sids run strictly sequential — one sid's `begin` → stages → `apply-finish`
+>   completes its transaction before the next sid's `begin` (the `.llmwiki.lock` and the
+>   ledger read-after-write depend on it; a batched `begin` deadlocks on the held lock).
+> - **NEVER parse driver stdout with tools.** No `jq`, no `ConvertFrom-Json`, no improvised
+>   python parsers. Every deterministic extraction is already code-owned by a driver verb
+>   (`session-plan` / `project-batch` / `begin` / `plan-fanout` / `apply-finish`); the stdout
+>   JSON is deliberately small (E1) — read the fields you need directly from it.
+> - **NEVER hand-clear a stuck transaction.** A residual `.llmwiki.lock` / `.llmwiki.txn.d`
+>   (from an interrupted prior run) is recovered ONLY by `ingest abort` — never `rm -f` the
+>   lock/journal (a partial `rm` leaves the `.llmwiki.txn.d` directory and a half-open
+>   transaction). If `begin` reports a lock-held error, STOP and run `ingest abort` first.
+
 The turn ledger makes Path B **idempotent and incremental**: a turn already owned by a
 prior ingest (Path A or a previous Path B run) is dropped at projection time by the
 projector's ledger diff, so a re-run files only the novel turns. Because that dedup is

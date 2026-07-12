@@ -146,6 +146,22 @@ you thread transaction state by hand, STOP and report
 > leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages
 > written; see the stuck-transaction recovery note at the end). Run it on a capable model.
 
+> **Execution discipline — run the cycle yourself, one driver call at a time.**
+>
+> - **NEVER delegate the cycle.** YOU execute the per-file cycle directly; do NOT hand it to
+>   a general-purpose subagent. The ONLY Agent-tool dispatches are the two declared stage
+>   workers (`llm-wiki:wiki-ingest-extract`, `llm-wiki:wiki-ingest-apply`).
+> - **NEVER script the cycle.** No bash/python/PowerShell batch scripts wrapping or looping
+>   the driver verbs (in a glob/dir loop, one file's `begin` → stages → `apply-finish`
+>   completes before the next file's `begin` — the `.llmwiki.lock` depends on it). One driver
+>   verb = one Bash invocation.
+> - **NEVER parse driver stdout with tools.** No `jq` / `ConvertFrom-Json` / improvised
+>   parsers — deterministic extraction is code-owned by the driver verbs and the stdout JSON
+>   is deliberately small (E1); read the fields you need directly.
+> - **NEVER hand-clear a stuck transaction.** Recover a residual `.llmwiki.lock` /
+>   `.llmwiki.txn.d` ONLY with `ingest abort`, never `rm -f`. On a lock-held `begin` error,
+>   STOP and run `ingest abort` first.
+
 ### Resolve `WIKI_ROOT` (multi-scope; do NOT hardcode the CWD)
 
 The wiki root is **resolved**, not assumed to be the CWD. Resolve it via
