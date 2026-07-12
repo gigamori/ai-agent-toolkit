@@ -50,6 +50,8 @@ Entering `2_done/` requires explicit human approval (typically via `/progress ap
 - **New reference material**: append to `## Reference Materials` in progress.md.
 - **Architectural change**: update `## Architecture` in progress.md.
 
+After advancing a task, keep `## Next Steps` current — it must reflect the remaining work at the end of the turn.
+
 There is no `Session Log` section. Per-task history lives in each task file's `<!-- @log -->` block.
 
 ## Prohibitions

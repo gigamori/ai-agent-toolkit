@@ -3,6 +3,10 @@
 When a project is assigned, include `[pj:<project>]` in the leading lines of the response (near the beginning, before the main body; it may follow other leading lines such as `mode:`, not necessarily the literal first line).
 When no project is assigned, omit `[pj:...]` entirely.
 
+This rule applies to every response turn, including turns that execute a
+skill or slash command whose instructions specify literal reply templates —
+add the leading line on top of the template output.
+
 When you did task work without editing the task's own `tasks/<status>/*.md` file (execution-by-reference — e.g., you read a task or handoff and produced the result elsewhere), also include `[tasks: <file>.md ...]` in the leading lines, listing the owning task filename(s) you actually worked on this turn. Omit it when you edited the task file directly (that edit is captured automatically) or when you did no task work. This binds the off-task work to the owning task's log.
 The body of the response follows the user's input language.
 
@@ -42,7 +46,7 @@ block as the prompt.
      "prompt_summary": "summary of the user input (≤ 50 chars)"
    }
    ```
-2. Invoke the subagent via the Agent tool: `subagent_type: project-router`, `prompt: <JSON context block>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself by reading the spec in the body of `agents/project-router.md`.
+2. Invoke the subagent via the Agent tool: `subagent_type: taskflow:project-router`, `prompt: <JSON context block>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself by reading the spec in the body of `agents/project-router.md`.
 4. Handling the result:
    - `action: apply` → use the returned context (progress, tasks, project-notes, etc.) as the premise for task execution.
    - `action: skip` → skip project management and proceed to the task.
@@ -69,9 +73,7 @@ When the project is empty (pj unassigned), only discovery (`pj:?`) is available.
 
 ## Interaction with Plan mode
 
-Even when Plan mode has injected the constraint "no edits outside the plan file", scaffold creation and updates under `_projects/<project>/` (`index.md`, `progress.md`, `project-notes/`, `tasks/`, and adding the matching row to `_projects/index.md`) are **permitted**. These are metadata-management assets on par with the plan file and do NOT fall under "editing implementation code" that Plan mode forbids. You may perform them without exiting Plan mode.
-
-This ensures that scaffold-creation confirmation under `progress_exists: false` and ACTION_REQUIRED banner handling do NOT conflict with Plan mode.
+If Plan mode blocks writes to `_projects/<project>/` (`index.md`, `progress.md`, `project-notes/`, `tasks/`, or `_projects/index.md`), ask the user to confirm before proceeding. Do not assert that these operations are permitted in Plan mode — harness permissions cannot be overridden by prompt text.
 
 ## Propagation to child sessions
 

@@ -191,8 +191,10 @@ def _task_basename_index(project_root: str) -> dict:
 
 def resolve_touched_tasks(touched, project_root):
     """Resolve each touched task md to its CURRENT on-disk location by basename
-    (P8). Returns {basename: absolute_current_path}; a deleted task is dropped."""
+    (P8). Returns {basename: absolute_current_path}; a deleted task or one whose
+    resolved path falls outside this project's tasks/ directory is dropped."""
     current = _task_basename_index(project_root)
+    tasks_prefix = os.path.normpath(os.path.join(project_root, 'tasks')) + os.sep
     resolved = {}
     for rel in touched:
         rel_fs = rel.replace('\\', '/')
@@ -201,6 +203,9 @@ def resolve_touched_tasks(touched, project_root):
         base = os.path.basename(rel_fs)
         cur = current.get(base)
         if cur:
+            # Boundary guard (F-L3): reject tasks not under this project's tasks/.
+            if not os.path.normpath(cur).startswith(tasks_prefix):
+                continue
             resolved[base] = cur
     return resolved
 
@@ -316,6 +321,10 @@ def _scan_note_writes(touched, project, project_root, reverse_index):
         prel = normalize_note_rel(_to_project_rel(rel, project))
         if not prel or prel in seen:
             continue
+        # Boundary guard (F-L3): reject paths from other projects (not under
+        # project-notes/ after project-relative conversion).
+        if not prel.startswith('project-notes/'):
+            continue
         if not is_note_deliverable(prel):
             continue
         seen.add(prel)
@@ -340,13 +349,15 @@ def _load_capture_sidecar(path):
 def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts):
     """Apply a validated capture sidecar deterministically (§10.3). All writes
     are idempotent (`log_block_has_sid` / `append_note_link` union). Returns
-    (summaries, links, proposals) for observability:
-      - summaries: list[task-basename] @log-bound with a real one-line summary
-      - links:     list[(note_rel, task-basename)] established in a task @notes
-      - proposals: list[str] surfaced (display-only; never auto-created)."""
+    (summaries, links, proposals, link_skipped) for observability:
+      - summaries:    list[task-basename] @log-bound with a real one-line summary
+      - links:        list[(note_rel, task-basename)] established in a task @notes
+      - proposals:    list[str] surfaced (display-only; never auto-created)
+      - link_skipped: list[(note_rel, task-basename)] where append_note_link returned False"""
     summaries: list[str] = []
     links: list[tuple] = []
     proposals: list[str] = []
+    link_skipped: list[tuple] = []
 
     confirmed = sidecar.get('confirmed')
     if isinstance(confirmed, list):
@@ -385,6 +396,8 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts):
                 continue
             if append_note_link(path, note_rel):
                 links.append((note_rel, base))
+            else:
+                link_skipped.append((note_rel, base))
 
     props = sidecar.get('proposals')
     if isinstance(props, list):
@@ -392,7 +405,7 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts):
             if isinstance(p, str) and p.strip():
                 proposals.append(p.strip())
 
-    return summaries, links, proposals
+    return summaries, links, proposals, link_skipped
 
 
 def merge_exec_bind(state, state_path, data):
@@ -557,6 +570,7 @@ def main() -> int:
 
     applied_summaries: list[str] = []
     applied_links: list[tuple] = []
+    applied_link_skipped: list[tuple] = []
     proposals: list[str] = []
 
     def _fold_tried(items):
@@ -566,11 +580,11 @@ def main() -> int:
 
     # --- (A) apply a delivered sidecar (only when one was requested) --------
     applied_this_stop = False
-    if status in ('requested', 'pending'):
+    if status in ('requested', 'pending', 'expired'):
         sidecar = _load_capture_sidecar(capture_path)
         if sidecar is not None:
             applied_this_stop = True
-            applied_summaries, applied_links, proposals = _apply_capture(
+            applied_summaries, applied_links, proposals, applied_link_skipped = _apply_capture(
                 sidecar, current_index, project, project_root, sid8, iso_ts)
             # Consume: unlink so a later request cannot re-match a stale sidecar.
             # On unlink failure, do NOT mark done — the next Stop re-applies
@@ -658,7 +672,7 @@ def main() -> int:
     # the block, so the next Stop re-enters via the requested/pending branch
     # (no re-block loop). An in-flight `pending` with nothing to report → no
     # block (AC-9).
-    report_binds = auto_bound or applied_summaries or applied_links
+    report_binds = auto_bound or applied_summaries or applied_links or applied_link_skipped
     if not spawn and not report_binds and not exec_skipped and not proposals:
         _save_bind(bind_path, reminded, exec_tried, capture)
         return 0
@@ -678,6 +692,10 @@ def main() -> int:
     )
     auto_lines += ''.join(
         f'[progress capture] auto-skip(ambiguous): {rel}\n' for rel in exec_skipped
+    )
+    auto_lines += ''.join(
+        f'[progress capture] link-skip: {note} -> {b}\n'
+        for note, b in applied_link_skipped
     )
 
     if spawn:

@@ -33,6 +33,8 @@ Special tokens in user prompt:
 """
 import json, sys, os, re, glob
 
+PJ_PARSE_WINDOW = 500  # chars; pj: and norouter are only recognized within this prefix
+
 PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -82,14 +84,6 @@ def detect_parent_session(transcript_path, session_id):
       continue
   return None
 
-# Bootstrap _projects/ root if missing (replaces taskflow:init skill).
-if not os.path.isdir(PROGRESS_ROOT):
-  os.makedirs(STATE_DIR, exist_ok=True)
-  index_md = os.path.join(PROGRESS_ROOT, 'index.md')
-  if not os.path.exists(index_md):
-    with open(index_md, 'w', encoding='utf-8') as f:
-      f.write('| Project | Description | Target |\n|---------|-------------|--------|\n')
-
 try:
   data = json.loads(sys.stdin.buffer.read().decode('utf-8'))
 except Exception:
@@ -103,12 +97,12 @@ state_path = os.path.join(STATE_DIR, f'{session_id}.json')
 transcript_path = data.get('transcript_path', '')
 user_prompt = data.get('prompt', '')
 
-# norouter bypass: total skip of taskflow for this turn.
-if re.search(r'(?:^|\s)norouter(?:\s|$)', user_prompt):
+# norouter bypass: only recognized within the first PJ_PARSE_WINDOW characters.
+if re.search(r'(?:^|\s)norouter(?:\s|$)', user_prompt[:PJ_PARSE_WINDOW]):
   sys.exit(0)
 
-# Parse first pj:<project> (anywhere, after start or whitespace).
-pj_match = re.search(r'(?:^|\s)pj:(\S+)', user_prompt)
+# Parse first pj:<project>; only recognized within the first PJ_PARSE_WINDOW characters.
+pj_match = re.search(r'(?:^|\s)pj:([\w-]+|\?)', user_prompt[:PJ_PARSE_WINDOW])
 pj_explicit = None
 pj_discovery = False
 if pj_match:
@@ -117,6 +111,18 @@ if pj_match:
     pj_discovery = True
   else:
     pj_explicit = '' if val == 'none' else val
+
+# Bootstrap _projects/ root only when a pj: engagement is present.
+# Without an explicit project or discovery request, no state or injection is needed.
+if not os.path.isdir(PROGRESS_ROOT):
+  if pj_explicit or pj_discovery:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    index_md = os.path.join(PROGRESS_ROOT, 'index.md')
+    if not os.path.exists(index_md):
+      with open(index_md, 'w', encoding='utf-8') as f:
+        f.write('| Project | Description | Target |\n|---------|-------------|--------|\n')
+  else:
+    sys.exit(0)
 
 # Load existing state with safe defaults for missing / corrupted fields (Q5).
 # `loaded` keeps the full raw dict so that unrelated fields written by other
@@ -212,18 +218,6 @@ if inject_rules:
   try:
     with open(PROJECT_ROUTING_MD, 'r', encoding='utf-8') as f:
       routing_content = f.read()
-    path_replacements = [
-      ('taskflow/prompts/project_router_agent.md', 'project_router_agent.md'),
-      ('taskflow/prompts/progress_guidelines.md', 'progress_guidelines.md'),
-      ('taskflow/prompts/notes_guidelines.md', 'notes_guidelines.md'),
-      ('taskflow/prompts/tasks_guidelines.md', 'tasks_guidelines.md'),
-      ('taskflow/prompts/progress_template.md', 'progress_template.md'),
-    ]
-    for old, new in path_replacements:
-      routing_content = routing_content.replace(
-        old,
-        os.path.join(PLUGIN_ROOT, 'prompts', new).replace('\\', '/')
-      )
     routing_content = '\n\n' + routing_content
   except Exception:
     pass
@@ -287,7 +281,7 @@ if current_project:
       f'(1) ask the user to approve scaffold generation; (2) on approval, create '
       f'`_projects/{current_project}/index.md`, `progress.md`, and `project-notes/index.md`; '
       f'(3) add the matching row to `_projects/index.md`. '
-      f'This scaffold generation is allowed even inside Plan mode (treated equivalently to the plan file). '
+      f'If Plan mode blocks writes, ask the user to confirm before proceeding. '
       f'Response leading lines (e.g. [pj:{current_project}]) still apply during this preflight.'
     )
 

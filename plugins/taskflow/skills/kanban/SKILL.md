@@ -2,7 +2,7 @@
 name: kanban
 description: Generate and open the taskflow project kanban board in the browser. Shows all projects × tasks × sessions with clickable session links.
 disable-model-invocation: true
-allowed-tools: Bash(uv run *)
+allowed-tools: Bash(uv run *), Bash(nohup uv run *)
 ---
 
 # /kanban

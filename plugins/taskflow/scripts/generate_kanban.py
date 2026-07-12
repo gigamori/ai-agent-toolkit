@@ -20,12 +20,15 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,20 +41,19 @@ import yaml
 
 SCRIPT_DIR = Path(__file__).parent          # plugins/taskflow/scripts
 PLUGIN_DIR = SCRIPT_DIR.parent              # plugins/taskflow
-REPO_ROOT  = PLUGIN_DIR.parent.parent       # ai-agent-toolkit root
-PRIMARY_ROOT   = REPO_ROOT / "_projects"    # <ai-agent-toolkit>/_projects
+WORKSPACE_ROOT = Path(os.getcwd())
 
 
 def _project_roots() -> list[Path]:
     """Return the list of _projects root directories.
 
     Reads ``TASKFLOW_PROJECT_ROOTS`` (semicolon-separated paths).  Falls back
-    to ``PRIMARY_ROOT`` when the variable is unset or empty.
+    to ``WORKSPACE_ROOT / "_projects"`` when the variable is unset or empty.
     """
     env = os.environ.get('TASKFLOW_PROJECT_ROOTS', '')
     if env:
         return [Path(p.strip()) for p in env.split(';') if p.strip()]
-    return [PRIMARY_ROOT]
+    return [WORKSPACE_ROOT / "_projects"]
 
 # ── regex ──────────────────────────────────────────────────────────────────
 
@@ -374,47 +376,47 @@ def dedup_sessions(sessions: list[SessionRef]) -> list[SessionRef]:
 STATUS_BADGE_LABEL = {"0_todo": "TODO", "1_in_progress": "WIP", "2_done": "✓"}
 
 
-def session_url(s: SessionRef, scheme: str, serve: bool) -> str:
+def session_url(s: SessionRef, scheme: str, serve: bool, open_token: str = "") -> str:
     if serve:
-        return f"http://localhost:{SERVE_PORT}/open?session={s.full_uuid}"
+        return f"http://localhost:{SERVE_PORT}/open?session={s.full_uuid}&t={open_token}"
     return f"{scheme}://anthropic.claude-code/open?session={s.full_uuid}"
 
 
 PROGRESS_SUBS = ["check", "audit", "rebuild"]
 
 
-def progress_url(project: str, sub: str, scheme: str, serve: bool) -> str:
+def progress_url(project: str, sub: str, scheme: str, serve: bool, open_token: str = "") -> str:
     from urllib.parse import quote
     prompt = f"pj:{project} /progress {sub}"
     if serve:
-        return f"http://localhost:{SERVE_PORT}/open?prompt={quote(prompt)}"
+        return f"http://localhost:{SERVE_PORT}/open?prompt={quote(prompt)}&t={open_token}"
     return f"{scheme}://anthropic.claude-code/open?prompt={quote(prompt)}"
 
 
-def task_start_url(project: str, file_path: str, scheme: str, serve: bool) -> str:
+def task_start_url(project: str, file_path: str, scheme: str, serve: bool, open_token: str = "") -> str:
     """Build a CC launch URL that pre-fills ``pj:<project> @<taskfile>``.
 
-    The ``@`` reference is REPO_ROOT-relative (base=a) so CC resolves it against
-    a repo-root workspace.  Task files outside REPO_ROOT (secondary
+    The ``@`` reference is WORKSPACE_ROOT-relative (base=a) so CC resolves it
+    against the current workspace.  Task files outside WORKSPACE_ROOT (secondary
     ``TASKFLOW_PROJECT_ROOTS``) fall back to an absolute path — emitted only in
     the runtime-generated URL, never written to a tracked file (D3).
     """
     from urllib.parse import quote
     p = Path(file_path)
     try:
-        ref = p.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+        ref = p.resolve().relative_to(WORKSPACE_ROOT.resolve()).as_posix()
     except ValueError:
         ref = p.resolve().as_posix()
     prompt = f"pj:{project} @{ref}"
     if serve:
-        return f"http://localhost:{SERVE_PORT}/open?prompt={quote(prompt)}"
+        return f"http://localhost:{SERVE_PORT}/open?prompt={quote(prompt)}&t={open_token}"
     return f"{scheme}://anthropic.claude-code/open?prompt={quote(prompt)}"
 
 
-def render_progress_picker(project: str, scheme: str, serve: bool) -> str:
+def render_progress_picker(project: str, scheme: str, serve: bool, open_token: str = "") -> str:
     items = ""
     for sub in PROGRESS_SUBS:
-        url = progress_url(project, sub, scheme, serve)
+        url = progress_url(project, sub, scheme, serve, open_token)
         items += (
             f'<a class="pm-item" href="{esc(url)}" target="_blank"'
             f' onclick="this.closest(\'details\').removeAttribute(\'open\')">'
@@ -433,6 +435,7 @@ def render_card(
     scheme: str,
     serve: bool = False,
     show_status_badge: bool = False,
+    open_token: str = "",
 ) -> str:
     pri_color = PRIORITY_COLORS.get(task.priority, "#718096")
     pri_label = task.priority or "—"
@@ -443,7 +446,7 @@ def render_card(
         for s in unique_sessions:
             summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
             if s.full_uuid:
-                url = session_url(s, scheme, serve)
+                url = session_url(s, scheme, serve, open_token)
                 items += (
                     f'<li><a href="{esc(url)}" target="_blank">'
                     f'<span class="s-date">{esc(s.date)}</span>'
@@ -473,7 +476,7 @@ def render_card(
 
     if task.file_path:
         from urllib.parse import quote
-        start_url = task_start_url(task.project, task.file_path, scheme, serve)
+        start_url = task_start_url(task.project, task.file_path, scheme, serve, open_token)
         btns = (
             f'<a class="start-btn start-cc" href="{esc(start_url)}" target="_blank">▶ CC</a>'
         )
@@ -506,9 +509,9 @@ def render_card(
 """
 
 
-def _session_li(s: SessionRef, scheme: str, serve: bool, project: str = "") -> str:
+def _session_li(s: SessionRef, scheme: str, serve: bool, project: str = "", open_token: str = "") -> str:
     """One clickable session row for the No Task / No Project lists."""
-    url = session_url(s, scheme, serve)
+    url = session_url(s, scheme, serve, open_token)
     summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
     pa = f' data-project="{esc(project)}"' if project else ""
     return (
@@ -527,6 +530,7 @@ def render_html(
     serve: bool = False,
     no_project: list[SessionRef] | None = None,
     no_project_total: int = 0,
+    open_token: str = "",
 ) -> str:
     proj_colors: dict[str, str] = {
         p.name: PROJECT_PALETTE[i % len(PROJECT_PALETTE)]
@@ -547,7 +551,7 @@ def render_html(
         tasks = by_status[status]
         hdr_color = STATUS_HEADER_COLOR[status]
         cards = "".join(
-            render_card(t, proj_colors[t.project], scheme, serve) for t in tasks
+            render_card(t, proj_colors[t.project], scheme, serve, open_token=open_token) for t in tasks
         ) or '<p class="empty-col">No tasks</p>'
         status_cols += f"""\
 <div class="column" data-status="{status}">
@@ -568,7 +572,7 @@ def render_html(
     if all_unassigned:
         ua_items = ""
         for pname, s in all_unassigned:
-            url = session_url(s, scheme, serve)
+            url = session_url(s, scheme, serve, open_token)
             summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
             ua_items += (
                 f'<li class="ua-item" data-project="{esc(pname)}">'
@@ -593,7 +597,7 @@ def render_html(
     if no_project:
         np_items = ""
         for s in no_project:
-            url = session_url(s, scheme, serve)
+            url = session_url(s, scheme, serve, open_token)
             summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
             np_items += (
                 f'<li class="ua-item">'
@@ -629,14 +633,14 @@ def render_html(
         )
         sorted_tasks = sorted(proj.tasks, key=lambda t: TASK_STATUSES.index(t.status))
         cards = "".join(
-            render_card(t, color, scheme, serve, show_status_badge=True)
+            render_card(t, color, scheme, serve, show_status_badge=True, open_token=open_token)
             for t in sorted_tasks
         ) or '<p class="empty-col">No tasks</p>'
-        picker = render_progress_picker(proj.name, scheme, serve)
+        picker = render_progress_picker(proj.name, scheme, serve, open_token)
         ua_section = ""
         if proj.unassigned_sessions:
             ua_lis = "".join(
-                _session_li(s, scheme, serve) for s in proj.unassigned_sessions
+                _session_li(s, scheme, serve, open_token=open_token) for s in proj.unassigned_sessions
             )
             ua_section = (
                 '<div class="unassigned-section">'
@@ -659,7 +663,7 @@ def render_html(
 
     # ── no-project column, rightmost in project view ─────────────────────────
     if no_project:
-        pnp_items = "".join(_session_li(s, scheme, serve) for s in no_project)
+        pnp_items = "".join(_session_li(s, scheme, serve, open_token=open_token) for s in no_project)
         np_shown = len(no_project)
         np_more = f" (+{no_project_total - np_shown} older)" if no_project_total > np_shown else ""
         proj_cols += f"""\
@@ -1265,9 +1269,22 @@ def render_markdown_file(path: Path, roots: list[Path]) -> str:
     return html
 
 
-def make_handler(build_html, scheme: str, roots: list[Path]):
+_HOST_ALLOWLIST = {
+    f"localhost:{SERVE_PORT}",
+    f"127.0.0.1:{SERVE_PORT}",
+    "localhost",
+    "127.0.0.1",
+    f"[::1]:{SERVE_PORT}",
+}
+
+
+def make_handler(build_html, scheme: str, roots: list[Path], open_token: str = ""):
     class KanbanHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            host = self.headers.get("Host", "")
+            if host not in _HOST_ALLOWLIST:
+                self._respond(403, b"forbidden")
+                return
             parsed = urlparse(self.path)
             if parsed.path == "/health":
                 payload = json.dumps(
@@ -1341,6 +1358,10 @@ def make_handler(build_html, scheme: str, roots: list[Path]):
             elif parsed.path == "/open":
                 from urllib.parse import quote, unquote
                 qs = parse_qs(parsed.query)
+                provided_t = qs.get("t", [""])[0]
+                if not hmac.compare_digest(provided_t, open_token):
+                    self._respond(403, b"forbidden")
+                    return
                 cmd = shutil.which("codium") or shutil.which("code") or "code"
                 if "session" in qs:
                     session = qs["session"][0]
@@ -1499,8 +1520,8 @@ def collect_no_project_sessions(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate taskflow HTML kanban.")
     parser.add_argument(
-        "--out", type=Path, default=Path("/tmp/taskflow-kanban.html"),
-        help="Output HTML path (default: /tmp/taskflow-kanban.html)",
+        "--out", type=Path, default=Path(tempfile.gettempdir()) / "taskflow-kanban.html",
+        help="Output HTML path (default: system temp dir / taskflow-kanban.html)",
     )
     parser.add_argument(
         "--open", action="store_true", help="Open in default browser after generating",
@@ -1549,13 +1570,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
+        open_token = secrets.token_urlsafe(16)
+
         def build_html():
             uuid_idx: dict[str, StateEntry] = {}
             for r in roots:
                 uuid_idx.update(build_uuid_index(r / "_state"))
             projs, np, npt = load_projects(roots, uuid_idx)
-            return render_html(projs, scheme, serve=True, no_project=np, no_project_total=npt)
-        handler = make_handler(build_html, scheme, roots)
+            return render_html(projs, scheme, serve=True, no_project=np, no_project_total=npt, open_token=open_token)
+        handler = make_handler(build_html, scheme, roots, open_token)
         try:
             server = KanbanServer(("localhost", SERVE_PORT), handler)
         except OSError as e:

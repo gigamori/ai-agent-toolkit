@@ -11,6 +11,15 @@ Arguments: `$ARGUMENTS`
 
 Execute the procedure below exactly. Report each step's outcome to the user.
 
+Leading-line invariant: every reply this command produces — including the
+literal "reply ... and stop" templates below — follows the taskflow
+RESPONSE LEADING LINES rule: when a project is assigned (the
+`[Progress Session]` header's `current_project` / the state file's `project`
+field resolved in Step 2 is non-empty), include `[pj:<current_project>]` in
+the reply's leading lines (near the beginning, before the main body; it may
+follow other leading lines such as `[Mode:]` — not necessarily the literal
+first line). Omit it only when no project is assigned.
+
 ## Step 1 — Parse arguments
 
 `$ARGUMENTS` is a free-form natural-language instruction with an optional
@@ -36,16 +45,30 @@ Execute the procedure below exactly. Report each step's outcome to the user.
 
 ## Step 2 — Resolve the project
 
-1. List `_projects/_state/*.json` sorted by mtime descending.
-2. Read the most recent file. Use its `project` field.
+1. Scan the current conversation context for the most recent line matching the
+   pattern `[Progress Session] session_id=<uuid> sid8=<8chars> state_file=<path> current_project=<name>`.
+2. Extract `state_file`, `session_id`, `sid8`, and `current_project` from that
+   header.
 
-If the resolved project is empty or the state file does not exist, reply:
+If no `[Progress Session]` header is found in context, reply:
 
 ```
 no project; set with pj:<project> first
 ```
 
 and stop.
+
+3. Read the `state_file` and confirm its `project` field is non-empty.
+
+If the `project` field is empty or the state file cannot be read, reply:
+
+```
+no project; set with pj:<project> first
+```
+
+and stop.
+
+Use `sid8` from the header as the session identifier (for router context).
 
 Then locate the project root. Split the environment variable
 `$TASKFLOW_PROJECT_ROOTS` by `;` into a list of root directories. Check each
@@ -118,8 +141,12 @@ For `approve` / `revert` / `start`:
 
 2. Call AskUserQuestion with:
    - question: `Execute <action> on <N> target(s)?`
+     - If any target has `status_mismatch: true` (`<K>` = count of such
+       targets), instead use: `Execute <action> on <N> target(s)? — ⚠ <K> task(s) skip 1_in_progress (0_todo → 2_done)`
    - options:
      - label: `Yes, execute`, description: `Apply the move + log update`
+       - If any target has `status_mismatch: true`, instead use description:
+         `Apply the move + log update (incl. <K> task(s) jumping 0_todo → 2_done)`
      - label: `No, cancel`, description: `Stop without changes`
 
 3. If the user picks `No, cancel`, reply `cancelled` and stop. Otherwise
@@ -202,6 +229,8 @@ After all targets, run `rebuild_progress.py` and report.
 - For state-changing actions (`approve`, `revert`, `start`), list each moved file as
   `<stem>: <current_status> → <target_status>`.
 - Total response ≤ 30 lines (excluding the AskUserQuestion UI).
+- Include the `[pj:<current_project>]` leading line per the Leading-line
+  invariant above (it does not count toward the 30-line limit).
 
 ## Restrictions
 

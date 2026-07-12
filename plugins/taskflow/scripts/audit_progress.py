@@ -101,15 +101,14 @@ def extract_last_session_id(body: str) -> str | None:
 
 
 def classify(status: str, present: bool, lines: list[str]) -> str:
-    if not present:
-        return "untracked"
-    # 2_done is terminal — any `## Next Steps` content remaining there is
-    # historical (a snapshot of what was unfinished at approve time), not
-    # actionable. The `/progress approve` flow now clears Next Steps on
-    # move, but legacy 2_done files predating that change may still carry
-    # content; treat them as clean regardless.
+    # 2_done is terminal — always clean regardless of section presence.
+    # The `/progress approve` flow clears Next Steps on move, but legacy
+    # 2_done files predating that change may still carry content or lack
+    # the section; treat them as clean in either case.
     if status == "2_done":
         return "clean"
+    if not present:
+        return "untracked"
     if lines:
         return "pending"
     if status == "1_in_progress":
@@ -167,7 +166,7 @@ def render_finding(
         out.append(f"      → suggest: /progress approve {f.path.stem}")
     elif f.bucket == "untracked":
         out.append("      `## Next Steps` section missing")
-        out.append("      → suggest: run migrate_task_next_steps.py")
+        out.append("      → suggest: add a `## Next Steps` section")
     else:  # clean
         if f.last_session:
             out.append(f"      (clean, last session: {f.last_session})")

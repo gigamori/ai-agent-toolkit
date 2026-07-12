@@ -57,7 +57,7 @@ The router does NOT auto-promote tasks in v0.2.2. All transitions are user-drive
 
 ### Approval gate
 
-Transitioning into `2_done/` requires explicit human approval. The subagent emits a `stale_hint` if `1_in_progress/` items have not been updated for ≥ 14 days (suggests running `/progress check`).
+Transitioning into `2_done/` requires explicit human approval. The subagent emits a `stale_hint` if `1_in_progress/` items have not been updated for ≥ 14 days (suggests running `/progress check`). Note: `stale_hint` is an mtime-based approximation; the authoritative staleness check is `/progress check`, which reads the `updated:` frontmatter field.
 
 ### Coordination with `progress.md`
 
@@ -133,10 +133,10 @@ user prompt
   │
   ▼ [LLM] detects [Progress Session] with a non-empty current_project
   │  1. build a JSON context block (router spec lives in agents/project-router.md; do NOT inline it)
-  │  2. invoke the project-router subagent via the Agent tool (subagent_type: project-router)
+  │  2. invoke the project-router subagent via the Agent tool (subagent_type: taskflow:project-router)
   │
   ▼ [project-router subagent] runs on an isolated generation path (model: sonnet)
-  │  1. determine the project and write state_file ({"project": "..."}) — always
+  │  1. determine the project (read-only; current_project is non-empty by gate)
   │  2. applicability decision (skip / apply)
   │  2b. project_notes_autosave decision (true for investigation / analysis intents)
   │  3. on apply: read index.md and progress.md
@@ -168,6 +168,10 @@ session end
   │  3. copy files modified in the last 10 minutes:
   │     ~/.claude/plans/*.md                          → _projects/<project>/plans/
   │     ~/.claude/projects/{encoded_cwd}/memory/*.md  → _projects/<project>/memory/
+  │     Note: the 10-minute window selects ALL recently-modified plans regardless
+  │     of which project they belong to. The plans/ directory is an archive that
+  │     may contain cross-project plans copied in the same window. This is
+  │     intentional archive behavior, not a bug.
   │
   ▼ [Stop hook #2] session_progress_capture.py  (design: project-notes/specs/exec-binding.md)
      1. read `project` from state_file
@@ -187,7 +191,7 @@ session end
 
 Path: `_projects/_state/{session_id}.json`
 
-The hook (`session_init.py`) writes the full schema below. The project-router subagent writes only `{"project": "..."}`. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (Round1/Round2 reminder rounds + `exec_tried` skip records) and `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
+The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (Round1/Round2 reminder rounds + `exec_tried` skip records) and `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
 
 ```json
 {
@@ -209,7 +213,6 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
 | Actor | Timing | Condition |
 |---|---|---|
 | `session_init.py` (hook) | every turn (while project active or `pj:?`) | writes the full schema; project from explicit `pj:` only — **no path inference** |
-| project-router subagent | each turn it is invoked | writes `{"project": "..."}` |
 | `session_progress_capture.py` (hook) | session end | recovers `project` from a `[pj:...]` line (self-heal); union-merges `exec_bind` from a `[tasks:]` carry in the assistant's last message |
 
 ### Readers
@@ -223,7 +226,7 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
 
 ## `pj:` syntax
 
-Place `pj:<project_name>` near the beginning of the prompt. It is recognized at the start of the prompt or after any whitespace, so it may follow other leading lines (e.g. `mode:`); it need NOT be the literal first line.
+Place `pj:<project_name>` near the beginning of the prompt. It is recognized at the start of the prompt or after any whitespace, so it may follow other leading lines (e.g. `mode:`); it need NOT be the literal first line. **`pj:` (and `norouter`) are only recognized within the first 500 characters of the prompt** — occurrences beyond that window are ignored (prevents accidental project switches from literal mentions in body text).
 
 | Input | Effect |
 |---|---|
@@ -284,7 +287,7 @@ While a project is active but its `progress.md` does not yet exist, `session_ini
 
 ### When `_projects/` is absent
 
-`session_init.py` (UserPromptSubmit) **bootstraps** `_projects/`, `_projects/_state/`, and a template `_projects/index.md` when they are missing — so the directory is created on the first prompt. The other hooks (`session_sync.py`, `session_progress_capture.py`, and `task_rebuild_progress.py`'s project-dir check) treat a missing `_projects/` as a harmless no-op and `sys.exit(0)`. The plugin can thus be enabled without affecting projects that have not been initialized.
+`session_init.py` (UserPromptSubmit) **bootstraps** `_projects/`, `_projects/_state/`, and a template `_projects/index.md` when they are missing — but only on the first prompt that includes an explicit `pj:<project>` or `pj:?` discovery. Prompts without any `pj:` engagement exit immediately without creating `_projects/`, so the plugin can be enabled in any workspace without side-effects until the user actively assigns a project. The other hooks (`session_sync.py`, `session_progress_capture.py`, and `task_rebuild_progress.py`'s project-dir check) treat a missing `_projects/` as a harmless no-op and `sys.exit(0)`.
 
 ## Directory layout
 

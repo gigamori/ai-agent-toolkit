@@ -10,9 +10,9 @@ Notes live in one of 6 fixed categories. The folder is the source of truth for c
 | Category | Purpose | Examples |
 |---|---|---|
 | `specs/` | Designs, decisions, ADRs, proposals | API spec, ADR, business proposal |
-| `investigations/` | Research, analysis, post-mortems, retrospectives | Code investigation, market analysis, incident retro |
+| `investigations/` | Findings and results of research, analysis, post-mortems, retrospectives | Code investigation report, market analysis results, incident retro |
 | `checks/` | Verification items, checklists (no judgment, just confirm) | Test specs (TC-1..), audit checklist |
-| `procedures/` | Step-by-step instructions for humans | Runbook, SOP, troubleshooting guide |
+| `procedures/` | Step-by-step instructions for humans or LLMs | Runbook, SOP, troubleshooting guide, agent instruction script |
 | `backlog/` | Candidate items, ideas, issue tracker entries | Feature backlog, issue list, initiative ideas |
 | `_archive/` | Exhausted; no longer authoritative | Old specs, deprecated docs |
 

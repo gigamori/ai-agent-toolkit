@@ -23,9 +23,9 @@ claude --plugin-dir ./plugins/taskflow
 
 ## セットアップ
 
-手動セットアップは不要。taskflow を有効化した workspace で最初のユーザプロンプトを送ると、`UserPromptSubmit` フックが `_projects/`、`_projects/_state/`、`_projects/index.md`（テンプレート）を自動生成する。
+手動セットアップは不要。workspace で初めて `pj:<project>` を使用したタイミングで、`UserPromptSubmit` フックが `_projects/`、`_projects/_state/`、`_projects/index.md`（テンプレート）を自動生成する。
 
-> **Claude Code 専用。** taskflow の毎ターン project routing は `UserPromptSubmit` の `additionalContext` 注入に依存している。Cursor の third-party 互換で auto-map される `beforeSubmitPrompt` は LLM コンテキスト注入を持たない（block 専用）ため、taskflow は Cursor 上では動作しない。背景は `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md` を参照。
+> **Claude Code 専用。** taskflow の毎ターン project routing は `UserPromptSubmit` の `additionalContext` 注入に依存している。Cursor の third-party 互換で auto-map される `beforeSubmitPrompt` は LLM コンテキスト注入を持たない（block 専用）ため、taskflow は Cursor 上では動作しない。背景は `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md`（開発リポジトリの設計メモ。プラグインには同梱されない）を参照。
 
 ## 設定
 
@@ -53,7 +53,7 @@ Claude Code で恒久設定するには `settings.json` に追加:
 
 ### プロジェクト指定
 
-`pj:プロジェクト名` はプロンプトの冒頭（最初のほう）に置く。行頭または空白直後ならどこでも認識されるため、他の先頭行（`mode:` など）の後でもよく、物理的な先頭である必要はない。省略時は直前に設定済みのプロジェクトを維持する（文脈からの推定は行わない）。
+`pj:プロジェクト名` はプロンプトの冒頭（最初のほう）に置く。行頭または空白直後ならどこでも認識されるため、他の先頭行（`mode:` など）の後でもよく、物理的な先頭である必要はない。**`pj:` はメッセージの先頭 500 字以内に記述した場合のみ認識される。** 省略時は直前に設定済みのプロジェクトを維持する（文脈からの推定は行わない）。
 
 | 操作 | プロンプト例 |
 |---|---|
@@ -121,7 +121,7 @@ kanban ボードの特性:
 
 script のオプション:
 
-- `--out PATH` — HTML 出力先を指定（デフォルト：`/tmp/taskflow-kanban.html`）
+- `--out PATH` — HTML 出力先を指定（デフォルト：システム一時ディレクトリ / `taskflow-kanban.html`）
 - `--serve` — `localhost:17329` で HTTP サーバーを起動。endpoints：`/open?session=<UUID>`・`/open?prompt=<...>`（セッション・プロンプト起動）、`/md?path=<file>`（サニタイズ済み Markdown 描画）、`/file?path=<file>`（プロジェクト配下の画像・添付配信）、`/health`
 - `--stop` — 稼働中の `--serve` を停止（`/health` の pid 経由）
 - `--open` — 生成後、デフォルトブラウザで自動起動
@@ -166,7 +166,7 @@ updated: 2026-05-14
 ```
 
 - 本文領域は自由編集、`<!-- @log -->` ブロックは **append-only**。
-- `## Next Steps` が非空 = pending、`1_in_progress/` で空 = 完了候補。`Stop` フックがセッション中の実作業を見て LLM にこのセクションの更新を促す（[仕組み](#仕組み) 参照）。
+- `## Next Steps` が非空 = pending、`1_in_progress/` で空 = 完了候補。ガイドラインがエージェントにタスクを前進させたターンの終わりに `## Next Steps` を維持するよう指示し、`/progress audit` がコードで検査する（[仕組み](#仕組み) 参照）。
 - log 行には `[s:<session-id 先頭>]` タグが付き、audit の参照用 index になる。
 - task には、関連する `project-notes/` パスを列挙する自動管理ブロック `<!-- @notes:begin/end -->`（`@log:end` の直後に配置）が付くことがある。note↔task link 機構が書き込む（[仕組み](#仕組み) 参照）ため手編集禁止。
 
@@ -306,7 +306,7 @@ Claude Code が会話を auto-compaction した際に発火。compaction では 
 
 #### Stop: session_progress_capture.py
 
-セッション終了時に `session_sync.py` と並列で実行。当該セッションの作業を、各 owning task の append-only `@log` ブロックに `- <ISO8601> [s:<sid>]: <summary>` 行として bind する。owning task の判定には `.touched` ledger（上記）と `[tasks:]` exec-binding carry（下記）を用いる。owner 判定 — touched task ごとの 1 行 summary と、新規書込された `project-notes/` 成果物の note↔task link — は async な `taskflow:progress-capture` サブエージェントに委譲する: hook は `capture.status=requested` を commit し、サブエージェント起動を促す block を 1 回返す。サブエージェントは `{session_id}.capture` JSON サイドカーを書き、後続の `Stop` がそれを決定論的に apply する（`@log` summary は `append_auto_binding`、note link は `append_note_link`）。15 秒の expiry 内にサイドカーが現れなければ、決定論バックストップが未 bind の touched task を placeholder-bind する。round / lifecycle 状態は `{session_id}.bind` サイドカーに保持する（state JSON とは分離し、他フックの並行書換による clobber を防ぐ）。旧 `{session_id}.captured` マーカーは legacy で、7 日クリーンアップで掃除されるのみ。設計は `_projects/harness-taskflow/project-notes/specs/exec-binding.md` と `project-notes/specs/note-task-link.md` を参照。
+セッション終了時に `session_sync.py` と並列で実行。当該セッションの作業を、各 owning task の append-only `@log` ブロックに `- <ISO8601> [s:<sid>]: <summary>` 行として bind する。owning task の判定には `.touched` ledger（上記）と `[tasks:]` exec-binding carry（下記）を用いる。owner 判定 — touched task ごとの 1 行 summary と、新規書込された `project-notes/` 成果物の note↔task link — は async な `taskflow:progress-capture` サブエージェントに委譲する: hook は `capture.status=requested` を commit し、サブエージェント起動を促す block を 1 回返す。サブエージェントは `{session_id}.capture` JSON サイドカーを書き、後続の `Stop` がそれを決定論的に apply する（`@log` summary は `append_auto_binding`、note link は `append_note_link`）。15 秒の expiry 内にサイドカーが現れなければ、決定論バックストップが未 bind の touched task を placeholder-bind する。round / lifecycle 状態は `{session_id}.bind` サイドカーに保持する（state JSON とは分離し、他フックの並行書換による clobber を防ぐ）。旧 `{session_id}.captured` マーカーは legacy で、7 日クリーンアップで掃除されるのみ。設計は `_projects/harness-taskflow/project-notes/specs/exec-binding.md`（開発リポジトリの設計メモ。プラグインには同梱されない）と `project-notes/specs/note-task-link.md` を参照。
 
 ##### exec-binding（`[tasks:]` carry）
 

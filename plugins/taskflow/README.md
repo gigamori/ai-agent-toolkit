@@ -23,9 +23,9 @@ claude --plugin-dir ./plugins/taskflow
 
 ## Setup
 
-No manual setup is required. On the first user prompt in a workspace, taskflow's `UserPromptSubmit` hook creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` automatically.
+No manual setup is required. `_projects/`, `_projects/_state/`, and a template `_projects/index.md` are created automatically on the first use of `pj:<project>` in a workspace.
 
-> **Claude Code only.** taskflow's per-turn project routing depends on `UserPromptSubmit`'s `additionalContext` injection. Cursor's `beforeSubmitPrompt` (the third-party auto-mapped equivalent) cannot inject context into the LLM, so taskflow does not work on Cursor. See `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md` for background.
+> **Claude Code only.** taskflow's per-turn project routing depends on `UserPromptSubmit`'s `additionalContext` injection. Cursor's `beforeSubmitPrompt` (the third-party auto-mapped equivalent) cannot inject context into the LLM, so taskflow does not work on Cursor. See `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md` (development-repo design notes; not shipped with the plugin) for background.
 
 ## Configuration
 
@@ -54,7 +54,7 @@ To set it permanently in Claude Code, add it to your `settings.json`:
 
 ### Specifying a project
 
-Put `pj:<project>` near the beginning of the prompt — it is recognized at the start or after any whitespace, so it may follow other leading lines (e.g. `mode:`); it need not be the literal first line. If omitted, the previously set project (if any) is kept; the project is NOT inferred from context.
+Put `pj:<project>` near the beginning of the prompt — it is recognized at the start or after any whitespace, so it may follow other leading lines (e.g. `mode:`); it need not be the literal first line. **`pj:` must appear within the first 500 characters of the message to be recognized.** If omitted, the previously set project (if any) is kept; the project is NOT inferred from context.
 
 | Action | Example prompt |
 |---|---|
@@ -122,7 +122,7 @@ Invocation:
 
 Options for the script:
 
-- `--out PATH` — Write HTML to a custom path (default: `/tmp/taskflow-kanban.html`)
+- `--out PATH` — Write HTML to a custom path (default: system temp directory / `taskflow-kanban.html`)
 - `--serve` — Start an HTTP server on `localhost:17329`; endpoints: `/open?session=<UUID>` and `/open?prompt=<...>` (session / prompt launches), `/md?path=<file>` (sanitized Markdown render), `/file?path=<file>` (project-scoped image / attachment serving), `/health`
 - `--stop` — Stop a running `--serve` instance (by its `/health` pid)
 - `--open` — Open the result in the default browser after generation
@@ -167,7 +167,7 @@ Body (mutable region — replace freely).
 ```
 
 - The body region is mutable; the log block is **append-only**.
-- `## Next Steps` non-empty = pending; empty in `1_in_progress/` = completion candidate. The `Stop` hook prompts the LLM to update this section based on actual session work (see [How it works](#how-it-works)).
+- `## Next Steps` non-empty = pending; empty in `1_in_progress/` = completion candidate. The guidelines instruct the agent to maintain `## Next Steps` at the end of each turn that advances a task; `/progress audit` verifies it in code (see [How it works](#how-it-works)).
 - Log lines carry a `[s:<session-id-prefix>]` tag for downstream audit lookup.
 - A task may also carry an auto-managed `<!-- @notes:begin/end -->` block (placed right after `@log:end`) that lists related `project-notes/` paths. It is written by the note↔task link mechanism (see [How it works](#how-it-works)); never hand-edit it.
 
@@ -307,7 +307,7 @@ Runs at session end. Copies plan/memory files modified within the last 10 minute
 
 #### Stop: session_progress_capture.py
 
-Runs at session end alongside `session_sync.py`. It binds this session's work to each owning task's append-only `@log` block as a `- <ISO8601> [s:<sid>]: <summary>` line, using the `.touched` ledger (above) plus any `[tasks:]` exec-binding carry (below) to decide the owning tasks. Owner judgement — a one-line summary per touched task and note↔task links for freshly-written `project-notes/` deliverables — is delegated to the async `taskflow:progress-capture` subagent: the hook commits `capture.status=requested` and blocks once with an instruction to spawn it; the subagent writes a `{session_id}.capture` JSON sidecar; a later `Stop` applies it deterministically (`@log` summaries via `append_auto_binding`, note links via `append_note_link`). If no sidecar appears within a 15 s expiry, a deterministic backstop placeholder-binds every still-missing touched task instead. Round / lifecycle state lives in a `{session_id}.bind` sidecar (kept separate from the state JSON so concurrent rewrites cannot clobber it); the old `{session_id}.captured` marker is legacy and only swept by the 7-day cleanup. See `_projects/harness-taskflow/project-notes/specs/exec-binding.md` and `project-notes/specs/note-task-link.md` for the design.
+Runs at session end alongside `session_sync.py`. It binds this session's work to each owning task's append-only `@log` block as a `- <ISO8601> [s:<sid>]: <summary>` line, using the `.touched` ledger (above) plus any `[tasks:]` exec-binding carry (below) to decide the owning tasks. Owner judgement — a one-line summary per touched task and note↔task links for freshly-written `project-notes/` deliverables — is delegated to the async `taskflow:progress-capture` subagent: the hook commits `capture.status=requested` and blocks once with an instruction to spawn it; the subagent writes a `{session_id}.capture` JSON sidecar; a later `Stop` applies it deterministically (`@log` summaries via `append_auto_binding`, note links via `append_note_link`). If no sidecar appears within a 15 s expiry, a deterministic backstop placeholder-binds every still-missing touched task instead. Round / lifecycle state lives in a `{session_id}.bind` sidecar (kept separate from the state JSON so concurrent rewrites cannot clobber it); the old `{session_id}.captured` marker is legacy and only swept by the 7-day cleanup. See `_projects/harness-taskflow/project-notes/specs/exec-binding.md` (development-repo design notes; not shipped with the plugin) and `project-notes/specs/note-task-link.md` for the design.
 
 ##### exec-binding (`[tasks:]` carry)
 

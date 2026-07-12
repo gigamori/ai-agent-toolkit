@@ -39,10 +39,13 @@ script = os.path.normpath(script)
 if not os.path.isfile(script):
     sys.exit(0)
 
-result = subprocess.run(
-    ['uv', 'run', script, project_dir],
-    capture_output=True, text=True, encoding='utf-8', timeout=15,
-)
+try:
+    result = subprocess.run(
+        ['uv', 'run', '--no-project', script, project_dir],
+        capture_output=True, text=True, encoding='utf-8', timeout=15,
+    )
+except (subprocess.TimeoutExpired, OSError):
+    sys.exit(0)
 
 if result.returncode == 0 and result.stdout.strip():
     session_id = data.get('session_id', '')

@@ -28,7 +28,8 @@ Body (mutable region — replace freely on each update).
 Common subsections:
 - ## Goal
 - ## Context
-- ## Plan / Next Steps
+- ## Plan
+- ## Next Steps
 
 <!-- @log:begin -->
 - 2026-05-08T09:15:00 [s:1a2b3c4d]: started
@@ -45,6 +46,8 @@ A task file has TWO regions:
 2. **Log region** (`<!-- @log:begin -->` ↔ `<!-- @log:end -->`): **append-only**. Never edit, reorder, or delete existing entries. Each entry is `- <YYYY-MM-DD>T<HH:MM:SS> [s:<sid8>]: <summary>` — an ISO8601 `T`-separated timestamp plus the 8-char session id tag `[s:<sid8>]` (supplied as `sid8=` in the Progress Session context). Status-transition lines (start / approve / revert) may omit the `[s:<sid8>]` tag.
 
 When you modify the body or append to the log, you MUST also update `updated:` in frontmatter to today's date.
+
+At the end of any turn where you advance a task, rewrite `## Next Steps` to describe the remaining work. For active tasks (in `0_todo/` or `1_in_progress/`), the `## Next Steps` section is required.
 
 ## Filename convention
 

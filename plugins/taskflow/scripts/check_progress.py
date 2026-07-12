@@ -14,6 +14,7 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
   6. summary / H1 sync   — progress.md row text contains task H1
   7. filename violations — <YYYY-MM-DD>_<topic>(-<N>)?.md
   8. pending approval    — 1_in_progress/ stalled past threshold
+  9. orphan lock         — *.md.lock with no sibling *.md (report-only)
 
 Exit codes:
   0 = no findings
@@ -366,6 +367,36 @@ def check_pending_approval(project_dir: Path, result: Result, threshold_days: in
             )
 
 
+def check_orphan_lock(project_dir: Path, result: Result) -> None:
+    """#9 — report *.md.lock files that have no sibling *.md in the same directory.
+
+    Does NOT delete lock files (report-only). Auto-deletion would break the
+    mutual exclusion invariant INV-2 by introducing an unlink race.
+    """
+    tasks_dir = project_dir / "tasks"
+    if not tasks_dir.is_dir():
+        return
+    for status in TASK_STATUSES:
+        sub = tasks_dir / status
+        if not sub.is_dir():
+            continue
+        for lock_path in sorted(sub.iterdir()):
+            if lock_path.suffix != ".lock":
+                continue
+            # Require the name to end with .md.lock
+            if not lock_path.name.endswith(".md.lock"):
+                continue
+            sibling_name = lock_path.name[: -len(".lock")]  # strip trailing .lock
+            sibling = lock_path.parent / sibling_name
+            if not sibling.exists():
+                result.add(
+                    "orphan_lock",
+                    "drift",
+                    str(lock_path),
+                    f"orphan lock: {lock_path.relative_to(project_dir).as_posix()}",
+                )
+
+
 # ============================================================================
 # Output
 # ============================================================================
@@ -437,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
     check_progress_summary_h1_sync(project_dir, result)
     check_filename_convention(project_dir, result)
     check_pending_approval(project_dir, result, args.stale_days)
+    check_orphan_lock(project_dir, result)
 
     print_findings(result)
     return 1 if result.findings else 0

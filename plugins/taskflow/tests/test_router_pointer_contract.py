@@ -82,6 +82,18 @@ def main():
     else:
         ok(f"'{BODY_LEAK_FIELD}' absent from the entire router definition")
 
+    # State-write sentinels: router must not contain a shell redirect to state_file.
+    if "> <state_file>" in text:
+        bad("router definition contains '> <state_file>' (state write must be removed)")
+    else:
+        ok("'> <state_file>' absent from the router definition")
+
+    # State-write sentinels: router must not contain the 'Write the finalized project name' instruction.
+    if "Write the finalized project name" in text:
+        bad("router definition contains 'Write the finalized project name' (state write must be removed)")
+    else:
+        ok("'Write the finalized project name' absent from the router definition")
+
     print()
     if FAIL == 0:
         print(f"All {PASS} checks passed.")
