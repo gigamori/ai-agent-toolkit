@@ -124,23 +124,31 @@ def render_action(tool_name: str, inp: dict) -> str:
     return tool_name
 
 
-def _extract_user_text(content_value) -> str:
-    """Extract first 50 chars of user message text for turn marker display."""
+def _extract_user_text(content_value, *, full: bool = False) -> str:
+    """Extract user message text for turn marker display.
+
+    Args:
+        full: If True, return the complete text without truncation.
+              Used by --until-message matching to avoid false negatives.
+    """
+    limit = None if full else 50
     if isinstance(content_value, str):
         try:
             content = json.loads(content_value)
         except json.JSONDecodeError:
-            return content_value[:50]
+            return content_value if full else content_value[:50]
     elif isinstance(content_value, list):
         content = content_value
     else:
-        return str(content_value)[:50]
+        raw = str(content_value)
+        return raw if full else raw[:50]
     if isinstance(content, str):
-        return content[:50]
+        return content if full else content[:50]
     if isinstance(content, list):
         for block in content:
             if isinstance(block, dict) and block.get("type") == "text":
-                return (block.get("text") or "")[:50]
+                text = block.get("text") or ""
+                return text if full else text[:50]
     return ""
 
 
@@ -171,7 +179,9 @@ def _is_system_injected_user_msg(content_value) -> bool:
     return any(marker in text for marker in _SYSTEM_INJECT_MARKERS)
 
 
-def collect_tool_actions(rows: list[tuple], n: int) -> list[tuple]:
+def collect_tool_actions(
+    rows: list[tuple], n: int, *, until_message: str | None = None
+) -> list[tuple]:
     """Iterate rows (newest first), expand tool_use blocks, insert turn markers.
 
     Returns list of:
@@ -180,6 +190,10 @@ def collect_tool_actions(rows: list[tuple], n: int) -> list[tuple]:
 
     Turn markers are inserted when a user row is encountered. They do NOT count
     toward the N-action limit.
+
+    If until_message is set, the N-action limit is ignored and collection stops
+    when a user message containing the substring is found (that message becomes
+    the boundary marker but actions below it are excluded).
     """
     out: list[tuple] = []
     action_count = 0
@@ -187,8 +201,14 @@ def collect_tool_actions(rows: list[tuple], n: int) -> list[tuple]:
         if msg_type == "user":
             if _is_system_injected_user_msg(content_value):
                 continue
-            user_text = _extract_user_text(content_value)
-            out.append((_TURN_MARKER, ts_local, user_text))
+            user_full = _extract_user_text(content_value, full=True)
+            user_display = user_full[:50]
+            # Check until_message boundary BEFORE appending
+            if until_message and until_message in user_full:
+                # Emit boundary marker and stop
+                out.append((_TURN_MARKER + "_boundary", ts_local, user_display))
+                return out
+            out.append((_TURN_MARKER, ts_local, user_display))
             continue
         # assistant row
         if isinstance(content_value, str):
@@ -213,7 +233,7 @@ def collect_tool_actions(rows: list[tuple], n: int) -> list[tuple]:
                 inp = {}
             out.append((ts_local, render_action(name, inp)))
             action_count += 1
-            if action_count >= n:
+            if not until_message and action_count >= n:
                 return out
     return out
 
@@ -246,15 +266,33 @@ def get_repo_context() -> dict:
     return {"type": "git", "cwd": cwd, "current_branch": branch}
 
 
-def render_output(actions: list[tuple], repo: dict) -> str:
+_TURN_BOUNDARY = _TURN_MARKER + "_boundary"
+
+
+def render_output(
+    actions: list[tuple], repo: dict, *, until_message: str | None = None
+) -> str:
     lines: list[str] = []
     action_idx = 0
-    has_actions = any(entry[0] != _TURN_MARKER for entry in actions)
+    has_actions = any(
+        entry[0] not in (_TURN_MARKER, _TURN_BOUNDARY) for entry in actions
+    )
     if has_actions:
-        lines.append("RECENT_LLM_ACTIONS (newest first):")
+        header = "RECENT_LLM_ACTIONS (newest first"
+        if until_message:
+            header += f", scoped to message: {until_message!r}"
+        header += "):"
+        lines.append(header)
         turn_label = "latest"
         for entry in actions:
-            if entry[0] == _TURN_MARKER:
+            if entry[0] == _TURN_BOUNDARY:
+                _, ts, user_text = entry
+                preview = _flatten(user_text)
+                lines.append(
+                    f"  --- Turn (target boundary, after user message at {ts}: {preview!r}) ---"
+                )
+                lines.append("  (actions before this point excluded)")
+            elif entry[0] == _TURN_MARKER:
                 _, ts, user_text = entry
                 preview = _flatten(user_text)
                 lines.append(f"  --- Turn ({turn_label}, after user message at {ts}: {preview!r}) ---")
@@ -300,6 +338,12 @@ def main() -> None:
         default="~/.claude/projects",
         help="jsonl search root. Default: ~/.claude/projects",
     )
+    ap.add_argument(
+        "--until-message",
+        default=None,
+        help="Collect actions back to the user message containing this substring. "
+        "Ignores --n limit when set. The matched message becomes the boundary.",
+    )
     args = ap.parse_args()
 
     jsonl = resolve_session_jsonl(args.session_id, args.projects_dir)
@@ -314,11 +358,13 @@ def main() -> None:
         print(f"jsonl read failure: {e}", file=sys.stderr)
         sys.exit(3)
 
-    actions = collect_tool_actions(rows, args.n)
+    actions = collect_tool_actions(rows, args.n, until_message=args.until_message)
     repo = get_repo_context()
-    print(render_output(actions, repo))
+    print(render_output(actions, repo, until_message=args.until_message))
 
-    has_actions = any(entry[0] != _TURN_MARKER for entry in actions)
+    has_actions = any(
+        entry[0] not in (_TURN_MARKER, _TURN_BOUNDARY) for entry in actions
+    )
     if not has_actions:
         sys.exit(1)
 

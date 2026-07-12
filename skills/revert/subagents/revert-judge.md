@@ -73,6 +73,13 @@ REPO_CONTEXT:
 
    上記を満たさない場合（例: 曖昧要求で前ターンの commit が 1 件だけマッチ）→ `decision: ask_user`
 
+   **`--until-message` スコープ指定済みの場合**:
+   ヘッダーに `scoped to message: '...'` が含まれ、末尾に `--- Turn (target boundary, ...) ---` が存在する場合、parent skill が `--until-message` で scope を確定済み。この場合:
+   - 検索範囲は **出力された全アクション**（boundary より新しい側すべて）
+   - ターンスコープ制約（latest / previous の区別）は適用しない
+   - scope 拡大修飾語（「全変更」「all changes」）があっても、boundary が明示されているため `ask_user` 降格は不要
+   - ただし proposed_op の scope_check (A/B/C) は通常通り適用する
+
 3. **proposed_op を決定**
    target action の type（git_commit / git_branch / file_write / file_edit ...）から **single shell command** を 1 つ決める。Git op の場合は以下の表に従う：
 

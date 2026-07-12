@@ -87,9 +87,14 @@ literally in the catalog, so no absolute path is baked into a view definition.
 ## Costs & limits
 
 - Each query re-reads all logs (a few seconds; ~0.3–2s observed per view count, more
-  for wide scans). File pruning by `session_id` is not possible (sid lives inside the
-  JSON, not the filename), so single-session queries pay the same scan — accepted in
-  exchange for always-fresh data and zero materialization.
+  for wide scans). `query.py` does not prune by filename — it always scans the whole
+  glob — so single-session queries pay the same scan, accepted in exchange for
+  always-fresh data and zero materialization. (Note: session files ARE named
+  `<sid>.jsonl` — filename == sid, empirically 100% — so file-level pruning by sid
+  would be possible for session files; the agent-child files (`agent-*.jsonl`) are the
+  exception, carrying no sid in the filename and the parent's `sessionId` inside the
+  JSON instead. The view stack filters by `session_id` regardless, which co-locates a
+  session's agent children.)
 - `query.py` caps output at 200 rows / 50KB; use `count`/`group by`/`limit` for breadth.
 - Live appends during a query make counts a momentary snapshot (read-only; no risk).
 

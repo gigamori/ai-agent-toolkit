@@ -28,6 +28,7 @@ LLM の直近行動を **state-revert 原理** で安全に undo する skill。
 ### Required steps（省略・順序変更・代替いずれも不可）
 
 1. `uv run scripts/revert_cc_log_extract.py --n 10` で `RECENT_LLM_ACTIONS` を取得
+   - ユーザが「『xxx』と言った直前の状態に戻して」のように user message を基準に scope を指定した場合: `uv run scripts/revert_cc_log_extract.py --until-message "xxx"` を使用（`--n` は無視され、該当メッセージまでの全アクションを収集する）
 2. `revert-judge` subagent に serialize protocol block を渡して判定 dispatch
 3. JSON decision に **verbatim で** 従って分岐:
    - `execute` → G1〜G8 の実行手順に進む
@@ -192,8 +193,14 @@ RESPONSE_FORMAT (JSON only):
 **scripts/revert_cc_log_extract.py**: session jsonl から直近 N アクションを抽出し、serialize protocol の `RECENT_LLM_ACTIONS` ブロックを生成する。
 
 ```bash
+# 直近 N アクション（デフォルト）
 uv run scripts/revert_cc_log_extract.py --n 10
+
+# user message を基準にスコープ指定（--n 無視、該当メッセージまで全収集）
+uv run scripts/revert_cc_log_extract.py --until-message "commitして"
 ```
+
+`--until-message` 指定時は、該当文字列を含む user message が boundary となり、それ以降（新しい方）の全アクションが出力される。boundary message 自体は `--- Turn (target boundary, ...) ---` として表示される。
 
 log 取得に失敗した場合は `confidence: low` フラグを subagent 入力に付加し、ask_user 寄りに判定を倒す。
 

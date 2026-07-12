@@ -131,6 +131,29 @@ with no error — validate the returned result; do not assume inheritance succee
 | Tasks needing restricted tools | `context: fork` + custom agent / `disallowed-tools` |
 | Side-effect actions (deploy, send) | Inline + `disable-model-invocation: true` |
 
+### Model Selection
+
+The `model` field (and a custom `agent`'s model) sets the capability tier a forked
+skill runs at. Match it to how much instruction-adherence the body demands.
+
+- **Avoid primitive / small models for procedural bodies.** A body that says "always
+  run this command and branch only on its output, never judge the input" needs a
+  model that follows imperatives literally. A primitive model (e.g. `haiku`) may
+  short-circuit — refusing to execute for inputs it pattern-matches as implausible
+  or placeholder, and returning an empty/error result *without running anything*,
+  even ignoring an explicit "run this first" step. **Default to `sonnet` or stronger
+  for such skills**; reserve the smallest tier for trivial, judgment-free text shaping.
+- **Symptom vs. cause.** If a forked skill returns "no input" / empty-sentinel for a
+  valid request, confirm argument delivery before blaming the model: add a temporary
+  `echo "[$ARGUMENTS]"` line. If the value is present yet the command never ran, the
+  cause is the model skipping execution — raise the tier.
+- **Porting a `model: fast` subagent?** `fast` denotes a *capable* fast tier, not the
+  smallest model, and is not a valid skill `model` value. Substitute `sonnet` or
+  `inherit` — not `haiku`.
+- **Iteration note.** A skill's body and frontmatter (including `model`) are re-read
+  on each invocation, so model/body edits take effect immediately; only newly added
+  skills need a reload to be discovered.
+
 ## Hooks in Skills
 
 Skills can define lifecycle hooks scoped to their execution:
