@@ -1,6 +1,6 @@
 ---
 name: run-sql
-description: Execute SQL queries against configured databases (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB) and return raw results. Use when the user asks to query a database, run SQL, check data, explore tables, or count rows. Also triggered by "SQLを実行", "データを取得", "テーブルを確認".
+description: Execute SQL queries against configured databases (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) and return raw results. Use when the user asks to query a database, run SQL, check data, explore tables, or count rows. Also triggered by "SQLを実行", "データを取得", "テーブルを確認".
 context: fork
 allowed-tools: "Bash(uv run ${CLAUDE_SKILL_DIR}/scripts/run_sql.py *)"
 ---
@@ -16,6 +16,8 @@ uv run ${CLAUDE_SKILL_DIR}/scripts/run_sql.py query --connection <name> --sql "<
 ```
 
 Defaults: `--max-rows 200`, `--max-bytes 51200` (50KB). Override with flags if needed.
+
+Note: statements are auto-committed — DML/DDL apply immediately and cannot be rolled back. (Exception: for Databricks, AUTOCOMMIT is not applied and whether DML persists is unverified; SELECT works.)
 
 ## Procedure
 

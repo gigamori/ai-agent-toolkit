@@ -36,8 +36,22 @@
 #
 # Alternative: set GOOGLE_APPLICATION_CREDENTIALS env var instead of credentials_path
 # dsn = "bigquery://project-id/dataset"
+#
+# Optional: set the dataset location (region) via the location query param, e.g. asia-northeast1, US, EU
+# dsn = "bigquery://project-id/dataset?credentials_path=/path/to/service-account-key.json&location=asia-northeast1"
 
 # --- DuckDB ---
 # [connections.duckdb]
 # dsn = "duckdb:///path/to/database.duckdb"
 # description = "DuckDB (local file)"
+
+# --- Databricks (SQL warehouse) ---
+# [connections.databricks]
+# dsn = "databricks://token:<ACCESS_TOKEN>@<SERVER_HOSTNAME>?http_path=<HTTP_PATH>&catalog=<CATALOG>&schema=<SCHEMA>"
+# description = "Databricks SQL warehouse"
+#
+# - SERVER_HOSTNAME / HTTP_PATH: SQL Warehouse の Connection details タブから取得
+#   (SQL warehouse の http_path は /sql/1.0/warehouses/<id> 形式)
+# - 認証は Personal Access Token (PAT)。<ACCESS_TOKEN> は直書きせず安全に管理すること
+# - SELECT は実行可。DML/UPDATE が確定するかは未検証 (残課題)
+# - サーバ側クエリキャンセルは未実装 (local-only フォールバック・残課題)
