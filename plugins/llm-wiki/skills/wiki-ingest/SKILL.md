@@ -262,7 +262,7 @@ tool with `subagent_type: llm-wiki:wiki-ingest-extract` (the `llm-wiki:` namespa
 REQUIRED — a bare `wiki-ingest-extract` can shadow-resolve to an incompatible user-level
 agent that holds no working tools, silently yielding a `tool_uses: 0` extraction). It is
 the ONLY place the untrusted raw body is read, and it has **no write tool** (`tools:
-Read`) — it emits proposed edits as text only.
+Read`) — it emits proposed edits as a **single JSON object** (its agent-def Step 3 contract), never a write.
 
 Instruct it to **Read the raw artifact at `$WIKI_ROOT/<raw_rel_path>`** — the
 `raw_rel_path` from `begin`'s JSON (Step 1). `begin` no longer inlines the body (E1); the
@@ -285,10 +285,14 @@ code: for `fe_b_prime`, `plan-fanout` (Step 3) rejects a proposal whose touched 
 not under `wiki/derived/`, and the Stage2 write gate (D20) admits only `wiki/derived/`. So
 proposing the correct tier here is load-bearing, not cosmetic.
 
-Capture its **proposed-edits blob** and **Write it ONCE** to the ABSOLUTE path
+Stage1 returns a **single JSON object** — `{"touched": [rel_path, …], "edits": [{rel_path,
+op, proposal}, …], "contradictions": […], "doc_type": …}` (its agent-def Step 3 contract; a
+prose/Markdown blob makes `plan-fanout` fail `neither a file nor JSON`). Capture that JSON
+blob and **Write it ONCE** to the ABSOLUTE path
 `stage1_blob_path` from `begin`'s JSON (Step 1) — **use it verbatim; do NOT reconstruct a
 temp path yourself** (#1: a hand-built `$TMPDIR/stage1-…` can be mis-resolved against the
-CWD). Call this path `$STAGE1_BLOB_PATH`; it is outside the wiki root (the system temp dir).
+CWD). Write the JSON exactly as returned; do NOT reformat or wrap it. Call this path
+`$STAGE1_BLOB_PATH`; it is outside the wiki root (the system temp dir).
 From here on the blob is passed **by path only** (never re-inlined into your context): to
 `plan-fanout` (Step 3) and to each Stage2 worker (Step 4). It is the only artifact that
 crosses into Stage2.
@@ -305,9 +309,9 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest plan-fanout \
   "$WIKI_ROOT" "$STAGE1_BLOB_PATH"
 ```
 
-`$STAGE1_BLOB_PATH` is the Stage1 proposed-edits blob file from Step 2 (a path — the driver
-accepts a path or inline JSON, and reads the touched-page set as a bare list of `rel_path`s
-or a `{"touched": [rel_path, ...]}` object). The driver reads K from the sidecar, persists
+`$STAGE1_BLOB_PATH` is the Stage1 JSON blob file from Step 2 (a path — the driver reads the
+touched-page set from the blob's `touched` field; it also still accepts a bare
+`[rel_path, ...]` list or inline JSON). The driver reads K from the sidecar, persists
 the resulting cluster plan to the sidecar as `planned_clusters` (C2 basis), and prints
 `{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K (a ≤ K touched set yields a single
 cluster). Always call it: the 0-based INDEX of each cluster in the returned list is that
@@ -329,9 +333,10 @@ yourself; the workers' manifests are applied by the `apply-finish` verb YOU run 
 
 Pass each apply-worker: the **path** `$STAGE1_BLOB_PATH` (Step 2) plus this cluster's
 `rel_path` list from `plan-fanout` (Step 3), and the `origin` from `begin`'s JSON
-(`fe_b` → source tier, `fe_b_prime` → derived tier), instructing it to **Read** the blob
-from that path (it holds `tools: Read` — no write tool added, E2) and that its reply must be
-the manifest JSON array only, restricted to its cluster's `rel_path`s.
+(`fe_b` → source tier, `fe_b_prime` → derived tier), instructing it to **Read** the JSON blob
+from that path (it holds `tools: Read` — no write tool added, E2), author each page from the
+blob's `edits` entries whose `rel_path` is in its cluster, and reply with the manifest JSON
+array only, restricted to its cluster's `rel_path`s.
 
 For EACH worker's returned manifest, in **plan-fanout cluster order (ordinal 0 first)**,
 save it to its own temp file **outside the wiki root**, e.g.

@@ -27,16 +27,19 @@ and commits it, writing page FILES to disk under that lock — each write is rec
 in the write-ahead undo journal so a failed `finish` rolls it back. You do NOT open
 or close the transaction, and there is no git: the ONE central finalize (discard the
 journal) is the orchestrator's `finish`, after the fan-out join (D23). The
-orchestrator passes you: the Stage1 proposed-edits blob (or one cluster of it on
-fan-out) and the `origin` from the driver's `begin` JSON (`fe_b` → source tier,
+orchestrator passes you: a PATH to the Stage1 proposed-edits blob — a JSON object
+`{"touched": [...], "edits": [{rel_path, op, proposal}, ...], "contradictions": [...],
+"doc_type": ...}` (Read it with your `Read` tool) — plus your cluster's `rel_path` list on
+fan-out, and the `origin` from the driver's `begin` JSON (`fe_b` → source tier,
 `fe_b_prime` → derived tier). The budget (`max_count`, `max_bytes`) is NOT your
 concern and is not threaded to you — the `ingest-apply` verb reads it from the
 `.llmwiki.txn` sidecar when the orchestrator runs it.
 
 ## Step 1 — Author the page updates
 
-From the proposed edits, author each page's full new content. Honor the contradiction
-flags from Stage1 (note staleness in the page rather than silently overwriting).
+From the blob's `edits` entries whose `rel_path` is in your cluster, author each page's full
+new content (`op` tells new vs update). Honor the blob's `contradictions`
+(note staleness in the page rather than silently overwriting).
 Do not invent information beyond the proposals. A derived-origin page (origin
 `fe_b_prime`) targets `wiki/derived/...` only. Do NOT touch `index.md` or `log.md` —
 the orchestrator regenerates the index, appends the log, and finalizes the single

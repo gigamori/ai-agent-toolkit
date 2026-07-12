@@ -390,7 +390,7 @@ with `subagent_type: llm-wiki:wiki-ingest-extract` (the `llm-wiki:` namespace is
 a bare `wiki-ingest-extract` can shadow-resolve to an incompatible user-level agent that
 holds no working tools, silently yielding a `tool_uses: 0` extraction). It is the ONLY
 place the projected transcript is read, and it has **no write tool** (`tools: Read`) — it
-emits proposed edits as text only.
+emits proposed edits as a **single JSON object** (its agent-def Step 3 contract), never a write.
 
 Instruct it to **Read the raw artifact at `$WIKI_ROOT/<raw_rel_path>`** — the
 `raw_rel_path` from `begin`'s JSON (Step 4). `begin` no longer inlines the body
@@ -408,10 +408,14 @@ page's `rel_path` under `wiki/derived/…`. The driver enforces this in code: `p
 Stage2 write gate (D20) only admits `wiki/derived/` for this origin — a base-tier `wiki/…`
 path fails. So proposing the correct tier here is load-bearing, not cosmetic.
 
-Capture its **proposed-edits blob** and **Write it ONCE** to the ABSOLUTE path
+Stage1 returns a **single JSON object** — `{"touched": [rel_path, …], "edits": [{rel_path,
+op, proposal}, …], "contradictions": […], "doc_type": …}` (its agent-def Step 3 contract; a
+prose/Markdown blob makes `plan-fanout` fail `neither a file nor JSON`). Capture that JSON
+blob and **Write it ONCE** to the ABSOLUTE path
 `stage1_blob_path` from `begin`'s JSON (Step 4) — **use it verbatim; do NOT reconstruct a
 temp path yourself** (#1: a hand-built `$OUT_DIR/stage1-…` was mis-resolved against the CWD
-on Windows, failing the Read once per sid). Call this path `$STAGE1_BLOB_PATH`. It lives
+on Windows, failing the Read once per sid). Write the JSON exactly as returned; do NOT
+reformat or wrap it. Call this path `$STAGE1_BLOB_PATH`. It lives
 under `$OUT_DIR` (code placed it there because `begin` was passed `--out_dir="$OUT_DIR"`),
 so it rides the existing `project-batch-cleanup` sweep — no new temp mechanism (E2/F3).
 From here on the blob is passed **by path only** (never re-inlined into your context): to
@@ -430,9 +434,9 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest plan-fanout \
   "$WIKI_ROOT" "$STAGE1_BLOB_PATH"
 ```
 
-`$STAGE1_BLOB_PATH` is the Stage1 proposed-edits blob file from Step 5 (a path — the driver
-accepts a path or inline JSON, and reads the touched-page set as a bare list of `rel_path`s
-or a `{"touched": [rel_path, ...]}` object). The driver reads K from the sidecar, persists
+`$STAGE1_BLOB_PATH` is the Stage1 JSON blob file from Step 5 (a path — the driver reads the
+touched-page set from the blob's `touched` field; it also still accepts a bare
+`[rel_path, ...]` list or inline JSON). The driver reads K from the sidecar, persists
 the resulting cluster plan to the sidecar as `planned_clusters` (C2 basis), and prints
 `{"clusters": [[rel_path, ...], ...]}`, each cluster ≤ K (a ≤ K touched set yields a single
 cluster). Always call it: the 0-based INDEX of each cluster in the returned list is that
@@ -454,9 +458,10 @@ manifests are applied by the `apply-finish` verb YOU run in Step 8.
 
 Pass each apply-worker: the **path** `$STAGE1_BLOB_PATH` (Step 5) plus this cluster's
 `rel_path` list from `plan-fanout` (Step 6), and the `origin` from `begin`'s JSON
-(`fe_b_prime` → derived tier), instructing it to **Read** the blob from that path (it holds
-`tools: Read` — no write tool added, E2) and that its reply must be the manifest JSON array
-only, restricted to its cluster's `rel_path`s.
+(`fe_b_prime` → derived tier), instructing it to **Read** the JSON blob from that path (it
+holds `tools: Read` — no write tool added, E2), author each page from the blob's `edits`
+entries whose `rel_path` is in its cluster, and reply with the manifest JSON array only,
+restricted to its cluster's `rel_path`s.
 
 For EACH worker's returned manifest, in **plan-fanout cluster order (ordinal 0 first)**,
 save it to its own temp file under `$OUT_DIR` (so it rides the `project-batch-cleanup`

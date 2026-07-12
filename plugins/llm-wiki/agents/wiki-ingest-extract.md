@@ -52,19 +52,39 @@ Apply the matched profile's `preserve` list and `rules` from `SCHEMA.md`. For
 
 For `default`, extract generically and emit the "profile candidate" note.
 
-## Step 3 — Emit PROPOSED EDITS ONLY (free-form text)
+## Step 3 — Emit PROPOSED EDITS as ONE JSON object
 
-Output, as text (no file writes):
+Your ENTIRE final response is a single JSON object and nothing else — the orchestrator
+writes it verbatim to a file that the driver's `plan-fanout` parses (`json.loads`) and the
+Stage2 apply-worker reads. Free-form prose as the reply is a hard failure: `plan-fanout`
+rejects it with `stage1 proposal is neither a file nor JSON`.
 
-1. **Affected-page candidates** (~10–15): for each, the page `rel_path` (under
-   `wiki/` or `wiki/derived/`), whether it is a new page or an update, and the
-   proposed content/diff in prose.
-2. **Contradiction candidates**: existing pages your extraction appears to
-   contradict or make stale.
-3. The resolved `doc_type` / profile used (and any "profile candidate" note).
+Shape (this is an illustration; your reply itself must be **bare JSON** — no ```json fence,
+no text before or after, must `json.loads` cleanly):
 
-> **Quarantine seam (last line of Stage1 / first line of Stage2):** Stage2 receives
-> ONLY this proposed-edits blob — never the raw untrusted source you just read
-> (D17). Make the proposals self-contained so the raw is never re-exposed.
+```json
+{
+  "touched": ["<rel_path>", "..."],
+  "edits": [
+    {"rel_path": "<rel_path>", "op": "new|update", "proposal": "<proposed content / diff — prose OK inside this string>"}
+  ],
+  "contradictions": [{"rel_path": "<rel_path>", "why": "<what this makes stale>"}],
+  "doc_type": "<resolved doc_type / profile>"
+}
+```
 
-Do not write anything. Return the proposal blob to the orchestrator.
+- `touched` — the ~10–15 affected-page `rel_path`s. Each MUST be under the tier for THIS
+  origin: `wiki/derived/…` for a projection origin (`fe_b_prime` / `fe_pi_log`), `wiki/…`
+  for `fe_b`. This is the machine-read field — `plan-fanout` clusters exactly these, and the
+  driver REJECTS a projection-origin path not under `wiki/derived/`. `touched` MUST equal the
+  set of `edits[].rel_path` (same paths, no more, no less).
+- `edits` — one entry per touched page: `op` (`new`|`update`) and the proposed content/diff
+  (prose is fine inside the JSON string). This is what Stage2 authors from.
+- `contradictions` — existing pages your extraction makes stale (may be `[]`).
+- `doc_type` — the resolved type/profile (include any "profile candidate" note as text).
+
+> **Quarantine seam (last line of Stage1 / first line of Stage2):** Stage2 receives ONLY
+> this JSON blob — never the raw untrusted source you just read (D17). Make each `proposal`
+> self-contained so the raw is never re-exposed.
+
+Do not write anything. Return the JSON object (bare, `json.loads`-able) to the orchestrator.
