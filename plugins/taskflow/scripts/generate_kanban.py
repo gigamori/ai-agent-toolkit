@@ -60,7 +60,7 @@ def _project_roots() -> list[Path]:
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 H1_RE = re.compile(r"^# (.+)$", re.MULTILINE)
 LOG_ENTRY_RE = re.compile(
-    r"-\s+(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)\s+\[s:([0-9a-f]{6,})\]:\s*(.+)"
+    r"-\s+(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})?)?)\s+\[s:([0-9a-f]{6,})\]:\s*(.+)"
 )
 
 TASK_STATUSES = ("0_todo", "1_in_progress", "2_done")

@@ -70,6 +70,7 @@ from note_links import (  # noqa: E402
     normalize_note_rel,
     resolve_note_owner,
 )
+from tstamp import now_iso  # noqa: E402
 
 PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
@@ -499,8 +500,10 @@ def main() -> int:
     project_root = os.path.join(PROGRESS_ROOT, project)
     cwd = os.getcwd()
     sid8 = session_id[:8]
-    # ISO8601 with `T` separator (second resolution).
-    iso_ts = datetime.datetime.now().replace(microsecond=0).isoformat()
+    # Offset-aware ISO8601 with `T` separator (second resolution). Shared
+    # generation point with session_init.py's `iso_ts=` header field (tstamp.py)
+    # so channel A and channel B never diverge on timezone again.
+    iso_ts = now_iso()
     date = datetime.date.today().isoformat()
 
     # --- touched (from the .touched ledger; tolerant + dedup) ---

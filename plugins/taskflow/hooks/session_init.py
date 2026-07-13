@@ -33,6 +33,12 @@ Special tokens in user prompt:
 """
 import json, sys, os, re, glob
 
+# Sibling import: the shared timestamp helper lives next to this hook. Hook
+# scripts run standalone (no package context), so add this file's own
+# directory to sys.path before importing it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tstamp import now_iso  # noqa: E402
+
 PJ_PARSE_WINDOW = 500  # chars; pj: and norouter are only recognized within this prefix
 
 PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
@@ -304,7 +310,7 @@ else:
   result = {
     'hookSpecificOutput': {
       'hookEventName': 'UserPromptSubmit',
-      'additionalContext': f'[Progress Session] session_id={session_id} sid8={session_id[:8]} state_file={state_path} current_project={current_project}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}'
+      'additionalContext': f'[Progress Session] session_id={session_id} sid8={session_id[:8]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}'
     }
   }
 
