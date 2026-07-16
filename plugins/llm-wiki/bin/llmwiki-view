@@ -29,12 +29,17 @@ from llmwiki.view import generate_wiki_view
 
 _USAGE = "usage: llmwiki-view view --serve [--port N] [--no-open] [--root R]"
 
+# Exit-code contract (theme1 i:39, generalized to this entrypoint 2026-07-16),
+# byte-identical to cli.py's EX_USAGE. A verb mismatch here is a usage error,
+# not a state sentinel.
+EX_USAGE = 64
+
 
 def main(argv: "list[str] | None" = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] != "view":
         print(_USAGE, file=sys.stderr)
-        return 2
+        return EX_USAGE
     # Subordinate the existing argv-CLI: pass the viewer its own argv verbatim.
     return generate_wiki_view.main(argv[1:])
 

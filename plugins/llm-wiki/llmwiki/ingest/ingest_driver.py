@@ -262,8 +262,48 @@ _LOG_HEADER_BY_ORIGIN = {
 _PROJECTION_ERRORS = (cc_log_project.ProjectionError, pi_log_project.ProjectionError)
 
 
+# Exit-code contract (theme1 i:39, generalized to this entrypoint 2026-07-16).
+# rc 0 = success. rc 2 = verb-specific SENTINEL only — a state notice (no
+# marker / no sidecar / REFUSED / zero-match / busy) that callers consume as
+# data, NOT a failure; bare DriverError and transaction.LockHeld surface here.
+# rc 3 = OPERATIONAL error (runtime/environment/verification failure, e.g.
+# non-UTF-8 source, corrupt sidecar, apply-verification mismatch); raised as
+# DriverOpError. Usage / protocol errors (bad args, unknown verb, malformed
+# --turns/--kind, Stage1 contract violations) return EX_USAGE so a contract
+# drift surfaces as a hard failure instead of masquerading as a sentinel;
+# raised as DriverUsageError. 64 = sysexits.h EX_USAGE, byte-identical to
+# cli.py's EX_USAGE.
+EX_USAGE = 64
+
+
 class DriverError(Exception):
-    """A driver-level usage / state error (surfaced to the CLI as exit 2)."""
+    """A driver-level state SENTINEL (surfaced to the CLI as exit 2).
+
+    Bare `DriverError` (not one of the subclasses below) is a normal-data
+    state notice a caller consumes as data (e.g. "no .llmwiki marker" /
+    "no .llmwiki.txn sidecar" / a REFUSED / zero-match result) — NOT a
+    failure.
+    """
+
+
+class DriverUsageError(DriverError):
+    """A usage / protocol error (surfaced to the CLI as EX_USAGE=64).
+
+    Bad argv shape, malformed --turns/--kind input, or a Stage1 output that
+    violates its contract (e.g. a tier mismatch). Subclasses DriverError so
+    any caller still catching the base class keeps working, but `main()`
+    dispatches this to EX_USAGE via a most-specific-first except chain.
+    """
+
+
+class DriverOpError(DriverError):
+    """A runtime / environment / verification failure (exit 3).
+
+    Not a usage error and not a normal-data state sentinel: a non-UTF-8
+    source, a corrupt sidecar field, a missing optional dependency (duckdb),
+    or an apply-time verification mismatch. Subclasses DriverError for the
+    same backward-compat reason as DriverUsageError.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -316,7 +356,7 @@ def _resolve_kind(kind: str) -> str:
         return ORIGIN_FE_B_PRIME
     if kind == "fe_pi_log":
         return ORIGIN_FE_PI_LOG
-    raise DriverError(f"unknown --kind: {kind!r} (auto|fe_b|fe_b_prime|fe_pi_log)")
+    raise DriverUsageError(f"unknown --kind: {kind!r} (auto|fe_b|fe_b_prime|fe_pi_log)")
 
 
 def begin(wiki_root: str, source: str, *, kind: str = "auto",
@@ -368,7 +408,7 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         try:
             fe_b_content = Path(source).read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
-            raise DriverError(
+            raise DriverOpError(
                 f"source is not UTF-8 text (binary?): {source}") from exc
         fe_b_ext = Path(source).suffix.lstrip(".") or "txt"
     else:  # FE-B' / fe_pi_log (projection origins; table-dispatched, design B)
@@ -396,7 +436,7 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
             try:
                 extracted = json.loads(turns_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                raise DriverError(
+                raise DriverUsageError(
                     f"--turns file unreadable or not JSON: {turns}") from exc
             # Guard the sid<->turns pairing: the turn-JSON's sid must match the
             # source's sid (a mismatched pairing would silently mis-attribute a
@@ -408,7 +448,7 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
             turn_list = (extracted.get("turns") if isinstance(extracted, dict)
                          else extracted)
             if turns_sid is not None and turns_sid != sid:
-                raise DriverError(
+                raise DriverUsageError(
                     f"--turns sid mismatch: file is for {turns_sid!r} but source "
                     f"resolves to {sid!r}")
             # F-1: cross-origin --turns must fail closed. A flag drop/mixup
@@ -422,12 +462,12 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
             effective_turns_origin = (
                 turns_origin if turns_origin is not None else ORIGIN_FE_B_PRIME)
             if effective_turns_origin != origin:
-                raise DriverError(
+                raise DriverUsageError(
                     f"--turns origin mismatch: file is for "
                     f"{effective_turns_origin!r} but --kind resolves to "
                     f"{origin!r} (fail-closed, F-1)")
             if not isinstance(turn_list, list):
-                raise DriverError("--turns JSON must be a list or {sid, turns:[...]}")
+                raise DriverUsageError("--turns JSON must be a list or {sid, turns:[...]}")
         else:
             # Path A: run ONLY the extract half here (read-only: DuckDB / session
             # walk; NO wiki state — `ledger` is used solely for compute_hash).
@@ -622,15 +662,15 @@ def _load_touched(stage1_proposal: str) -> list[str]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise DriverError(f"stage1 proposal is neither a file nor JSON: {exc}") from exc
+        raise DriverUsageError(f"stage1 proposal is neither a file nor JSON: {exc}") from exc
     if isinstance(data, dict):
         touched = data.get("touched", [])
     elif isinstance(data, list):
         touched = data
     else:
-        raise DriverError("stage1 proposal JSON must be a list or {touched: [...]}")
+        raise DriverUsageError("stage1 proposal JSON must be a list or {touched: [...]}")
     if not all(isinstance(t, str) for t in touched):
-        raise DriverError("touched entries must be rel_path strings")
+        raise DriverUsageError("touched entries must be rel_path strings")
     return list(touched)
 
 
@@ -645,7 +685,7 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
         raise DriverError("no .llmwiki.txn sidecar; call begin first")
     k = int(state["apply_fanout_k"])
     if k <= 0:
-        raise DriverError(f"apply_fanout_k must be positive, got {k}")
+        raise DriverUsageError(f"apply_fanout_k must be positive, got {k}")
     touched = _load_touched(stage1_proposal)
     # #2 follow-up (tier enforcement in code, F2 principle): the derived-tier
     # prefix is a DETERMINISTIC function of the origin — projection origins
@@ -663,7 +703,7 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
         mis = [t for t in touched
                if not t.replace("\\", "/").startswith("wiki/derived/")]
         if mis:
-            raise DriverError(
+            raise DriverUsageError(
                 f"tier mismatch: origin {origin!r} writes the derived tier, so "
                 f"every Stage1 touched page must be under 'wiki/derived/'; "
                 f"got: {mis}")
@@ -702,7 +742,7 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
 def _log_header_for_origin(origin: str) -> tuple[str, str]:
     header_fn = _LOG_HEADER_BY_ORIGIN.get(origin)
     if header_fn is None:
-        raise DriverError(f"unknown origin in sidecar: {origin!r}")
+        raise DriverOpError(f"unknown origin in sidecar: {origin!r}")
     return header_fn()
 
 
@@ -710,7 +750,7 @@ def finish(wiki_root: str, outcome: str, *,
            expected_pages: "list[str] | None" = None,
            title: "str | None" = None) -> dict:
     if outcome not in ("success", "fail"):
-        raise DriverError(f"outcome must be success|fail, got {outcome!r}")
+        raise DriverUsageError(f"outcome must be success|fail, got {outcome!r}")
     root = Path(wiki_root)
 
     # reconstruct lock handle + checkpoint from the sidecar (zero LLM-threaded
@@ -759,7 +799,7 @@ def finish(wiki_root: str, outcome: str, *,
                     missing = [p for p in expected_pages
                                if not (root / Path(p)).exists()]
                     if missing:
-                        raise DriverError(
+                        raise DriverOpError(
                             f"expected pages missing on disk: {missing}")
                 else:
                     planned = state.get("planned_clusters") or []
@@ -767,7 +807,7 @@ def finish(wiki_root: str, outcome: str, *,
                     missing_clusters = [i for i in range(len(planned))
                                         if i not in applied]
                     if missing_clusters:
-                        raise DriverError(
+                        raise DriverOpError(
                             "cluster(s) never dispatched (no ingest-apply "
                             f"receipt): ordinals {missing_clusters} "
                             f"(planned {len(planned)}, applied {sorted(applied)})")
@@ -1137,7 +1177,7 @@ def _order_sids_by_started_ts(sids: list[str]) -> list[str]:
     try:
         import duckdb
     except ImportError as exc:  # pragma: no cover - declared in the PEP723 header
-        raise DriverError(f"duckdb unavailable for session-plan ordering: {exc}") from exc
+        raise DriverOpError(f"duckdb unavailable for session-plan ordering: {exc}") from exc
     try:
         con = duckdb.connect()
         # Reuse the projector's vendored views (single source of truth for the
@@ -1150,7 +1190,7 @@ def _order_sids_by_started_ts(sids: list[str]) -> list[str]:
             sids,
         ).fetchall()
     except Exception as exc:  # noqa: BLE001 - surface as a driver error
-        raise DriverError(f"session-plan ts ordering failed: {exc}") from exc
+        raise DriverOpError(f"session-plan ts ordering failed: {exc}") from exc
     started: dict[str, object] = {sid: ts for sid, ts in rows}
     # None-started sids sort last (True > False); then by ts, then by sid.
     return sorted(
@@ -1477,7 +1517,7 @@ def project_batch(wiki_root: str, sids: "list[str]", *,
     if mk is None:
         raise DriverError(f"no .llmwiki marker at {wiki_root} (not a wiki root)")
     if not sids:
-        raise DriverError("project-batch requires at least one sid")
+        raise DriverUsageError("project-batch requires at least one sid")
 
     # C3 step 2 backstop: prune stale (>24h) llmwiki-turns-* temp dirs left by a
     # crashed / interrupted prior loop before creating this run's dir (F4-safe).
@@ -1569,7 +1609,7 @@ def main(argv: "list[str] | None" = None) -> int:
               "<begin|plan-fanout|finish|apply-finish|abort|enumerate|"
               "session-plan|project-batch|project-batch-cleanup> ...",
               file=sys.stderr)
-        return 2
+        return EX_USAGE
     verb, rest = argv[0], argv[1:]
     # E3 compound verb: `apply-finish` owns its own arg parsing (repeated
     # `--manifest`, order = ordinal — the flat `_parse_opts` dict below would
@@ -1584,7 +1624,7 @@ def main(argv: "list[str] | None" = None) -> int:
     try:
         if verb == "begin":
             if len(pos) < 2:
-                raise DriverError("begin requires <root> <source>")
+                raise DriverUsageError("begin requires <root> <source>")
             result = begin(
                 pos[0], pos[1],
                 kind=opts.get("kind", "auto"),
@@ -1597,11 +1637,11 @@ def main(argv: "list[str] | None" = None) -> int:
             )
         elif verb == "plan-fanout":
             if len(pos) < 2:
-                raise DriverError("plan-fanout requires <root> <stage1_proposal_path_or_json>")
+                raise DriverUsageError("plan-fanout requires <root> <stage1_proposal_path_or_json>")
             result = plan_fanout(pos[0], pos[1])
         elif verb == "finish":
             if len(pos) < 2:
-                raise DriverError("finish requires <root> <outcome:success|fail>")
+                raise DriverUsageError("finish requires <root> <outcome:success|fail>")
             expected = opts.get("expected_pages")
             expected_pages = expected.split(",") if expected else None
             result = finish(pos[0], pos[1],
@@ -1609,15 +1649,15 @@ def main(argv: "list[str] | None" = None) -> int:
                             title=opts.get("title"))
         elif verb == "abort":
             if len(pos) < 1:
-                raise DriverError("abort requires <root>")
+                raise DriverUsageError("abort requires <root>")
             result = abort(pos[0])
         elif verb == "enumerate":
             if len(pos) < 2:
-                raise DriverError("enumerate requires <root> <glob>")
+                raise DriverUsageError("enumerate requires <root> <glob>")
             result = enumerate_files(pos[0], pos[1])
         elif verb == "session-plan":
             if len(pos) < 1:
-                raise DriverError(
+                raise DriverUsageError(
                     "session-plan requires <root> [--pj <name>] [--workspace] "
                     "[--scope <scope>]")
             # Accept both `--pj=name` and the spec's space form `--pj name`.
@@ -1635,28 +1675,41 @@ def main(argv: "list[str] | None" = None) -> int:
                                   scope=opts.get("scope"))
         elif verb == "project-batch":
             if len(pos) < 2:
-                raise DriverError("project-batch requires <root> <sid> [<sid>...]")
+                raise DriverUsageError("project-batch requires <root> <sid> [<sid>...]")
             result = project_batch(pos[0], pos[1:], kind=opts.get("kind", "auto"))
         elif verb == "project-batch-cleanup":
             if len(pos) < 1:
-                raise DriverError("project-batch-cleanup requires <out_dir>")
+                raise DriverUsageError("project-batch-cleanup requires <out_dir>")
             result = project_batch_cleanup(pos[0])
         else:
             print(f"unknown verb: {verb!r} "
                   "(begin|plan-fanout|finish|apply-finish|abort|enumerate|"
                   "session-plan|project-batch|project-batch-cleanup)",
                   file=sys.stderr)
-            return 2
+            return EX_USAGE
     except config_resolver.ConfigInconsistency as e:
+        # A resolved-config contract violation (D-c) — operational, not a
+        # usage error (the CLI args were fine) and not a normal-data
+        # sentinel (2026-07-16 D3).
         print(f"config-inconsistency: {e}", file=sys.stderr)
-        return 2
+        return 3
     except _PROJECTION_ERRORS as e:
         print(f"extract: {e}", file=sys.stderr)
         return 3
     except transaction.StaleJournal as e:
+        # Recoverable via `abort` — a state notice, not a failure (2026-07-16 D3).
         print(f"stale-journal: {e}", file=sys.stderr)
         return 2
+    except DriverUsageError as e:
+        print(str(e), file=sys.stderr)
+        return EX_USAGE
+    except DriverOpError as e:
+        print(str(e), file=sys.stderr)
+        return 3
     except (DriverError, transaction.LockHeld) as e:
+        # Bare DriverError (SENTINEL) and LockHeld (busy) are both normal-data
+        # state notices, not failures (2026-07-16 D3 — LockHeld unified with
+        # the :729 lock-ownership REFUSED sentinel).
         print(str(e), file=sys.stderr)
         return 2
 

@@ -27,9 +27,12 @@ Usage:
 The wiki root is resolved via wiki_root_resolver (prompt>pj>workspace>cwd);
 ``--root <path>`` is the top override. If nothing resolves, exit 2.
 
-Exit codes:
-    0 = success (server ran)
-    2 = error (no .llmwiki marker / port in use)
+Exit codes (theme1 i:39 contract, generalized 2026-07-16):
+    0  = success (server ran)
+    2  = SENTINEL (no wiki resolved / no .llmwiki marker — normal-data state
+         notice, not a failure)
+    3  = OPERATIONAL error (port already in use)
+    64 = EX_USAGE (usage/protocol error: --serve omitted, bad argv)
 """
 
 from __future__ import annotations
@@ -52,6 +55,14 @@ import nh3         # (PEP723 inline dep) — HTML sanitizer (stored-XSS hardenin
 
 SERVE_HOST = "127.0.0.1"   # never 0.0.0.0 — not externally reachable (plan §5-Q1 / R-3)
 DEFAULT_PORT = 17330       # proposal (plan §1-A); --port overrides
+
+# Exit-code contract (theme1 i:39, generalized to this entrypoint 2026-07-16).
+# rc 0 = success. rc 2 = SENTINEL (no wiki resolved — normal-data state notice
+# a caller consumes as data, NOT a failure). rc 3 = OPERATIONAL error (port
+# bind failure — a runtime/environment condition, not usage and not sentinel).
+# rc 64 = EX_USAGE (usage/protocol error: --serve omitted, bad argv), byte-
+# identical to cli.py's EX_USAGE.
+EX_USAGE = 64
 
 # Loopback Host allowlist (DNS-rebinding hardening). 127.0.0.1 binding keeps the
 # socket off the network, but a rebinding attacker points THEIR hostname at
@@ -445,7 +456,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Explicit wiki root (top override). If omitted, the wiki root is "
              "resolved by wiki_root_resolver (prompt>pj>workspace>cwd).",
     )
-    args = parser.parse_args(argv)
+    # argparse raises SystemExit(2) on a bad argument, which collides with our
+    # rc2 SENTINEL contract (:457's "no wiki resolved" is a genuine sentinel).
+    # Remap the argparse usage exit to EX_USAGE so a real usage error is not
+    # read as a sentinel; argparse also exits 0 for --help, passed through
+    # (2026-07-16 F5 — this wraps parse_args() itself, unlike cli.py's `_init`
+    # which wraps a delegate call, since here parse_args() runs inline).
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else EX_USAGE)
+        return EX_USAGE if code == 2 else code
 
     resolution = wiki_root_resolver.resolve(args.root)
     if resolution is None:
@@ -461,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.serve:
         print("error: --serve is required", file=sys.stderr)
-        return 2
+        return EX_USAGE
 
     handler = build_app(root)
     try:
@@ -475,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
             f"--port <other> (e.g. --port {args.port + 1}).",
             file=sys.stderr,
         )
-        return 2
+        return 3
 
     url = f"http://{SERVE_HOST}:{args.port}/"
     # summary line the skill greps (mirrors kanban's "serving" line)

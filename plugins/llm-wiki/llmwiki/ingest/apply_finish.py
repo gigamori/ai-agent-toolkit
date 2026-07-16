@@ -88,21 +88,22 @@ def _ws_origin(fe_origin: str) -> str:
 def _load_manifest(path: str) -> list:
     """Read + validate a manifest JSON file: a list of {rel_path, content} dicts.
 
-    Raises DriverError on an unreadable / non-JSON / wrong-shaped file so the
-    caller rolls the transaction back and reports (never a raw traceback).
+    Raises DriverUsageError (a malformed-input protocol violation, not a
+    normal-data sentinel) on an unreadable / non-JSON / wrong-shaped file so
+    the caller rolls the transaction back and reports (never a raw traceback).
     """
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ingest_driver.DriverError(
+        raise ingest_driver.DriverUsageError(
             f"manifest unreadable or not JSON: {path} ({exc})") from exc
     if not isinstance(data, list):
-        raise ingest_driver.DriverError(
+        raise ingest_driver.DriverUsageError(
             f"manifest must be a list of {{rel_path, content}}: {path}")
     for entry in data:
         if (not isinstance(entry, dict) or "rel_path" not in entry
                 or "content" not in entry):
-            raise ingest_driver.DriverError(
+            raise ingest_driver.DriverUsageError(
                 f"manifest entry must be {{rel_path, content}}: {path}")
     return data
 
@@ -268,6 +269,16 @@ def run_apply_finish_cli(argv: "list[str]") -> int:
         print(f"REJECTED {e.gate} {e.reason}", file=sys.stderr)
         print(json.dumps({"rolled_back": True}, ensure_ascii=False))
         return 1
+    except ingest_driver.DriverUsageError as e:
+        # Usage / protocol error (2026-07-16 F2): the transaction was NOT
+        # touched, so there is no rolled_back to report.
+        print(str(e), file=sys.stderr)
+        return EX_USAGE
+    except ingest_driver.DriverOpError as e:
+        # Operational (runtime/environment/verification) error (2026-07-16 F2):
+        # the transaction was NOT touched, so there is no rolled_back to report.
+        print(str(e), file=sys.stderr)
+        return 3
     except ingest_driver.DriverError as e:
         # Pre-flight setup error (no sidecar / no journal / foreign lock): the
         # transaction was NOT touched, so there is no rolled_back to report.
