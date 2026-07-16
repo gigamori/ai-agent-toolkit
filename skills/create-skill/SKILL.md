@@ -99,6 +99,18 @@ Security restrictions in frontmatter:
 - XML angle brackets (`<` `>`) are forbidden (frontmatter appears in system prompt; injection risk)
 - Some platforms reserve certain name prefixes — check your agent's restrictions
 
+**Always wrap string values in double quotes** — especially `description`. Frontmatter is parsed as YAML, where an unquoted value breaks the parse when it contains a `:` followed by a space, contains a `#`, or *starts* with an indicator character (`# > | - ! & * ? : [ ] { } @ %`). Quoting neutralizes all of these:
+
+```yaml
+# Breaks: the ": " after the first phrase is parsed as a mapping key/value separator
+description: Generate a db spec. Supported DB: BigQuery / Snowflake / Redshift
+
+# Works: the whole value is a single quoted string
+description: "Generate a db spec. Supported DB: BigQuery / Snowflake / Redshift"
+```
+
+Do not place a raw ASCII double quote (`"`) inside a double-quoted value — escape it as `\"`, or avoid it. After writing the frontmatter, validate that it parses (see Phase 4).
+
 ---
 
 ## Writing Effective Descriptions
@@ -330,7 +342,12 @@ If you have access to the AskQuestion tool, use it for efficient structured gath
    - Name does not conflict with platform-reserved prefixes
    - No `README.md` inside the skill folder
    - Folder name matches `name` field
-6. Test that the skill can be discovered and applied
+6. Validate that the frontmatter parses as YAML — run the bundled validator and confirm it prints `OK`:
+   ```bash
+   uv run --script scripts/validate_frontmatter.py path/to/skill/SKILL.md
+   ```
+   It checks that the frontmatter parses as YAML, that `name`/`description` are present, that `description` is ≤1024 chars with no `<`/`>`, and that `name` is kebab-case, ≤64 chars, and matches the folder name. If YAML parsing fails, the usual cause is an unquoted `description` — quote it (see "Security restrictions in frontmatter" above). If `uv`/`pyyaml` is unavailable, manually confirm every string value is double-quoted.
+7. Test that the skill can be discovered and applied
 
 For common issues and their solutions, see [security-and-troubleshooting.md](security-and-troubleshooting.md).
 

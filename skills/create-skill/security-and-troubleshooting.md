@@ -18,6 +18,12 @@ Allowed:
 - Custom metadata fields
 - Long descriptions (up to 1024 characters)
 
+Required — quote string values:
+- **Wrap every string value in double quotes**, especially `description`. This neutralizes the YAML-conflicting characters listed above, including a `:` followed by a space or a `#` mid-value, and any indicator character (`# > | - ! & * ? : [ ] { } @ %`) at the *start* of a value.
+- Do not place a raw `"` inside a double-quoted value; escape it as `\"` or omit it.
+- Example: `description: "Processes X. Supported: A / B / C."` — the unquoted form `description: Processes X. Supported: A / B / C.` fails to parse at `Supported:`.
+- After authoring, run `scripts/validate_frontmatter.py` (see SKILL.md Phase 4) to confirm the frontmatter parses.
+
 ### Folder Rules
 
 - No `README.md` inside the skill folder (all documentation goes in SKILL.md or references/)
