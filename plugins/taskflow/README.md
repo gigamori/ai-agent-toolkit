@@ -116,15 +116,19 @@ Invocation:
 
 | Method | Command | Result |
 |---|---|---|
-| Via skill | `/kanban` | Starts the server in the background at `http://localhost:17329/` (idempotent — reports `already serving` if one is running); prints the URL and the `--stop` command (does not block) |
+| Via skill | `/kanban` | Starts the server in the background at a workspace-derived `http://localhost:<port>/` (idempotent — reports `already serving` if one is running for this workspace); prints the URL and the `--stop` command (does not block) |
 | Via script (static) | `uv run scripts/generate_kanban.py` | Writes HTML to `/tmp/taskflow-kanban.html` |
 | Via script (serve) | `uv run scripts/generate_kanban.py --serve --open` | Starts server and opens browser |
+
+Each workspace's server binds a port derived from its `_projects` roots (base `17329`, span 64 — deterministic across processes via `hashlib`, so a later `--stop` from the same workspace finds the same server). Running `/kanban` from multiple VSCode workspaces at once no longer collides: each gets its own port, and `/health` carries a workspace-identity key so a same-port hash collision between two different workspaces is never mistaken for "already serving".
 
 Options for the script:
 
 - `--out PATH` — Write HTML to a custom path (default: system temp directory / `taskflow-kanban.html`)
-- `--serve` — Start an HTTP server on `localhost:17329`; endpoints: `/open?session=<UUID>` and `/open?prompt=<...>` (session / prompt launches), `/md?path=<file>` (sanitized Markdown render), `/file?path=<file>` (project-scoped image / attachment serving), `/health`
-- `--stop` — Stop a running `--serve` instance (by its `/health` pid)
+- `--serve` — Start an HTTP server on a workspace-derived port; endpoints: `/open?session=<UUID>` and `/open?prompt=<...>` (session / prompt launches), `/md?path=<file>` (sanitized Markdown render), `/file?path=<file>` (project-scoped image / attachment serving), `/health`
+- `--stop` — Stop this workspace's running `--serve` instance (by its `/health` pid)
+- `--stop --all` — Stop every kanban server across all workspaces
+- `--port PORT` — Use an explicit port instead of the derived one (applies to `--serve` and `--stop`)
 - `--open` — Open the result in the default browser after generation
 - `--scheme vscode|vscodium` — Override the URI scheme (default: auto-detect)
 

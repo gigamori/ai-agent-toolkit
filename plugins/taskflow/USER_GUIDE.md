@@ -214,7 +214,7 @@ Run `/kanban` to get a visual board of every project and task.
 
 ```mermaid
 flowchart LR
-    K["/kanban"] --> S["Local board at<br/>http://localhost:17329/"]
+    K["/kanban"] --> S["Local board at<br/>http://localhost:&lt;port&gt;/ (per workspace)"]
     S --> V1["By Status<br/>TODO · In Progress · Done"]
     S --> V2["By Project<br/>one column per project"]
     V1 --> L["Click a task → jump to its<br/>session log or a /progress action"]

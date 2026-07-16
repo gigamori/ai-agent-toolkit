@@ -20,6 +20,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import os
@@ -1056,9 +1057,92 @@ document.addEventListener('keydown',function(e){
 # ── main ───────────────────────────────────────────────────────────────────
 
 
-SERVE_PORT = 17329
+PORT_BASE = 17329
+PORT_SPAN = 64  # candidate ports: PORT_BASE .. PORT_BASE + PORT_SPAN - 1
+SERVE_PORT = PORT_BASE  # reassigned once resolved, in main()'s --serve path (D-notation: see spec)
 SESSION_RE = re.compile(r'^[0-9a-f-]+$')
 APP_ID = "taskflow-kanban"
+
+
+def _workspace_key(roots: list[Path]) -> str:
+    """Identity for a kanban server: the resolved roots it serves.
+
+    Same roots (any order) → same key → same derived port and "ours" match.
+    Different roots → different key, so a per-workspace server never mistakes
+    another workspace's server (even one occupying its hash-derived port) for
+    its own."""
+    return "\n".join(sorted(str(r.resolve()).lower() for r in roots))
+
+
+def _derive_port(key: str) -> int:
+    """Deterministic starting port for a workspace key.
+
+    Uses hashlib (not the builtin `hash()`, which is salted per-process via
+    PYTHONHASHSEED) so independent processes — e.g. a later `--stop` — derive
+    the same starting port for the same workspace."""
+    h = int(hashlib.sha1(key.encode("utf-8")).hexdigest(), 16)
+    return PORT_BASE + (h % PORT_SPAN)
+
+
+def _port_state_path(roots: list[Path], key: str) -> Path | None:
+    """Where this workspace's last-bound kanban port is recorded.
+
+    Lives under the primary root's ``_state/`` (same place session state
+    already lives). The filename embeds a short digest of the workspace key
+    so two workspaces that happen to share ``roots[0]`` (distinct secondary
+    roots) never collide on the same file; the record is also key-checked
+    before being trusted regardless (see `resolve_workspace_port`), so a
+    collision here would degrade to a wasted read, never a misattribution.
+    """
+    if not roots:
+        return None
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    return roots[0] / "_state" / f"kanban-port-{digest}.json"
+
+
+def _read_persisted_port(roots: list[Path], key: str) -> int | None:
+    """Last port this workspace successfully bound, if the record matches."""
+    path = _port_state_path(roots, key)
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("key") != key:
+        return None
+    port = data.get("port")
+    return port if isinstance(port, int) else None
+
+
+def _persist_port(roots: list[Path], key: str, port: int, pid: int) -> None:
+    """Record the port this workspace just bound (F1: so a server displaced
+    to a fallback slot by a hash collision is found directly next time,
+    instead of appearing to have vanished once the collision's occupant is
+    gone). Best-effort — a failed write only costs an extra derive+scan on
+    the next call, never a correctness problem (the record is re-verified by
+    probing before it is trusted)."""
+    path = _port_state_path(roots, key)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"key": key, "port": port, "pid": pid}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_persisted_port(roots: list[Path], key: str, port: int) -> None:
+    """Remove this workspace's port record after a clean `--stop` of it."""
+    path = _port_state_path(roots, key)
+    if path is None or not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("key") == key and data.get("port") == port:
+            path.unlink()
+    except (OSError, ValueError):
+        pass
 
 
 def script_version() -> str:
@@ -1080,18 +1164,29 @@ class KanbanServer(ThreadingHTTPServer):
     allow_reuse_address = False
 
 
-def port_status(port: int) -> tuple[str, dict | None]:
-    """Probe ``localhost:<port>/health`` → ``(state, info)``.
+def port_status(port: int, timeout: float = 2.0) -> tuple[str, dict | None]:
+    """Probe ``127.0.0.1:<port>/health`` → ``(state, info)``.
 
     state ∈ {"free", "ours", "foreign"}.  Nothing listening → free; our
-    /health signature → ours (info carries pid/version); any other response →
-    foreign (port occupied by an unrelated service).
+    /health signature → ours (info carries pid/version/key); any other
+    response → foreign (port occupied by an unrelated service).
+
+    Uses the literal IP (not ``localhost``) because ``KanbanServer`` binds
+    IPv4-only (``HTTPServer.address_family = AF_INET``); probing ``localhost``
+    lets the resolver additionally try the (here, unbound) IPv6 loopback
+    first, which on some Windows setups adds several seconds of pure refusal
+    latency before falling back to IPv4 — doubling the cost of every probe
+    for no benefit. ``timeout`` is shortened by callers that probe many
+    candidate ports in one pass (`resolve_workspace_port`'s collision-scan
+    fallback) — measured on this environment, even a *refused* localhost
+    connection can take ~2s to surface, so scanning a wide span at the
+    default timeout would make `--serve` startup unacceptably slow.
     """
     import urllib.error
     import urllib.request
-    url = f"http://localhost:{port}/health"
+    url = f"http://127.0.0.1:{port}/health"
     try:
-        with urllib.request.urlopen(url, timeout=2.0) as resp:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
             raw = resp.read(4096)
     except urllib.error.HTTPError:
         return ("foreign", None)
@@ -1106,6 +1201,76 @@ def port_status(port: int) -> tuple[str, dict | None]:
     return ("foreign", None)
 
 
+def resolve_workspace_port(
+    roots: list[Path], explicit_port: int = 0, scan_timeout: float = 0.5
+) -> tuple[int, str, dict | None]:
+    """Resolve the port this workspace's kanban server uses.
+
+    Returns ``(port, state, info)`` with ``state`` one of:
+      - ``"ours"``:  a server for this exact workspace (key match) is already
+        running on the returned port.
+      - ``"free"``:  the returned port is free to bind.
+      - ``"foreign"``: ``explicit_port`` is occupied by an unrelated service
+        (only reachable when ``explicit_port`` is given).
+      - ``"full"``: no free port and no "ours" match anywhere in the span
+        (only reachable when ``explicit_port`` is not given).
+
+    Without ``explicit_port``, first checks this workspace's persisted
+    last-bound port (if any — see `_read_persisted_port`), then falls back to
+    the derived port. Either check is a single probe, covering the common
+    case (nothing running yet, our own server at its natural slot, or our
+    own server previously displaced to a fallback slot by a hash collision)
+    without a wide scan. A persisted port that no longer answers as "ours"
+    (server stopped, crashed, or the port was reused) is simply stale and
+    falls through — self-healing on the next successful bind. Only when
+    neither check finds our server does it fall back to scanning the rest of
+    the span (at a shorter ``scan_timeout``) for either our server (should
+    both prior checks have missed it — belt and suspenders) or the next free
+    slot. Measured on Windows, even a *refused* loopback probe can take ~2s
+    to surface — unconditionally scanning the whole span on every invocation
+    would make `--serve` startup unacceptably slow for the overwhelmingly
+    common case."""
+    key = _workspace_key(roots)
+    if explicit_port:
+        state, info = port_status(explicit_port)
+        ours = state == "ours" and bool(info) and info.get("key") == key
+        return explicit_port, ("ours" if ours else state), info
+
+    persisted = _read_persisted_port(roots, key)
+    persisted_state: str | None = None
+    persisted_info: dict | None = None
+    if persisted is not None:
+        persisted_state, persisted_info = port_status(persisted)
+        if persisted_state == "ours" and persisted_info and persisted_info.get("key") == key:
+            return persisted, "ours", persisted_info
+        # stale record (server gone, or port reused) — fall through, but
+        # reuse this probe below if it happens to be the same as `start`.
+
+    start = _derive_port(key)
+    if start == persisted:
+        state, info = persisted_state, persisted_info  # already probed above
+    else:
+        state, info = port_status(start)
+    if state == "free":
+        return start, "free", None
+    if state == "ours" and info and info.get("key") == key:
+        return start, "ours", info
+
+    # start is occupied by something else (foreign, or another workspace's
+    # server that landed here via its own collision fallback) — rare path.
+    first_free = None
+    for i in range(1, PORT_SPAN):
+        port = PORT_BASE + ((start - PORT_BASE + i) % PORT_SPAN)
+        st, inf = port_status(port, timeout=scan_timeout)
+        if st == "ours" and inf and inf.get("key") == key:
+            return port, "ours", inf
+        if st == "free" and first_free is None:
+            first_free = port
+    if first_free is not None:
+        return first_free, "free", None
+    return start, "full", None
+
+
 def _report_already_serving(url: str, info: dict | None) -> None:
     pid = info.get("pid", "?") if info else "?"
     ver = info.get("version", "?") if info else "?"
@@ -1115,12 +1280,46 @@ def _report_already_serving(url: str, info: dict | None) -> None:
     )
 
 
-def stop_server(port: int) -> int:
-    """PH-5: stop a running kanban server via its /health pid."""
+def stop_server(
+    roots: list[Path], explicit_port: int = 0, stop_all: bool = False, scan_timeout: float = 0.5,
+) -> int:
+    """PH-5/D6: stop this workspace's kanban server via its /health pid.
+
+    ``stop_all`` scans the whole port span and stops every kanban server
+    found (any workspace) — a cleanup sweep independent of the workspace-key
+    matching used for the normal single-server stop. Uses the same short
+    ``scan_timeout`` as `resolve_workspace_port`'s collision fallback (see
+    its docstring — a full-span scan at the default probe timeout is
+    unacceptably slow on this environment)."""
     import signal as _signal
-    state, info = port_status(port)
+
+    if stop_all:
+        stopped = 0
+        for i in range(PORT_SPAN):
+            port = PORT_BASE + i
+            state, info = port_status(port, timeout=scan_timeout)
+            if state != "ours" or not info:
+                continue
+            pid = info.get("pid")
+            if not isinstance(pid, int):
+                continue
+            try:
+                os.kill(pid, _signal.SIGTERM)
+            except OSError as e:
+                print(f"[kanban] failed to stop port {port} pid {pid}: {e}", file=sys.stderr)
+                continue
+            print(f"[kanban] stopped kanban server on port {port} (pid {pid})", file=sys.stderr)
+            stopped += 1
+        if stopped == 0:
+            print("[kanban] no kanban servers running", file=sys.stderr)
+        return 0
+
+    port, state, info = resolve_workspace_port(roots, explicit_port)
     if state != "ours" or not info:
-        print(f"[kanban] no kanban server running on port {port}", file=sys.stderr)
+        print(
+            f"[kanban] no kanban server running for this workspace (checked port {port})",
+            file=sys.stderr,
+        )
         return 0
     pid = info.get("pid")
     if not isinstance(pid, int):
@@ -1131,7 +1330,8 @@ def stop_server(port: int) -> int:
     except OSError as e:
         print(f"[kanban] failed to stop pid {pid}: {e}", file=sys.stderr)
         return 1
-    print(f"[kanban] stopped kanban server (pid {pid})", file=sys.stderr)
+    _clear_persisted_port(roots, _workspace_key(roots), port)
+    print(f"[kanban] stopped kanban server on port {port} (pid {pid})", file=sys.stderr)
     return 0
 
 
@@ -1292,26 +1492,27 @@ def render_markdown_file(path: Path, roots: list[Path]) -> str:
     return html
 
 
-_HOST_ALLOWLIST = {
-    f"localhost:{SERVE_PORT}",
-    f"127.0.0.1:{SERVE_PORT}",
-    "localhost",
-    "127.0.0.1",
-    f"[::1]:{SERVE_PORT}",
-}
+def make_handler(
+    build_html, scheme: str, roots: list[Path], open_token: str = "", key: str = "", port: int = 0,
+):
+    host_allowlist = {
+        f"localhost:{port}",
+        f"127.0.0.1:{port}",
+        "localhost",
+        "127.0.0.1",
+        f"[::1]:{port}",
+    }
 
-
-def make_handler(build_html, scheme: str, roots: list[Path], open_token: str = ""):
     class KanbanHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             host = self.headers.get("Host", "")
-            if host not in _HOST_ALLOWLIST:
+            if host not in host_allowlist:
                 self._respond(403, b"forbidden")
                 return
             parsed = urlparse(self.path)
             if parsed.path == "/health":
                 payload = json.dumps(
-                    {"app": APP_ID, "pid": os.getpid(), "version": script_version()}
+                    {"app": APP_ID, "pid": os.getpid(), "version": script_version(), "key": key}
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1551,23 +1752,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--serve", action="store_true",
-        help=f"Serve on http://localhost:{SERVE_PORT}/ with /open?session=UUID endpoint",
+        help=f"Serve on a workspace-derived port (base {PORT_BASE}) with /open?session=UUID endpoint",
     )
     parser.add_argument(
         "--scheme", default="", help="URI scheme override: vscode or vscodium",
     )
     parser.add_argument(
         "--stop", action="store_true",
-        help="Stop a running kanban --serve instance (via its /health pid)",
+        help="Stop this workspace's running kanban --serve instance (via its /health pid)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=0,
+        help="Explicit port for --serve/--stop (default: derived from this workspace's _projects roots)",
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="With --stop, stop every kanban server across all workspaces",
     )
     args = parser.parse_args(argv)
 
+    roots = [r for r in _project_roots() if r.is_dir()]
+
     if args.stop:
-        return stop_server(SERVE_PORT)
+        if not roots and not args.all:
+            print("error: no _projects/ directory found", file=sys.stderr)
+            return 2
+        return stop_server(roots, args.port, stop_all=args.all)
 
     scheme = args.scheme or detect_scheme()
 
-    roots = [r for r in _project_roots() if r.is_dir()]
     if not roots:
         print("error: no _projects/ directory found", file=sys.stderr)
         return 2
@@ -1581,18 +1794,28 @@ def main(argv: list[str] | None = None) -> int:
     total = sum(len(p.tasks) for p in projects)
 
     if args.serve:
-        url = f"http://localhost:{SERVE_PORT}/"
-        state, info = port_status(SERVE_PORT)
+        global SERVE_PORT
+        key = _workspace_key(roots)
+        port, state, info = resolve_workspace_port(roots, args.port)
+        url = f"http://localhost:{port}/"
         if state == "ours":
             _report_already_serving(url, info)
             return 0
+        if state == "full":
+            print(
+                f"[kanban] no free port in {PORT_BASE}-{PORT_BASE + PORT_SPAN - 1} for this "
+                f"workspace; stop unused servers first (--stop --all)",
+                file=sys.stderr,
+            )
+            return 1
         if state == "foreign":
             print(
-                f"[kanban] port {SERVE_PORT} is in use by another service; not starting",
+                f"[kanban] port {port} is in use by another service; not starting",
                 file=sys.stderr,
             )
             return 1
 
+        SERVE_PORT = port
         open_token = secrets.token_urlsafe(16)
 
         def build_html():
@@ -1601,18 +1824,19 @@ def main(argv: list[str] | None = None) -> int:
                 uuid_idx.update(build_uuid_index(r / "_state"))
             projs, np, npt = load_projects(roots, uuid_idx)
             return render_html(projs, scheme, serve=True, no_project=np, no_project_total=npt, open_token=open_token)
-        handler = make_handler(build_html, scheme, roots, open_token)
+        handler = make_handler(build_html, scheme, roots, open_token, key=key, port=port)
         try:
-            server = KanbanServer(("localhost", SERVE_PORT), handler)
+            server = KanbanServer(("localhost", port), handler)
         except OSError as e:
             # PH-4: bind lost a race with a concurrent start; re-probe so the
             # message matches the P3 primary path instead of a raw bind error.
-            st2, inf2 = port_status(SERVE_PORT)
-            if st2 == "ours":
+            st2, inf2 = port_status(port)
+            if st2 == "ours" and inf2 and inf2.get("key") == key:
                 _report_already_serving(url, inf2)
                 return 0
-            print(f"[kanban] cannot bind port {SERVE_PORT}: {e}", file=sys.stderr)
+            print(f"[kanban] cannot bind port {port}: {e}", file=sys.stderr)
             return 1
+        _persist_port(roots, key, port, os.getpid())
         print(f"[kanban] serving {total} tasks at {url} (Ctrl+C to stop)", file=sys.stderr)
         open_browser(url)
         try:

@@ -214,7 +214,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    K["/kanban"] --> S["ローカルボード<br/>http://localhost:17329/"]
+    K["/kanban"] --> S["ローカルボード<br/>http://localhost:&lt;port&gt;/（ワークスペース毎）"]
     S --> V1["ステータス別<br/>TODO · In Progress · Done"]
     S --> V2["プロジェクト別<br/>1 プロジェクト 1 列"]
     V1 --> L["タスクをクリック → その<br/>セッションログ / /progress アクションへ"]

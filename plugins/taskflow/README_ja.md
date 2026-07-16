@@ -115,15 +115,19 @@ kanban ボードの特性:
 
 | 方法 | コマンド | 結果 |
 |---|---|---|
-| skill 経由 | `/kanban` | サーバーをバックグラウンドで `http://localhost:17329/` に起動（冪等 — 既に稼働中なら `already serving` を報告）し、URL と `--stop` コマンドを表示する（ブロックしない） |
+| skill 経由 | `/kanban` | サーバーをバックグラウンドでワークスペース由来の `http://localhost:<port>/` に起動（冪等 — このワークスペース向けに既に稼働中なら `already serving` を報告）し、URL と `--stop` コマンドを表示する（ブロックしない） |
 | script（静的） | `uv run scripts/generate_kanban.py` | HTML を `/tmp/taskflow-kanban.html` に出力 |
 | script（サーブ） | `uv run scripts/generate_kanban.py --serve --open` | サーバー起動＋ブラウザ自動起動 |
+
+各ワークスペースのサーバーは、その `_projects` roots から導出したポート（base `17329`・span 64、プロセスを跨いでも `hashlib` により決定論的 — 同一ワークスペースからの後続の `--stop` が同じサーバーを発見できる）で待受する。複数の VSCode ワークスペースで同時に `/kanban` を実行してもポートが衝突しなくなった：各ワークスペースが個別のポートを持ち、`/health` にワークスペース識別キーを含めることで、ポートのハッシュ衝突が起きても別ワークスペースのサーバーを「既に稼働中」と誤認しない。
 
 script のオプション:
 
 - `--out PATH` — HTML 出力先を指定（デフォルト：システム一時ディレクトリ / `taskflow-kanban.html`）
-- `--serve` — `localhost:17329` で HTTP サーバーを起動。endpoints：`/open?session=<UUID>`・`/open?prompt=<...>`（セッション・プロンプト起動）、`/md?path=<file>`（サニタイズ済み Markdown 描画）、`/file?path=<file>`（プロジェクト配下の画像・添付配信）、`/health`
-- `--stop` — 稼働中の `--serve` を停止（`/health` の pid 経由）
+- `--serve` — ワークスペース由来のポートで HTTP サーバーを起動。endpoints：`/open?session=<UUID>`・`/open?prompt=<...>`（セッション・プロンプト起動）、`/md?path=<file>`（サニタイズ済み Markdown 描画）、`/file?path=<file>`（プロジェクト配下の画像・添付配信）、`/health`
+- `--stop` — このワークスペースの稼働中 `--serve` を停止（`/health` の pid 経由）
+- `--stop --all` — 全ワークスペースの kanban サーバーをすべて停止
+- `--port PORT` — 導出ポートの代わりに明示ポートを使用（`--serve`／`--stop` 両対応）
 - `--open` — 生成後、デフォルトブラウザで自動起動
 - `--scheme vscode|vscodium` — URI scheme を上書き（デフォルト：自動検出）
 
