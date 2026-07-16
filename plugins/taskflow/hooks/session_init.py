@@ -52,23 +52,70 @@ GUIDELINES_FILES = [
 ]
 GUIDELINES_REMINDER_MD = os.path.join(PLUGIN_ROOT, 'prompts', 'guidelines_reminder.md')
 
-def detect_parent_session(transcript_path, session_id):
-  """Detect parent session_id for forked sessions via shared message uuid.
+PARENT_SCAN_LINES = 50  # transcript head lines scanned for parent detection
 
-  Fork copies all parent JSONL entries (with sessionId rewritten) but preserves
-  message uuids. If the first entry's uuid exists in another recent JSONL in
-  the same directory, that file's session is the parent.
+PARENT_MARKER_RE = re.compile(
+  r'\[Progress Session\] session_id='
+  r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+)
+
+
+def _first_user_entry(path, scan_lines=PARENT_SCAN_LINES):
+  """Return (timestamp, content-json) of the first type=user entry in the
+  head of a JSONL transcript, or None."""
+  try:
+    with open(path, 'r', encoding='utf-8') as f:
+      for _ in range(scan_lines):
+        line = f.readline()
+        if not line:
+          break
+        try:
+          entry = json.loads(line)
+        except json.JSONDecodeError:
+          continue
+        if not isinstance(entry, dict) or entry.get('type') != 'user':
+          continue
+        msg = entry.get('message')
+        if not isinstance(msg, dict):
+          continue
+        return (
+          entry.get('timestamp', ''),
+          json.dumps(msg.get('content'), sort_keys=True, ensure_ascii=False),
+        )
+  except OSError:
+    return None
+  return None
+
+
+def detect_parent_session(transcript_path, session_id):
+  """Detect parent session_id for forked sessions.
+
+  Fork copies all parent JSONL entries with sessionId — and, in current
+  Claude Code, message uuids — rewritten, so uuid comparison cannot identify
+  the parent. Two signals survive the copy instead:
+
+  1. The taskflow hook context injected in the parent, whose literal
+     `[Progress Session] session_id=<parent>` marker is preserved verbatim.
+     Scan the transcript head for a session_id other than our own.
+  2. The first user entry's (timestamp, message content), which the copy
+     preserves. Match it against the head entries of recent sibling JSONLs.
 
   Returns parent session_id string, or None if not a fork.
   """
   try:
     with open(transcript_path, 'r', encoding='utf-8') as f:
-      first_line = f.readline()
-    first_entry = json.loads(first_line)
-    target_uuid = first_entry.get('uuid')
-    if not target_uuid:
-      return None
-  except (OSError, json.JSONDecodeError):
+      for _ in range(PARENT_SCAN_LINES):
+        line = f.readline()
+        if not line:
+          break
+        for m in PARENT_MARKER_RE.finditer(line):
+          if m.group(1) != session_id:
+            return m.group(1)
+  except OSError:
+    return None
+
+  head = _first_user_entry(transcript_path)
+  if head is None:
     return None
 
   directory = os.path.dirname(transcript_path)
@@ -80,14 +127,8 @@ def detect_parent_session(transcript_path, session_id):
   for path in candidates:
     if os.path.abspath(path) == os.path.abspath(transcript_path):
       continue
-    try:
-      with open(path, 'r', encoding='utf-8') as f:
-        line = f.readline()
-      entry = json.loads(line)
-      if entry.get('uuid') == target_uuid:
-        return os.path.splitext(os.path.basename(path))[0]
-    except (OSError, json.JSONDecodeError):
-      continue
+    if _first_user_entry(path) == head:
+      return os.path.splitext(os.path.basename(path))[0]
   return None
 
 try:

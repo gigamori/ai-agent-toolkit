@@ -128,10 +128,26 @@ def extract_sessions(content: str) -> list[SessionRef]:
     log_m = re.search(
         r"<!-- @log:begin -->(.*?)<!-- @log:end -->", content, re.DOTALL
     )
-    if not log_m:
-        return []
+    if log_m:
+        region = log_m.group(1)
+    else:
+        # Tolerate a missing @log:end (marker destroyed by a hand edit): fall
+        # back to the span from @log:begin to the @notes block / EOF, so the
+        # task's session bindings survive the damage.
+        begin_m = re.search(r"<!-- @log:begin -->", content)
+        if not begin_m:
+            return []
+        region = content[begin_m.end():]
+        stop = re.search(
+            r"<!-- @notes:begin -->"
+            r"|<!-- auto-managed by taskflow note-link[^>]*-->"
+            r"|<!-- @notes:end -->",
+            region,
+        )
+        if stop:
+            region = region[:stop.start()]
     refs = []
-    for m in LOG_ENTRY_RE.finditer(log_m.group(1)):
+    for m in LOG_ENTRY_RE.finditer(region):
         refs.append(SessionRef(
             date=m.group(1),
             short_id=m.group(2),
@@ -237,6 +253,11 @@ def load_tasks(
                 return s[:10]
             created = _date(fm.get("created", ""))
             updated = _date(fm.get("updated", ""))
+            if "<!-- @log:begin -->" in content and "<!-- @log:end -->" not in content:
+                print(
+                    f"[kanban] warn: unbalanced @log markers (missing @log:end): {p}",
+                    file=sys.stderr,
+                )
             sessions = extract_sessions(content)
             for s in sessions:
                 entry = uuid_index.get(s.short_id)
@@ -310,7 +331,7 @@ def read_cc_session_first_message(path: Path) -> tuple[str, str]:
             and isinstance(msg, dict)
             and msg.get("role") == "user"
         )
-        if not is_user:
+        if not is_user or entry.get("isMeta"):
             continue
         content = msg.get("content")
         text = ""
@@ -321,6 +342,8 @@ def read_cc_session_first_message(path: Path) -> tuple[str, str]:
                 if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
                     text = str(b["text"])
                     break
+        if text.lstrip().startswith(("<local-command-", "<command-name>")):
+            continue
         if text:
             date = timestamp.split("T")[0][:10] if timestamp else ""
             return date, text.strip()[:72]

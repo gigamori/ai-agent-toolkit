@@ -64,6 +64,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from log_lock import log_lock  # noqa: E402
 from note_links import (  # noqa: E402
+    _AUTO_COMMENT,
+    NOTES_BEGIN,
+    NOTES_END,
     append_note_link,
     build_reverse_index,
     is_note_deliverable,
@@ -238,10 +241,47 @@ def log_block_has_sid(path, sid8):
     return f'[s:{sid8}]' in block
 
 
+def repair_log_markers(content):
+    """Conservatively restore region markers destroyed by a hand edit inside
+    `@log` (observed damage shape: an LLM Edit appends a log line by replacing
+    the `<!-- @log:end -->` / `<!-- @notes:begin -->` boundary and drops the
+    markers). Returns the repaired content, or None when the damage shape is
+    ambiguous (repair only when there is exactly one `@log:begin` and no
+    `@log:end`; anything else is left untouched).
+
+    - `<!-- @log:end -->` is re-inserted before the `@notes` block (its begin
+      marker, the auto-managed comment, or its end marker — whichever comes
+      first after `@log:begin`), or at EOF when no `@notes` block follows.
+    - `<!-- @notes:begin -->` is re-inserted before the auto-managed comment
+      when it is missing while the comment and `@notes:end` survive.
+    """
+    if content.count('<!-- @log:begin -->') != 1 or _LOG_END_RE.search(content):
+        return None
+    begin_at = content.index('<!-- @log:begin -->') + len('<!-- @log:begin -->')
+    if (NOTES_BEGIN not in content and _AUTO_COMMENT in content
+            and NOTES_END in content):
+        content = content.replace(_AUTO_COMMENT, f'{NOTES_BEGIN}\n{_AUTO_COMMENT}', 1)
+    anchor = len(content)
+    for marker in (NOTES_BEGIN, _AUTO_COMMENT, NOTES_END):
+        at = content.find(marker, begin_at)
+        if at != -1 and at < anchor:
+            anchor = at
+    tail = content[anchor:]
+    head = content[:anchor]
+    if head and not head.endswith('\n'):
+        head += '\n'
+    sep = '\n' if tail else ''
+    return head + '<!-- @log:end -->\n' + sep + tail
+
+
 def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pending'):
     """Code-append a `- <iso_ts> [s:<sid8>]: <note>` line immediately before the
     `<!-- @log:end -->` marker. Append-only; never edits existing lines.
     Returns True on success.
+
+    When `@log:end` is missing (marker destroyed by a hand edit), a
+    conservative `repair_log_markers` pass runs first; the repaired markers are
+    persisted together with the appended line.
 
     The read-modify-write is serialized through the shared bounded advisory lock
     (`log_lock`, INV-2). Residual gap: an LLM Edit-tool append at the tool layer
@@ -254,7 +294,13 @@ def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pendin
             return False
         m = _LOG_END_RE.search(content)
         if not m:
-            return False
+            repaired = repair_log_markers(content)
+            if repaired is None:
+                return False
+            content = repaired
+            m = _LOG_END_RE.search(content)
+            if not m:
+                return False
         line = f'- {iso_ts} [s:{sid8}]: {note}\n'
         insert_at = m.start()
         prefix = content[:insert_at]
