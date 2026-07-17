@@ -29,7 +29,7 @@ claude --plugin-dir ./plugins/llm-wiki
 
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki <verb> ...        # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|apply-finish|finish|abort|enumerate}
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|finish|apply-finish|abort|enumerate|session-plan|project-batch|project-batch-cleanup}
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve # markdown: ローカル HTML ビューア
 ```
 
@@ -253,7 +253,7 @@ plugins/llm-wiki/
     init/   wiki_init.py       # wiki 初期化
   bin/                         # CLI entrypoint（PEP 723 で依存宣言・uv run）
     llmwiki                    # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
-    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|apply-finish|finish|abort|enumerate}
+    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|finish|apply-finish|abort|enumerate|session-plan|project-batch|project-batch-cleanup}
     llmwiki-view               # markdown: view --serve
   pyproject.toml               # version / requires-python / extras(doc)。runtime は install しない
   templates/                   # 新しい wiki インスタンスの初期化元

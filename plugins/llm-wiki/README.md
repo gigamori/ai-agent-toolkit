@@ -29,7 +29,7 @@ The plugin's deterministic engine is a path-imported Python package (`llmwiki/`,
 
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki <verb> ...        # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|apply-finish|finish|abort|enumerate}
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest ... # duckdb:   ingest {begin|plan-fanout|finish|apply-finish|abort|enumerate|session-plan|project-batch|project-batch-cleanup}
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve # markdown: local HTML viewer
 ```
 
@@ -257,7 +257,7 @@ plugins/llm-wiki/
     init/   wiki_init.py       # wiki initializer
   bin/                         # CLI entrypoints (PEP 723 dep decls; uv run)
     llmwiki                    # dep-free: resolve-root scan-pages search file declare promote-check promote lint init marker-detect ingest-apply floor-check reindex
-    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|apply-finish|finish|abort|enumerate}
+    llmwiki-ingest             # duckdb:   ingest {begin|plan-fanout|finish|apply-finish|abort|enumerate|session-plan|project-batch|project-batch-cleanup}
     llmwiki-view               # markdown: view --serve
   pyproject.toml               # version / requires-python / extras(doc); runtime is not installed
   templates/                   # what a new wiki instance is initialized from
