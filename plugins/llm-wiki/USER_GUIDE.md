@@ -199,7 +199,9 @@ Answers aren't saved unless you ask. Two ways:
 ```
 
 Read-only. It checks the wiki's links and catalog for problems and hands you a
-prioritized list of "next questions" worth resolving. It never edits anything.
+prioritized list of "next questions" worth resolving. It never edits anything. It also
+flags transcript claims that don't carry a clear yes/no signal — currently English-only
+(see §7 if you work in Japanese transcripts).
 
 ### Browse it — `/wiki-view`
 
@@ -354,10 +356,22 @@ small/fast model it can drop a step partway — leaving the transaction open, ju
 interrupted import. Prefer a capable model for imports; to clear a stuck one, use the same
 `abort` shown above.
 
+**Ingesting a `.jsonl` file was refused.**
+A `.jsonl` file is refused by default unless it's recognized as a Claude Code or pi
+session log — llm-wiki won't silently treat an unrecognized `.jsonl` as plain text (a
+session log accidentally imported as generic text would corrupt the transcript trust
+boundary). If the file really is a plain-text `.jsonl` data file (not a session log),
+say so — the ingest retries treating it as plain text instead of guessing.
+
 **An import was rejected as "too large."**
 A single import that would write more pages than the configured limit (`max_count`, 100
-by default) is stopped and handed to you rather than silently writing hundreds of pages.
-Import a smaller slice, or raise the limit in `SCHEMA.md` if you really mean it.
+by default), or more total bytes than `max_bytes` (10 MiB by default), is stopped and
+handed to you rather than silently writing hundreds of pages. For a large import split
+into batches, the byte total is tracked *across the whole import*, not reset per batch,
+so a combined-over-limit import is still caught even when each individual batch looks
+small enough on its own. The same size limit also applies when you save a single answer
+as a page. Import a smaller slice, or raise the limit in `SCHEMA.md` if you really mean
+it.
 
 **A page write was refused.**
 Writes are only ever allowed inside `wiki/` and `wiki/derived/`. Attempts to write
@@ -368,6 +382,25 @@ design. This is the safety boundary working, not a bug.
 That just means the optional qmd backend wasn't available (not installed, still building,
 or empty) and the query used the normal page scan instead. Answers are still correct;
 run `/wiki-reindex` if you expected qmd to be active.
+
+**Re-ingesting an old source filed a second `raw/` copy instead of being recognized as a
+duplicate.**
+A 2026-07-17 fix corrected what redaction masks before a source is stored (URLs and a
+bare `~` are no longer treated as sensitive paths). Because the duplicate-detection hash
+is computed on the *redacted* text, a source you ingested before that fix will hash
+differently the next time you re-ingest it, so it's filed as a new source instead of
+recognized as the same one — a one-time effect; later re-ingests dedup normally again.
+Session-log ingestion's own duplicate tracking (the turn ledger) is separate and
+unaffected.
+
+**`/wiki-lint` flags every decision in a Japanese-language transcript.**
+The decision floor that `/wiki-lint` checks only recognizes English affirmation phrases
+("approved", "lgtm", "sounds good", …). On a Japanese transcript, every candidate
+decision currently fails that check and gets flagged — this is a known limitation
+(Japanese affirmation/negation isn't reliably detectable with the same approach), not a
+sign your wiki is broken. Treat flagged Japanese-transcript decisions as needing your own
+manual read rather than the floor's verdict; the floor still fails in the *safe*
+direction (over-flagging, never silently accepting a claim that wasn't actually agreed).
 
 ---
 

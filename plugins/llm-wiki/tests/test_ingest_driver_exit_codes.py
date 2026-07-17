@@ -147,10 +147,44 @@ def test_finish_no_sidecar_is_sentinel_rc2(tmp_path):
     assert drv.main(["finish", str(tmp_path), "fail"]) == 2
 
 
+def test_abort_ownership_mismatch_is_sentinel_rc2(tmp_path):
+    """P10: abort's ownership-mismatch refusal is a rc2 SENTINEL (raised
+    DriverError), not a silent rc0 {"aborted": false}."""
+    _init_wiki(tmp_path)
+    src = tmp_path.parent / "src3.txt"
+    src.write_text("owned by A", encoding="utf-8")
+    drv.main(["begin", str(tmp_path), str(src), "--kind=fe_b"])
+    (tmp_path / drv.transaction.LOCK_NAME).write_text(
+        json.dumps({"pid": 999999, "token": "FOREIGN"}), encoding="utf-8")
+    rc = drv.main(["abort", str(tmp_path)])
+    assert rc == 2
+    assert rc != drv.EX_USAGE
+
+
 def test_enumerate_zero_match_is_sentinel_rc2(tmp_path):
     _init_wiki(tmp_path)
     rc = drv.main(["enumerate", str(tmp_path), "*.no-such-ext"])
     assert rc == 2
+
+
+def test_begin_jsonl_auto_kind_is_sentinel_rc2(tmp_path):
+    """A-3 fail-closed kind gate (F-3): bare DriverError -> rc2, NOT EX_USAGE."""
+    _init_wiki(tmp_path)
+    src = tmp_path.parent / "some-sid.jsonl"
+    src.write_text('{"turns": []}\n', encoding="utf-8")
+    rc = drv.main(["begin", str(tmp_path), str(src)])     # no --kind
+    assert rc == 2
+    assert rc != drv.EX_USAGE
+
+
+def test_begin_jsonl_explicit_fe_b_is_not_sentinel(tmp_path):
+    """Contrast: an explicit --kind=fe_b on the same jsonl proceeds (rc0)."""
+    _init_wiki(tmp_path)
+    src = tmp_path.parent / "some-sid.jsonl"
+    src.write_text('{"turns": []}\n', encoding="utf-8")
+    rc = drv.main(["begin", str(tmp_path), str(src), "--kind=fe_b"])
+    assert rc == 0
+    drv.main(["abort", str(tmp_path)])     # file-hygiene cleanup
 
 
 # --------------------------------------------------------------------------- #

@@ -102,6 +102,20 @@ def test_directory_only_applies_text_allowlist(tmp_path):
     assert out["pattern"] == "docs/**/*"
 
 
+def test_enumerate_dir_keeps_jsonl(tmp_path):
+    # Scope guard (A-3, item 4): the text allowlist must KEEP .jsonl so a
+    # directory/glob over a log dir still surfaces session-log files, which the
+    # per-file `begin` fail-closed kind gate then refuses under auto (correct/
+    # loud). This pins the invariant against a future allowlist edit silently
+    # hiding logs from the refusal.
+    docs = tmp_path / "docs"
+    _touch(docs / "a.jsonl")
+    _touch(docs / "b.txt")
+
+    out = drv.enumerate_files(str(tmp_path), "docs/")
+    assert "docs/a.jsonl" in out["files"]
+
+
 def test_directory_only_without_trailing_slash(tmp_path):
     # A metacharacter-free token resolving to an existing dir is also dir-only.
     docs = tmp_path / "docs"

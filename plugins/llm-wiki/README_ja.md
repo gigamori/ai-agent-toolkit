@@ -56,7 +56,7 @@ wiki はプラグインの `templates/` から初期化される：
 - `SCHEMA.md` — wiki **契約**：規約 prose ＋ `config` と `doc_type_profiles` を持つ YAML frontmatter（8 つの doc type を全て seed、加えて必須の `default`）。
 - `index.md` — content-oriented なカタログ seed。
 - `log.md` — append-only ログ seed。grep 解析可能な `## [YYYY-MM-DD] <op>|<provenance-or-origin> | <Title>` prefix 規約。
-- `raw/` — 不変・redaction 済みのソースアーティファクト（id は content-hash。LLM は読むのみ）。
+- `raw/` — 不変・redaction 済みのソースアーティファクト（id は content-hash。LLM は読むのみ）。redaction は Windows drive-letter パス・UNC パス・POSIX system/home root・`~/...` などローカルパスのパターンと secret 様トークンをマスクする。URL（`https://...`）やパスを伴わない裸の `~` はマスクされない。
 - `wiki/` — LLM が執筆するページ。`wiki/` は source tier、`wiki/derived/` は未昇格の synthesis。
 
 ## active な wiki の解決
@@ -136,7 +136,9 @@ hook は `wiki:on|off` トグルも扱う：プロンプト中の `wiki:on`/`wik
 `/wiki-ingest`（および `/wiki-ingest-sessions`）は多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり 最後の `apply-finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
 
 - **Stage 1（extract）** — `wiki-ingest-extract` subagent が redaction 済み・untrusted の raw ソースを**構造的に書込ツールなし**で読み、提案編集のみを出力する。
-- **Stage 2（apply）** — `wiki-ingest-apply` subagent が**構造的に書込ツールなし**でページ更新を執筆し、page manifest として返す。orchestrator がそれらの manifest を allowlist write ツール（`llmwiki/write/write_tool.py`）に複合 `apply-finish` verb 経由で通す。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。その後 `apply-finish` が各 cluster の manifest を適用し、index / log / commit を join 後に中央集約する。提案された touch ページ集合の総数はまず `max_count` でゲートされる：これを超える ingest は fan-out せず human gate へエスカレートするため、per-worker の書込 budget が cluster 数だけ暗黙に乗算されることはない。
+- **Stage 2（apply）** — `wiki-ingest-apply` subagent が**構造的に書込ツールなし**でページ更新を執筆し、page manifest として返す。orchestrator がそれらの manifest を allowlist write ツール（`llmwiki/write/write_tool.py`）に複合 `apply-finish` verb 経由で通す。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。その後 `apply-finish` が各 cluster の manifest を適用し、index / log / commit を join 後に中央集約する。提案された touch ページ集合の総数はまず `max_count` でゲートされる：これを超える ingest は fan-out せず human gate へエスカレートするため、per-worker の書込 budget が cluster 数だけ暗黙に乗算されることはない。fan-out 時、各 cluster の worker はコード算出の絶対 manifest パス（`plan-fanout` が返す `manifest_paths`）も受け取るため、temp ファイルパスを自分で再構成する必要がない。
+
+`begin` は `.jsonl` ソースに対し fail-closed：`--kind` が省略または `auto` で、ソースパスが `.jsonl` で終わる場合、`begin` はそれを（lock も書込も一切行わず）ingest 拒否する — session log を暗黙に plain text 扱いしない。`--kind=fe_b_prime`（cc-log transcript）、`--kind=fe_pi_log`（pi-log transcript）、または明示的な `--kind=fe_b` を渡して plain-text の `.jsonl` DATA ファイルとして ingest する。glob/ディレクトリバッチ（テキスト系 allowlist は `.jsonl` を含んだまま）では、この拒否に当たったファイルはサマリで単に `failed` として数えられ、実行は続行する。
 
 cc-log（FE-B'）入力は `doc_type=transcript` に pin され、決定的な decision floor（`llmwiki/ingest/transcript_floor.py`、`llmwiki floor-check` として起動）が掛かる：claim は明示的な affirmative token がある時のみ decision として記録され、沈黙は非承認として扱う。
 
@@ -179,6 +181,8 @@ dispatch し、全列挙の代わりに関連度上位 k の ranked なページ
 
 read-only。決定的な link / index グラフ検査（`llmwiki/lint/link_lint.py`、`llmwiki/core/wiki_index.py`、`llmwiki lint` として起動）に加え transcript 限定の型別 lint（v1）を実行し、優先順位付きの「next questions」リストを報告する。書込は一切しない。
 
+transcript decision floor の affirmative-token 判定（`AFFIRMATIVE_TOKENS`、`transcript_floor.py`）は**英語専用**。日本語の transcript では、現状すべての `decisions` 候補がこのチェックに失敗し `FLOOR-VIOLATION` を発火する — floor は日本語コンテンツに対して事実上 inert であり、代わりに手動判断が必要になる。これは既知・受容済みの制限（日本語の肯定/否定は主に postfix であり、同じ token 方式では確実に検出できない）であり、不具合ではない。fail する方向は保守的（over-flag であり、false-admit ではない）に保たれる。
+
 ### Promote — `/wiki-promote <wiki/derived/X.md>`
 
 derived な synthesis ページを source tier へ昇格する（`wiki/derived/X.md → wiki/X.md`）。コード駆動の move ＋ inbound link-rewrite（`llmwiki/write/promote.py`）で、明示的な人間承認と contamination チェックでゲートされる。フローは read-only verb と write verb に分割される：`llmwiki declare`（Step1 解決値宣言）、read-only `llmwiki promote-check`（Step2 承認**前**の contamination preview、move しない）、`llmwiki promote`（Step3 move、承認**後**のみ）。derived から source tier への唯一の経路。
@@ -213,6 +217,8 @@ config は `SCHEMA.md` frontmatter（wiki-local）にあり、Claude Code の設
 | `qmd_page_threshold` | `100` | wiki のページ数がこれを超える時のみ qmd を使う（以下は index 直） |
 
 ingest のジャーナル checkpoint は毎回取得する（D14）：`write_mode` は「書込適用前に確認を出すか」のみを制御する。エンジンは git に commit することはない。
+
+`max_bytes` は書込ごとではなく**累積**で強制される：fan-out した ingest（`apply_fanout_k`）では、同一トランザクション内の全 cluster を跨いで byte 累計が引き継がれるため、各 cluster が個別には上限内でも合算で budget を超える fan-out は拒否される（`REJECTED budget`、トランザクション全体がロールバック）。同じ budget は直接のページ書込（`file` verb。例：query 回答の filing）にも掛かり、ハードコードの default ではなく wiki の設定済み `max_count`/`max_bytes` を使う。
 
 ## ファイル構成
 

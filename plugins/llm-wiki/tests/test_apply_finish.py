@@ -50,6 +50,33 @@ def _init_wiki(tmp_path):
     (tmp_path / "log.md").write_text("# Log\n", encoding="utf-8")
 
 
+_SCHEMA_TINY_BYTES = """---
+config:
+  activation_scope: scoped
+  read_grounding:  implicit
+  write_mode:      explicit
+  write_autocommit: auto
+  override_scope:  operation
+  apply_fanout_k:  10
+  max_count:       100
+  max_bytes:       100
+---
+# SCHEMA
+"""
+
+
+def _init_wiki_tiny_bytes(tmp_path):
+    # DEC-BUD-1=A / B-1: mirrors _init_wiki but with a TINY max_bytes (100) so a
+    # 3-cluster fixture can trip the CROSS-cluster carried ceiling while each
+    # cluster individually stays under budget. Does NOT mutate the shared
+    # _SCHEMA constant (other tests depend on max_bytes=10485760).
+    (tmp_path / ".llmwiki").write_text("version: 1\nschema: SCHEMA.md\n",
+                                       encoding="utf-8")
+    (tmp_path / "SCHEMA.md").write_text(_SCHEMA_TINY_BYTES, encoding="utf-8")
+    (tmp_path / "index.md").write_text("# Index\n", encoding="utf-8")
+    (tmp_path / "log.md").write_text("# Log\n", encoding="utf-8")
+
+
 def _manifest_file(tmp_path, name, entries):
     """Write a manifest JSON [{rel_path, content}] OUTSIDE the wiki root."""
     path = tmp_path.parent / name
@@ -197,3 +224,65 @@ def test_apply_finish_refuses_foreign_lock(tmp_path):
     assert not (tmp_path / "wiki" / "a.md").exists()
     # Clean up our still-open transaction.
     (tmp_path / tx.LOCK_NAME).unlink()
+
+
+# --------------------------------------------------------------------------- #
+# B-1 (DEC-BUD-1=A): cross-cluster byte carry. Each of 3 clusters is
+# INDIVIDUALLY under max_bytes, but the COMBINED total trips the gate on the
+# 3rd cluster -> REJECTED budget, full rollback, no partial pages.
+# --------------------------------------------------------------------------- #
+def test_apply_finish_cross_cluster_combined_over_budget_rolls_back(tmp_path, capsys):
+    _init_wiki_tiny_bytes(tmp_path)   # max_bytes: 100
+    clusters = _begin_and_plan(
+        tmp_path, ["wiki/a.md", "wiki/b.md", "wiki/c.md"], k="1")
+    assert clusters == [["wiki/a.md"], ["wiki/b.md"], ["wiki/c.md"]]
+
+    body = "x" * 40   # 40 bytes each; individually << 100
+    m0 = _manifest_file(tmp_path, "c0.json",
+                        [{"rel_path": "wiki/a.md", "content": body}])
+    m1 = _manifest_file(tmp_path, "c1.json",
+                        [{"rel_path": "wiki/b.md", "content": body}])
+    m2 = _manifest_file(tmp_path, "c2.json",
+                        [{"rel_path": "wiki/c.md", "content": body}])
+    # cluster0: 0 + 40 = 40 (ok); cluster1: 40 + 40 = 80 (ok);
+    # cluster2: 80 + 40 = 120 > 100 -> WriteRejected("budget").
+
+    rc = af.run_apply_finish_cli(
+        [str(tmp_path), "fe_b", "--manifest", m0, "--manifest", m1,
+         "--manifest", m2])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"rolled_back": True}
+    assert "REJECTED budget" in captured.err
+    # No partial pages: cluster0/1's already-committed pages are rolled back too.
+    assert not (tmp_path / "wiki" / "a.md").exists()
+    assert not (tmp_path / "wiki" / "b.md").exists()
+    assert not (tmp_path / "wiki" / "c.md").exists()
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / tx.JOURNAL_DIR).exists()
+
+
+def test_apply_finish_cross_cluster_under_combined_budget_succeeds(tmp_path, capsys):
+    # Negative twin: SAME 3 manifests (40 bytes each, 120 combined), but a wiki
+    # with the DEFAULT max_bytes (10485760, from _init_wiki) -> all three
+    # clusters commit. Proves the carry (not a per-cluster limit) is what fires
+    # in the sibling test above.
+    _init_wiki(tmp_path)   # max_bytes: 10485760
+    _begin_and_plan(tmp_path, ["wiki/a.md", "wiki/b.md", "wiki/c.md"], k="1")
+
+    body = "x" * 40
+    m0 = _manifest_file(tmp_path, "g0.json",
+                        [{"rel_path": "wiki/a.md", "content": body}])
+    m1 = _manifest_file(tmp_path, "g1.json",
+                        [{"rel_path": "wiki/b.md", "content": body}])
+    m2 = _manifest_file(tmp_path, "g2.json",
+                        [{"rel_path": "wiki/c.md", "content": body}])
+
+    rc = af.run_apply_finish_cli(
+        [str(tmp_path), "fe_b", "--manifest", m0, "--manifest", m1,
+         "--manifest", m2])
+    assert rc == 0
+    assert (tmp_path / "wiki" / "a.md").read_text(encoding="utf-8") == body
+    assert (tmp_path / "wiki" / "b.md").read_text(encoding="utf-8") == body
+    assert (tmp_path / "wiki" / "c.md").read_text(encoding="utf-8") == body

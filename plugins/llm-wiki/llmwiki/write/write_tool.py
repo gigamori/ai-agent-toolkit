@@ -46,7 +46,6 @@ from pathlib import PurePosixPath, Path
 WIKI_DIR = "wiki"
 DERIVED_PREFIX = "wiki/derived/"
 PROTECTED_NAMES = {"SCHEMA.md", ".llmwiki"}
-PROTECTED_PREFIXES = ("raw/", "raw\\")
 
 
 class WriteRejected(Exception):
@@ -95,6 +94,11 @@ def classify_target(rel_path: str) -> TargetCheck:
     # Must be a page file (a .md), not the wiki dir itself.
     if norm in (WIKI_DIR, DERIVED_PREFIX.rstrip("/")):
         return TargetCheck(False, f"not a page file: {rel_path}", "path")
+    # DEC-MD-1 (P10, ENFORCE): scan_pages/lint/index only ever see .md pages,
+    # so a non-.md target inside wiki/ is invisible to every downstream
+    # consumer — reject it here instead of silently landing an orphan file.
+    if not norm.endswith(".md"):
+        return TargetCheck(False, f"not a page file: {rel_path}", "path")
     return TargetCheck(True)
 
 
@@ -114,6 +118,10 @@ class WriteSession:
     max_count: int = 100
     max_bytes: int = 10 * 1024 * 1024
     origin: str = "source"   # "source" | "derived" — derived edits go wiki/derived/ only
+    # DEC-BUD-1=A: bytes already consumed by PRIOR clusters in the same fanout
+    # transaction. Default 0 -> single-session callers (file verb, ingest-apply)
+    # unchanged. apply_finish threads the cumulative running total in here.
+    initial_bytes: int = 0
     ops: list = field(default_factory=list)
     _bytes: int = 0
 
@@ -132,7 +140,7 @@ class WriteSession:
             raise WriteRejected(
                 f"budget overflow: count > {self.max_count}", "budget")
         size = len(content.encode("utf-8"))
-        if self._bytes + size > self.max_bytes:
+        if self.initial_bytes + self._bytes + size > self.max_bytes:
             raise WriteRejected(
                 f"budget overflow: total bytes > {self.max_bytes}", "budget")
         op = WriteOp(rel_path=rel_path.replace("\\", "/"), content=content)

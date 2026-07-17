@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """UserPromptSubmit hook: wiki-active marker injection (D8, design §4 起動 / §6 F2).
 
 Resolves the active wiki via `wiki_root_resolver.resolve(cwd=<hook cwd>)` so

@@ -40,7 +40,8 @@ PH_ABSPATH = "«REDACTED:ABS_PATH»"
 class Flag:
     kind: str          # "secret" | "abs_path"
     placeholder: str   # token substituted in
-    preview: str       # short, already-masked preview for the human gate
+    preview: str       # masked full-line snippet for the human gate (DEC-RED-1=A)
+    line_no: int = 0   # 1-based line of the match in the (pre-substitution) text
 
 
 @dataclass
@@ -92,20 +93,49 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
 # NOT masked (too many false positives on URLs / markdown), but home-rooted and
 # system-rooted absolutes are.
 _ABSPATH_PATTERNS: list[re.Pattern] = [
-    re.compile(r"[A-Za-z]:[\\/][^\s'\"<>|]*"),          # drive-letter
+    re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s'\"<>|]*"),  # drive-letter
     re.compile(r"\\\\[^\s'\"<>|]+"),                     # UNC
     re.compile(
         r"(?<![\w/])/(?:home|Users|root|etc|usr|var|tmp|opt|mnt|srv)"
         r"(?:/[^\s'\"<>|]*)?"
     ),                                                   # POSIX system/home roots
-    re.compile(r"~(?:/[^\s'\"<>|]*)?"),                  # ~ home shorthand
+    re.compile(r"~/[^\s'\"<>|]*"),                       # ~ home shorthand
 ]
+
+
+def _mask_all(text: str) -> str:
+    """Mask ALL secret + abs-path patterns in a text fragment.
+
+    Used to build `Flag.preview` so a sibling match of the same (or any
+    other) pattern on the same line never leaks its raw bytes into the
+    preview surface (F1 fix, DEC-RED-1 posture).
+    """
+    out = text
+    for _kind, pat in _SECRET_PATTERNS:
+        out = pat.sub(PH_SECRET, out)
+    for pat in _ABSPATH_PATTERNS:
+        out = pat.sub(PH_ABSPATH, out)
+    return out
 
 
 def _apply(text: str, kind: str, placeholder: str, pattern: re.Pattern,
            flags: list[Flag]) -> str:
     def _sub(m: re.Match) -> str:
-        flags.append(Flag(kind=kind, placeholder=placeholder, preview=placeholder))
+        s = m.string
+        start, end = m.start(), m.end()
+        line_no = s.count("\n", 0, start) + 1
+        line_start = s.rfind("\n", 0, start) + 1     # 0 if no prior newline
+        line_end = s.find("\n", end)
+        if line_end == -1:
+            line_end = len(s)
+        # Build the preview from the line slice with ALL patterns applied,
+        # not just this match's span — otherwise a sibling match of the same
+        # (or another) pattern on the same line leaks its raw bytes (F1).
+        preview = _mask_all(s[line_start:line_end]).strip()
+        if len(preview) > 120:
+            preview = preview[:120]
+        flags.append(Flag(kind=kind, placeholder=placeholder,
+                          preview=preview, line_no=line_no))
         return placeholder
 
     return pattern.sub(_sub, text)

@@ -11,14 +11,14 @@ model: sonnet
 
 > **lint never writes — it only reports** (graph findings + "next questions"), and
 > type-specific lint exists ONLY for `transcript` in v1; every other `doc_type`
-> degrades to the `default` profile rather than inventing rules. (05-plan §3.5;
-> design D11; §4 :138.)
+> degrades to the `default` profile rather than inventing rules.
+> <!-- design: 05-plan §3.5; D11; §4 :138 -->
 
 You are read-only. You have no Write/Edit/Bash tool, and you must not mutate any wiki
 file (not `index.md`, not `log.md`, not pages). If any step would write, STOP and
 report `[BLOCKED: lint must not write]`.
 
-## Step 1 — Interpret the deterministic graph / index findings (code output; 05-plan §3.1 step 1)
+## Step 1 — Interpret the deterministic graph / index findings (code output) <!-- design: 05-plan §3.1 step 1 -->
 
 The orchestrator has ALREADY run the deterministic code checks (the `lint` verb) and
 hands you their output verbatim as `$LINT_OUTPUT`. You do NOT execute anything and do
@@ -27,11 +27,11 @@ input: `missing-crossrefs:` (`link_lint.lint` — `[(src_rel_path, target_name),
 `orphans:` (`[rel_path, ...]`), then `wiki_index.check_integrity` as `integrity-ok:`,
 `index-missing:` / `index-stale:`, and `tier-mismatch:`.
 
-## Step 2 — Type-specific lint (v1: transcript ONLY; 05-plan §3.1 step 2)
+## Step 2 — Type-specific lint (v1: transcript ONLY) <!-- design: 05-plan §3.1 step 2 -->
 
 For pages with `doc_type == transcript`, apply the decision-rule floor. This is a
-`[混在]` step (design §5): the **rule frame is code**, the **meaning judgment is
-yours**. You own isolating which span is the candidate `decisions` claim (and the
+`[混在]` step: the **rule frame is code**, the **meaning judgment is
+yours**. <!-- design: §5 --> You own isolating which span is the candidate `decisions` claim (and the
 deciding speaker); the CODE owns the deterministic affirmative-token check that is
 the R5 backstop — do NOT re-decide token presence in prose, and do NOT attempt to
 run the check yourself. The deterministic check body (the `floor-check` verb over
@@ -55,7 +55,7 @@ are appended to your report by the orchestrator.
 Every `FLOOR-VIOLATION` line is a decision-floor violation: the claim lacks an
 explicit affirmative token from the deciding speaker, so silence / absence of
 objection was treated as affirmation. It belongs under "intent changes" or
-"outstanding items", not "decisions" (compact2.md:69-70; design R5/D11). This
+"outstanding items", not "decisions". <!-- design: compact2.md:69-70; R5/D11 --> This
 code check DETECTS decision-floor violations after the fact — lint is read-only
 and runs after the write, so it flags a non-admissible `decisions` claim rather
 than stopping or preventing the write or the factualization. The SCHEMA.md
@@ -66,7 +66,7 @@ R9 posture this floor is detection, not prevention.
 
 For EVERY other `doc_type` (article/paper/spec/runbook/incident/policy/guide and
 `default`): do NOT fabricate type-specific rules — they use the `default` profile
-in v1 (D11). Report only the deterministic graph/index findings for those pages.
+in v1. <!-- design: D11 --> Report only the deterministic graph/index findings for those pages.
 
 ## Step 3 — Report "next questions" (LLM; no writes)
 

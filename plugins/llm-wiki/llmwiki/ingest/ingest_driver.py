@@ -399,6 +399,27 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
     if mk is None:
         raise DriverError(f"no .llmwiki marker at {wiki_root} (not a wiki root)")
 
+    # 1b) A-3 fail-closed kind gate (DEC-KIND-1 = Option A / F-3). A session-log
+    #     `.jsonl` source under auto/empty --kind must NOT be silently ingested as
+    #     plain text (FE-B) — that trust-tier decision belongs to the caller, not
+    #     an implicit default (the finding). Inspect the RAW --kind string HERE,
+    #     BEFORE _resolve_kind (which conflates explicit `fe_b` with auto): gate on
+    #     ("auto", "", None) ONLY, so an EXPLICIT --kind=fe_b (or fe_b_prime /
+    #     fe_pi_log) bypasses while auto/empty does not. Refuse with a BARE
+    #     DriverError -> rc2 SENTINEL (NOT EX_USAGE): this is data-dependent ("this
+    #     source needs an explicit flag"), which the glob/dir loop consumes as a
+    #     per-file `failed` and continues (G-f); EX_USAGE stays reserved for
+    #     argv/protocol drift. Raised before acquire_lock, so nothing is locked or
+    #     written. Kind tokens are the real ORIGIN_* CLI values (fe_b_prime cc log,
+    #     fe_pi_log pi log, fe_b plain text).
+    if kind in ("auto", "", None) and Path(source).suffix.lower() == ".jsonl":
+        raise DriverError(
+            f"jsonl source under --kind=auto: {source} looks like a session log; "
+            "refusing to ingest it implicitly as plain text. Pass "
+            "--kind=fe_b_prime (cc log), --kind=fe_pi_log (pi log), or an explicit "
+            "--kind=fe_b to ingest this jsonl as a plain-text data file."
+        )
+
     # 2) config_resolver.resolve_all + declare_all.
     wiki_config = config_resolver.load_config(mk.schema_path)
     prompt_values: dict[str, str] = {}
@@ -665,7 +686,8 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         # C1: begin auto-closed the txn on a dedup no-op (rollback + release_lock
         # above), so the caller must NOT run finish — true iff dedup_noop.
         "auto_closed": fe.exists,
-        "redaction_flags": [asdict(f) for f in fe.redaction_flags],
+        "redaction_flags": [asdict(f) for f in fe.redaction_flags[:20]],
+        "flags_total": len(fe.redaction_flags),
         # FE-B' per-run ledger-skipped TURN count (F6): how many projected turns
         # were dropped because a prior ingest already owns them (turn-content-hash
         # ledger diff). Surfaced so the Path B loop (wiki-ingest-sessions.md) can sum
@@ -768,6 +790,25 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
     else:
         num = math.ceil(n / k)
         clusters = [touched[i * k:(i + 1) * k] for i in range(num)]
+    # B-6 (F-2): one code-authored ABSOLUTE manifest path per cluster ordinal, so
+    # the orchestrator/worker never reconstructs a temp path across turns (same
+    # defect class + rationale as #1 stage1_blob_path above). Directory, uniform
+    # over ALL _load_touched input forms: a FILE-path proposal inherits the blob's
+    # dir (Path A system temp / Path B $OUT_DIR, so the manifest rides the
+    # project-batch-cleanup sweep on Path B); an inline-JSON / bare-list proposal
+    # (legacy/direct callers, no parent dir) falls back to the system temp dir.
+    # Filename keys the txn's fe_hash[:12] (already in the sidecar `state`) + the
+    # 0-based ordinal (== cluster list INDEX == the ordinal `finish` checks).
+    manifest_dir = (
+        Path(stage1_proposal).parent
+        if Path(stage1_proposal).is_file()
+        else Path(tempfile.gettempdir())
+    )
+    fe_hash12 = str(state.get("fe_hash", ""))[:12]
+    manifest_paths = [
+        str(manifest_dir / f"manifest-{fe_hash12}-{i}.json")
+        for i in range(len(clusters))
+    ]
     # C2 (Option C): persist the planned cluster set so `finish` can prove every
     # cluster was dispatched. The 0-based ordinal is the list INDEX of each
     # cluster in `planned_clusters`; `ingest-apply` appends that ordinal to
@@ -776,7 +817,7 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
     # transaction keys — journal_dir, lock_token, pending_ledger_entries, ...).
     state["planned_clusters"] = clusters
     _write_sidecar(root, state)
-    return {"clusters": clusters}
+    return {"clusters": clusters, "manifest_paths": manifest_paths}
 
 
 # --------------------------------------------------------------------------- #
@@ -921,9 +962,14 @@ def abort(wiki_root: str) -> dict:
         actual_token = transaction.read_lock_token(root)
         if (expected_token is not None and actual_token is not None
                 and expected_token != actual_token):
-            return {"aborted": False,
-                    "message": "lock ownership mismatch; residue belongs to a "
-                               "different ingest — not aborting"}
+            # P10: this is a REFUSAL (residue belongs to a different ingest),
+            # not a successful no-op — raise the bare DriverError SENTINEL
+            # (rc2 via main()'s bare-DriverError handler) instead of a rc0
+            # {"aborted": false}, matching finish()'s ownership-mismatch
+            # DriverError (:854) for the same DEC-R1=D check.
+            raise DriverError(
+                "lock ownership mismatch; residue belongs to a "
+                "different ingest — not aborting")
     # journal_dir is the fixed path under the root; the sidecar copy is only a hint.
     cp = (_checkpoint_from_sidecar(state) if state is not None
           else transaction.Checkpoint(journal_dir=str(root / transaction.JOURNAL_DIR)))

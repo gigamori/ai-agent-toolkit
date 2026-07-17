@@ -43,6 +43,17 @@ def test_rejects_traversal():
     assert not c.ok and c.gate == "traversal"
 
 
+def test_rejects_non_md_target(tmp_path):
+    # DEC-MD-1 (P10, ENFORCE): a non-.md target under wiki/ is invisible to
+    # scan_pages/lint/index, so classify_target rejects it outright.
+    c = wt.classify_target("wiki/notes.txt")
+    assert not c.ok and c.gate == "path"
+    assert not wt.classify_target("wiki/derived/data.json").ok
+    with pytest.raises(wt.WriteRejected) as e:
+        wt.WriteSession(tmp_path, origin="source").add("wiki/notes.txt", "x")
+    assert e.value.gate == "path"
+
+
 def test_budget_count_overflow_is_human_gate(tmp_path):
     s = wt.WriteSession(tmp_path, max_count=2, origin="source")
     s.add("wiki/a.md", "x")
@@ -75,3 +86,21 @@ def test_commit_writes_files(tmp_path):
     assert set(written) == {"wiki/a.md", "wiki/derived/b.md"}
     assert (tmp_path / "wiki" / "a.md").read_text(encoding="utf-8") == "content a"
     assert (tmp_path / "wiki" / "derived" / "b.md").read_text(encoding="utf-8") == "content b"
+
+
+def test_initial_bytes_carry_counts_toward_budget(tmp_path):
+    s = wt.WriteSession(tmp_path, max_bytes=10, initial_bytes=6, origin="source")
+    with pytest.raises(wt.WriteRejected) as e:
+        s.add("wiki/a.md", "01234")   # 5 bytes; 6 + 5 = 11 > 10
+    assert e.value.gate == "budget"
+
+
+def test_initial_bytes_default_zero_is_backward_compatible(tmp_path):
+    # A session with initial_bytes=0 (the default) behaves exactly as before
+    # this change: only its own accumulated bytes count toward max_bytes.
+    s = wt.WriteSession(tmp_path, max_bytes=10, origin="source")
+    assert s.initial_bytes == 0
+    s.add("wiki/a.md", "0123456789")  # exactly 10 bytes -> at the ceiling, ok
+    with pytest.raises(wt.WriteRejected) as e:
+        s.add("wiki/b.md", "x")       # 10 + 1 > 10
+    assert e.value.gate == "budget"

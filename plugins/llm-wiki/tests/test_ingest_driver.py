@@ -293,6 +293,81 @@ def test_plan_fanout_over_k_ceil_split_each_le_k(tmp_path):
     drv.abort(str(tmp_path))
 
 
+# --------------------------------------------------------------------------- #
+# B-6 (F-2): plan-fanout returns manifest_paths — one code-authored ABSOLUTE
+# path per cluster ordinal, so the orchestrator/worker never reconstructs a
+# temp path across turns (same defect class as #1 stage1_blob_path above).
+# --------------------------------------------------------------------------- #
+def test_plan_fanout_manifest_paths_inline_json_uses_system_temp(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("x", encoding="utf-8")
+    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
+    touched = [f"wiki/p{i}.md" for i in range(23)]     # 23 > 10 -> 3 clusters
+    out = drv.plan_fanout(str(tmp_path), json.dumps(touched))
+    state = drv._read_sidecar(tmp_path)
+    fe_hash12 = state["fe_hash"][:12]
+    assert len(out["manifest_paths"]) == len(out["clusters"]) == 3
+    for i, p in enumerate(out["manifest_paths"]):
+        path = Path(p)
+        assert path.is_absolute()
+        assert path.parent == Path(tempfile.gettempdir())   # inline form -> temp fallback
+        assert path.name == f"manifest-{fe_hash12}-{i}.json"
+    drv.abort(str(tmp_path))
+
+
+def test_plan_fanout_manifest_paths_file_input_parented_at_blob_dir(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("x", encoding="utf-8")
+    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
+    touched = [f"wiki/p{i}.md" for i in range(7)]      # 7 <= 10 -> one cluster
+    blobdir = tmp_path / "blobdir"
+    blobdir.mkdir()
+    proposal_path = blobdir / "stage1.json"
+    proposal_path.write_text(json.dumps({"touched": touched}), encoding="utf-8")
+    out = drv.plan_fanout(str(tmp_path), str(proposal_path))
+    state = drv._read_sidecar(tmp_path)
+    fe_hash12 = state["fe_hash"][:12]
+    assert len(out["manifest_paths"]) == len(out["clusters"])
+    for i, p in enumerate(out["manifest_paths"]):
+        path = Path(p)
+        assert path.is_absolute()
+        assert path.parent == blobdir                       # FILE-path branch, not temp
+        assert path.name == f"manifest-{fe_hash12}-{i}.json"
+    drv.abort(str(tmp_path))
+
+
+def test_plan_fanout_manifest_paths_file_under_out_dir_rides_cleanup(tmp_path):
+    """Path B: a proposal file inside $OUT_DIR yields manifest_paths under
+    that same out_dir, so the manifest rides the project-batch-cleanup sweep."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("x", encoding="utf-8")
+    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
+    touched = [f"wiki/p{i}.md" for i in range(23)]     # 23 > 10 -> 3 clusters
+    out_dir = tmp_path / "batchtmp"
+    out_dir.mkdir()
+    proposal_path = out_dir / "stage1.json"
+    proposal_path.write_text(json.dumps(touched), encoding="utf-8")
+    out = drv.plan_fanout(str(tmp_path), str(proposal_path))
+    assert len(out["manifest_paths"]) == 3
+    for p in out["manifest_paths"]:
+        assert Path(p).parent == out_dir
+    drv.abort(str(tmp_path))
+
+
+def test_plan_fanout_manifest_paths_empty_touched_aligned(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("x", encoding="utf-8")
+    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
+    out = drv.plan_fanout(str(tmp_path), json.dumps([]))
+    assert out["clusters"] == []
+    assert out["manifest_paths"] == []
+    drv.abort(str(tmp_path))
+
+
 def test_plan_fanout_requires_sidecar(tmp_path):
     _init_wiki(tmp_path)
     with pytest.raises(drv.DriverError):
@@ -406,6 +481,71 @@ def test_begin_binary_source_is_clean_driver_error(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# A-3 fail-closed kind gate (DEC-KIND-1 = Option A / F-3): .jsonl under
+# auto/empty --kind is refused; explicit --kind bypasses; non-jsonl auto is
+# byte-identical.
+# --------------------------------------------------------------------------- #
+def test_begin_jsonl_auto_kind_refused_fail_closed(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path / "some-sid.jsonl"
+    src.write_text('{"turns": []}\n', encoding="utf-8")
+    with pytest.raises(drv.DriverError) as exc_info:
+        drv.begin(str(tmp_path), str(src))     # kind defaults "auto"
+    msg = str(exc_info.value)
+    assert "--kind=fe_b_prime" in msg
+    assert "--kind=fe_pi_log" in msg
+    assert "--kind=fe_b" in msg
+    # Refused BEFORE any side effect -> nothing locked/written (mirrors
+    # test_begin_binary_source_is_clean_driver_error).
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+    assert not (tmp_path / tx.JOURNAL_DIR).exists()
+    assert not (tmp_path / "raw").exists()
+
+
+def test_begin_jsonl_explicit_fe_b_bypasses_gate(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path / "some-sid.jsonl"
+    src.write_text('{"turns": []}\n', encoding="utf-8")
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b")
+    assert out["origin"] == drv.ORIGIN_FE_B
+    assert out["dedup_noop"] is False
+    drv.abort(str(tmp_path))
+
+
+def test_begin_jsonl_explicit_fe_b_prime_bypasses_gate(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    sid = "some-sid"
+    src = tmp_path / f"{sid}.jsonl"
+    src.write_text('{"turns": []}\n', encoding="utf-8")
+
+    monkeypatch.setattr(cc_log_project, "extract_owned",
+                        lambda sid, *, ledger: [])
+
+    def _fake_project_from_turns(root, s, turn_list, *, ledger):
+        return cc_log_project.ProjectionResult(
+            markdown="# CC Session transcript\n", novel_entries=[],
+            ledger_skipped=0)
+    monkeypatch.setattr(cc_log_project, "project_from_turns",
+                        _fake_project_from_turns)
+
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b_prime")
+    assert out["origin"] == drv.ORIGIN_FE_B_PRIME
+    drv.abort(str(tmp_path))
+
+
+def test_begin_non_jsonl_auto_unaffected(tmp_path):
+    """Scope guard: the gate's suffix conjunct means non-jsonl auto is
+    byte-identical to pre-gate behavior."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("plain text source", encoding="utf-8")
+    out = drv.begin(str(tmp_path), str(src))     # kind defaults "auto"
+    assert out["origin"] == drv.ORIGIN_FE_B
+    drv.abort(str(tmp_path))
+
+
+# --------------------------------------------------------------------------- #
 # consistency invariant: violation aborts begin BEFORE locking
 # --------------------------------------------------------------------------- #
 def test_consistency_violation_aborts_begin_before_locking(tmp_path):
@@ -469,6 +609,8 @@ def test_finish_refuses_on_lock_ownership_mismatch(tmp_path):
 
 
 def test_abort_refuses_on_lock_ownership_mismatch(tmp_path):
+    # P10: the refusal is a rc2 SENTINEL (raised DriverError), not a rc0
+    # {"aborted": false} no-op — mirrors finish()'s ownership-mismatch DriverError.
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("owned by A", encoding="utf-8")
@@ -476,9 +618,12 @@ def test_abort_refuses_on_lock_ownership_mismatch(tmp_path):
     (tmp_path / tx.LOCK_NAME).write_text(
         json.dumps({"pid": os.getpid(), "token": "FOREIGN"}), encoding="utf-8")
 
-    res = drv.abort(str(tmp_path))
-    assert res["aborted"] is False and "ownership mismatch" in res["message"]
+    with pytest.raises(drv.DriverError) as ei:
+        drv.abort(str(tmp_path))
+    assert "ownership mismatch" in str(ei.value)
+    # Refused WITHOUT touching the foreign lock or our sidecar.
     assert (tmp_path / tx.LOCK_NAME).exists()
+    assert (tmp_path / drv.SIDECAR_NAME).exists()
 
 
 # --------------------------------------------------------------------------- #

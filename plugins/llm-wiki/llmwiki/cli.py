@@ -276,6 +276,11 @@ def _file(argv: list[str]) -> int:
     if fe.redaction_flags:
         kinds = ", ".join(sorted({f.kind for f in fe.redaction_flags}))
         print(f"redaction-flags: {len(fe.redaction_flags)} ({kinds})")
+        for f in fe.redaction_flags[:20]:
+            print(f"  [line {f.line_no}] {f.kind}: {f.preview}")
+        if len(fe.redaction_flags) > 20:
+            print(f"  … flags_total={len(fe.redaction_flags)} "
+                  f"(showing first 20)")
     if fe.exists:
         print("dedup no-op")
         return 0
@@ -290,7 +295,10 @@ def _file(argv: list[str]) -> int:
             raw_path.write_text(fe.body, encoding="utf-8")
             # 2) the PAGE is the REDACTED body (D16), through the allowlist gate
             #    (origin=derived -> wiki/derived/ only, D20).
-            sess = WriteSession(root, origin="derived")
+            sess = WriteSession(root,
+                                max_count=int(res["max_count"].value),
+                                max_bytes=int(res["max_bytes"].value),
+                                origin="derived")
             sess.add(page, fe.body)
             written = sess.commit()
             transaction.journal_before_write(root, ["index.md", "log.md"])
@@ -339,7 +347,15 @@ def _promote_check(argv: list[str]) -> int:
         print("usage: promote-check <root> <wiki/derived/X.md>", file=sys.stderr)
         return EX_USAGE
     root, rel = argv[0], argv[1]
-    text = (Path(root) / rel).read_text(encoding="utf-8")
+    target = Path(root) / rel
+    if not target.is_file():
+        # P10 clean-error: a missing preview target is data (the caller passed
+        # a path that doesn't exist), not a usage error -> rc2 SENTINEL, same
+        # mechanism as NOT-A-WIKI/NO-MARKER above (print + return 2), instead
+        # of an uncaught FileNotFoundError traceback.
+        print("NOT-FOUND", file=sys.stderr)
+        return 2
+    text = target.read_text(encoding="utf-8")
     print("dest:", promote.derived_to_source_path(rel))
     print("contamination:", promote.detect_contamination(text))
     return 0
@@ -495,7 +511,16 @@ def _floor_check(argv: list[str]) -> int:
     # ingest-layer (transcript_floor) but dep-free; imported INSIDE the branch.
     from llmwiki.ingest import transcript_floor as tf
 
-    candidates = json.loads(sys.stdin.read())   # [{span, speaker}]
+    raw = sys.stdin.read()
+    try:
+        candidates = json.loads(raw)   # [{span, speaker}]
+    except json.JSONDecodeError as e:
+        # P10 clean-error: malformed stdin JSON is a protocol/contract
+        # violation (the caller's STDIN framing is broken), not normal data
+        # -> EX_USAGE, not the rc2 sentinel (mirrors the argv/protocol-drift
+        # classification used elsewhere in this file).
+        print(f"floor-check: malformed stdin JSON: {e}", file=sys.stderr)
+        return EX_USAGE
     for entry in candidates:
         span = entry["span"]
         speaker = entry.get("speaker")

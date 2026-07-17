@@ -102,6 +102,19 @@ def test_ingest_apply_no_journal_is_sentinel_rc2(tmp_path):
     assert rc == 2 and "REFUSED no-journal" in err
 
 
+def test_promote_check_missing_file_is_sentinel_rc2(tmp_path):
+    # P10 clean-error: a missing preview target is data, not a usage error.
+    root = _make_wiki(tmp_path)
+    rc, _, err = _run(["promote-check", root, "wiki/derived/no-such.md"])
+    assert rc == 2 and "NOT-FOUND" in err
+
+
+def test_floor_check_malformed_json_is_ex_usage(tmp_path):
+    # P10 clean-error: malformed stdin JSON is a protocol violation.
+    rc, _, err = _run(["floor-check"], stdin="{not json")
+    assert rc == cli.EX_USAGE and "malformed stdin JSON" in err
+
+
 # --------------------------------------------------------------------------- #
 # i:45 — read verbs fail CLOSED on a missing marker
 # --------------------------------------------------------------------------- #

@@ -190,13 +190,21 @@ def apply_finish(wiki_root: str, fe_origin: str, manifest_paths: "list[str]",
     max_count = int(state["max_count"])
     max_bytes = int(state["max_bytes"])
     clusters_written: list[dict] = []
+    # DEC-BUD-1=A: cumulative bytes across all clusters applied so far in THIS
+    # fanout transaction. Threaded into each cluster's WriteSession as
+    # initial_bytes so the max_bytes ceiling spans the whole apply-finish, not
+    # just one cluster (B-1). Count is gated upstream by the driver, not carried.
+    carried_bytes = 0
     try:
         for ordinal, entries in enumerate(manifests):
             sess = WriteSession(root, max_count=max_count, max_bytes=max_bytes,
-                                origin=ws_origin)
+                                origin=ws_origin, initial_bytes=carried_bytes)
             for entry in entries:
                 sess.add(entry["rel_path"], entry["content"])
             written = sess.commit()   # journals each target BEFORE writing (F1)
+            # CUMULATIVE running total (spec: initial_bytes + sess._bytes), NOT
+            # this cluster's own bytes alone -> carried into cluster i+1.
+            carried_bytes = sess.initial_bytes + sess._bytes
             clusters_written.append({"ordinal": ordinal, "written": written})
             # C2 receipt (same keys `ingest-apply` writes): read-modify-write the
             # sidecar so finish (expected_pages omitted) proves every planned

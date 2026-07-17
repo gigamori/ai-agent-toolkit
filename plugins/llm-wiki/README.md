@@ -56,7 +56,7 @@ The wiki is initialized from the plugin's `templates/`:
 - `SCHEMA.md` — the wiki **contract**: regulatory prose plus YAML frontmatter carrying `config` and `doc_type_profiles` (all 8 doc types seeded, plus a mandatory `default`).
 - `index.md` — content-oriented catalog seed.
 - `log.md` — append-only log seed with the grep-parseable `## [YYYY-MM-DD] <op>|<provenance-or-origin> | <Title>` prefix convention.
-- `raw/` — immutable, redacted source artifacts (content-hash id; the LLM only reads them).
+- `raw/` — immutable, redacted source artifacts (content-hash id; the LLM only reads them). Redaction masks local-path patterns (Windows drive-letter paths, UNC paths, POSIX system/home roots, `~/...`) and secret-shaped tokens; URLs (`https://...`) and a bare `~` with no path attached are left unmasked.
 - `wiki/` — LLM-authored pages. `wiki/` is source tier; `wiki/derived/` is un-promoted synthesis.
 
 ## Resolving the active wiki
@@ -136,7 +136,9 @@ Ingests a 3rd-party source (FE-B) or a Claude Code session jsonl (FE-B') through
 `/wiki-ingest` (and `/wiki-ingest-sessions`) is a multi-stage orchestration (`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`), so run it on a **capable model**: a lightweight/minimal model tends to drop the Stage 2 apply dispatch or skip the closing `apply-finish`, which leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages written — clear it with the `abort` verb; see *Recovery* above).
 
 - **Stage 1 (extract)** — the `wiki-ingest-extract` subagent reads the redacted, untrusted raw source with **no write tool by construction** and emits proposed edits only.
-- **Stage 2 (apply)** — the `wiki-ingest-apply` subagent authors page updates with **no write tool by construction** and returns them as a page manifest; the orchestrator pipes those manifests through the allowlist write tool (`llmwiki/write/write_tool.py`) via the compound `apply-finish` verb, which confines writes to `wiki/` and `wiki/derived/`, rejects `SCHEMA.md` / `.llmwiki` / `raw/` / absolute paths / traversal, and gates on budget. On more than `apply_fanout_k` touched pages, Stage 2 fans out one apply worker per cluster; `apply-finish` then applies every cluster's manifest and centralizes index / log / commit after the join. The total proposed touched-page set is first gated against `max_count`: an ingest proposing more pages than that escalates to the human gate instead of fanning out, so the per-worker write budget can't be silently multiplied by the cluster count.
+- **Stage 2 (apply)** — the `wiki-ingest-apply` subagent authors page updates with **no write tool by construction** and returns them as a page manifest; the orchestrator pipes those manifests through the allowlist write tool (`llmwiki/write/write_tool.py`) via the compound `apply-finish` verb, which confines writes to `wiki/` and `wiki/derived/`, rejects `SCHEMA.md` / `.llmwiki` / `raw/` / absolute paths / traversal, and gates on budget. On more than `apply_fanout_k` touched pages, Stage 2 fans out one apply worker per cluster; `apply-finish` then applies every cluster's manifest and centralizes index / log / commit after the join. The total proposed touched-page set is first gated against `max_count`: an ingest proposing more pages than that escalates to the human gate instead of fanning out, so the per-worker write budget can't be silently multiplied by the cluster count. On fan-out, each cluster's worker also receives a code-authored absolute manifest path (`manifest_paths`, returned by `plan-fanout`) so it never has to reconstruct a temp file path itself.
+
+`begin` fails closed on a `.jsonl` source: when `--kind` is omitted/`auto` and the source path ends in `.jsonl`, `begin` refuses to ingest it (nothing locked or written) rather than silently treating a session log as plain text — pass `--kind=fe_b_prime` (cc-log transcript), `--kind=fe_pi_log` (pi-log transcript), or an explicit `--kind=fe_b` to ingest a plain-text `.jsonl` DATA file. In a glob/directory batch (the text-type allowlist still keeps `.jsonl`), a source that hits this refusal is simply counted `failed` in the summary and the run continues.
 
 cc-log (FE-B') input is pinned to `doc_type=transcript` with a deterministic decision floor (`llmwiki/ingest/transcript_floor.py`, invoked as `llmwiki floor-check`): a claim is recorded as a decision only with an explicit affirmative token; silence is non-affirmation.
 
@@ -183,6 +185,8 @@ top-k of the most relevant pages instead of the full enumeration.
 
 Read-only. Runs the deterministic link / index graph checks (`llmwiki/lint/link_lint.py`, `llmwiki/core/wiki_index.py`, invoked as `llmwiki lint`) plus the transcript-only type-specific lint (v1), and reports a prioritized "next questions" list. Never writes.
 
+The transcript decision floor's affirmative-token check (`AFFIRMATIVE_TOKENS`, `transcript_floor.py`) is **English-only**. On a Japanese-language transcript, every `decisions` candidate currently fails the check and fires `FLOOR-VIOLATION` — the floor is effectively inert for Japanese content and manual judgment applies instead. This is a known, accepted limitation (Japanese affirmation/negation is predominantly postfix and isn't reliably coverable by the same token approach), not a bug; the fail direction stays conservative (over-flagging, never a false admit).
+
 ### Promote — `/wiki-promote <wiki/derived/X.md>`
 
 Promotes a derived synthesis page to source tier (`wiki/derived/X.md → wiki/X.md`) as a code-driven move plus inbound link-rewrite (`llmwiki/write/promote.py`), gated on explicit human approval and a contamination check. The flow is split across read-only and write verbs: `llmwiki declare` (Step 1 resolved-value declaration), read-only `llmwiki promote-check` (Step 2 pre-approval contamination preview, no move), then `llmwiki promote` (Step 3 move, only after approval). The only path from derived to source tier.
@@ -217,6 +221,8 @@ Config lives in `SCHEMA.md` frontmatter (wiki-local) and is read by the plugin's
 | `qmd_page_threshold` | `100` | Use qmd only when the wiki holds more than this many pages (below it, index-direct) |
 
 The ingest journal checkpoint is taken on every run (D14): `write_mode` controls only whether a confirmation precedes applying writes. The engine never commits to git.
+
+`max_bytes` is enforced **cumulatively**, not per write: on a fanned-out ingest (`apply_fanout_k`), the running byte total carries across every cluster in the same transaction, so a combined-over-budget fanout is rejected (`REJECTED budget`, the whole transaction rolled back) even when each individual cluster is under the limit on its own. The same budget also gates a direct page write (the `file` verb, e.g. filing a query answer) using the wiki's configured `max_count`/`max_bytes` rather than a hardcoded default.
 
 ## File layout
 
