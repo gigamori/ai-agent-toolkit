@@ -288,6 +288,16 @@ _projects/
 2. フォーマット固有パターン（frontmatter フィールド、ファイル名規約、文字数制限）
 3. 権威の定義（どのフィールドがどの情報源を正とするか）
 
+##### プロジェクトルール（rules.md）
+
+`session_init.py` は、存在すればプロジェクト固有ルールファイル `_projects/<project>/rules.md` も注入する。ルールは taskflow プロジェクト（`pj:`）単位のスコープであり、ファイルパス単位ではない — パス/glob 単位のルールは `.claude/rules`、グローバルなルールは `CLAUDE.md` を使う。
+
+- **プロジェクト切替時**: 全文を 1 回 *primer* として注入。
+- **以降のターン**: ファイルの `##` 見出しの簡潔な manifest を recall cue（「行動前に読む」トリガー）として再掲し、全文を再注入せず低トークンコストでルールを温存する。
+- **`inject_every_turn: true`**（ファイルの frontmatter）: 代わりに全文を毎ターン注入する — 常に温存されるが毎ターンのトークンコストがかかる。
+
+ファイルは人間が編集する（モデル自己判断の書込なし）。エージェントは diff を提示し、ユーザ承認後にのみ適用する。state file の `project_rules_indexed` が切替時注入をゲートし、compaction 時にリセットされて primer が再注入される。設計の全文は `_projects/harness-taskflow/project-notes/specs/project-rules-injection.md`（開発リポジトリの設計メモ・配布物には含まない）を参照。
+
 #### PreToolUse: notes_index_reminder.py (matcher: Write|Edit)
 
 `_projects/<project>/project-notes/` 配下のファイル（`index.md` 自身は除く）への `Write`/`Edit` 直前に発火。`additionalContext` 経由で `[Project Notes Index Rule]` リマインダーを注入し、操作後に `project-notes/index.md` を同期するよう LLM に指示する（新規ファイルは行追加、Description/Tags 変更時は該当行更新、削除時は該当行除去）。
@@ -302,7 +312,7 @@ _projects/
 
 #### SessionStart: session_compact_reset.py (matcher: compact)
 
-Claude Code が会話を auto-compaction した際に発火。compaction では `session_init.py` が注入した `additionalContext` が失われるため、state file の injection フラグ（`rules_loaded`, `indexed_project`, `guidelines_loaded`）をリセットする（他のフィールドは保持）。次の `UserPromptSubmit` ターンで `static_rules`・プロジェクトインデックス・全文ガイドラインが再注入される。
+Claude Code が会話を auto-compaction した際に発火。compaction では `session_init.py` が注入した `additionalContext` が失われるため、state file の injection フラグ（`rules_loaded`, `indexed_project`, `guidelines_loaded`, `project_rules_indexed`）をリセットする（他のフィールドは保持）。次の `UserPromptSubmit` ターンで `static_rules`・プロジェクトインデックス・全文ガイドライン・`rules.md` primer が再注入される。
 
 #### Stop: session_sync.py
 

@@ -7,11 +7,17 @@ injected by session_init.py is lost (compaction summarizes conversation
 history; hook output is not re-attached). This hook fires on the
 SessionStart event with reason=compact and resets injection flags so
 the next UserPromptSubmit turn re-injects static_rules, project index,
-and full guidelines.
+full guidelines, and the per-project rules.md primer.
 
 State file location: _projects/_state/{session_id}.json
-Resets: rules_loaded, indexed_project, guidelines_loaded.
+Resets: rules_loaded, indexed_project, guidelines_loaded, project_rules_indexed.
 All other fields are preserved.
+
+project_rules_indexed MUST be reset here: compaction summarizes away the rules.md
+primer body injected at project switch, so without this reset the state would
+still read "primed" and only the `##` manifest (headings, no bodies) would
+recur — the full rule text would never re-enter context for the rest of the
+session.
 """
 import json, sys, os
 
@@ -43,6 +49,7 @@ if not isinstance(state, dict):
 state['rules_loaded'] = False
 state['indexed_project'] = ''
 state['guidelines_loaded'] = False
+state['project_rules_indexed'] = ''
 
 with open(state_path, 'w', encoding='utf-8') as f:
   json.dump(state, f, ensure_ascii=False)

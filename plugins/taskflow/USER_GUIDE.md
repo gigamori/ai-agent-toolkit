@@ -234,7 +234,7 @@ You don't manage any of this — it's here so you understand *why* your files st
 ```mermaid
 flowchart TD
     subgraph turn["Each turn"]
-        A["Before your prompt reaches Claude:<br/>set/keep the project, inject its context + guidelines"]
+        A["Before your prompt reaches Claude:<br/>set/keep the project, inject its context, guidelines + any project rules"]
         B["After each file write:<br/>rebuild the progress table, note which files changed"]
     end
     subgraph end_["When the session ends"]
@@ -251,6 +251,13 @@ Two conveniences worth knowing about:
 
 The system uses append-only writes and bounded locking for protection, and the automatic table in `progress.md` is always rebuildable from the task files. The known residual risk is R-lock (concurrent append with the tool layer's Edit), which is logged to stderr.
 
+### Optional: per-project rules (`rules.md`)
+
+A project can carry a short `rules.md` — project-specific rules you want Claude to follow (e.g. *"edit `src/`, never `dist/` directly"*). They are scoped to the taskflow project, so they switch with `pj:` — unlike a repo-wide `CLAUDE.md`, and unlike path-scoped `.claude/rules`.
+
+- **Set them**: ask Claude *"add a project rule that …"* — it proposes the change as a diff and applies it only after you confirm. You can also edit `_projects/<project>/rules.md` by hand. Claude never rewrites this file on its own.
+- **How they reach Claude**: on switching into the project the full rules are shown once; on later turns only their `##` headings recur as a reminder to re-read before acting. Keep the file short (default budget ~100 lines). Set `inject_every_turn: true` in the file's frontmatter if you want the full text kept in view every turn.
+
 ---
 
 ## 9. Quick reference
@@ -265,6 +272,7 @@ The system uses append-only writes and bounded locking for protection, and the a
 | Health check tasks | `/progress check` · `/progress audit` |
 | Refresh the dashboard | `/progress rebuild` |
 | Save durable knowledge | "save this to notes" |
+| Set project-specific rules | Ask: "add a project rule that …" (Claude proposes a diff; you confirm) |
 | See everything | `/kanban` |
 
 **Golden rules**

@@ -234,7 +234,7 @@ flowchart LR
 ```mermaid
 flowchart TD
     subgraph turn["各ターン"]
-        A["プロンプトが Claude に届く前:<br/>プロジェクトを設定/維持し、context + guidelines を注入"]
+        A["プロンプトが Claude に届く前:<br/>プロジェクトを設定/維持し、context・guidelines + プロジェクトルールを注入"]
         B["各ファイル書込の後:<br/>progress テーブルを rebuild、触ったファイルを記録"]
     end
     subgraph end_["セッション終了時"]
@@ -251,6 +251,13 @@ flowchart TD
 
 このシステムは append-only 書込みと有界ロックで保護されており、`progress.md` の自動テーブルはタスクファイルからいつでも rebuild できる。既知の残余リスクは R-lock（ツール層の Edit との並行 append）で、stderr に記録される。
 
+### 任意: プロジェクト固有ルール（`rules.md`）
+
+プロジェクトには短い `rules.md` を持たせられる — Claude に守らせたいプロジェクト固有のルール（例：*「`src/` を編集し、`dist/` は直接編集しない」*）。taskflow プロジェクト単位のスコープなので `pj:` で切り替わる — リポジトリ全体の `CLAUDE.md` や、パス単位の `.claude/rules` とは異なる。
+
+- **設定**: Claude に *「… というプロジェクトルールを追加して」* と頼む — 変更を diff として提示し、承認後にのみ適用する。`_projects/<project>/rules.md` を手で編集してもよい。Claude がこのファイルを勝手に書き換えることはない。
+- **Claude への届き方**: プロジェクトに切り替えた時に全文を 1 回提示し、以降のターンは `##` 見出しだけを「行動前に読み直せ」というリマインダとして再掲する。ファイルは短く保つ（デフォルト予算 ~100 行）。全文を毎ターン視界に残したい場合は frontmatter に `inject_every_turn: true` を設定する。
+
 ---
 
 ## 9. クイックリファレンス
@@ -265,6 +272,7 @@ flowchart TD
 | タスクの健全性チェック | `/progress check` · `/progress audit` |
 | ダッシュボード更新 | `/progress rebuild` |
 | 永続知識を保存 | 「これを notes に保存して」 |
+| プロジェクト固有ルールを設定 | 「… というプロジェクトルールを追加して」と頼む（Claude が diff を提示・承認制） |
 | 全体を見る | `/kanban` |
 
 **黄金律**

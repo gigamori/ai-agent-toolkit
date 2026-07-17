@@ -9,16 +9,23 @@ Injection blocks per turn (decided from state file flags):
   - project_index      (on project switch): _projects/<project>/index.md (~250 tok)
   - guidelines_full    (once per session): 3 guidelines files (~3000 tok)
   - guidelines_reminder(subsequent turns): keyword reminder (~150 tok)
+  - project_rules      (per-project rules.md, if present): on project switch the
+                       full body ("primer"); on subsequent turns a compact
+                       manifest of `##` headings ("effective file-mention").
+                       If rules.md frontmatter has `inject_every_turn: true`, the
+                       full body is injected every turn instead. See project-notes
+                       spec project-rules-injection.md.
   - action_req         (every turn while progress.md missing): scaffold banner
 
-State file schema (v2.4):
+State file schema (v2.5):
   {
-    "project":            "<current active project>",
-    "rules_loaded":       <bool — static_rules injected this session>,
-    "indexed_project":    "<last project for which project_index was injected>",
-    "guidelines_loaded":  <bool — full guidelines injected this session>,
-    "origin":             "cc"  — generator identifier (Claude Code),
-    "parent_session_id":  "<parent session id if forked, absent otherwise>"
+    "project":              "<current active project>",
+    "rules_loaded":         <bool — static_rules injected this session>,
+    "indexed_project":      "<last project for which project_index was injected>",
+    "guidelines_loaded":    <bool — full guidelines injected this session>,
+    "project_rules_indexed":"<last project for which the full rules.md body was injected>",
+    "origin":               "cc"  — generator identifier (Claude Code),
+    "parent_session_id":    "<parent session id if forked, absent otherwise>"
   }
 
 Backward compat: older state is loaded with safe defaults
@@ -131,6 +138,55 @@ def detect_parent_session(transcript_path, session_id):
       return os.path.splitext(os.path.basename(path))[0]
   return None
 
+
+def split_frontmatter(text):
+  """Split a leading `---` ... `---` YAML-ish block from `text`.
+
+  Returns (frontmatter_dict, body). Only simple top-level `key: value` lines are
+  parsed (no nesting). If no well-formed frontmatter is present, returns
+  ({}, text) unchanged. Used to read per-project rules.md settings and to strip
+  the frontmatter from the injected body.
+  """
+  if not text.startswith('---'):
+    return {}, text
+  lines = text.split('\n')
+  end = None
+  for i in range(1, len(lines)):
+    if lines[i].strip() == '---':
+      end = i
+      break
+  if end is None:
+    return {}, text
+  fm = {}
+  for line in lines[1:end]:
+    if ':' in line and not line.lstrip().startswith('#'):
+      k, _, v = line.partition(':')
+      fm[k.strip()] = v.strip()
+  return fm, '\n'.join(lines[end + 1:])
+
+
+def extract_headings(body):
+  """Return level-2 (`## `) headings from `body`, skipping fenced code blocks.
+
+  Only exactly-two-hash headings match (`###` and deeper are ignored). Lines
+  inside ``` or ~~~ fences are excluded so example `##` lines are not mistaken
+  for rule titles.
+  """
+  heads = []
+  in_fence = False
+  for line in body.split('\n'):
+    stripped = line.strip()
+    if stripped.startswith('```') or stripped.startswith('~~~'):
+      in_fence = not in_fence
+      continue
+    if in_fence:
+      continue
+    m = re.match(r'^##\s+(\S.*?)\s*$', line)
+    if m:
+      heads.append(m.group(1))
+  return heads
+
+
 try:
   data = json.loads(sys.stdin.buffer.read().decode('utf-8'))
 except Exception:
@@ -229,6 +285,7 @@ state = {
   'rules_loaded': bool(loaded.get('rules_loaded', False)),
   'indexed_project': loaded.get('indexed_project', '') or '',
   'guidelines_loaded': bool(loaded.get('guidelines_loaded', False)),
+  'project_rules_indexed': loaded.get('project_rules_indexed', '') or '',
   'origin': loaded.get('origin', 'cc'),
 }
 
@@ -250,6 +307,7 @@ if current_project and not state['project']:
   state['rules_loaded'] = False
   state['guidelines_loaded'] = False
   state['indexed_project'] = ''
+  state['project_rules_indexed'] = ''
 
 # Decide which blocks to inject.
 #   inject_rules: user is engaging with taskflow AND rules not yet loaded this session.
@@ -298,6 +356,58 @@ if inject_index:
   except FileNotFoundError:
     pass
 
+# Build project_rules block from _projects/<project>/rules.md (if present).
+#   FALSE (inject_every_turn absent/false):
+#     - on project switch (current_project != project_rules_indexed): full body,
+#       framed as a primer.
+#     - subsequent turns: a compact manifest of `##` headings (recall cue).
+#   TRUE (frontmatter inject_every_turn: true): full body every turn.
+# project_rules_indexed gates the switch, mirroring indexed_project for the index
+# block. Naming is deliberately project_rules_* to avoid collision with the
+# unrelated rules_loaded / inject_rules (project_routing.md static_rules).
+rules_content = ''
+if current_project:
+  rules_path = os.path.join(PROGRESS_ROOT, current_project, 'rules.md')
+  rules_raw = None
+  try:
+    with open(rules_path, 'r', encoding='utf-8') as f:
+      rules_raw = f.read()
+  except OSError:
+    rules_raw = None
+  if rules_raw is not None:
+    fm, rules_body = split_frontmatter(rules_raw)
+    every_turn = fm.get('inject_every_turn', '').strip().lower() in (
+      'true', '1', 'yes', 'on')
+    rules_body = rules_body.strip('\n')
+    rel = f'_projects/{current_project}/rules.md'
+    inject_rules_full = every_turn or current_project != state['project_rules_indexed']
+    if inject_rules_full:
+      if every_turn:
+        header = f'[Project Rules: {current_project}] — full text (per-turn).'
+      else:
+        header = (
+          f'[Project Rules: {current_project}] — full text (read now). A per-turn '
+          f'reminder will re-list only the `##` headings; re-open `{rel}` whenever '
+          f'your action touches one.'
+        )
+      rules_content = f'\n\n{header}\n{rules_body}'
+      state['project_rules_indexed'] = current_project
+    else:
+      heads = extract_headings(rules_body)
+      if heads:
+        bullets = '\n'.join(f'- {h}' for h in heads)
+        rules_content = (
+          f'\n\n[Project Rules reminder: {current_project}] {len(heads)} rule(s) · {rel}\n'
+          f'Before writing / committing / generating deliverables or any non-trivial '
+          f'action, check whether it touches a rule below; if so, re-read the file '
+          f'(full text was shown at project switch):\n{bullets}'
+        )
+      else:
+        rules_content = (
+          f'\n\n[Project Rules reminder: {current_project}] · {rel} — '
+          f'consult before non-trivial action.'
+        )
+
 # Persist updated state. We mark rules_loaded and indexed_project regardless of
 # read success — if a file is genuinely broken, we don't want to retry every turn.
 # Recovery path: user re-issues pj:<name> or fixes the file then resets state.
@@ -311,6 +421,7 @@ new_state['project'] = current_project if not pj_discovery else state['project']
 new_state['rules_loaded'] = state['rules_loaded'] or inject_rules
 new_state['indexed_project'] = current_project
 new_state['guidelines_loaded'] = state['guidelines_loaded'] or inject_guidelines_full
+new_state['project_rules_indexed'] = state['project_rules_indexed']
 new_state['origin'] = state['origin']
 os.makedirs(STATE_DIR, exist_ok=True)
 with open(state_path, 'w', encoding='utf-8') as f:
@@ -351,7 +462,7 @@ else:
   result = {
     'hookSpecificOutput': {
       'hookEventName': 'UserPromptSubmit',
-      'additionalContext': f'[Progress Session] session_id={session_id} sid8={session_id[:8]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}'
+      'additionalContext': f'[Progress Session] session_id={session_id} sid8={session_id[:8]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}{rules_content}'
     }
   }
 

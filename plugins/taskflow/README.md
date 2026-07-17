@@ -289,6 +289,16 @@ Also handles guidelines injection: on the first turn of a session (and after com
 2. Format-specific patterns (frontmatter fields, filename conventions, character limits)
 3. Authority definitions (which source of truth governs which field)
 
+##### Project rules (rules.md)
+
+`session_init.py` also injects an optional per-project rules file, `_projects/<project>/rules.md`, when present. Rules are scoped to the taskflow project (`pj:`), not to a filesystem path — use `.claude/rules` for path/glob-scoped rules and `CLAUDE.md` for global rules.
+
+- **On project switch**: the full body is injected once as a *primer*.
+- **On subsequent turns**: a compact manifest of the file's `##` headings recurs as a recall cue (a "read-before-acting" trigger), keeping the rules warm at low token cost without re-injecting the full text.
+- **`inject_every_turn: true`** (in the file's frontmatter): the full body is injected every turn instead — always warm, at a per-turn token cost.
+
+The file is human-authored (no model-autonomous writes); the agent proposes a diff and applies only on user confirmation. `project_rules_indexed` in the state file gates the switch-time injection and is reset on compaction so the primer re-injects. See `_projects/harness-taskflow/project-notes/specs/project-rules-injection.md` (development-repo design notes; not shipped) for the full design.
+
 #### PreToolUse: notes_index_reminder.py (matcher: Write|Edit)
 
 Fires before a `Write`/`Edit` targeting a file under `_projects/<project>/project-notes/` (excluding `index.md` itself). Injects a `[Project Notes Index Rule]` reminder via `additionalContext`, instructing the LLM to keep `project-notes/index.md` in sync after the operation (add a row for new files, update on Description/Tags change, remove on delete).
@@ -303,7 +313,7 @@ Fires after every `Write` / `Edit` / `NotebookEdit` and file-touching `Bash` (`m
 
 #### SessionStart: session_compact_reset.py (matcher: compact)
 
-Fires when Claude Code auto-compacts the conversation. Compaction discards the `additionalContext` injected by `session_init.py`, so this hook resets the injection flags (`rules_loaded`, `indexed_project`, `guidelines_loaded`) in the state file; all other fields are preserved. The next `UserPromptSubmit` turn then re-injects `static_rules`, the project index, and the full guidelines.
+Fires when Claude Code auto-compacts the conversation. Compaction discards the `additionalContext` injected by `session_init.py`, so this hook resets the injection flags (`rules_loaded`, `indexed_project`, `guidelines_loaded`, `project_rules_indexed`) in the state file; all other fields are preserved. The next `UserPromptSubmit` turn then re-injects `static_rules`, the project index, the full guidelines, and the `rules.md` primer.
 
 #### Stop: session_sync.py
 

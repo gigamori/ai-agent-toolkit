@@ -79,6 +79,29 @@ If Plan mode blocks writes to `_projects/<project>/` (`index.md`, `progress.md`,
 
 When the LLM spawns a new session via the Agent tool (subagent) or a CLI launch through Bash, insert `pj:<current_project>` into the leading lines of the prompt (near the beginning; it may follow other leading lines such as `mode:`, not necessarily the literal first line). This allows the child session to inherit the parent's project context.
 
+**Project rules do not reach subagents automatically.** `UserPromptSubmit` does not fire for Agent-tool subagents, so the injected project-rules block (below) is absent in the child. When you delegate work whose actions could touch a project rule (writing files, git operations, generating deliverables), copy the relevant rule text — or an explicit instruction to read `_projects/<current_project>/rules.md` — into the subagent's prompt.
+
+## Project rules (`rules.md`)
+
+A project may carry `_projects/<project>/rules.md`: human-authored, project-specific rules (constraints, conventions, gotchas) that follow the logical project rather than a filesystem path. When present it is injected each turn while the project is active — the full body as a primer on project switch, then a compact manifest of its `##` headings on subsequent turns (or the full body every turn if its frontmatter sets `inject_every_turn: true`).
+
+Scope boundary: `rules.md` is for **pj-scoped** rules only. Path/directory/tool-scoped rules belong in Claude Code's native `.claude/rules`; global rules belong in `CLAUDE.md`. There is deliberately no global taskflow-rules layer.
+
+### Precedence
+
+Project rules are **additive domain constraints**, largely orthogonal to the response-processing axes (mode / role). They are not a flat peer in a single ranking:
+
+- A conflict arises only at an **action boundary** (a rule prescribes or forbids an action that the active mode also governs) — there, the active **mode contract wins**.
+- A **live user instruction overrides** a standing rule ("just this once…").
+- **Safety outranks everything.** Do NOT put safety-critical bans in `rules.md` (they would be weakened by the above); those belong in the harness / CLAUDE.md.
+
+### Editing rules (human-initiated only)
+
+`rules.md` is written by humans, never by model self-judgment. Two paths:
+
+- **Manual edit** of the file directly.
+- **Natural-language request** ("add a project rule that …", "このプロジェクトのルールに X を足して"). When the project is assigned, an unqualified "rule" refers to **project rules** (`rules.md`) — not `CLAUDE.md` or `.claude/rules` unless the user names them. Before writing, **show the proposed diff and get explicit confirmation**, then apply. Never mutate `rules.md` silently — its blast radius is every future turn.
+
 ## Adding, changing, and removing projects
 
 - Creating a new project: add a row to `_projects/index.md` and create `_projects/<project>/index.md`.
@@ -89,6 +112,29 @@ When the LLM spawns a new session via the Agent tool (subagent) or a CLI launch 
 
 - `_projects/<project>/plans/` and `_projects/<project>/memory/` are archive copies maintained by the Stop hook. Do NOT reference them as authoritative sources.
 
+## Project rules (`rules.md`)
+
+`_projects/<project>/rules.md` is an optional, per-project file holding normative rules for that project (e.g. "edit `src/`, never `dist/` directly"). It is scoped to the taskflow project (`pj:`), not to a filesystem path — for path/glob-scoped rules use `.claude/rules`, and for global rules use `CLAUDE.md`. The file is human-authored and versioned in the repo.
+
+**Injection (handled by `session_init.py`, no action needed from you):** on project switch the full body is injected as a primer; on later turns a compact manifest of its `##` headings recurs as a recall cue. If the file's frontmatter sets `inject_every_turn: true`, the full body is injected every turn instead. When you see a `[Project Rules reminder: <project>]` block, treat each `##` heading as a trigger: before writing / committing / generating deliverables or any non-trivial action, check whether it touches a listed rule and, if so, re-read `_projects/<project>/rules.md` before acting.
+
+**Precedence.** Project rules are additive domain constraints, mostly orthogonal to the response `mode`/`role`. They do NOT form a flat priority ladder with mode. Resolve conflict only where a rule prescribes an action the active mode also governs:
+
+- The active turn's **mode contract wins** at that action boundary.
+- A **live user instruction overrides** a standing project rule ("just this once …").
+- **Safety outranks everything.** Do NOT place safety-critical constraints in `rules.md` (they would be weakened by the above); keep those in the harness/safety layer.
+
+**Editing `rules.md` (human-initiated only).** There is no model-autonomous write to this file. When the user asks (in natural language or via a command) to add/change a project rule:
+
+1. Propose the change as a diff (or the exact lines to add) and state the target `_projects/<project>/rules.md`.
+2. Apply only after the user confirms. Manual hand-editing by the user is also fine.
+
+The blast radius is every future turn of the project, so the confirm step is required even though the request is human-initiated.
+
+**NL disambiguation.** When a project is assigned, an unqualified request about "the rules" (「ルール」) refers to this project's `rules.md` by default. Only treat it as `CLAUDE.md` or `.claude/rules` when the user names those explicitly.
+
+**Subagent propagation.** `UserPromptSubmit` does NOT fire for Agent-tool subagents, so a spawned subagent never receives the rules injection. When you delegate work whose actions could touch a listed rule, include the relevant rule text (or an instruction to read `_projects/<project>/rules.md`) in the subagent's prompt.
+
 ## Directory layout (v0.2.2)
 
 ```
@@ -96,6 +142,7 @@ _projects/
   index.md               all-projects index
   <project>/
     index.md             project overview
+    rules.md             optional per-project rules (injected by session_init.py; see "Project rules")
     progress.md          task index (auto-generated table region + hand-edited free-text sections)
     tasks/               task files, one per task (status by folder)
       0_todo/            not started

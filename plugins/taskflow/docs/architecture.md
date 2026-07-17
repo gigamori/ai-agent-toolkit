@@ -127,6 +127,8 @@ user prompt
   │     + static_rules: body of project_routing.md (once per session)
   │     + guidelines:  full 3 files on first turn / after compact; keyword reminder otherwise
   │     + project_index: index.md on project switch
+  │     + project_rules: rules.md full body on switch / `##` heading manifest otherwise
+  │                      (full every turn if frontmatter inject_every_turn: true; absent if no rules.md)
   │     + ACTION_REQUIRED banner: every turn while progress.md is missing
   │     + fork_context: first turn of a forked session
   │     (when current_project is empty and not discovery → NOTHING is injected; router not invoked)
@@ -199,6 +201,7 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
   "rules_loaded": true,
   "indexed_project": "<last project the index was injected for>",
   "guidelines_loaded": true,
+  "project_rules_indexed": "<last project the rules.md full body was injected for>",
   "origin": "cc",
   "parent_session_id": "<parent session id if forked; absent otherwise>",
   "inherited_tasks": ["<task filenames inherited from the parent, if forked>"],
@@ -206,7 +209,7 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
 }
 ```
 
-`rules_loaded` / `guidelines_loaded` / `indexed_project` gate the once-per-session injections and are reset by `session_compact_reset.py` after auto-compaction. `origin` identifies the generator (`cc` = Claude Code). `parent_session_id` / `inherited_tasks` appear only on forked sessions.
+`rules_loaded` / `guidelines_loaded` / `indexed_project` / `project_rules_indexed` gate the once-per-session (or per-switch) injections and are reset by `session_compact_reset.py` after auto-compaction. `project_rules_indexed` tracks the last project whose `rules.md` full body was injected; resetting it on compaction re-injects the primer (compaction summarizes the primer body away). `origin` identifies the generator (`cc` = Claude Code). `parent_session_id` / `inherited_tasks` appear only on forked sessions.
 
 ### Writers
 
