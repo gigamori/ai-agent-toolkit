@@ -81,6 +81,57 @@ def test_apply_finish_usage_is_ex_usage():
     assert drv.main(["apply-finish"]) == af.EX_USAGE
 
 
+# --- begin strict arg contract (DEC-a; item3) -> EX_USAGE ------------------- #
+def test_begin_unknown_flag_is_ex_usage(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path.parent / "src_uf.txt"
+    src.write_text("hello", encoding="utf-8")
+    # `--origin` is not a begin flag (origin is selected via --kind).
+    rc = drv.main(["begin", str(tmp_path), str(src), "--origin=fe_b"])
+    assert rc == drv.EX_USAGE
+
+
+def test_begin_empty_value_flag_is_ex_usage(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path.parent / "src_ev.txt"
+    src.write_text("hello", encoding="utf-8")
+    # `--kind` with no `=value` (space-form, unsupported for begin) is rejected.
+    rc = drv.main(["begin", str(tmp_path), str(src), "--kind"])
+    assert rc == drv.EX_USAGE
+
+
+def test_begin_excess_positional_is_ex_usage(tmp_path):
+    _init_wiki(tmp_path)
+    src = tmp_path.parent / "src_ex.txt"
+    src.write_text("hello", encoding="utf-8")
+    # A 3rd positional was silently ignored before strict arity (item3).
+    rc = drv.main(["begin", str(tmp_path), str(src), "extra-arg"])
+    assert rc == drv.EX_USAGE
+
+
+# --- session-plan space-form --pj must NOT regress (guard is begin-only) ---- #
+def test_session_plan_space_form_pj_not_ex_usage(tmp_path, monkeypatch):
+    # `--pj name` (space form) is intentional for session-plan (L1663-1668); the
+    # begin-only strict-flag guard (item3) must not reach it. Hermetic: pin the
+    # state dir + ts ordering (mirrors test_session_plan.py) so the space-form
+    # `--pj` is proven to resolve to the project name, not an empty-value reject.
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "sid-a.json").write_text(
+        json.dumps({"project": "my-project", "origin": "cc"}), encoding="utf-8")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    # Direct call proves the space form resolves pj -> the project name.
+    out = drv.session_plan(str(tmp_path), pj="my-project", kind="auto")
+    assert out["sids"] == ["sid-a"]
+    # Via the CLI entrypoint: `--pj my-project` must NOT be a usage error.
+    rc = drv.main(["session-plan", str(tmp_path), "--pj", "my-project"])
+    assert rc != drv.EX_USAGE
+    assert rc == 0
+
+
 # --------------------------------------------------------------------------- #
 # genuine SENTINELs stay rc2
 # --------------------------------------------------------------------------- #
@@ -110,6 +161,16 @@ def test_begin_non_utf8_source_is_operational_rc3(tmp_path):
     src = tmp_path.parent / "binary.bin"
     src.write_bytes(b"\xff\xfe\x00\x01binary-not-utf8")
     rc = drv.main(["begin", str(tmp_path), str(src)])
+    assert rc == 3
+
+
+def test_begin_missing_source_is_operational_rc3(tmp_path):
+    # A non-existent source must be a clean DriverOpError (exit 3), NOT an
+    # uncaught FileNotFoundError traceback (item2 / DEC-b). Returning (not
+    # raising) already proves no traceback escaped.
+    _init_wiki(tmp_path)
+    missing = tmp_path.parent / "does-not-exist.txt"
+    rc = drv.main(["begin", str(tmp_path), str(missing)])
     assert rc == 3
 
 

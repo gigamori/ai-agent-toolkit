@@ -188,7 +188,9 @@ Answers aren't saved unless you ask. Two ways:
 
   With `=retry-policy` the page is named `wiki/derived/retry-policy.md`; without a name,
   Claude picks one. The marker saves without a confirmation prompt (you asked for it
-  explicitly), but the same safety checks still apply.
+  explicitly), but the same safety checks still apply. The marker is used alongside a
+  question — behavior of a marker-alone turn (a marker with no question) is not
+  guaranteed.
 
 ### Keep it healthy — `/wiki-lint`
 

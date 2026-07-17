@@ -306,6 +306,32 @@ class DriverOpError(DriverError):
     """
 
 
+# Canonical ingest verb set (single source of truth). main()'s own usage /
+# unknown-verb banners derive from this tuple, and the bin/ shim imports it to
+# BUILD both its usage banner and its "did you mean" hint (no literal re-listing
+# anywhere), so a new verb is declared in exactly one place.
+INGEST_VERBS = (
+    "begin",
+    "plan-fanout",
+    "finish",
+    "apply-finish",
+    "abort",
+    "enumerate",
+    "session-plan",
+    "project-batch",
+    "project-batch-cleanup",
+)
+
+# begin's accepted --flags (DEC-a: begin-only strict parse; the central
+# _parse_opts stays permissive for every other verb, e.g. session-plan's
+# space-form `--pj`). A --flag outside this set, or any of these supplied with
+# no value, is a usage error (EX_USAGE) rather than a silently-ignored token.
+_BEGIN_OPTS = frozenset({
+    "kind", "write_mode", "apply_fanout_k", "doc_type",
+    "external", "turns", "out_dir",
+})
+
+
 # --------------------------------------------------------------------------- #
 # sidecar (on-disk transaction state — replaces LLM-threaded state)
 # --------------------------------------------------------------------------- #
@@ -410,6 +436,13 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         except UnicodeDecodeError as exc:
             raise DriverOpError(
                 f"source is not UTF-8 text (binary?): {source}") from exc
+        except (FileNotFoundError, IsADirectoryError, PermissionError) as exc:
+            # DEC-b: a missing / directory / unreadable source is an OPERATIONAL
+            # error (exit 3, clean stderr) — not an uncaught traceback. Same
+            # per-file DriverError shape as the UnicodeDecodeError above so a
+            # glob loop counts it as a failure and continues (G-f).
+            raise DriverOpError(
+                f"source not readable (missing/dir/permission): {source}") from exc
         fe_b_ext = Path(source).suffix.lstrip(".") or "txt"
     else:  # FE-B' / fe_pi_log (projection origins; table-dispatched, design B)
         # Normalize the source to a session id. Path A surface: `source` is a
@@ -476,7 +509,17 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
             # ingest could finish() between our diff and our lock, leaving this
             # begin to re-file turns the other ingest now owns (duplicate pages
             # + last-wins first_sid corruption in the ledger).
-            turn_list = projector.extract_owned(sid, ledger=ledger)
+            # DEC-b: keep the projection-origin source contract symmetric with
+            # FE-B — a missing / inaccessible backing store (source absent) is an
+            # OPERATIONAL error (exit 3, clean stderr), never an uncaught
+            # traceback. (ProjectionError already lands rc3 via _PROJECTION_ERRORS
+            # in main(); this only covers raw read OSErrors.)
+            try:
+                turn_list = projector.extract_owned(sid, ledger=ledger)
+            except (FileNotFoundError, IsADirectoryError, PermissionError) as exc:
+                raise DriverOpError(
+                    f"projection source unavailable (missing backing store?): "
+                    f"{source}") from exc
 
     # 4) acquire_lock THEN checkpoint (lock-first). Only the lock holder ever
     #    creates/touches the fixed-path journal dir, so a second ingest that fails
@@ -1605,9 +1648,7 @@ def main(argv: "list[str] | None" = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
-        print("usage: ingest_driver.py "
-              "<begin|plan-fanout|finish|apply-finish|abort|enumerate|"
-              "session-plan|project-batch|project-batch-cleanup> ...",
+        print(f"usage: ingest_driver.py <{'|'.join(INGEST_VERBS)}> ...",
               file=sys.stderr)
         return EX_USAGE
     verb, rest = argv[0], argv[1:]
@@ -1623,8 +1664,31 @@ def main(argv: "list[str] | None" = None) -> int:
     pos, opts = _parse_opts(rest)
     try:
         if verb == "begin":
-            if len(pos) < 2:
-                raise DriverUsageError("begin requires <root> <source>")
+            # DEC-a: begin-only strict parse (unknown-flag reject + empty-value
+            # detection + exact arity). Do NOT extend this to session-plan (its
+            # space-form `--pj` leaves an empty-value opt on purpose, L1666-1668).
+            _begin_usage = (
+                "usage: begin <root> <source> "
+                "[--kind=auto|fe_b|fe_b_prime|fe_pi_log] [--write_mode=...] "
+                "[--apply_fanout_k=N] [--doc_type=...] [--external=...] "
+                "[--turns=<path>] [--out_dir=<dir>]")
+            unknown = sorted(k for k in opts if k not in _BEGIN_OPTS)
+            if unknown:
+                raise DriverUsageError(
+                    "begin: unknown flag(s): "
+                    + ", ".join("--" + k for k in unknown)
+                    + " (use --key=value; origin is set via --kind=). "
+                    + _begin_usage)
+            empty = sorted(k for k in opts if opts[k] == "")
+            if empty:
+                raise DriverUsageError(
+                    "begin: flag(s) need a value in --key=value form: "
+                    + ", ".join("--" + k for k in empty)
+                    + ". " + _begin_usage)
+            if len(pos) != 2:
+                raise DriverUsageError(
+                    f"begin requires exactly the positional args <root> <source> "
+                    f"(2), got {len(pos)}. " + _begin_usage)
             result = begin(
                 pos[0], pos[1],
                 kind=opts.get("kind", "auto"),
@@ -1682,9 +1746,7 @@ def main(argv: "list[str] | None" = None) -> int:
                 raise DriverUsageError("project-batch-cleanup requires <out_dir>")
             result = project_batch_cleanup(pos[0])
         else:
-            print(f"unknown verb: {verb!r} "
-                  "(begin|plan-fanout|finish|apply-finish|abort|enumerate|"
-                  "session-plan|project-batch|project-batch-cleanup)",
+            print(f"unknown verb: {verb!r} ({'|'.join(INGEST_VERBS)})",
                   file=sys.stderr)
             return EX_USAGE
     except config_resolver.ConfigInconsistency as e:

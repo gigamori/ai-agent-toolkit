@@ -254,7 +254,8 @@ def _file(argv: list[str]) -> int:
     from llmwiki.write.write_tool import WriteSession, WriteRejected
 
     if len(argv) < 3:
-        print("usage: file <root> <page> <title> (page content on STDIN)",
+        print("usage: file <root> <page> <title> "
+              "(page content on STDIN; <page> must be under wiki/derived/)",
               file=sys.stderr)
         return EX_USAGE
     root, page, title = argv[0], argv[1], argv[2]

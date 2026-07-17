@@ -131,6 +131,17 @@ def main() -> None:
             "response leading lines (mirrors `[pj:...]`). Do NOT read or write "
             "wiki pages this turn. Send `wiki:on` to re-enable."
         )
+        # (fail-visible) The off branch returns BEFORE the FILE_MARKER_RE search
+        # below, so a filing marker sent this turn would be silently dropped. Do
+        # NOT drop it without a trace: detect it here and surface the drop in the
+        # model-visible off notice, so the user's filing intent is not lost
+        # (parity with pi pi-extensions/packages/llm-wiki/src/index.ts theme5(g)).
+        if FILE_MARKER_RE.search(prompt) is not None:
+            off_context += (
+                "\nNote: a filing instruction (`llm-wiki:file`) was received this "
+                "turn but was DROPPED because wiki is OFF. Re-send `wiki:on` and "
+                "the filing marker to file this conversation."
+            )
         _emit(off_context)
         return
 

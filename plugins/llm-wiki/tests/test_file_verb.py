@@ -8,9 +8,12 @@ Verifies the full FE-A write envelope now realized in `cli._file`:
 """
 import io
 
+import pytest
+
 from llmwiki import cli
 from llmwiki.core import content_hash as ch
 from llmwiki.ingest import redaction
+from llmwiki.write.write_tool import WriteRejected
 
 
 def _make_wiki(tmp_path):
@@ -67,3 +70,23 @@ def test_file_redacts_secret_in_page_and_flags(monkeypatch, capsys, tmp_path):
     assert secret not in page                       # D16: masked in the page
     assert redaction.PH_SECRET in page
     assert "redaction-flags:" in out                # surfaced to the human gate
+
+
+def test_file_outside_wiki_derived_is_rejected(monkeypatch, capsys, tmp_path):
+    # item4: filing a page OUTSIDE wiki/derived/ stays REJECTED (D20 cross-
+    # namespace), the existing contract. A `file`-origin write is derived-origin.
+    root = _make_wiki(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO("body"))
+    with pytest.raises(WriteRejected):
+        cli.main(["file", root, "wiki/not-derived.md", "Outside"])
+    out = capsys.readouterr().out
+    assert "REJECTED" in out
+
+
+def test_file_usage_discloses_wiki_derived_constraint(capsys):
+    # item4: too-few args prints the usage, which now discloses the
+    # wiki/derived/ target constraint.
+    rc = cli.main(["file", "only-root"])            # < 3 positional args
+    assert rc == cli.EX_USAGE
+    err = capsys.readouterr().err
+    assert "wiki/derived/" in err

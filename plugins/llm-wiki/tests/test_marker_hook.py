@@ -127,3 +127,40 @@ def test_cwd_scope_has_no_coexistence_guide(tmp_path):
     ctx = _ctx(_run(tmp_path, session_id="sid-a"))
     assert "[wiki<->taskflow]" not in ctx
     assert "wiki-active" in ctx
+
+
+# --------------------------------------------------------------------------- #
+# Step 3 — filing-marker contract pin (B) + wiki:off fail-visible (C)
+# --------------------------------------------------------------------------- #
+def test_marker_present_emits_file_tag_fea_and_slug_variants(tmp_path):
+    # Part B(a): with a filing marker present (wiki-active), the emitted context
+    # carries the `[llm-wiki:file]` tag + the FE-A path text, in BOTH the
+    # slug-present and slug-absent variants (hook emit block).
+    _make_wiki(tmp_path)
+    # slug-present variant
+    ctx_slug = _ctx(_run(tmp_path, prompt="answer this llm-wiki:file=mypage", session_id="sid-a"))
+    assert "[llm-wiki:file]" in ctx_slug
+    assert "FE-A path (wiki-query SKILL Step 3)" in ctx_slug
+    assert "Target page name is `mypage` -> `wiki/derived/mypage.md`" in ctx_slug
+    # slug-absent variant
+    ctx_noslug = _ctx(_run(tmp_path, prompt="answer this llm-wiki:file", session_id="sid-b"))
+    assert "[llm-wiki:file]" in ctx_noslug
+    assert "FE-A path (wiki-query SKILL Step 3)" in ctx_noslug
+    assert "No slug given: generate the page name from the answer content" in ctx_noslug
+
+
+def test_skill_md_references_file_marker_tag():
+    # Part B(b): the wiki-query SKILL references the same `[llm-wiki:file]` tag
+    # literal that the hook emits (contract pinned across hook <-> skill).
+    skill_md = _HOOK.resolve().parents[1] / "skills" / "wiki-query" / "SKILL.md"
+    assert "[llm-wiki:file]" in skill_md.read_text(encoding="utf-8")
+
+
+def test_off_plus_marker_reports_dropped(tmp_path):
+    # Part C: a filing marker sent while wiki is OFF must not be silently
+    # dropped — the off notice surfaces the DROP with re-send guidance.
+    _make_wiki(tmp_path)
+    ctx = _ctx(_run(tmp_path, prompt="wiki:off please file this llm-wiki:file", session_id="sid-a"))
+    assert "[wiki:off]" in ctx
+    assert "DROPPED because wiki is OFF" in ctx
+    assert "Re-send `wiki:on`" in ctx
