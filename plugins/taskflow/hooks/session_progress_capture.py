@@ -50,7 +50,10 @@ Round / lifecycle state lives in a sidecar `{session_id}.bind` (`reminded`,
 `exec_tried`, and the `capture` lifecycle `{status, items, requested_ts,
 tried_notes}` — writer = this hook only, §10.1), kept separate from the state
 JSON so concurrent rewrites by other hooks cannot clobber it. A 7-day cleanup
-prunes stale `.bind` / `.touched` / `.capture` / legacy `.captured` sidecars.
+prunes stale `.bind` / `.touched` / `.capture` / legacy `.captured` sidecars,
+and (F5b / D-2) session-state `.json` whose `project` is empty once it is also
+older than 7 days; a `.json` with a non-empty `project` is kept indefinitely
+(generate_kanban.py resolves past task `@log` session links from it).
 """
 import datetime
 import json
@@ -156,14 +159,41 @@ def read_touched(touched_path: str, cwd: str) -> list[str]:
 
 
 def _cleanup_stale_markers(state_dir: str) -> None:
-    """Remove sidecar marker files older than _MARKER_MAX_AGE_DAYS
-    (`.bind` / `.touched`, plus legacy `.captured`)."""
+    """Remove stale files under STATE_DIR older than _MARKER_MAX_AGE_DAYS:
+      - sidecar markers (`.bind` / `.touched` / `.capture`, plus legacy
+        `.captured`) — unconditional mtime sweep (unchanged).
+      - session-state `.json` (36-char-UUID stem) whose `project` is EMPTY
+        (F5b / D-2): parse-guarded — a json that fails to parse or is not a
+        dict is NEVER removed (conservative); a NON-EMPTY `project` state is
+        kept INDEFINITELY (generate_kanban.build_uuid_index resolves each task
+        @log `[s:]` link from it). State mtime is refreshed every turn
+        (session_init rewrites it each UserPromptSubmit), so the 7-day cutoff
+        only catches DEAD sessions — long-lived projectless sessions are
+        naturally protected (same property as the sidecar sweep).
+    Non-UUID `.json` (e.g. kanban-port-*.json written by generate_kanban) is
+    left untouched: the `len(stem) == 36` guard mirrors build_uuid_index's own
+    session-state filter."""
     try:
         cutoff = datetime.datetime.now().timestamp() - _MARKER_MAX_AGE_DAYS * 86400
         for name in os.listdir(state_dir):
+            path = os.path.join(state_dir, name)
+            stem, ext = os.path.splitext(name)
+            if ext == '.json' and len(stem) == 36:
+                try:
+                    if os.path.getmtime(path) >= cutoff:
+                        continue  # fresh mtime → live/recent session; keep
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except (OSError, ValueError):
+                    continue  # unreadable / parse-unable → never delete (D-2)
+                if isinstance(data, dict) and not data.get('project'):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                continue
             if not name.endswith(_CLEANUP_SUFFIXES):
                 continue
-            path = os.path.join(state_dir, name)
             try:
                 if os.path.getmtime(path) < cutoff:
                     os.remove(path)
@@ -393,18 +423,31 @@ def _load_capture_sidecar(path):
     return data if isinstance(data, dict) else None
 
 
-def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts):
+def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, items=None):
     """Apply a validated capture sidecar deterministically (§10.3). All writes
     are idempotent (`log_block_has_sid` / `append_note_link` union). Returns
-    (summaries, links, proposals, link_skipped) for observability:
+    (summaries, links, proposals, link_skipped, membership_skipped) for
+    observability:
       - summaries:    list[task-basename] @log-bound with a real one-line summary
       - links:        list[(note_rel, task-basename)] established in a task @notes
       - proposals:    list[str] surfaced (display-only; never auto-created)
-      - link_skipped: list[(note_rel, task-basename)] where append_note_link returned False"""
+      - link_skipped: list[(note_rel, task-basename)] where append_note_link returned False
+      - membership_skipped: list[str] task-basename / note_rel names skipped because
+        they were outside the request-time closed set (F7a §8 boundary enforcement)
+
+    `items` is the request-time closed set `{'tasks': [basenames], 'notes':
+    [note_rel]}` that gated this capture request, or `None` for a legacy
+    sidecar/.bind predating `items` — in which case the membership check is
+    bypassed and both loops apply exactly as before (fail-open fallback)."""
     summaries: list[str] = []
     links: list[tuple] = []
     proposals: list[str] = []
     link_skipped: list[tuple] = []
+    membership_skipped: list[str] = []
+    task_set = (set(items['tasks']) if isinstance(items, dict)
+                and isinstance(items.get('tasks'), list) else None)
+    note_set = (set(items['notes']) if isinstance(items, dict)
+                and isinstance(items.get('notes'), list) else None)
 
     confirmed = sidecar.get('confirmed')
     if isinstance(confirmed, list):
@@ -416,6 +459,9 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts):
             if not isinstance(base, str) or not isinstance(summ, str):
                 continue
             base = os.path.basename(base.replace('\\', '/'))
+            if task_set is not None and base not in task_set:
+                membership_skipped.append(base)
+                continue
             path = current_index.get(base)
             if not path or log_block_has_sid(path, sid8):
                 continue  # missing/already bound — idempotent
@@ -441,6 +487,9 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts):
             note_rel = normalize_note_rel(_to_project_rel(note, project))
             if not is_note_deliverable(note_rel):
                 continue
+            if note_set is not None and note_rel not in note_set:
+                membership_skipped.append(note_rel)
+                continue
             if append_note_link(path, note_rel):
                 links.append((note_rel, base))
             else:
@@ -452,7 +501,7 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts):
             if isinstance(p, str) and p.strip():
                 proposals.append(p.strip())
 
-    return summaries, links, proposals, link_skipped
+    return summaries, links, proposals, link_skipped, membership_skipped
 
 
 def merge_exec_bind(state, state_path, data):
@@ -620,6 +669,7 @@ def main() -> int:
     applied_summaries: list[str] = []
     applied_links: list[tuple] = []
     applied_link_skipped: list[tuple] = []
+    applied_membership_skipped: list[str] = []
     proposals: list[str] = []
 
     def _fold_tried(items):
@@ -633,8 +683,8 @@ def main() -> int:
         sidecar = _load_capture_sidecar(capture_path)
         if sidecar is not None:
             applied_this_stop = True
-            applied_summaries, applied_links, proposals, applied_link_skipped = _apply_capture(
-                sidecar, current_index, project, project_root, sid8, iso_ts)
+            applied_summaries, applied_links, proposals, applied_link_skipped, applied_membership_skipped = _apply_capture(
+                sidecar, current_index, project, project_root, sid8, iso_ts, capture.get('items'))
             # Consume: unlink so a later request cannot re-match a stale sidecar.
             # On unlink failure, do NOT mark done — the next Stop re-applies
             # (idempotent), keeping the apply eventual (§10.2 / AC-11).
@@ -721,7 +771,7 @@ def main() -> int:
     # the block, so the next Stop re-enters via the requested/pending branch
     # (no re-block loop). An in-flight `pending` with nothing to report → no
     # block (AC-9).
-    report_binds = auto_bound or applied_summaries or applied_links or applied_link_skipped
+    report_binds = auto_bound or applied_summaries or applied_links or applied_link_skipped or applied_membership_skipped
     if not spawn and not report_binds and not exec_skipped and not proposals:
         _save_bind(bind_path, reminded, exec_tried, capture)
         return 0
@@ -745,6 +795,9 @@ def main() -> int:
     auto_lines += ''.join(
         f'[progress capture] link-skip: {note} -> {b}\n'
         for note, b in applied_link_skipped
+    )
+    auto_lines += ''.join(
+        f'[progress capture] membership-skip: {name}\n' for name in applied_membership_skipped
     )
 
     if spawn:

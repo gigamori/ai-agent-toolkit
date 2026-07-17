@@ -1,6 +1,6 @@
 <!-- taskflow guidelines keyword reminder -->
-<!-- Source: progress_guidelines.md, notes_guidelines.md, tasks_guidelines.md -->
-<!-- When updating any of the 3 source guidelines, update this file too (see README.md) -->
+<!-- Source: progress_guidelines.md, notes_guidelines.md, tasks_guidelines.md, project_routing.md -->
+<!-- When updating any of the source files listed above, update this file too (see README.md) -->
 
 [taskflow guidelines reminder]
 PROHIBIT: no status: or summary: in task frontmatter, no category: in frontmatter, no hand-edit inside <!-- @table:begin/end -->, no multiple table regions (exactly 1 per project), no auto-move to 2_done/ without human approval, no edit/reorder/delete inside <!-- @log -->, no Session Log/Last Updated/Completed Tasks sections in progress.md
@@ -9,4 +9,5 @@ AUTHORITY: folder location = single authority for status, H1 = summary/title, pr
 NOTES: 6 fixed categories (specs/ investigations/ checks/ procedures/ backlog/ _archive/), auto-save requires user confirmation, code-derivable info must not be saved, temporary single-session memos must not be saved
 AUTOSAVE: project_notes_autosave: true → deliver result then ask save confirmation, false → do not ask, manual "save to notes" → skip confirmation, propose appending to existing note when topic overlaps
 TASK WRITE: body region = mutable (replace fully), log region = append-only, update updated: on every modify, 0_todo → 1_in_progress via /progress start, 2_done/ requires /progress approve, new task default 0_todo (if ambiguous ask user), distill durable knowledge from 2_done/ into project-notes/, rewrite ## Next Steps at end of every turn that advances a task (required for active tasks in 0_todo/ or 1_in_progress/)
+ROUTER: [Progress Session] with non-empty current_project → invoke subagent taskflow:project-router (Agent tool) BEFORE answering; empty → do not invoke.
 RESPONSE LEADING LINES: when a project is assigned, ALWAYS include [pj:<project>] in the response's leading lines (near the beginning, before the main body; it may follow other leading lines such as [Mode:], not necessarily the first line). When unassigned, omit [pj:...] entirely. This applies also to skill/slash-command turns, including literal reply templates. If you did task work WITHOUT editing the task's own tasks/<status>/*.md file (read a task/handoff, produced the result elsewhere), ALSO add [tasks: <file>.md ...] in the leading lines listing the owning task filename(s) worked on this turn (omit when you edited the task file directly, or did no task work).

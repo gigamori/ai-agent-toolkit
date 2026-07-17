@@ -5,10 +5,10 @@ UserPromptSubmit hook: smart session/project context injection (v2.2).
 Injection blocks per turn (decided from state file flags):
 
   - session_info       (always): [Progress Session] header (~50 tok)
-  - static_rules       (once per session): project_routing.md (~1600 tok)
+  - static_rules       (once per session): project_routing.md (~2700 tok)
   - project_index      (on project switch): _projects/<project>/index.md (~250 tok)
-  - guidelines_full    (once per session): 3 guidelines files (~3000 tok)
-  - guidelines_reminder(subsequent turns): keyword reminder (~150 tok)
+  - guidelines_full    (once per session): 3 guidelines files (~3250 tok)
+  - guidelines_reminder(subsequent turns): keyword reminder (~750 tok)
   - project_rules      (per-project rules.md, if present): on project switch the
                        full body ("primer"); on subsequent turns a compact
                        manifest of `##` headings ("effective file-mention").

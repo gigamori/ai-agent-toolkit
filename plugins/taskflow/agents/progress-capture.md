@@ -2,7 +2,7 @@
 name: progress-capture
 description: Async judgment-only capture for the taskflow Stop apply-path. Summarizes this session's task work, maps newly-written project-notes deliverables to their owning task, and proposes genesis tasks. Writes a single JSON sidecar that the Stop hook applies deterministically. Internal (hook-spawned); not user-facing.
 tools: Read, Write
-model: haiku
+model: sonnet
 ---
 
 # Progress Capture Task

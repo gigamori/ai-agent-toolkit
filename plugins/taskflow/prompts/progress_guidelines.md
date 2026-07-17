@@ -22,7 +22,7 @@ The table region is a **cache** rebuilt from task files. It is never authoritati
 | Sub-action | Effect |
 |---|---|
 | `/progress check` | Run drift / stale / approval-pending detection. Read-only. |
-| `/progress sync` | Reconcile status text in progress.md table ↔ folder location. Moves files when text and folder disagree. |
+| `/progress sync` | Alias of rebuild — regenerate the table region from task files. |
 | `/progress rebuild` | Regenerate the table region from current task files. |
 | `/progress start <id>...` | Move tasks from `tasks/0_todo/` to `tasks/1_in_progress/`. Multiple IDs OK. |
 | `/progress approve <id>...` | Move tasks from `tasks/1_in_progress/` to `tasks/2_done/`. Multiple IDs OK. |

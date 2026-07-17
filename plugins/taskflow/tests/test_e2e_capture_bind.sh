@@ -10,6 +10,7 @@
 #   Stage 2  Stop Round1 → block reminder (not yet bound)
 #   Stage 3  Stop Round2 → `[s:<sid8>]` appended end-to-end
 #   Stage 4  exec-binding: a task NOT in `.touched` is bound via a `[tasks:]` carry
+#   Stage 5  F7a membership containment: an out-of-request sidecar entry is skipped
 #
 # Usage:  bash plugins/taskflow/tests/test_e2e_capture_bind.sh
 # Requires: bash (Git-Bash on win32 — primary), uv.
@@ -37,7 +38,7 @@ PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 cleanup() {
-  rm -rf "$PDIR"; rm -f "$SF" "$TF" "$BF"
+  rm -rf "$PDIR"; rm -f "$SF" "$TF" "$BF" "$STATE/$SID.capture"
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
 }
@@ -120,6 +121,23 @@ O3=$(stop "[pj:$PROJ] [tasks: 2026-06-29_exec.md] produced the result off-task")
 [ "$(sidlines "$ET")" = "1" ] && pass "exec owning task bound via [tasks:] e2e" || fail "exec not bound: $(sidlines "$ET")"
 echo "$O3" | grep -q "auto-bound: .*2026-06-29_exec.md \[s:$SID8\]" \
   && pass "exec F5 auto-bound reported" || fail "no exec F5: $O3"
+
+# Stage 5 — F7a membership containment: out-of-request sidecar entry is skipped.
+echo "[Stage 5] capture membership containment (F7a)"
+IN="$PDIR/tasks/1_in_progress/2026-06-29_inset.md";  mk "$IN"
+OUT="$PDIR/tasks/1_in_progress/2026-06-29_outset.md"; mk "$OUT"   # exists, never touched
+NOW=$(uv run python -c "import time;print(time.time())")
+cat > "$BF" << EOF
+{"reminded":{},"exec_tried":[],"capture":{"status":"requested","items":{"tasks":["2026-06-29_inset.md"],"notes":[]},"requested_ts":$NOW,"tried_notes":[],"tried_tasks":[]}}
+EOF
+cat > "$STATE/$SID.capture" << 'EOF'
+{"confirmed":[{"task":"2026-06-29_inset.md","summary":"in-set change"},{"task":"2026-06-29_outset.md","summary":"OUT-OF-REQUEST change"}],"note_links":[],"proposals":[]}
+EOF
+O5=$(stop)
+[ "$(sidlines "$IN")"  = "1" ] && pass "in-set task applied"         || fail "in-set not applied: $(sidlines "$IN")"
+[ "$(sidlines "$OUT")" = "0" ] && pass "out-of-request task skipped" || fail "out-of-request bound: $(sidlines "$OUT")"
+echo "$O5" | grep -q "membership-skip: 2026-06-29_outset.md" \
+  && pass "F5 membership-skip reported" || fail "no membership-skip line: $O5"
 
 echo ""
 echo "=== Done ==="

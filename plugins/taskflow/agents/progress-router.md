@@ -62,9 +62,9 @@ The main agent prepends a JSON context block:
 
 Map `raw_input` to one canonical action via the synonym table:
 
-| Action | Synonyms (case-insensitive substring match) |
+| Action | Synonyms |
 |---|---|
-| `approve` | `approve`, `完了`, `終了`, `done`, `finish`, `ok` |
+| `approve` | `approve`, `完了`, `終了`, `done`, `finish` |
 | `revert` | `revert`, `戻す`, `戻し`, `undo`, `取り消し` |
 | `start` | `start`, `開始`, `着手`, `begin` |
 | `check` | `check` |
@@ -72,12 +72,35 @@ Map `raw_input` to one canonical action via the synonym table:
 | `sync` | `sync` |
 | `rebuild` | `rebuild` |
 
+Matching (per token language):
+
+- **English / Latin-script tokens** (`approve`, `done`, `finish`, `revert`,
+  `undo`, `start`, `begin`, `check`, `audit`, `sync`, `rebuild`) match
+  **case-insensitively on a word boundary only**. A token `T` matches iff it
+  occurs in `raw_input` NOT immediately preceded or followed by an ASCII letter
+  — i.e. at a position matching `(?<![A-Za-z])T(?![A-Za-z])` (case-insensitive).
+  This MATCHES `start`, `start beta`, `revertして`, `alpha を approve`; it does
+  NOT match `restart`, `upstart`, `beginner`, `checkbox`, `look`, `tokyo`.
+  **Substring matching of English tokens is forbidden.**
+- **Japanese tokens** (`完了`, `終了`, `戻す`, `戻し`, `取り消し`, `開始`,
+  `着手`) match as a **substring anywhere** in `raw_input` (unchanged) —
+  Japanese has no whitespace word delimiter, so substring is the only viable
+  rule.
+
 Rules:
 
 - If exactly one synonym set matches → that action.
-- If multiple synonyms from different sets match → choose the one whose token
-  appears earliest in `raw_input`. If still tied, prefer in this order:
-  `approve` > `revert` > `start` > `audit` > `check` > `sync` > `rebuild`.
+- If synonyms from more than one action set match → pick the action that is the
+  **main verb of the sentence: the operation the user is ultimately
+  requesting** — NOT the earliest-appearing token, and NOT a token that is only
+  a grammatical object. Worked examples (apply this reasoning; not an
+  exhaustive list):
+  - 「着手を取り消して」 → `revert`. 「着手」 is the object of 取り消す; the
+    requested operation is 取り消す = revert.
+  - "revert the start" → `revert`. "start" is the object of "revert"; the
+    requested operation is revert.
+  - If you genuinely cannot decide which matched action is the main verb →
+    `action: "unknown"` (ask a confirming question rather than mis-commit).
 - If no synonym matches → `action: "unknown"`. Emit immediately with empty
   `targets` and reasoning that explains what could not be parsed.
 

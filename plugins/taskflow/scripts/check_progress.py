@@ -15,6 +15,7 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
   7. filename violations — <YYYY-MM-DD>_<topic>(-<N>)?.md
   8. pending approval    — 1_in_progress/ stalled past threshold
   9. orphan lock         — *.md.lock with no sibling *.md (report-only)
+  10. duplicate basename — same task-md basename in >=2 locations under tasks/ (whole-tree walk)
 
 Exit codes:
   0 = no findings
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -397,6 +399,42 @@ def check_orphan_lock(project_dir: Path, result: Result) -> None:
                 )
 
 
+def check_duplicate_basename(project_dir: Path, result: Result) -> None:
+    """#10 — same task-md basename in >=2 locations anywhere under tasks/.
+
+    Walk range MUST mirror hooks/session_progress_capture.py::_task_basename_index
+    (os.walk of the WHOLE tasks/ tree, case-insensitive .md, keyed by exact
+    basename with last-writer-wins). A duplicate basename there is silently
+    collapsed, so capture may bind the wrong copy — this deterministically
+    executes the uniqueness invariant. LOCKSTEP: change this walk range and
+    _task_basename_index's together.
+    """
+    tasks_dir = project_dir / "tasks"
+    if not tasks_dir.is_dir():
+        return
+    index: dict[str, list[Path]] = {}
+    for dirpath, _dirs, files in os.walk(tasks_dir):
+        for fn in files:
+            if fn.lower().endswith(".md"):
+                index.setdefault(fn, []).append(Path(dirpath) / fn)
+    for base in sorted(index):
+        paths = index[base]
+        if len(paths) < 2:
+            continue
+        locs = ", ".join(
+            p.relative_to(project_dir).as_posix() for p in sorted(paths)
+        )
+        result.add(
+            "duplicate_basename",
+            "violation",
+            str(sorted(paths)[0]),
+            f"task basename '{base}' occurs in {len(paths)} locations under "
+            f"tasks/ ({locs}); _task_basename_index keeps only one "
+            "(last-writer-wins) so capture may bind the wrong copy — "
+            "rename or remove the duplicates",
+        )
+
+
 # ============================================================================
 # Output
 # ============================================================================
@@ -469,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     check_filename_convention(project_dir, result)
     check_pending_approval(project_dir, result, args.stale_days)
     check_orphan_lock(project_dir, result)
+    check_duplicate_basename(project_dir, result)
 
     print_findings(result)
     return 1 if result.findings else 0

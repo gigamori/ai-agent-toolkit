@@ -78,9 +78,9 @@ Put `pj:<project>` near the beginning of the prompt — it is recognized at the 
 | `approve` | Move a task `1_in_progress/ → 2_done/`. Human-approved transition. | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
 | `revert` | Move backward one step (`1_in_progress → 0_todo`, or `2_done → 1_in_progress`). | `/progress revert <prefix>`<br>`/progress 戻して audit` |
 
-**Action synonyms** (case-insensitive substring match on the input):
+**Action synonyms** (English tokens match on word boundaries — no partial-word hits; Japanese tokens match as substrings; case-insensitive):
 
-- approve: `approve`, `完了`, `終了`, `done`, `finish`, `ok`
+- approve: `approve`, `完了`, `終了`, `done`, `finish`
 - revert: `revert`, `戻す`, `戻し`, `undo`, `取り消し`
 - start: `start`, `開始`, `着手`, `begin`
 - `check` / `audit` / `sync` / `rebuild`: literal keywords only
@@ -294,7 +294,7 @@ Also handles guidelines injection: on the first turn of a session (and after com
 
 **Design principle**: the reminder contains distinctive terms from the source guidelines — particularly prohibitions, format-specific patterns, and authority definitions — that boost attention weight on the corresponding full-text passages.
 
-**Maintenance rule**: when any of the 3 source guidelines (`progress_guidelines.md`, `notes_guidelines.md`, `tasks_guidelines.md`) is updated, `guidelines_reminder.md` MUST be updated in the same commit. Stale keywords that reference removed rules cause hallucinated constraints; missing keywords for new rules cause silent non-compliance.
+**Maintenance rule**: when any source that feeds the reminder is updated — the 3 guidelines (`progress_guidelines.md`, `notes_guidelines.md`, `tasks_guidelines.md`) plus `project_routing.md` (source of the ROUTER cue) — `guidelines_reminder.md` MUST be updated in the same commit. Stale keywords that reference removed rules cause hallucinated constraints; missing keywords for new rules cause silent non-compliance.
 
 **Keyword selection criteria** (in priority order):
 

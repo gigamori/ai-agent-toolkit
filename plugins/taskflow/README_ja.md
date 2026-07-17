@@ -77,9 +77,9 @@ Claude Code で恒久設定するには `settings.json` に追加:
 | `approve` | `1_in_progress/ → 2_done/` への移動。人間承認の遷移。 | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
 | `revert` | 1 段戻す（`1_in_progress → 0_todo`、または `2_done → 1_in_progress`）。 | `/progress revert <prefix>`<br>`/progress 戻して audit` |
 
-**action 同義語**（大文字小文字無視、入力に対する substring match）:
+**action 同義語**（英語トークンは語境界一致 — 部分語ヒットなし、日本語トークンは substring 一致、大文字小文字無視）:
 
-- approve: `approve`, `完了`, `終了`, `done`, `finish`, `ok`
+- approve: `approve`, `完了`, `終了`, `done`, `finish`
 - revert: `revert`, `戻す`, `戻し`, `undo`, `取り消し`
 - start: `start`, `開始`, `着手`, `begin`
 - `check` / `audit` / `sync` / `rebuild`: literal キーワードのみ
@@ -293,7 +293,7 @@ _projects/
 
 **設計原則**: 元のガイドラインから特徴的な用語（特に禁止規則、フォーマット固有パターン、権威の定義）を抽出し、対応する全文パッセージへのアテンション重みを強化する。
 
-**メンテナンスルール**: 3 つのソースガイドライン（`progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md`）のいずれかを更新したら、`guidelines_reminder.md` も同じコミットで必ず更新すること。削除されたルールのキーワードが残ると幻覚的な制約を引き起こし、新ルールのキーワードが欠けるとサイレントな非準拠を招く。
+**メンテナンスルール**: reminder に供給するソース — 3 つのガイドライン（`progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md`）＋ `project_routing.md`（ROUTER cue のソース）— のいずれかを更新したら、`guidelines_reminder.md` も同じコミットで必ず更新すること。削除されたルールのキーワードが残ると幻覚的な制約を引き起こし、新ルールのキーワードが欠けるとサイレントな非準拠を招く。
 
 **キーワード選定基準**（優先順）:
 

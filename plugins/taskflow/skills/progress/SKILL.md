@@ -95,8 +95,11 @@ it. Pass only the JSON context block as the prompt.
 3. Parse the returned JSON object. Fields: `action`, `targets`, `confidence`,
    `reasoning`.
 4. If the router response is not valid JSON (parse error, prose, or empty):
-   - Derive `action` from `raw_input` using the synonym table in the router
-     spec (Step 1 of the body of `${CLAUDE_PLUGIN_ROOT}/agents/progress-router.md`).
+   - Derive `action` from `raw_input` using the synonym table **and its
+     matching + tie-break rules** in the router spec (Step 1 of the body of
+     `${CLAUDE_PLUGIN_ROOT}/agents/progress-router.md`) — i.e. English tokens
+     match on a word boundary (never as a substring), Japanese tokens match as
+     a substring, and a multi-match resolves to the sentence's main verb.
      If no synonym matches, treat as `action: "unknown"`.
    - Set `targets: []`, `confidence: "high"`.
    - Proceed to Step 4 with this synthetic result.
