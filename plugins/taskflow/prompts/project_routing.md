@@ -124,12 +124,12 @@ Project rules are **additive domain constraints**, largely orthogonal to the res
 - A **live user instruction overrides** a standing project rule ("just this once …").
 - **Safety outranks everything.** Do NOT place safety-critical constraints in `rules.md` (they would be weakened by the above); keep those in the harness/safety layer.
 
-**Editing `rules.md` (human-initiated only).** There is no model-autonomous write to this file. When the user asks (in natural language or via a command) to add/change a project rule:
+**Editing `rules.md` (human-initiated only, via `/pj-rules`).** There is no model-autonomous write to this file. Use the `/pj-rules` skill for both reading and writing:
 
-1. Propose the change as a diff (or the exact lines to add) and state the target `_projects/<project>/rules.md`.
-2. Apply only after the user confirms. Manual hand-editing by the user is also fine.
+- `/pj-rules show` (read-only, no confirmation) — lists the current rules, heading count, and line count vs. cap.
+- `/pj-rules <NL description of the change>` — proposes the change as a diff and applies it only after the user confirms via `AskUserQuestion`. There is no `-y`/`--yes` skip for this write — the blast radius is every future turn of the project, so confirmation is never bypassed even on an explicit human request.
 
-The blast radius is every future turn of the project, so the confirm step is required even though the request is human-initiated.
+Manual hand-editing of `_projects/<project>/rules.md` by the user is also fine at any time. When the user's plain-language request (not a `/pj-rules` invocation) is clearly about adding or changing a project rule, route it through the same `/pj-rules` procedure rather than editing the file directly.
 
 **NL disambiguation.** When a project is assigned, an unqualified request about "the rules" (「ルール」) refers to this project's `rules.md` by default. Only treat it as `CLAUDE.md` or `.claude/rules` when the user names those explicitly.
 

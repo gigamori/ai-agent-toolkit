@@ -98,6 +98,19 @@ Put `pj:<project>` near the beginning of the prompt — it is recognized at the 
 
 For destructive actions (`approve` / `revert`), the main agent prints the resolved plan and asks via `AskUserQuestion` before any mutation. `-y` skips this when the target is already verified. When the router returns zero matches or ambiguous low-confidence candidates, it stops and lists candidates rather than guessing.
 
+### /pj-rules — per-project rules
+
+`/pj-rules` views or edits a project's optional `_projects/<project>/rules.md` — normative rules scoped to the taskflow project (`pj:`), not to a filesystem path. It runs no router subagent (the action set is small and a write's body is authored by the main agent regardless); intent is classified inline against a small synonym table.
+
+| Action | What it does | Example |
+|---|---|---|
+| `show` (alias `list`) | Print the rules, their `## ` heading count, and line count vs. the cap. Read-only, no confirmation. | `/pj-rules show` |
+| `write` | Add or edit a rule, or change `inject_every_turn`/`max_lines` frontmatter. Always shown as a diff and confirmed via `AskUserQuestion` before applying. | `/pj-rules add a rule: never edit dist/ directly` |
+
+**No `-y` skip for `write`.** Unlike `/progress`, this skill has no confirmation bypass: `rules.md` is injected into every future turn of the project, so its blast radius extends well past the current turn. `-y`/`--yes` in the input is silently ignored.
+
+After a confirmed write, `scripts/pj_rules.py show` is run before and after to verify the edit produced a `## ` heading (not just trust the model's self-report), then `scripts/pj_rules.py reset-indexed` resets only the session state's `project_rules_indexed` field (merge-preserving — other state fields are untouched) so the updated full text is shown again on the next turn.
+
 ### /kanban — Kanban project board
 
 `/kanban` generates a self-contained HTML kanban board showing all taskflow projects and their tasks. Tasks are organized by status (TODO / In Progress / Done) and by project, with priority badges, session history, and one-click navigation to session logs or `/progress` sub-actions.

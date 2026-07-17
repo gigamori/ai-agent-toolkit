@@ -97,6 +97,19 @@ Claude Code で恒久設定するには `settings.json` に追加:
 
 destructive アクション（`approve` / `revert`）では、メインエージェントが解決済 plan を表示し `AskUserQuestion` で確認を取ってから初めて mutation を実行する。`-y` で対象が確定済の場合はスキップ可。0 match / 低 confidence の複数 match の場合、router は候補を列挙して停止する（推測進行しない）。
 
+### /pj-rules — プロジェクト固有ルール
+
+`/pj-rules` は、プロジェクトが任意で持つ `_projects/<project>/rules.md` — taskflow プロジェクト（`pj:`）単位でスコープされた規範（ファイルパス単位ではない）— を閲覧・編集する。router subagent は使わない（action 集合が小さく、write の本文はどのみち主エージェントが構成するため）。intent は小さな同義語表で inline 分類する。
+
+| Action | 動作 | 例 |
+|---|---|---|
+| `show`（別名 `list`） | ルール本文・`## ` 見出し数・行数 vs cap を表示。read-only、確認不要。 | `/pj-rules show` |
+| `write` | ルールの追加/編集、または `inject_every_turn`/`max_lines` frontmatter の変更。常に diff として提示し `AskUserQuestion` で承認後に適用。 | `/pj-rules add a rule: never edit dist/ directly` |
+
+**`write` に `-y` スキップは無い。** `/progress` と異なり、この skill には確認バイパスが存在しない — `rules.md` はプロジェクトの以降の全ターンに注入されるため、blast radius が当該ターンを超えて及ぶ。入力中の `-y`/`--yes` は無条件に無視される。
+
+承認済み write の後、`scripts/pj_rules.py show` を前後で実行して編集が `## ` 見出しを生成したか検証し（モデルの自己申告を信用しない）、続いて `scripts/pj_rules.py reset-indexed` で session state の `project_rules_indexed` フィールドのみをリセットする（merge-preserving — 他の state フィールドは無傷）。これにより次ターンで更新後の全文が再び表示される。
+
 ### /kanban — Kanban プロジェクトボード
 
 `/kanban` はすべての taskflow プロジェクトとそのタスクを kanban ボードで表示する自己完結型 HTML を生成する。タスクはステータス（未着手・作業中・完了）とプロジェクト別に整理され、優先度バッジ、セッション履歴、セッションログ or `/progress` サブコマンドへのワンクリック遷移を提供。

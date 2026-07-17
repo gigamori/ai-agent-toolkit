@@ -255,8 +255,8 @@ The system uses append-only writes and bounded locking for protection, and the a
 
 A project can carry a short `rules.md` — project-specific rules you want Claude to follow (e.g. *"edit `src/`, never `dist/` directly"*). They are scoped to the taskflow project, so they switch with `pj:` — unlike a repo-wide `CLAUDE.md`, and unlike path-scoped `.claude/rules`.
 
-- **Set them**: ask Claude *"add a project rule that …"* — it proposes the change as a diff and applies it only after you confirm. You can also edit `_projects/<project>/rules.md` by hand. Claude never rewrites this file on its own.
-- **How they reach Claude**: on switching into the project the full rules are shown once; on later turns only their `##` headings recur as a reminder to re-read before acting. Keep the file short (default budget ~100 lines). Set `inject_every_turn: true` in the file's frontmatter if you want the full text kept in view every turn.
+- **Set them**: `/pj-rules show` lists what's there; `/pj-rules add a rule that …` (or just ask in plain language) proposes the change as a diff and applies it only after you confirm — there's no way to skip that confirmation, since the file affects every future turn. You can also edit `_projects/<project>/rules.md` by hand. Claude never rewrites this file on its own.
+- **How they reach Claude**: on switching into the project the full rules are shown once; on later turns only their `##` headings recur as a reminder to re-read before acting. Keep the file short (default budget ~100 lines; `/pj-rules show` reports the current count). Set `inject_every_turn: true` in the file's frontmatter if you want the full text kept in view every turn.
 
 ---
 
@@ -272,7 +272,7 @@ A project can carry a short `rules.md` — project-specific rules you want Claud
 | Health check tasks | `/progress check` · `/progress audit` |
 | Refresh the dashboard | `/progress rebuild` |
 | Save durable knowledge | "save this to notes" |
-| Set project-specific rules | Ask: "add a project rule that …" (Claude proposes a diff; you confirm) |
+| View / set project-specific rules | `/pj-rules show` · `/pj-rules add a rule that …` (always diff + confirm) |
 | See everything | `/kanban` |
 
 **Golden rules**

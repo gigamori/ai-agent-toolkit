@@ -217,6 +217,7 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
 |---|---|---|
 | `session_init.py` (hook) | every turn (while project active or `pj:?`) | writes the full schema; project from explicit `pj:` only — **no path inference** |
 | `session_progress_capture.py` (hook) | session end | recovers `project` from a `[pj:...]` line (self-heal); union-merges `exec_bind` from a `[tasks:]` carry in the assistant's last message |
+| `scripts/pj_rules.py reset-indexed` (via `/pj-rules` skill) | after a confirmed `rules.md` write | merge-preserving reset of `project_rules_indexed` only, so the updated body re-primes next turn; never hand-edited by the skill |
 
 ### Readers
 
