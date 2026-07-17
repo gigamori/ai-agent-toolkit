@@ -2,7 +2,6 @@
 name: run-sql
 description: Execute SQL queries against configured databases (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) and return raw results. Use when the user asks to query a database, run SQL, check data, explore tables, or count rows. Also triggered by "SQLを実行", "データを取得", "テーブルを確認".
 context: fork
-allowed-tools: "Bash(uv run ${CLAUDE_SKILL_DIR}/scripts/run_sql.py *)"
 ---
 
 ## Available connections
