@@ -6,7 +6,7 @@
 #   2. /progress start via English synonym (start)
 #   3. /progress start with ambiguous target (multiple candidates)
 #   4. /progress start on empty 0_todo (no candidates)
-#   5. Synonym collision: 「開始」 should route to start, not approve/revert
+#   5. Synonym collision: 「開始」 should route to start, not approve/unstart
 #   6. Task creation folder selection: already underway → ask or 1_in_progress
 #
 # Usage:  bash plugins/taskflow/tests/test_progress_start.sh
@@ -129,8 +129,8 @@ if [ -f "$PROJECT_DIR/tasks/1_in_progress/2026-05-21_feature-alpha.md" ]; then
     fail "log entry 'started' not found in task file"
   fi
 
-  # Verify updated: date changed
-  if grep -q "updated: 2026-05-21" "$PROJECT_DIR/tasks/1_in_progress/2026-05-21_feature-alpha.md"; then
+  # Verify updated: date changed to the real today (dynamic — never hardcode)
+  if grep -q "updated: $(date +%F)" "$PROJECT_DIR/tasks/1_in_progress/2026-05-21_feature-alpha.md"; then
     pass "updated: date is today"
   else
     fail "updated: date not updated"
@@ -187,15 +187,15 @@ fi
 # Scenario 4: Revert alpha back to 0_todo, then start again
 # ----------------------------------------------------------
 echo ""
-echo "[Scenario 4] Revert alpha → 0_todo, then start again"
+echo "[Scenario 4] Unstart alpha → 0_todo, then start again"
 
-echo "pj:$PROJECT /progress alpha を戻して -y" \
+echo "pj:$PROJECT /progress alpha を未着手に -y" \
   | $CLAUDE --system-prompt "$SYSTEM_PROMPT" > /tmp/_test_start_s4a.log 2>&1 || true
 
 if [ -f "$PROJECT_DIR/tasks/0_todo/2026-05-21_feature-alpha.md" ]; then
-  pass "alpha reverted to 0_todo"
+  pass "alpha unstarted to 0_todo"
 else
-  fail "alpha not reverted to 0_todo"
+  fail "alpha not unstarted to 0_todo"
 fi
 
 echo "pj:$PROJECT /progress alpha 開始 -y" \

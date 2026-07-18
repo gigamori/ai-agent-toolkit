@@ -38,7 +38,7 @@ first line). Omit it only when no project is assigned.
      /progress rebuild
      /progress タスクXを完了にして
      /progress Xに着手
-     /progress Xを戻して
+     /progress Xを未着手に
    ```
 
    and stop.
@@ -95,11 +95,16 @@ it. Pass only the JSON context block as the prompt.
 3. Parse the returned JSON object. Fields: `action`, `targets`, `confidence`,
    `reasoning`.
 4. If the router response is not valid JSON (parse error, prose, or empty):
-   - Derive `action` from `raw_input` using the synonym table **and its
-     matching + tie-break rules** in the router spec (Step 1 of the body of
-     `${CLAUDE_PLUGIN_ROOT}/agents/progress-router.md`) — i.e. English tokens
-     match on a word boundary (never as a substring), Japanese tokens match as
-     a substring, and a multi-match resolves to the sentence's main verb.
+   - Derive `action` from `raw_input` using the goal-state table **and its
+     gate + matching + tie-break rules** in the router spec (Step 1 of the body of
+     `${CLAUDE_PLUGIN_ROOT}/agents/progress-router.md`) — i.e. the undo-intent
+     gate (a sentence-level semantic judgment, not a string rule: an
+     undo/cancel request → `unknown`, owned by the global `revert` skill;
+     example words appearing as content, e.g. 戻り値 or a stem containing
+     "revert", do not fire it) is checked first, English tokens match on a
+     word boundary (never as a substring), Japanese tokens match as a substring
+     with maximal munch and path exclusion, and a multi-state match resolves to
+     the goal state the user wants the task to reach.
      If no synonym matches, treat as `action: "unknown"`.
    - Set `targets: []`, `confidence: "high"`.
    - Proceed to Step 4 with this synthetic result.
@@ -109,8 +114,8 @@ it. Pass only the JSON context block as the prompt.
 | Condition | Reply and stop |
 |---|---|
 | `action: "unknown"` | `cannot parse: <raw_input>` + `reasoning: <reasoning>` + 1-line of valid actions/synonyms |
-| `action in {approve, revert, start}` AND `len(targets) >= 2` AND `confidence: "low"` | `ambiguous: <raw_input>`. List the returned targets with `<stem> \| <H1>`. |
-| `action in {approve, revert, start}` AND `len(targets) == 0` | `no match for '<raw_input>'`. List up to 10 candidates from the action's candidate folder(s) with `<stem> \| <H1>`. |
+| `action in {approve, start, unstart}` AND `len(targets) >= 2` AND `confidence: "low"` | `ambiguous: <raw_input>`. List the returned targets with `<stem> \| <H1>`. |
+| `action in {approve, start, unstart}` AND `len(targets) == 0` | `no match for '<raw_input>'`. List up to 10 candidates from the action's candidate folder(s) with `<stem> \| <H1>`. |
 
 ### Status mismatch warning
 
@@ -118,7 +123,7 @@ If any target has `status_mismatch: true`, include a warning line in the
 plan summary (Step 5):
 
 ```
-⚠ <stem> is in <current_status> (expected <primary_folder> for <action>)
+⚠ <stem>: <current_status> → <target_status> skips a state
 ```
 
 The user confirms or cancels as usual.
@@ -130,7 +135,7 @@ If `skip_confirm` is true, skip this step and proceed to Step 6.
 For `check`, `audit`, `sync`, `rebuild`: skip confirmation (these are
 non-destructive read or rebuild operations). Proceed to Step 6.
 
-For `approve` / `revert` / `start`:
+For `approve` / `start` / `unstart`:
 
 1. Print a plan summary in text (before the AskUserQuestion call):
 
@@ -145,11 +150,11 @@ For `approve` / `revert` / `start`:
 2. Call AskUserQuestion with:
    - question: `Execute <action> on <N> target(s)?`
      - If any target has `status_mismatch: true` (`<K>` = count of such
-       targets), instead use: `Execute <action> on <N> target(s)? — ⚠ <K> task(s) skip 1_in_progress (0_todo → 2_done)`
+       targets), instead use: `Execute <action> on <N> target(s)? — ⚠ <K> task(s) make a non-adjacent jump (skipping 1_in_progress)`
    - options:
      - label: `Yes, execute`, description: `Apply the move + log update`
        - If any target has `status_mismatch: true`, instead use description:
-         `Apply the move + log update (incl. <K> task(s) jumping 0_todo → 2_done)`
+         `Apply the move + log update (incl. <K> non-adjacent jump(s))`
      - label: `No, cancel`, description: `Stop without changes`
 
 3. If the user picks `No, cancel`, reply `cancelled` and stop. Otherwise
@@ -195,6 +200,8 @@ For each target in `targets`:
 
 1. `mkdir -p "<project-root>/tasks/2_done"` (idempotent).
 2. `mv "<project-root>/<current_file>" "<project-root>/tasks/2_done/<basename of current_file>"`.
+   (`current_file` may be in `tasks/0_todo/` — a non-adjacent jump the user
+   confirmed in Step 5; mechanics are identical.)
 3. Edit the moved file:
    - frontmatter `updated:` → today (YYYY-MM-DD)
    - **clear the `## Next Steps` section content**: keep the `## Next Steps` header line, remove all lines between it and the next section heading (`## ...`) or the `<!-- @log:begin -->` marker — whichever comes first. Leave one blank line after the header for readability.
@@ -202,18 +209,24 @@ For each target in `targets`:
 
 The Next Steps clear is destructive of historical "what was unfinished at approve time" — that intent is preserved by the `@log` entry on approve and any prior `[s:<sid>]: completed` entries. Audit no longer flags 2_done files regardless of Next Steps content, but clearing keeps file content consistent with semantics.
 
-After all targets, run `rebuild_progress.py` and report.
+After all targets, run `rebuild_progress.py` (same command as `sync`/`rebuild`
+above) and report — REQUIRED, do not skip: the `mv` alone may not fire the
+auto-rebuild hook, leaving the progress.md cache stale.
 
-### action = `revert`
+### action = `unstart`
 
 For each target in `targets`:
 
-1. `mkdir -p "<project-root>/tasks/<target_status>"` (idempotent).
-2. `mv "<project-root>/<current_file>" "<project-root>/tasks/<target_status>/<basename of current_file>"`.
+1. `mkdir -p "<project-root>/tasks/0_todo"` (idempotent).
+2. `mv "<project-root>/<current_file>" "<project-root>/tasks/0_todo/<basename of current_file>"`.
+   (`current_file` may be in `tasks/2_done/` — a non-adjacent jump the user
+   confirmed in Step 5; mechanics are identical.)
 3. Edit the moved file's frontmatter `updated:` to today. Append one line:
-   `- <today>: reverted to <target_status>`.
+   `- <today>: unstarted → 0_todo`.
 
-After all targets, run `rebuild_progress.py` and report.
+After all targets, run `rebuild_progress.py` (same command as `sync`/`rebuild`
+above) and report — REQUIRED, do not skip: the `mv` alone may not fire the
+auto-rebuild hook, leaving the progress.md cache stale.
 
 ### action = `start`
 
@@ -221,15 +234,19 @@ For each target in `targets`:
 
 1. `mkdir -p "<project-root>/tasks/1_in_progress"` (idempotent).
 2. `mv "<project-root>/<current_file>" "<project-root>/tasks/1_in_progress/<basename of current_file>"`.
+   (`current_file` may be in `tasks/2_done/` — a reopen; mechanics are
+   identical.)
 3. Edit the moved file's frontmatter `updated:` to today. Append one line:
    `- <today>: started → 1_in_progress`.
 
-After all targets, run `rebuild_progress.py` and report.
+After all targets, run `rebuild_progress.py` (same command as `sync`/`rebuild`
+above) and report — REQUIRED, do not skip: the `mv` alone may not fire the
+auto-rebuild hook, leaving the progress.md cache stale.
 
 ## Output rules
 
 - Echo each Bash command's relevant output (or a 1-line summary).
-- For state-changing actions (`approve`, `revert`, `start`), list each moved file as
+- For state-changing actions (`approve`, `start`, `unstart`), list each moved file as
   `<stem>: <current_status> → <target_status>`.
 - Total response ≤ 30 lines (excluding the AskUserQuestion UI).
 - Include the `[pj:<current_project>]` leading line per the Leading-line

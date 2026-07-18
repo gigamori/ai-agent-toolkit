@@ -58,49 +58,100 @@ The main agent prepends a JSON context block:
 }
 ```
 
-## Step 1 — Identify the action
+## Step 1 — Identify the goal state / action
 
-Map `raw_input` to one canonical action via the synonym table:
+A `/progress` request names the **state the user wants the task to reach**
+(the goal state) — e.g. 完了 / 着手 / 未着手 — not a direction verb.
+taskflow deliberately claims NO undo/revert vocabulary: 戻す / undo /
+revert / 取り消し belong to the global `revert` skill (LLM-action undo)
+and are handled by the undo-intent gate below.
 
-| Action | Synonyms |
+Map `raw_input` to one goal state (emitting its action) or one maintenance
+action:
+
+| Goal state | Action | Synonyms |
+|---|---|---|
+| `2_done` | `approve` | `完了`, `終了`, `done`, `finish`, `approve` |
+| `1_in_progress` | `start` | `着手`, `開始`, `再開`, `進行中`, `start`, `begin`, `resume` |
+| `0_todo` | `unstart` | `未着手`, `着手前`, `開始前`, `todo`, `unstart` |
+
+| Maintenance action | Synonyms |
 |---|---|
-| `approve` | `approve`, `完了`, `終了`, `done`, `finish` |
-| `revert` | `revert`, `戻す`, `戻し`, `undo`, `取り消し` |
-| `start` | `start`, `開始`, `着手`, `begin` |
 | `check` | `check` |
 | `audit` | `audit` |
 | `sync` | `sync` |
 | `rebuild` | `rebuild` |
 
-Matching (per token language):
+### Undo-intent gate (checked FIRST — overrides every match below)
 
-- **English / Latin-script tokens** (`approve`, `done`, `finish`, `revert`,
-  `undo`, `start`, `begin`, `check`, `audit`, `sync`, `rebuild`) match
-  **case-insensitively on a word boundary only**. A token `T` matches iff it
-  occurs in `raw_input` NOT immediately preceded or followed by an ASCII letter
-  — i.e. at a position matching `(?<![A-Za-z])T(?![A-Za-z])` (case-insensitive).
-  This MATCHES `start`, `start beta`, `revertして`, `alpha を approve`; it does
-  NOT match `restart`, `upstart`, `beginner`, `checkbox`, `look`, `tokyo`.
+Judge the REQUEST INTENT at the sentence level, as a single yes/no call:
+is the user asking to undo / cancel / nullify a prior action, decision, or
+status move? Intent examples (illustrative only — NOT a string-match
+list): 取り消して / やめて / 戻して / なかったことに / undo / revert /
+cancel.
+
+- If YES → terminal. Emit exactly:
+  `{"action": "unknown", "targets": [], "confidence": "low", "reasoning":
+  "undo/revert request — out of taskflow scope (owned by the global revert
+  skill). Name the goal state instead: 完了 / 着手 / 未着手."}`
+  Do not continue to matching or target resolution.
+- If NO → proceed to matching below. Example words appearing as CONTENT —
+  in a task name, stem, path, or technical term — are not intent:
+  - 「戻り値検証タスクを完了に」 → NOT an undo request (戻り値 is a
+    technical term; the intent is completion) → proceed with goal `2_done`.
+  - 「着手を取り消して」 → IS an undo request (取り消して targets the
+    prior start) → the gate fires; this must NOT become `start`.
+
+This gate is a semantic judgment, not a string rule: never fire it merely
+because an example word appears as a substring, and never skip it because
+none appears verbatim.
+
+### Matching (per token language)
+
+- **English / Latin-script tokens** (`approve`, `done`, `finish`, `start`,
+  `begin`, `resume`, `todo`, `unstart`, `check`, `audit`, `sync`,
+  `rebuild`) match **case-insensitively on a word boundary only**. A token
+  `T` matches iff it occurs in `raw_input` NOT immediately preceded or
+  followed by an ASCII letter — i.e. at a position matching
+  `(?<![A-Za-z])T(?![A-Za-z])` (case-insensitive). This MATCHES `start`,
+  `start beta`, `alpha を approve`; it does NOT match `restart`,
+  `unstarted`, `beginner`, `checkbox`.
   **Substring matching of English tokens is forbidden.**
-- **Japanese tokens** (`完了`, `終了`, `戻す`, `戻し`, `取り消し`, `開始`,
-  `着手`) match as a **substring anywhere** in `raw_input` (unchanged) —
-  Japanese has no whitespace word delimiter, so substring is the only viable
-  rule.
+- **Japanese tokens** (`完了`, `終了`, `着手`, `開始`, `再開`, `進行中`,
+  `未着手`, `着手前`, `開始前`) match as a **substring anywhere** in
+  `raw_input` — Japanese has no whitespace word delimiter, so substring is
+  the only viable rule.
+- **Maximal munch (Japanese overlaps)**: when two matched Japanese tokens
+  overlap at the same position, only the longest occurrence counts.
+  `未着手` / `着手前` therefore suppress the `着手` they contain, and
+  `開始前` suppresses `開始`. (Without this, 「alpha を未着手に」 would
+  mis-resolve to `start`.)
+- **Path exclusion**: synonym occurrences inside a path-like token (any
+  whitespace-delimited token containing `/`, including `@`-references such
+  as `@tasks/0_todo/x.md`) do NOT count as matches. The folder name
+  `0_todo` inside a path must not register `todo`, and a filename like
+  `2026-01-01_start-foo.md` must not register `start`.
 
-Rules:
+### Tie-break rules
 
-- If exactly one synonym set matches → that action.
-- If synonyms from more than one action set match → pick the action that is the
-  **main verb of the sentence: the operation the user is ultimately
-  requesting** — NOT the earliest-appearing token, and NOT a token that is only
-  a grammatical object. Worked examples (apply this reasoning; not an
+- Tokens from **more than one goal state** match: pick the state the user
+  wants the task to **reach** — typically the token marked with に / へ /
+  to, or the final requested outcome of the sentence — NOT the state being
+  left or negated. Worked examples (apply this reasoning; not an
   exhaustive list):
-  - 「着手を取り消して」 → `revert`. 「着手」 is the object of 取り消す; the
-    requested operation is 取り消す = revert.
-  - "revert the start" → `revert`. "start" is the object of "revert"; the
-    requested operation is revert.
-  - If you genuinely cannot decide which matched action is the main verb →
-    `action: "unknown"` (ask a confirming question rather than mis-commit).
+  - 「alpha を完了に」 → `2_done`.
+  - 「完了していた alpha を未着手へ」 → `0_todo`. 未着手 is the
+    reach-state; 完了 only describes the status being left.
+  - "move the done one to todo" → `0_todo`. "done" describes what is being
+    left; "todo" is the reach-state.
+  - If you genuinely cannot decide which matched state is the reach-state
+    → `action: "unknown"` (ask a confirming question rather than
+    mis-commit).
+- A **goal-state token and a maintenance token** both match: the goal
+  state wins and the maintenance word is treated as target text —
+  「audit を未着手に」 → `unstart` targeting a task whose name contains
+  "audit". Emit a maintenance action only when no goal-state token
+  matches.
 - If no synonym matches → `action: "unknown"`. Emit immediately with empty
   `targets` and reasoning that explains what could not be parsed.
 
@@ -108,13 +159,18 @@ Rules:
 
 For `check` / `audit` / `sync` / `rebuild`: `targets: []`. Proceed to Step 3.
 
-For `approve`, `revert`, and `start`:
+For `approve`, `start`, and `unstart`:
 
 1. **List candidate task files**:
-   - `approve` candidates: `<project_root>/tasks/1_in_progress/*.md`
-   - `revert` candidates: `<project_root>/tasks/1_in_progress/*.md` and
-     `<project_root>/tasks/2_done/*.md`
-   - `start` candidates: `<project_root>/tasks/0_todo/*.md`
+   - `approve` candidates: `<project_root>/tasks/1_in_progress/*.md` and
+     `<project_root>/tasks/0_todo/*.md` (a `0_todo` hit skips a state —
+     see Step 2.6)
+   - `start` candidates: `<project_root>/tasks/0_todo/*.md` and
+     `<project_root>/tasks/2_done/*.md` (a `2_done` hit is a reopen —
+     adjacent, no flag)
+   - `unstart` candidates: `<project_root>/tasks/1_in_progress/*.md` and
+     `<project_root>/tasks/2_done/*.md` (a `2_done` hit skips a state —
+     see Step 2.6)
 
    Use `Bash(ls <dir>)` or `Glob` to enumerate. If a folder does not exist,
    treat as empty.
@@ -129,14 +185,20 @@ For `approve`, `revert`, and `start`:
 3½. **Empty target_phrase handling**:
     If `target_phrase` is empty or whitespace-only after cleanup:
     a. If `session_id` is present in the input context, grep for the literal
-       string `[s:<session_id>]` across task files in ALL
-       folders relevant to the action (not just the primary folder):
-       - `approve`: `tasks/0_todo/*.md` and `tasks/1_in_progress/*.md`
-       - `start`:   `tasks/0_todo/*.md`
-       - `revert`:  `tasks/1_in_progress/*.md` and `tasks/2_done/*.md`
+       string `[s:<session_id>]` across task files in these folders:
+       - `approve`: `tasks/1_in_progress/*.md` and `tasks/0_todo/*.md`
+       - `start`:   `tasks/0_todo/*.md` only
+       - `unstart`: `tasks/1_in_progress/*.md` only
+
+       Deliberately narrower than the Step 2.1 candidates: empty-target
+       auto-resolution must NEVER select a `2_done` task. Leaving the
+       human-approved state (reopen via `start`, jump via `unstart`)
+       requires the user to name the target explicitly — otherwise
+       `/progress 着手 -y` right after approving a task could silently
+       un-approve it through the sid-grep match.
     b. If ≥ 1 match: use matched files as targets with `confidence: "medium"`.
-       For matches found outside the action's primary folder
-       (e.g., `0_todo/` for an `approve` action), add `"status_mismatch": true`
+       For matches whose transition would skip a state (a `0_todo` hit for
+       `approve`, a `2_done` hit for `unstart`), add `"status_mismatch": true`
        to that target entry.
     c. If 0 matches or no `session_id`: emit `targets: []`,
        `confidence: "high"`.
@@ -159,11 +221,15 @@ For `approve`, `revert`, and `start`:
    - `medium` — exactly one match at priority (c), or plurality (d)
    - `low` — multiple matches at the same priority
 
-6. **Compute `target_status`** for each match:
-   - `approve` → always `2_done`
-   - `revert` from `1_in_progress` → `0_todo`
-   - `revert` from `2_done` → `1_in_progress`
-   - `start` → always `1_in_progress`
+6. **Compute `target_status`** for each match — always the goal state:
+   - `approve` → `2_done`
+   - `start` → `1_in_progress`
+   - `unstart` → `0_todo`
+
+   Set `"status_mismatch": true` on any target whose transition **skips a
+   state** (non-adjacent): `0_todo → 2_done` (approve from todo) or
+   `2_done → 0_todo` (unstart from done). Adjacent moves — including the
+   reopen `2_done → 1_in_progress` — keep `status_mismatch: false`.
 
 ## Step 3 — Emit JSON
 
@@ -171,7 +237,7 @@ Output a single JSON object on stdout:
 
 ```json
 {
-  "action": "approve | revert | start | check | audit | sync | rebuild | unknown",
+  "action": "approve | start | unstart | check | audit | sync | rebuild | unknown",
   "targets": [
     {
       "current_file": "tasks/<status>/<stem>.md",
@@ -186,12 +252,12 @@ Output a single JSON object on stdout:
 }
 ```
 
-`status_mismatch`: `true when the task was found outside the action's primary candidate folder (e.g., found in 0_todo for an approve action). Default: false. Omit or set false when not applicable.`
+`status_mismatch`: `true when the target's transition skips a state (0_todo → 2_done, or 2_done → 0_todo). Default: false. Omit or set false when not applicable.`
 
 For `check` / `audit` / `sync` / `rebuild`: emit `targets: []` and
 `confidence: "high"`.
 
-For `approve` / `revert` / `start` with no candidates resolved: emit
+For `approve` / `start` / `unstart` with no candidates resolved: emit
 `targets: []` with the identified action. Main agent will list available
 candidates and stop — the router does NOT list candidates itself.
 

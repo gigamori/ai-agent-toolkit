@@ -43,7 +43,7 @@ Common subsections:
 A task file has TWO regions:
 
 1. **Body region** (from frontmatter close `---` to `<!-- @log:begin -->`): **mutable**. Replace fully when content changes.
-2. **Log region** (`<!-- @log:begin -->` ↔ `<!-- @log:end -->`): **append-only**. Never edit, reorder, or delete existing entries. Each entry is `- <YYYY-MM-DD>T<HH:MM:SS>±HH:MM [s:<sid8>]: <summary>` — an offset-aware ISO8601 `T`-separated timestamp plus the 8-char session id tag `[s:<sid8>]`. Copy both verbatim from the Progress Session context (`iso_ts=` and `sid8=`) — never compute or guess the timestamp yourself; doing so drops the timezone offset and produces entries that cannot be told apart from ones written under a different local timezone. Status-transition lines (start / approve / revert) may omit the `[s:<sid8>]` tag.
+2. **Log region** (`<!-- @log:begin -->` ↔ `<!-- @log:end -->`): **append-only**. Never edit, reorder, or delete existing entries. Each entry is `- <YYYY-MM-DD>T<HH:MM:SS>±HH:MM [s:<sid8>]: <summary>` — an offset-aware ISO8601 `T`-separated timestamp plus the 8-char session id tag `[s:<sid8>]`. Copy both verbatim from the Progress Session context (`iso_ts=` and `sid8=`) — never compute or guess the timestamp yourself; doing so drops the timezone offset and produces entries that cannot be told apart from ones written under a different local timezone. Status-transition lines (start / approve / unstart) may omit the `[s:<sid8>]` tag.
 
 When you modify the body or append to the log, you MUST also update `updated:` in frontmatter to today's date.
 
@@ -63,8 +63,8 @@ Example: `2026-05-13_extension-ui-context.md`, `2026-05-13_extension-ui-context-
 |---|---|---|
 | `0_todo` | `1_in_progress` | `/progress start <id>`, or `mv` the file directly. |
 | `1_in_progress` | `2_done` | **Human approval required**. `/progress approve <id>...`. |
-| `1_in_progress` | `0_todo` | Send back / postpone. `/progress revert <id>`. |
-| `2_done` | `1_in_progress` | Reopen completed task. `/progress revert <id>`. |
+| `1_in_progress` | `0_todo` | Send back / postpone. `/progress unstart <id>`. |
+| `2_done` | `1_in_progress` | Reopen completed task. `/progress start <id>`. |
 
 Folder location is the **single authority** for status. progress.md table is rebuilt from this via `/progress rebuild`.
 

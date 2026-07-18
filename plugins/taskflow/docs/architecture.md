@@ -25,7 +25,7 @@ Internal design document for developers — read this when you need to understan
 
 | Field | Source of truth | How to change |
 |---|---|---|
-| Task status (TODO / In Progress / Completed) | Folder of the task file | Move the file via `/progress start`/`approve`/`revert` (the table is regenerated from task files by `/progress rebuild`; `sync` is an alias of `rebuild`) |
+| Task status (TODO / In Progress / Completed) | Folder of the task file | Move the file via `/progress start`/`approve`/`unstart` (the table is regenerated from task files by `/progress rebuild`; `sync` is an alias of `rebuild`) |
 | Task summary | Task file H1 line | Edit in the task file body |
 | Task priority | `priority:` in frontmatter | Edit frontmatter |
 | Notes category | Folder under `project-notes/` | Move the file |
@@ -50,8 +50,8 @@ tasks/
 |---|---|---|
 | `0_todo` → `1_in_progress` | `/progress start <id>`, or `mv` the file directly | Human or LLM |
 | `1_in_progress` → `2_done` | **Explicit human approval** via `/progress approve <id>` | Human invokes |
-| `1_in_progress` → `0_todo` | Send back / postpone via `/progress revert <id>` | Human invokes |
-| `2_done` → `1_in_progress` | Reopen via `/progress revert <id>` | Human invokes |
+| `1_in_progress` → `0_todo` | Send back / postpone via `/progress unstart <id>` | Human invokes |
+| `2_done` → `1_in_progress` | Reopen via `/progress start <id>` | Human invokes |
 
 The router does NOT auto-promote tasks in v0.2.2. All transitions are user-driven via `/progress` sub-actions or explicit file moves.
 
@@ -97,9 +97,9 @@ The router does NOT walk `project-notes/**/*.md` as a fallback. If a note exists
 | `check` | Run drift / stale / approval-pending detection across 8 checks (`check_progress.py`). Read-only. |
 | `audit` | Classify each task by `## Next Steps` state: pending / completion_candidate / untracked / clean (`audit_progress.py`). Read-only. |
 | `rebuild` (alias `sync`) | Regenerate the `<!-- @table -->` block from task files (`rebuild_progress.py`). |
-| `start <id>` | Move a task `0_todo/ → 1_in_progress/`. |
+| `start <id>` | Move a task `0_todo/ → 1_in_progress/` (also reopens `2_done/ → 1_in_progress/`). |
 | `approve <id>...` | Move tasks `1_in_progress/ → 2_done/` (human-approved); clears the `## Next Steps` content on move. |
-| `revert <id>` | Context-aware backward move (`1_in_progress → 0_todo`, or `2_done → 1_in_progress`). |
+| `unstart <id>` | Move a task back to TODO (`1_in_progress → 0_todo`; from `2_done` it is a non-adjacent jump confirmed with a ⚠). |
 
 The per-turn project-router stays lightweight. Heavy checks and state transitions are explicitly invoked on demand via `/progress`.
 

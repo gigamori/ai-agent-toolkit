@@ -9,7 +9,7 @@
 
 | Field | Source of truth | Editor |
 |---|---|---|
-| Task status (TODO / In Progress / Completed) | Folder of the task file (`tasks/0_todo/`, `1_in_progress/`, `2_done/`) | `/progress` commands (`start` / `approve` / `revert`) or `mv` |
+| Task status (TODO / In Progress / Completed) | Folder of the task file (`tasks/0_todo/`, `1_in_progress/`, `2_done/`) | `/progress` commands (`start` / `approve` / `unstart`) or `mv` |
 | Task summary text | Task file H1 line (`# <title>`) | Edit in the task file body |
 | Task priority | `priority:` in task frontmatter | Edit frontmatter |
 | Task created / updated date | Task frontmatter `created:` / `updated:` | Edit frontmatter |
@@ -24,9 +24,9 @@ The table region is a **cache** rebuilt from task files. It is never authoritati
 | `/progress check` | Run drift / stale / approval-pending detection. Read-only. |
 | `/progress sync` | Alias of rebuild — regenerate the table region from task files. |
 | `/progress rebuild` | Regenerate the table region from current task files. |
-| `/progress start <id>...` | Move tasks from `tasks/0_todo/` to `tasks/1_in_progress/`. Multiple IDs OK. |
+| `/progress start <id>...` | Move tasks from `tasks/0_todo/` to `tasks/1_in_progress/`. Multiple IDs OK. Also reopens from `tasks/2_done/`. |
 | `/progress approve <id>...` | Move tasks from `tasks/1_in_progress/` to `tasks/2_done/`. Multiple IDs OK. |
-| `/progress revert <id>` | Move backward by one step: `1_in_progress/ → 0_todo/`, or `2_done/ → 1_in_progress/`. |
+| `/progress unstart <id>` | Move a task back to `tasks/0_todo/` (from `1_in_progress/`; from `2_done/` it is a non-adjacent jump confirmed with a ⚠). |
 
 ## Status transitions
 

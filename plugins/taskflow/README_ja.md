@@ -73,16 +73,17 @@ Claude Code で恒久設定するには `settings.json` に追加:
 | `check` | drift / stale / 承認待ち検出。read-only。 | `/progress check` |
 | `audit` | 各タスクを `## Next Steps` 状態で 4 区分（pending / completion candidate / untracked / clean）に分類。read-only。 | `/progress audit` |
 | `rebuild`（`sync` は別名） | progress.md のテーブル領域を task ファイル群から再生成。 | `/progress rebuild` |
-| `start` | `0_todo/ → 1_in_progress/` への移動。 | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
-| `approve` | `1_in_progress/ → 2_done/` への移動。人間承認の遷移。 | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
-| `revert` | 1 段戻す（`1_in_progress → 0_todo`、または `2_done → 1_in_progress`）。 | `/progress revert <prefix>`<br>`/progress 戻して audit` |
+| `start` | `0_todo/ → 1_in_progress/` への移動（完了タスクの再開 `2_done/ → 1_in_progress/` も担当）。 | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
+| `approve` | `1_in_progress/ → 2_done/` への移動。人間承認の遷移。（`0_todo/` からは 1 段飛ばしの jump として ⚠ 付きで確認。） | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
+| `unstart` | タスクを未着手（TODO）へ移動（`1_in_progress → 0_todo`。`2_done` からは 1 段飛ばしの jump として ⚠ 付きで確認）。 | `/progress unstart <prefix>`<br>`/progress migration を未着手に` |
 
-**action 同義語**（英語トークンは語境界一致 — 部分語ヒットなし、日本語トークンは substring 一致、大文字小文字無視）:
+**state 目的語の同義語** — ユーザは到達させたい state を名指す（英語トークンは語境界一致 — 部分語ヒットなし・パス内は不算入、日本語トークンは substring 一致で重なりは最長優先、大文字小文字無視）:
 
-- approve: `approve`, `完了`, `終了`, `done`, `finish`
-- revert: `revert`, `戻す`, `戻し`, `undo`, `取り消し`
-- start: `start`, `開始`, `着手`, `begin`
+- approve（`2_done`）: `完了`, `終了`, `done`, `finish`, `approve`
+- start（`1_in_progress`）: `着手`, `開始`, `再開`, `進行中`, `start`, `begin`, `resume`
+- unstart（`0_todo`）: `未着手`, `着手前`, `開始前`, `todo`, `unstart`
 - `check` / `audit` / `sync` / `rebuild`: literal キーワードのみ
+- undo/revert 語彙（`戻す` / `undo` / `revert` / `取り消し`）は意図的に不採用 — これらは LLM 行動の undo（例: グローバル revert skill）の領域であり、該当入力は `unknown` となり何も移動しない。
 
 **target 解決**（優先度の高い match から採用）:
 
@@ -95,7 +96,7 @@ Claude Code で恒久設定するには `settings.json` に追加:
 
 - `-y` / `--yes` — 確認プロンプトをスキップして即実行
 
-destructive アクション（`approve` / `revert`）では、メインエージェントが解決済 plan を表示し `AskUserQuestion` で確認を取ってから初めて mutation を実行する。`-y` で対象が確定済の場合はスキップ可。0 match / 低 confidence の複数 match の場合、router は候補を列挙して停止する（推測進行しない）。
+destructive アクション（`approve` / `start` / `unstart`）では、メインエージェントが解決済 plan を表示し `AskUserQuestion` で確認を取ってから初めて mutation を実行する。`-y` で対象が確定済の場合はスキップ可。0 match / 低 confidence の複数 match の場合、router は候補を列挙して停止する（推測進行しない）。
 
 ### /pj-rules — プロジェクト固有ルール
 
@@ -187,7 +188,7 @@ updated: 2026-05-14
 - log 行には `[s:<session-id 先頭>]` タグが付き、audit の参照用 index になる。
 - task には、関連する `project-notes/` パスを列挙する自動管理ブロック `<!-- @notes:begin/end -->`（`@log:end` の直後に配置）が付くことがある。note↔task link 機構が書き込む（[仕組み](#仕組み) 参照）ため手編集禁止。
 
-status 遷移は `/progress start` / `/progress approve` / `/progress revert` で行う（上記参照）。
+status 遷移は `/progress start` / `/progress approve` / `/progress unstart` で行う（上記参照）。
 
 ### project-notes
 

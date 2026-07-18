@@ -126,8 +126,8 @@ stateDiagram-v2
     [*] --> todo: タスク作成
     todo --> in_progress: /progress start
     in_progress --> done: /progress approve （あなたが承認）
-    in_progress --> todo: /progress revert
-    done --> in_progress: /progress revert （再開）
+    in_progress --> todo: /progress unstart
+    done --> in_progress: /progress start （再開）
     done --> [*]
 ```
 
@@ -135,9 +135,9 @@ stateDiagram-v2
 |---|---|
 | 要注意点を見る（drift・stale・承認待ち） | `/progress check` |
 | 残作業で全タスクを分類 | `/progress audit` |
-| タスクに着手 | `/progress start migration` · `/progress 着手 migration` |
+| タスクに着手（再開も） | `/progress start migration` · `/progress 着手 migration` |
 | 完了にする（要あなたの OK） | `/progress approve migration` · `/progress 完了 migration` |
-| 差し戻す / 再開 | `/progress revert migration` |
+| タスクを未着手（TODO）へ | `/progress unstart migration` · `/progress migration を未着手に` |
 | ダッシュボードの表を更新 | `/progress rebuild` |
 
 - タスクを **Done に入れるには必ずあなたの明示的な承認が要る** — Claude が勝手に完了扱いにすることはない。
@@ -268,7 +268,7 @@ flowchart TD
 | 適切なプロジェクトを探す | `pj:?` |
 | 単発、taskflow を無視 | `norouter` で始める |
 | プロジェクト作成 | 「… という新しいプロジェクトを作って」と頼む |
-| タスクの着手/完了/再開 | `/progress start\|approve\|revert <name>` |
+| タスクの着手/完了/未着手へ | `/progress start\|approve\|unstart <name>` |
 | タスクの健全性チェック | `/progress check` · `/progress audit` |
 | ダッシュボード更新 | `/progress rebuild` |
 | 永続知識を保存 | 「これを notes に保存して」 |

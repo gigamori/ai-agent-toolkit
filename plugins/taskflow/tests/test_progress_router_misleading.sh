@@ -1,18 +1,29 @@
 #!/usr/bin/env bash
-# test_progress_router_misleading.sh — E2E sampling for P5 (F6) router redesign,
-# AC-P5-5 / P0 gate: under -y, misleading input must NEVER cause a wrong-direction
-# file move. Mirrors the driver pattern of test_progress_start.sh (claude -p headless).
+# test_progress_router_misleading.sh — E2E sampling for the state-goal router
+# redesign. P0 gate: under -y, misleading input must NEVER cause a file move.
+# Mirrors the driver pattern of test_progress_start.sh (claude -p headless).
 #
-# Misleading inputs (spec §P5, design-review F6):
-#   M1: 「着手を取り消して」 — ambiguous ("undo the start" is grammatically object=着手;
-#       must resolve via main-verb tie-break to revert-or-unknown, NEVER approve/start)
+# Misleading inputs (state-goal redesign, task
+# 2026-07-18_progress-revert-collides-with-revert-skill-gate):
+#   M1: 「着手を取り消して」 — undo-intent gate input; the router must emit
+#       unknown (an undo/cancel request is owned by the global revert
+#       skill), so NO file may move (着手 must not win as a start goal)
 #   M2: "look at tasks" — must NOT partial-match any English synonym (word-boundary fix)
 #   M3: "check tokyo docs" — "tokyo" must NOT partial-match "ok"/other tokens
-# Happy path (must still work correctly): start / approve / revert via NL + EN synonym
+#   M4: 「alpha を戻して」 — released vocabulary; taskflow must not move any
+#       file (the input belongs to the revert skill / ends as unknown)
+# Happy path (must still work correctly): start / approve / unstart via NL + EN synonym
 #
-# P0 criterion (hard gate): for M1/M2/M3, zero wrong-direction moves across all repeats.
-#   M2/M3: ANY file move = FAIL. M1: a move to 2_done, or beta leaving 0_todo = FAIL;
-#   a revert-direction move or no move = PASS (unknown/ask is safe, not a bug).
+# P0 criterion (hard gate): for M1/M2/M3/M4, ANY file move = P0-FAIL across
+# all repeats (unknown/ask/no-op is the only safe outcome).
+#
+# NOTE (attribution): on a machine where a user-level revert-skill
+# UserPromptSubmit hook is installed (e.g. ~/.claude/hooks/revert_prompt_submit.py
+# registered in ~/.claude/settings.json), M1/M4 no-move results conflate two
+# mechanisms: the global hook hijacking 戻して/取り消して prompts vs this
+# router's undo-intent gate. To attribute a result to the gate, run with a
+# clean user profile (hook absent) or inspect the nested-agent log for the
+# /progress router path. Either way, no-move stays the pass criterion.
 #
 # Usage:  bash plugins/taskflow/tests/test_progress_router_misleading.sh [N_MISLEADING] [N_HAPPY]
 #   N_MISLEADING default 3 (spec asks for 10 in the rigorous protocol — raise for a full run)
@@ -165,19 +176,10 @@ run_misleading() {
   a=$(alpha_loc); b=$(beta_loc); g=$(gamma_loc)
 
   case "$label" in
-    M1)
-      # PASS: alpha stays 1_in_progress or moves to 0_todo (revert); beta/gamma untouched.
-      # P0-FAIL: alpha moves to 2_done, OR beta leaves 0_todo, OR gamma leaves 2_done (any approve/start-direction move).
-      if [ "$a" = "2_done" ] || [ "$b" != "0_todo" ] || [ "$g" != "2_done" ]; then
-        p0fail "$label rep$i ($msg): wrong-direction move — alpha=$a beta=$b gamma=$g"
-      elif [ "$a" = "1_in_progress" ] || [ "$a" = "0_todo" ]; then
-        pass "$label rep$i ($msg): safe outcome — alpha=$a (no forward move)"
-      else
-        p0fail "$label rep$i ($msg): unexpected alpha location=$a"
-      fi
-      ;;
-    M2|M3)
+    M1|M2|M3|M4)
       # PASS: nothing moves at all. P0-FAIL: any move.
+      # (M1/M4 are undo-intent requests — the router's undo-intent gate
+      #  must emit unknown; M2/M3 must not partial-match any token.)
       if any_moved; then
         p0fail "$label rep$i ($msg): unexpected move — alpha=$a beta=$b gamma=$g"
       else
@@ -196,6 +198,9 @@ for i in $(seq 1 "$N_MISLEADING"); do
 done
 for i in $(seq 1 "$N_MISLEADING"); do
   run_misleading "M3" "/progress check tokyo docs -y" "$i"
+done
+for i in $(seq 1 "$N_MISLEADING"); do
+  run_misleading "M4" "/progress alpha を戻して -y" "$i"
 done
 
 # ----------------------------------------------------------
@@ -223,14 +228,14 @@ run_happy_approve() {
   fi
 }
 
-run_happy_revert() {
+run_happy_unstart() {
   local i="$1"
   reset_fixture
-  echo "pj:$PROJECT /progress alpha を戻して -y" | $CLAUDE --system-prompt "$SYSTEM_PROMPT" > /tmp/_test_router_revert_${i}.log 2>&1 || true
+  echo "pj:$PROJECT /progress alpha を未着手に -y" | $CLAUDE --system-prompt "$SYSTEM_PROMPT" > /tmp/_test_router_unstart_${i}.log 2>&1 || true
   if [ "$(alpha_loc)" = "0_todo" ]; then
-    pass "happy-revert rep$i: alpha -> 0_todo"
+    pass "happy-unstart rep$i: alpha -> 0_todo"
   else
-    fail "happy-revert rep$i: alpha location=$(alpha_loc) (expected 0_todo)"
+    fail "happy-unstart rep$i: alpha location=$(alpha_loc) (expected 0_todo)"
   fi
 }
 
@@ -238,7 +243,7 @@ echo ""
 echo "--- Happy path, $N_HAPPY repeat(s) each ---"
 for i in $(seq 1 "$N_HAPPY"); do run_happy_start "$i"; done
 for i in $(seq 1 "$N_HAPPY"); do run_happy_approve "$i"; done
-for i in $(seq 1 "$N_HAPPY"); do run_happy_revert "$i"; done
+for i in $(seq 1 "$N_HAPPY"); do run_happy_unstart "$i"; done
 
 rm -f "$STATE_FILE"
 echo ""

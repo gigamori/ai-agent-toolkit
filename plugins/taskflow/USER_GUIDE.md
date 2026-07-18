@@ -126,8 +126,8 @@ stateDiagram-v2
     [*] --> todo: task created
     todo --> in_progress: /progress start
     in_progress --> done: /progress approve (you approve)
-    in_progress --> todo: /progress revert
-    done --> in_progress: /progress revert (reopen)
+    in_progress --> todo: /progress unstart
+    done --> in_progress: /progress start (reopen)
     done --> [*]
 ```
 
@@ -135,9 +135,9 @@ stateDiagram-v2
 |---|---|
 | See what needs attention (drift, stale, waiting) | `/progress check` |
 | Classify every task by remaining work | `/progress audit` |
-| Start a task | `/progress start migration` · `/progress 着手 migration` |
+| Start (or reopen) a task | `/progress start migration` · `/progress 着手 migration` |
 | Mark a task done (needs your OK) | `/progress approve migration` · `/progress 完了 migration` |
-| Send a task back / reopen | `/progress revert migration` |
+| Send a task back to TODO | `/progress unstart migration` · `/progress migration を未着手に` |
 | Refresh the dashboard table | `/progress rebuild` |
 
 - Moving a task **into Done always requires your explicit approval** — Claude will never auto-complete a task.
@@ -268,7 +268,7 @@ A project can carry a short `rules.md` — project-specific rules you want Claud
 | Find the right project | `pj:?` |
 | One-off, ignore taskflow | Start with `norouter` |
 | Create a project | Ask: "create a new project called …" |
-| Start / finish / reopen a task | `/progress start\|approve\|revert <name>` |
+| Start / finish / send back a task | `/progress start\|approve\|unstart <name>` |
 | Health check tasks | `/progress check` · `/progress audit` |
 | Refresh the dashboard | `/progress rebuild` |
 | Save durable knowledge | "save this to notes" |

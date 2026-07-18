@@ -74,16 +74,17 @@ Put `pj:<project>` near the beginning of the prompt — it is recognized at the 
 | `check` | Drift / stale / approval-pending detection. Read-only. | `/progress check` |
 | `audit` | Classify every task by `## Next Steps` state (pending / completion candidate / untracked / clean). Read-only. | `/progress audit` |
 | `rebuild` (alias `sync`) | Regenerate the progress.md table region from task files. | `/progress rebuild` |
-| `start` | Move a task `0_todo/ → 1_in_progress/`. | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
-| `approve` | Move a task `1_in_progress/ → 2_done/`. Human-approved transition. | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
-| `revert` | Move backward one step (`1_in_progress → 0_todo`, or `2_done → 1_in_progress`). | `/progress revert <prefix>`<br>`/progress 戻して audit` |
+| `start` | Move a task `0_todo/ → 1_in_progress/` (also reopens a done task: `2_done/ → 1_in_progress/`). | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
+| `approve` | Move a task `1_in_progress/ → 2_done/`. Human-approved transition. (From `0_todo/` it is a non-adjacent jump, confirmed with a ⚠.) | `/progress approve 2026-05-14_xxx`<br>`/progress 完了 migration`<br>`/progress 全部完了 -y` |
+| `unstart` | Move a task back to TODO (`1_in_progress → 0_todo`; from `2_done` it is a non-adjacent jump, confirmed with a ⚠). | `/progress unstart <prefix>`<br>`/progress migration を未着手に` |
 
-**Action synonyms** (English tokens match on word boundaries — no partial-word hits; Japanese tokens match as substrings; case-insensitive):
+**State-goal synonyms** — the user names the state a task should reach (English tokens match on word boundaries — no partial-word hits, and never inside paths; Japanese tokens match as substrings with the longest overlapping token winning; case-insensitive):
 
-- approve: `approve`, `完了`, `終了`, `done`, `finish`
-- revert: `revert`, `戻す`, `戻し`, `undo`, `取り消し`
-- start: `start`, `開始`, `着手`, `begin`
+- approve (`2_done`): `完了`, `終了`, `done`, `finish`, `approve`
+- start (`1_in_progress`): `着手`, `開始`, `再開`, `進行中`, `start`, `begin`, `resume`
+- unstart (`0_todo`): `未着手`, `着手前`, `開始前`, `todo`, `unstart`
 - `check` / `audit` / `sync` / `rebuild`: literal keywords only
+- undo/revert vocabulary (`戻す` / `undo` / `revert` / `取り消し`) is deliberately NOT claimed — those words mean "undo an LLM action" (e.g. a global revert skill owns them); such input resolves to `unknown` and moves nothing.
 
 **Target resolution** (highest-priority match wins):
 
@@ -96,7 +97,7 @@ Put `pj:<project>` near the beginning of the prompt — it is recognized at the 
 
 - `-y` / `--yes` — skip the confirmation prompt and execute immediately
 
-For destructive actions (`approve` / `revert`), the main agent prints the resolved plan and asks via `AskUserQuestion` before any mutation. `-y` skips this when the target is already verified. When the router returns zero matches or ambiguous low-confidence candidates, it stops and lists candidates rather than guessing.
+For destructive actions (`approve` / `start` / `unstart`), the main agent prints the resolved plan and asks via `AskUserQuestion` before any mutation. `-y` skips this when the target is already verified. When the router returns zero matches or ambiguous low-confidence candidates, it stops and lists candidates rather than guessing.
 
 ### /pj-rules — per-project rules
 
@@ -188,7 +189,7 @@ Body (mutable region — replace freely).
 - Log lines carry a `[s:<session-id-prefix>]` tag for downstream audit lookup.
 - A task may also carry an auto-managed `<!-- @notes:begin/end -->` block (placed right after `@log:end`) that lists related `project-notes/` paths. It is written by the note↔task link mechanism (see [How it works](#how-it-works)); never hand-edit it.
 
-Status transitions are performed via `/progress start`, `/progress approve`, and `/progress revert` (see above).
+Status transitions are performed via `/progress start`, `/progress approve`, and `/progress unstart` (see above).
 
 ### project-notes
 

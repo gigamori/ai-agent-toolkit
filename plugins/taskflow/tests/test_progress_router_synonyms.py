@@ -1,23 +1,36 @@
 #!/usr/bin/env python3
-"""Static text-contract test for agents/progress-router.md (P5, F6) and its
-single-source pointer from skills/progress/SKILL.md Step 3.4.
+"""Static text-contract test for agents/progress-router.md (state-goal model)
+and its single-source pointer from skills/progress/SKILL.md Step 3.4.
 
-Covers project-notes/specs/review-2026-07-17-fixes.md P5:
-  (a) `approve` synonyms no longer include `ok` (was colliding with
-      substrings of "tokyo" / "look" under the old substring-match rule).
-  (b) English tokens match on a word boundary via the negative-lookaround
-      `(?<![A-Za-z])T(?![A-Za-z])`; Japanese tokens still match as a
-      substring (no whitespace word delimiter).
-  (c) the multi-match tie-break resolves to the sentence's main verb, with
-      two hardcoded worked examples («着手を取り消して» / "revert the
-      start") and an `unknown` fallback when undecidable.
-  (d) the tie-break paragraph does NOT reassert the OLD "earliest matched
-      token" rule as authoritative — it explicitly negates it
-      ("NOT the earliest-appearing token") rather than merely omitting the
-      word "earliest" (which also appears legitimately in the new rule's own
-      negation, so bare-absence of "earliest" would be a false-fail).
-  (e) SKILL.md Step 3.4 still points at progress-router.md's Step 1 body as
-      the single source of truth (does not re-embed its own synonym table).
+Covers the 2026-07-19 redesign (task
+2026-07-18_progress-revert-collides-with-revert-skill-gate): the router no
+longer claims any undo/revert vocabulary (that belongs to the global `revert`
+skill, whose UserPromptSubmit hook force-routes 戻す/undo/revert inputs), and
+instead resolves the GOAL STATE the user names:
+
+  (a) the goal-state table maps 2_done→approve / 1_in_progress→start /
+      0_todo→unstart with the expected synonyms, and NO synonym row contains
+      the released vocabulary (revert / 戻す / 戻し / undo / 取り消し) or the
+      historical `ok` collision token.
+  (b) English tokens still match on a word boundary only (negative-lookaround
+      `(?<![A-Za-z])T(?![A-Za-z])`); Japanese tokens still match as a
+      substring.
+  (c) maximal munch: overlapping Japanese tokens resolve to the longest
+      occurrence (未着手 / 着手前 suppress the contained 着手).
+  (d) path exclusion: synonyms inside path-like tokens (e.g. `@tasks/0_todo/`)
+      do not count — required for the `todo` English token to be safe.
+  (e) undo-intent gate: a sentence-level semantic judgment (NOT string
+      matching) short-circuits undo/cancel requests to a fixed unknown
+      terminal BEFORE any state match; example words are illustrative, and
+      content occurrences (戻り値, stems containing "revert") do not fire it.
+  (f) tie-break: multi-state matches resolve to the reach-state (NOT the state
+      being left); goal-state tokens beat maintenance tokens; undecidable →
+      "unknown". The old main-verb rule is gone.
+  (g) the JSON contract's action enum is approve|start|unstart|... with no
+      revert, and target_status is always the goal state.
+  (h) SKILL.md Step 3.4 still points at progress-router.md's Step 1 body as
+      the single source (no re-embedded table), dispatches `unstart` (not
+      `revert`), and its usage examples use state words.
 
 Read-only / no model call: this test only reads the two markdown files and
 greps their text. Run with:
@@ -56,6 +69,8 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 ROUTER_MD = PLUGIN_ROOT / "agents" / "progress-router.md"
 SKILL_MD = PLUGIN_ROOT / "skills" / "progress" / "SKILL.md"
 
+RELEASED_VOCAB = ("revert", "戻す", "戻し", "undo", "取り消し")
+
 
 def test_files_exist() -> tuple[str, str] | None:
     print("--- fixture: source files exist ---")
@@ -67,21 +82,38 @@ def test_files_exist() -> tuple[str, str] | None:
             SKILL_MD.read_text(encoding="utf-8"))
 
 
-def test_a_no_ok_synonym(router: str) -> None:
-    print("--- (a) approve synonyms no longer list `ok` ---")
-    m = re.search(r"^\|\s*`approve`\s*\|(?P<cells>.*)\|\s*$", router, re.MULTILINE)
-    check(m is not None, "approve synonym table row is present")
+def _goal_row(router: str, state: str, action: str) -> list[str] | None:
+    m = re.search(
+        rf"^\|\s*`{state}`\s*\|\s*`{action}`\s*\|(?P<cells>.*)\|\s*$",
+        router, re.MULTILINE)
     if not m:
-        return
-    cells_text = m.group("cells")
-    tokens = [t.strip().strip("`") for t in cells_text.split(",")]
-    check(len(tokens) >= 1 and all(tokens), f"approve row parses into synonym tokens: {tokens}")
-    check("ok" not in [t.lower() for t in tokens],
-          f"'ok' is not among the approve synonym tokens (got {tokens})")
-    # Positive signal: the row still has its legitimate current synonyms.
-    for expect in ("approve", "done", "finish"):
-        check(expect in [t.lower() for t in tokens],
-              f"approve row still contains legitimate synonym '{expect}'")
+        return None
+    return [t.strip().strip("`") for t in m.group("cells").split(",")]
+
+
+def test_a_goal_state_table(router: str) -> None:
+    print("--- (a) goal-state table rows and released vocabulary ---")
+    rows = {
+        ("2_done", "approve"): ("完了", "終了", "done", "finish", "approve"),
+        ("1_in_progress", "start"): ("着手", "開始", "再開", "進行中",
+                                     "start", "begin", "resume"),
+        ("0_todo", "unstart"): ("未着手", "着手前", "開始前", "todo",
+                                "unstart"),
+    }
+    all_tokens: list[str] = []
+    for (state, action), expected in rows.items():
+        tokens = _goal_row(router, state, action)
+        check(tokens is not None, f"goal-state row `{state}` → `{action}` is present")
+        if tokens is None:
+            continue
+        all_tokens.extend(tokens)
+        for t in expected:
+            check(t in tokens, f"{state} row contains synonym '{t}'")
+    lowered = [t.lower() for t in all_tokens]
+    for released in RELEASED_VOCAB:
+        check(released not in lowered,
+              f"released vocabulary '{released}' is absent from all synonym rows")
+    check("ok" not in lowered, "'ok' is not among any synonym tokens")
 
 
 def test_b_word_boundary_rule(router: str) -> None:
@@ -96,83 +128,140 @@ def test_b_word_boundary_rule(router: str) -> None:
         r"\*\*Japanese tokens\*\*.*?substring", router, re.DOTALL)
     check(jp_section is not None,
           "text describes Japanese tokens matching as a substring")
+    for tok in ("進行中", "開始前"):
+        check(f"`{tok}`" in router,
+              f"Japanese token list includes new token '{tok}'")
 
 
-def test_c_main_verb_tiebreak(router: str) -> None:
-    print("--- (c) main-verb tie-break with 2 hardcoded examples + unknown fallback ---")
-    check(re.search(r"main verb", router, re.IGNORECASE) is not None,
-          "tie-break rule invokes 'main verb' of the sentence")
-    check("「着手を取り消して」" in router,
-          "worked example 1 (「着手を取り消して」 → revert) is present")
-    check('"revert the start"' in router,
-          "worked example 2 (\"revert the start\" → revert) is present")
-    check(re.search(r'cannot decide.*action:\s*"unknown"', router, re.DOTALL) is not None
-          or re.search(r'action:\s*"unknown".*cannot decide', router, re.DOTALL) is not None,
-          "undecidable tie-break explicitly falls back to action: \"unknown\"")
+def test_c_maximal_munch(router: str) -> None:
+    print("--- (c) maximal munch for overlapping Japanese tokens ---")
+    check(re.search(r"[Mm]aximal munch", router) is not None,
+          "maximal-munch rule is present")
+    check(re.search(r"longest occurrence", router) is not None,
+          "rule counts only the longest overlapping occurrence")
+    check("未着手" in router and "suppress" in router,
+          "未着手/着手前 suppress the contained 着手 (example present)")
+    check("未着手に」 would" in router or "mis-resolve" in router,
+          "rationale example (「alpha を未着手に」 mis-resolving to start) present")
 
 
-def _tiebreak_paragraph(router: str) -> str:
-    m = re.search(
-        r"If synonyms from more than one action set match.*?(?=\n- If no synonym matches)",
-        router, re.DOTALL)
-    return m.group(0) if m else ""
+def test_d_path_exclusion(router: str) -> None:
+    print("--- (d) path exclusion for synonyms inside path-like tokens ---")
+    check(re.search(r"[Pp]ath exclusion", router) is not None,
+          "path-exclusion rule is present")
+    check("@tasks/0_todo/" in router,
+          "@-reference example (@tasks/0_todo/...) present")
+    check(re.search(r"`0_todo`[^\n]*must not register `todo`", router) is not None,
+          "0_todo-inside-a-path must not register `todo`")
+    check(re.search(r"must not register `start`", router) is not None,
+          "filename containing 'start' must not register `start`")
 
 
-def test_d_no_old_priority_order_reassertion(router: str) -> None:
-    print("--- (d) tie-break does not reassert an old fixed priority-order rule ---")
-    para = _tiebreak_paragraph(router)
-    check(bool(para), "the multi-match tie-break paragraph is locatable")
-    if not para:
+def test_e_undo_intent_gate(router: str) -> None:
+    print("--- (e) undo-intent gate (semantic, checked first, fail-closed) ---")
+    check(re.search(r"###\s*Undo-intent gate", router) is not None,
+          "undo-intent gate section heading is present")
+    m = re.search(r"###\s*Undo-intent gate.*?(?=\n### )", router, re.DOTALL)
+    check(m is not None, "gate section is sliceable (followed by another ### section)")
+    sec = m.group(0) if m else ""
+    if not sec:
         return
-    # Positive signal: the new rule explicitly NEGATES the old "earliest
-    # token" rule (not just omits the word "earliest" — the instructions
-    # forbid a bare-absence check since the negation itself legitimately
-    # contains the word).
-    check("NOT the earliest-appearing token" in para,
-          "paragraph explicitly negates the old earliest-appearing-token rule")
-    check(re.search(r"main verb", para, re.IGNORECASE) is not None,
-          "paragraph's actual rule is main-verb based")
-    # The old rule shape would have been a fixed priority ordering of the
-    # action names themselves (e.g. "approve > revert > start" or a numbered
-    # priority list of actions) as the tie-break authority. That shape must
-    # not be present in THIS paragraph (Step 2's target-phrase match-priority
-    # table elsewhere in the doc is unrelated and out of scope here).
-    check(re.search(r"priority order", para, re.IGNORECASE) is None,
-          "paragraph does not reassert a 'priority order' tie-break")
-    check(re.search(r"approve\s*[>→]\s*revert", para, re.IGNORECASE) is None,
-          "paragraph does not hardcode a fixed action-priority ordering")
+    check("checked FIRST" in sec,
+          "gate is declared to run first / override matches")
+    check("NOT a string-match" in sec,
+          "example words are marked illustrative, not a match list")
+    for w in ("取り消して", "やめて", "戻して", "なかったことに", "undo", "revert", "cancel"):
+        check(w in sec, f"intent example word '{w}' present")
+    check('"action": "unknown"' in sec,
+          "gate terminal emits the fixed unknown JSON")
+    check("Do not continue" in sec,
+          "terminal stops before matching / target resolution")
+    check("「戻り値検証タスクを完了に」" in sec,
+          "contrastive negative example (戻り値 → not undo, proceed to approve) present")
+    check("「着手を取り消して」" in sec,
+          "positive worked example 「着手を取り消して」 present")
+    check("must NOT become `start`" in sec,
+          "example explicitly forbids resolving 「着手を取り消して」 to start")
+    check("semantic judgment, not a string rule" in sec,
+          "gate is declared semantic with both failure directions banned")
+    check("global revert" in sec,
+          "gate reasoning attributes the vocabulary to the global revert skill")
 
 
-def test_e_skill_single_source_pointer(router: str, skill: str) -> None:
-    print("--- (e) SKILL.md Step 3.4 points to progress-router.md (single-source) ---")
+def test_f_reach_state_tiebreak(router: str) -> None:
+    print("--- (f) reach-state tie-break replaces the main-verb rule ---")
+    check(re.search(r"\*\*reach\*\*|reach-state", router) is not None,
+          "tie-break picks the state the user wants the task to reach")
+    check(re.search(r"NOT the state being\s+left", router) is not None,
+          "tie-break explicitly excludes the state being left")
+    check("未着手へ」 → `0_todo`" in router,
+          "worked example (完了していた…未着手へ → 0_todo) present")
+    check(re.search(r"maintenance token[^\n]*\n?[^\n]*goal\s*\n?[^\n]*state wins|goal\s+state wins", router) is not None,
+          "goal-state token beats a maintenance token")
+    check(re.search(r'cannot decide.*?action:\s*"unknown"', router, re.DOTALL) is not None,
+          "undecidable tie-break falls back to action \"unknown\"")
+    check(re.search(r"main verb", router, re.IGNORECASE) is None,
+          "old main-verb rule text is fully removed from the router")
+
+
+def test_g_json_contract(router: str) -> None:
+    print("--- (g) JSON contract: action enum and goal target_status ---")
+    check('"action": "approve | start | unstart | check | audit | sync | rebuild | unknown"' in router,
+          "action enum is approve | start | unstart | ... (no revert)")
+    check(re.search(r'"action":[^\n]*revert', router) is None,
+          "no revert remains in the action enum line")
+    check(re.search(r"`unstart` → `0_todo`", router) is not None,
+          "target_status maps unstart → 0_todo")
+    check(re.search(r"skips a\s+state", router) is not None,
+          "status_mismatch is defined as a state-skipping transition")
+
+
+def test_h_skill_single_source(router: str, skill: str) -> None:
+    print("--- (h) SKILL.md single-source pointer and unstart dispatch ---")
     check("agents/progress-router.md" in skill,
           "SKILL.md references agents/progress-router.md")
     check(re.search(r"Step 1 of the body of", skill) is not None,
           "SKILL.md points at the router's Step 1 body specifically")
-    check(re.search(r"main verb|main-verb", skill, re.IGNORECASE) is not None,
-          "SKILL.md's fallback description mentions the main-verb tie-break "
-          "(consistent with the router, not a stale earliest-token summary)")
-    # Single-source: SKILL.md must NOT re-embed the router's own synonym
-    # table (its distinctive header row).
-    check("| Action | Synonyms |" not in skill,
-          "SKILL.md does not duplicate the router's synonym table")
-    check("| Action | Synonyms |" in router,
-          "sanity: the synonym table header does live in progress-router.md")
+    check(re.search(r"undo-intent\s+gate", skill, re.IGNORECASE) is not None,
+          "SKILL.md fallback mentions the undo-intent gate")
+    check(re.search(r"goal state", skill, re.IGNORECASE) is not None,
+          "SKILL.md fallback describes goal-state resolution")
+    check(re.search(r"main verb", skill, re.IGNORECASE) is None,
+          "SKILL.md no longer carries the stale main-verb summary")
+    check("| Goal state | Action | Synonyms |" not in skill,
+          "SKILL.md does not duplicate the router's goal-state table")
+    check("| Goal state | Action | Synonyms |" in router,
+          "sanity: the goal-state table header does live in progress-router.md")
+    check("### action = `unstart`" in skill,
+          "SKILL.md dispatches action unstart")
+    check("### action = `revert`" not in skill,
+          "SKILL.md no longer has a revert dispatch branch")
+    check("{approve, start, unstart}" in skill,
+          "SKILL.md Step 4 validates the {approve, start, unstart} set")
+    check("/progress revert" not in skill,
+          "SKILL.md carries no /progress revert usage")
+    check("未着手" in skill,
+          "SKILL.md usage examples include the state word 未着手")
+    check("unstarted → 0_todo" in skill,
+          "SKILL.md unstart branch logs 'unstarted → 0_todo'")
 
 
 def main() -> int:
-    print("=== progress-router.md / SKILL.md synonym text-contract tests (P5, F6) ===")
+    print("=== progress-router.md / SKILL.md state-goal text-contract tests ===")
     texts = test_files_exist()
     if texts is None:
         print()
         print(f"{FAIL} failed, {PASS} passed. (source files missing — aborted)")
         return 1
     router, skill = texts
-    test_a_no_ok_synonym(router)
+    test_a_goal_state_table(router)
     test_b_word_boundary_rule(router)
-    test_c_main_verb_tiebreak(router)
-    test_d_no_old_priority_order_reassertion(router)
-    test_e_skill_single_source_pointer(router, skill)
+    test_c_maximal_munch(router)
+    test_d_path_exclusion(router)
+    test_e_undo_intent_gate(router)
+    test_f_reach_state_tiebreak(router)
+    test_g_json_contract(router)
+    test_h_skill_single_source(router, skill)
 
     print()
     if FAIL == 0:
