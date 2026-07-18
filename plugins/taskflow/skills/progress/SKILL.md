@@ -166,7 +166,7 @@ Plugin script paths:
 ### action = `check`
 
 ```bash
-uv run python ${CLAUDE_PLUGIN_ROOT}/scripts/check_progress.py "<project-root>"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/scripts/check_progress.py "<project-root>"
 ```
 
 Read stdout. If `OK: no drift...`, reply `OK: <project>` and stop. Otherwise
@@ -184,7 +184,7 @@ read-only.
 ### action in {`sync`, `rebuild`}
 
 ```bash
-uv run python ${CLAUDE_PLUGIN_ROOT}/scripts/rebuild_progress.py "<project-root>"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/scripts/rebuild_progress.py "<project-root>"
 ```
 
 Echo stdout.

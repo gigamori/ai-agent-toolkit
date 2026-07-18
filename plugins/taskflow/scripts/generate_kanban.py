@@ -10,7 +10,7 @@ enumerates tasks, extracts session references from @log blocks, resolves full
 UUIDs from _state/, and emits a self-contained HTML file.
 
 Usage:
-    uv run python generate_kanban.py [--out PATH] [--open] [--scheme vscode|vscodium]
+    uv run --script generate_kanban.py [--out PATH] [--open] [--scheme vscode|vscodium]
 
 Exit codes:
     0 = success

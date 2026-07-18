@@ -89,7 +89,7 @@ updated: 2026-05-21
 TASK
 
 # Create initial progress.md via rebuild
-uv run python "$REPO_ROOT/plugins/taskflow/scripts/rebuild_progress.py" "$PROJECT_DIR" > /dev/null 2>&1
+uv run --script "$REPO_ROOT/plugins/taskflow/scripts/rebuild_progress.py" "$PROJECT_DIR" > /dev/null 2>&1
 
 # Write state file so /progress can resolve the project
 STATE_FILE="$STATE_DIR/test-progress-start.json"
