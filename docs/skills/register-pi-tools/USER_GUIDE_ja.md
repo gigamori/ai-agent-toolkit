@@ -1,6 +1,6 @@
-# register-pi-tools — User Manual
+# register-pi-tools — User Guide
 
-このスキルが提供する **「Python スクリプトを Anthropic API tool として登録する仕組み」** のユーザ向けマニュアル。LLM 向けの仕様は同ディレクトリの `SKILL.md` 側を参照。
+このスキルが提供する **「Python スクリプトを Anthropic API tool として登録する仕組み」** のユーザ向けガイド。LLM 向けの仕様はスキル本体の `SKILL.md`（`skills/register-pi-tools/` 配下）を参照。
 
 ## 全体像
 
@@ -120,7 +120,7 @@ uv run python /path/to/lib/src/run_tool.py \
 | パス | 役割 |
 |---|---|
 | `<skill_dir>/SKILL.md` | LLM 自動 trigger 用のスキル定義 |
-| `<skill_dir>/manual.md` | このファイル（人間向け） |
+| `docs/skills/register-pi-tools/USER_GUIDE_ja.md` | このファイル（人間向け） |
 | `<skill_dir>/scripts/build_tools_yaml.py` | レジストリビルド本体 |
 | `<skill_dir>/scripts/_tool.py` | runtime ヘルパ（同梱コピー） |
 | `~/.pi/agent/tools.yaml` | 生成されるレジストリ（build artifact） |

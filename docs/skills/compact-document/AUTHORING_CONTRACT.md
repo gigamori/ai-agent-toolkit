@@ -1,5 +1,7 @@
 # Shared Compaction Contract
 
+> Positioning: this is **maintenance context, not execution context** — not needed to *run* compact-document, needed to *maintain* it. It is the shared design contract that the skill's three prompt templates (`chunk-brief/prompt.md`, `merge/prompt.md`, `render/prompt.md`) must jointly satisfy. It is never read at runtime and is not literally inlined into the prompts; each prompt independently re-expresses the relevant rules in its own `<rules>` block. When you edit any prompt's rules, keep it and this contract consistent.
+
 ## Global Rules
 
 - Optimize for loss-minimizing compaction, not abstract summarization

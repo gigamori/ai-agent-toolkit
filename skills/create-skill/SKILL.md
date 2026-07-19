@@ -72,8 +72,8 @@ Skills are stored as directories containing a `SKILL.md` file:
 
 ```
 skill-name/
-├── SKILL.md              # Required - main instructions
-├── references/           # Optional - documentation
+├── SKILL.md              # Required - execution context; loads on every run
+├── references/           # Optional - runtime-read docs (read or sliced/inlined during execution)
 │   ├── api-guide.md
 │   └── examples.md
 ├── scripts/              # Optional - executable code
@@ -82,6 +82,8 @@ skill-name/
 └── assets/               # Optional - templates, fonts, icons
     └── report-template.md
 ```
+
+Non-runtime documentation does NOT live in the skill dir. User-facing guides (`USER_GUIDE.md` / `USER_GUIDE_ja.md`) and authoring/design contracts (`AUTHORING_CONTRACT.md`) go OUTSIDE the tree under `docs/skills/<skill-name>/`, so they cannot be read or misread during execution. `references/` is only for docs that ARE read at runtime. Keep `SKILL.md` to execution context: do not describe maintenance-only material there (a contract's positioning, "docs/skills is in scope", authoring procedures) — put it in the relevant `docs/skills/<skill-name>/` doc. When you change a skill's behavior, keep its `docs/skills/<skill-name>/` docs in sync.
 
 ### Storage Locations
 
@@ -364,7 +366,7 @@ each failing item as a finding (file + what's wrong); do not edit anything.
 4. Verify all file references are one level deep
 5. Security check:
    - No XML angle brackets (`<` `>`) in frontmatter (rejected by some platforms; see "Security restrictions in frontmatter")
-   - No `README.md` inside the skill folder (the spec allows extra files, but documentation belongs in SKILL.md or references/ — a README duplicates SKILL.md)
+   - No `README.md` inside the skill folder (the spec allows extra files, but runtime documentation belongs in SKILL.md or references/, and non-runtime user guides / contracts go under docs/skills/<skill> — a README duplicates SKILL.md)
    - Folder name matches `name` field
 6. Validate that the frontmatter parses as YAML — run the bundled validator and confirm it prints `OK`:
    ```bash
@@ -393,7 +395,7 @@ Before finalizing a skill, verify:
 ### Security & Naming
 - [ ] No XML angle brackets in frontmatter
 - [ ] Folder name matches `name` field
-- [ ] No `README.md` inside skill folder (docs go in SKILL.md or references/)
+- [ ] No `README.md` inside skill folder (runtime docs in SKILL.md or references/; non-runtime docs under docs/skills/<skill>)
 
 ### Structure
 - [ ] File references are one level deep

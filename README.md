@@ -43,9 +43,9 @@ Standalone Agent Skills that can be dropped into any agent without a plugin.
 
 | Skill | Compat | Docs | Description |
 |---|---|---|---|
-| [create-skill](skills/create-skill/) | CC / Cursor | — | Guides through creating effective Agent Skills with best practices, structure templates, and validation checklists |
-| [compact-document](skills/compact-document/) | CC / Cursor | — | Multi-mode document compaction framework — condenses articles, specs, transcripts, and more with minimal information loss |
-| [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | — | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller |
+| [create-skill](skills/create-skill/) | CC / Cursor | — | Guides through creating effective Agent Skills — best practices, structure templates, validation checklists, and a `validate_frontmatter.py` script — with bundled deep-dive references for advanced authoring, subagent protocols, patterns/examples, debugging, and security |
+| [compact-document](skills/compact-document/) | CC / Cursor | — | Multi-mode compaction framework (7 document types, automatic mode detection) — condenses articles, specs, transcripts, and more with minimal information loss; long documents run through a chunked map-reduce pipeline of parallel chunk-brief → merge → render subagents |
+| [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | [docs](docs/skills/register-pi-tools/) | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller; ships a standalone EN/JA user guide and a `build_tools_yaml.py` builder |
 | [revert](skills/revert/) | CC | — | Safely undo recent assistant actions using state-revert semantics — delegates judgment to a bias-isolated subagent to prevent over-removal |
 | [debug-isolate](skills/debug-isolate/) | CC | — | Isolate iterative debugging in a forked subagent — preserves working tree state with git stash checkpoints and automatic rollback on consecutive failures |
 | [run-sql](skills/run-sql/) | CC | — | Execute SQL against configured databases (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) and relay raw JSON results |
@@ -111,7 +111,10 @@ ai-agent-toolkit/
 │   ├── write-get-started/      Skill: rewrite a user guide into a GET_STARTED doc + manual
 │   └── xml-wf/                 Skill: deterministic XML v2 workflow runner (wfrun)
 ├── docs/
-│   └── skills/xml-wf/          Docs: xml-wf reference README + user guide (EN/JA)
+│   └── skills/                Non-runtime skill docs (user guides, authoring contracts)
+│       ├── xml-wf/            xml-wf reference README + user guide (EN/JA)
+│       ├── register-pi-tools/ register-pi-tools user guide (EN/JA)
+│       └── compact-document/  compact-document authoring contract
 ├── LICENSE
 ├── README.md
 └── README_ja.md

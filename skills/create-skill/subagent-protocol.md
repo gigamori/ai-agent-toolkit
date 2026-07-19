@@ -9,13 +9,11 @@
 │   └── prompt.md             # prompt template for task type a
 ├── {task-type-b}/
 │   └── prompt.md             # prompt template for task type b
-├── references/               # runtime-read docs (read or sliced/inlined during execution)
-│   └── mode-definitions.md
-└── only_for_human/           # authoring-only docs (not read at runtime)
-    └── shared-contract.md
+└── references/               # runtime-read docs (sliced/inlined into task_description)
+    └── mode-definitions.md
 ```
 
-Files under `only_for_human/` are authoring-only references (e.g. a shared contract inlined into the prompt templates at authoring time) and are NOT read at runtime; `references/` holds docs that ARE read at runtime.
+Non-runtime docs (user guides, authoring/design contracts) live outside the skill tree under `docs/skills/{skill-name}/` — see "Skill File Structure" in `SKILL.md` for the general convention. For the SubAgent pattern specifically: when a skill's prompt templates share global rules, capture them as an `AUTHORING_CONTRACT.md` under `docs/skills/{skill-name}/`. It is the shared spec the prompt templates must jointly satisfy — NOT literally inlined into them; each prompt independently re-expresses the relevant rules in its own `<rules>`. Edit the contract and every affected prompt together so they stay consistent. (This replaces the older in-tree `only_for_human/` convention.)
 
 ## Prompt Template Structure
 

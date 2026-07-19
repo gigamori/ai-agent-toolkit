@@ -7,8 +7,6 @@ description: Migrates Python scripts under a directory to use frontmatter args (
 
 Convert existing Python scripts under a chosen directory so each one carries a YAML frontmatter `args` block (JSON Schema) and uses `from _tool import args` for argument parsing. After migrating all files, run the bundled build script to emit a `tools.yaml` registry that downstream LLM-callers (pi extension, MCP server, or custom) consume to construct the Anthropic API `tools` array.
 
-Do not read `manual.md` / `manual_ja.md` directly — they are user-facing only.
-
 ## Inputs to confirm before doing anything
 
 Always confirm both with the user before starting work:

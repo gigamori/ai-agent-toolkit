@@ -1,6 +1,6 @@
-# register-pi-tools — User Manual
+# register-pi-tools — User Guide
 
-User-facing manual for the `register-pi-tools` skill: a workflow that converts Python scripts into Anthropic API tools through frontmatter `args` (JSON Schema) and a `tools.yaml` registry. The LLM-facing spec lives in `SKILL.md` next to this file. (Japanese version: `manual_ja.md`.)
+User-facing guide for the `register-pi-tools` skill: a workflow that converts Python scripts into Anthropic API tools through frontmatter `args` (JSON Schema) and a `tools.yaml` registry. The LLM-facing spec lives in this skill's `SKILL.md` (under `skills/register-pi-tools/`). (Japanese version: `USER_GUIDE_ja.md`.)
 
 ## How it fits together
 
@@ -120,8 +120,8 @@ The supported route is to wrap `tools.yaml` in an **MCP server** (Model Context 
 | Path | Role |
 |---|---|
 | `<skill_dir>/SKILL.md` | LLM-facing spec (auto-trigger) |
-| `<skill_dir>/manual.md` | This file (English, human-facing) |
-| `<skill_dir>/manual_ja.md` | Japanese version of this manual |
+| `docs/skills/register-pi-tools/USER_GUIDE.md` | This file (English, human-facing) |
+| `docs/skills/register-pi-tools/USER_GUIDE_ja.md` | Japanese version of this guide |
 | `<skill_dir>/scripts/build_tools_yaml.py` | Registry builder |
 | `<skill_dir>/scripts/_tool.py` | Bundled runtime helper |
 | `~/.pi/agent/tools.yaml` | Generated registry (build artifact) |

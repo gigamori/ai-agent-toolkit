@@ -43,9 +43,9 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 
 | スキル | 互換性 | Docs | 説明 |
 |---|---|---|---|
-| [create-skill](skills/create-skill/) | CC / Cursor | — | エージェントスキルの作成をガイド。ベストプラクティス、構造テンプレート、検証チェックリスト付き |
-| [compact-document](skills/compact-document/) | CC / Cursor | — | マルチモードのドキュメント圧縮フレームワーク。記事、仕様書、議事録などを最小限の情報損失で凝縮 |
-| [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | — | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成 |
+| [create-skill](skills/create-skill/) | CC / Cursor | — | エージェントスキルの作成をガイド。ベストプラクティス、構造テンプレート、検証チェックリスト、`validate_frontmatter.py` スクリプトに加え、高度なスキル設計・subagent プロトコル・パターン/実例・デバッグ・セキュリティの深掘りリファレンスを同梱 |
+| [compact-document](skills/compact-document/) | CC / Cursor | — | マルチモードのドキュメント圧縮フレームワーク（7 文書タイプ・モード自動判定）。記事、仕様書、議事録などを最小限の情報損失で凝縮。長文は chunk-brief（並列）→ merge → render の chunked map-reduce パイプラインで処理 |
+| [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | [docs](docs/skills/register-pi-tools/) | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成。独立した EN/JA ユーザガイドと `build_tools_yaml.py` ビルダーを同梱 |
 | [revert](skills/revert/) | CC | — | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
 | [debug-isolate](skills/debug-isolate/) | CC | — | 反復デバッグを forked subagent に隔離。git stash チェックポイントと連続失敗時の自動ロールバックで作業ツリーの状態を保全 |
 | [run-sql](skills/run-sql/) | CC | — | 設定済みデータベース (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) に対し SQL を実行し、生の JSON 結果を返す |
@@ -111,7 +111,10 @@ ai-agent-toolkit/
 │   ├── write-get-started/      スキル: ユーザガイドを GET_STARTED 文書 + マニュアルへ書換
 │   └── xml-wf/                 スキル: 決定論的 XML v2 ワークフローランナー (wfrun)
 ├── docs/
-│   └── skills/xml-wf/          ドキュメント: xml-wf リファレンス README + ユーザガイド (EN/JA)
+│   └── skills/                非 runtime のスキル文書 (ユーザガイド・authoring contract)
+│       ├── xml-wf/            xml-wf リファレンス README + ユーザガイド (EN/JA)
+│       ├── register-pi-tools/ register-pi-tools ユーザガイド (EN/JA)
+│       └── compact-document/  compact-document authoring contract
 ├── LICENSE
 ├── README.md
 └── README_ja.md

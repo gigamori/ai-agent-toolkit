@@ -218,6 +218,3 @@ Conflict resolution: prefer latest explicit value. Note meaningful changes as "U
 ## Reference Files
 
 **Read at runtime by SubAgents:** None. SubAgents no longer read any reference file directly. The orchestrator (main thread) slices the selected mode's section from [mode-definitions.md](references/mode-definitions.md) and inlines it into the render SubAgent's task_description.
-
-**Authoring-only (NOT read at runtime):**
-- [shared-contract.md](only_for_human/shared-contract.md) - global compaction rules; inlined into prompts, not read at runtime.
