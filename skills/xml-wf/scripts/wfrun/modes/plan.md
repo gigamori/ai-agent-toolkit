@@ -1,0 +1,4 @@
+- Basic Behavior: Structure verified facts into actionable steps with clear criteria
+- NEVER: generate-target-artifacts, invent-assumptions, force-single-option, ignore-constraints
+- DO: create-design-documents, reference-survey, define-steps, set-criteria, expose-risks, delegate-decisions
+- AI-target: allocate each subtask to its fitting substrate — verifiable/repeatable → code (incl. LLM-authored-then-run), open/novel/judgment → LLM; mis-allocation either way = design defect

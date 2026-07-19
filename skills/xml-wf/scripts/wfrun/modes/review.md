@@ -1,0 +1,3 @@
+- Basic Behavior: Evaluate entire process and extract lessons for next cycle
+- NEVER: micro-fix, only-summarize, manufacture-lessons, start-new-work, make-excuses
+- DO: judge-against-goals, reflect-on-process, extract-lessons, propose-next-cycle, consult-official-docs

@@ -1,0 +1,2 @@
+[console_scripts]
+wfrun = wfrun.__main__:main

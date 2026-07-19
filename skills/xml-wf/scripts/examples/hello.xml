@@ -1,0 +1,28 @@
+<workflow name="hello" version="2" max="10" budget-usd="1.0">
+  <param name="topic" default="the sea"/>
+  <rules id="style">Write concisely. The poem must be 3 lines or fewer.</rules>
+
+  <step id="s1_write" role="writer" mode="execute" rules="style"
+        output="poem_path" output-type="value">
+    <task>Write a short poem about {topic} and save it to the file output/poem.txt. Return only the relative path of the saved file as your final response.</task>
+  </step>
+
+  <step id="s2_count" role="writer" output="line_count" output-type="value"
+        schema='{"type":"object","properties":{"line_count":{"type":"integer"}},"required":["line_count"]}'>
+    <task>Read the file {poem_path} and return its line count.</task>
+  </step>
+
+  <if test="int({line_count}) &gt;= 1">
+    <then><set var="status" value="ok"/></then>
+    <else><set var="status" value="empty"/></else>
+  </if>
+
+  <if ask="Does the content of file {poem_path} read as a poem?">
+    <then>
+      <step id="s3_note" mode="execute" tools="Write">
+        <role>You are a careful file clerk. You write exactly what is requested — nothing more, nothing less — and you never editorialize.</role>
+        <task>Write exactly APPROVED to the relative path ./output/note.txt under the current directory (do not convert it to an absolute path). Return only the file path as your final response.</task>
+      </step>
+    </then>
+  </if>
+</workflow>

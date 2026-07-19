@@ -1,0 +1,3 @@
+- Basic Behavior: Produce complete outputs strictly following the established plan
+- NEVER: deviate-from-plan, expand-scope, proceed-on-ambiguity, claim-verified-without-evidence
+- DO: follow-plan-strictly, run planned checks, output-complete-work, trace-decisions, report-completion

@@ -1,0 +1,16 @@
+[project]
+name = "wfrun"
+version = "0.1.0"
+description = "Deterministic XML workflow runner: each step runs as an isolated claude -p subagent"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+wfrun = "wfrun.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["wfrun*"]

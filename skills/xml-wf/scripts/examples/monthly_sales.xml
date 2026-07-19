@@ -1,0 +1,73 @@
+<!-- Production-scale reference example (the legacy _233 plan table restructured
+     for v2). Works in a project where the agents analytic-sql-coder /
+     faithful-operator / data-explainer are defined under .claude/agents/. -->
+<workflow name="monthly-sales-analysis" version="2" max="40" budget-usd="5.0">
+  <param name="months" default="12"/>
+  <param name="report_path" default="results/monthly_sales_analysis_report.md"/>
+
+  <rules id="table_data" src="rules/table_data.md"/>
+  <rules id="no_fabrication">Never fabricate numbers or sources absent from the real data. Mark anything unknown explicitly as unknown.</rules>
+
+  <step id="s1_schema" role="analytic-sql-coder" rules="table_data"
+        output="schema_dir" output-type="value">
+    <task>Fetch the schema definitions for the sales, customers, and regions tables
+and save them under output/schema/ as one JSON file per table.
+Return only the relative path of the output directory as your final response.</task>
+  </step>
+
+  <step id="s2_gen_sql" role="analytic-sql-coder" rules="table_data" retry="1"
+        output="sql_path" output-type="value">
+    <task>Using the schemas in {schema_dir}, write SQL that aggregates monthly sales
+for the past {months} months by region and customer segment, into sql/generated/monthly_sales.sql.
+Return only the relative path of the SQL file as your final response.</task>
+  </step>
+
+  <step id="s3_run_sql" role="faithful-operator" mode="execute" on-error="debug" retry="1"
+        output="data_csv" output-type="value">
+    <task>Execute {sql_path} and save the results to output/monthly_sales.csv.
+Return only the relative path of the CSV as your final response.</task>
+  </step>
+
+  <step id="s4_detect" role="data-explainer" rules="no_fabrication"
+        output="anomaly_count" output-type="value"
+        schema='{"type":"object","properties":{"anomaly_count":{"type":"integer"}},"required":["anomaly_count"]}'>
+    <task>Detect statistically significant anomalies in the monthly sales in {data_csv}
+and save the results (month, sales amount, deviation) to output/anomalies.csv. Return the detection count.</task>
+  </step>
+
+  <if test="int({anomaly_count}) > 0">
+    <then>
+      <step id="s5_root_cause_sql" role="analytic-sql-coder" rules="table_data"
+            output="rc_sql" output-type="value">
+        <task>For each anomaly in output/anomalies.csv, write root-cause-analysis SQL
+that breaks it down by region, customer segment, and product category, into sql/generated/root_cause.sql.
+Return only the relative path of the SQL file as your final response.</task>
+      </step>
+      <step id="s6_run_rc_sql" role="faithful-operator" mode="execute" on-error="debug"
+            output="rc_csv" output-type="value">
+        <task>Execute {rc_sql} and save the results to output/root_cause.csv.
+Return only the relative path of the CSV as your final response.</task>
+      </step>
+    </then>
+    <else>
+      <set var="rc_csv" value="(no anomalies, so no root-cause analysis)"/>
+    </else>
+  </if>
+
+  <step id="s7_report" role="data-explainer" rules="no_fabrication" model="opus">
+    <task>Integrate the analysis results below and write the final report (Markdown) to {report_path}.
+- Monthly sales data: {data_csv}
+- Anomaly detection results: output/anomalies.csv (detection count {anomaly_count})
+- Root-cause analysis results: {rc_csv}
+Structure: trend overview (with an embedded Mermaid chart) / anomaly list / root causes / recommended actions.</task>
+  </step>
+
+  <while ask="Does the report {report_path} FAIL to meet the success criteria (trends, anomalies, root causes, and recommendations described grounded in the data)?" max="2">
+    <do>
+      <step id="s8_fix" role="data-explainer" rules="no_fabrication">
+        <task>Read {report_path} and fix whatever falls short of the success criteria
+(trends, anomalies, root causes, and recommendations described grounded in the data).</task>
+      </step>
+    </do>
+  </while>
+</workflow>

@@ -1,0 +1,3 @@
+- Basic Behavior: Collect facts and identify unknowns without generating solutions
+- NEVER: generate-target-artifacts, assume, fill-gaps, propose-solutions, decide
+- DO: create-process-documents, cite-sources, mark-unknowns, list-constraints, surface-contradictions

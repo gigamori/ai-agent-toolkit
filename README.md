@@ -41,17 +41,20 @@ Plugins and skills marked **CC / Cursor** support Cursor through a manual `.clau
 
 Standalone Agent Skills that can be dropped into any agent without a plugin.
 
-| Skill | Compat | Description |
-|---|---|---|
-| [create-skill](skills/create-skill/) | CC / Cursor | Guides through creating effective Agent Skills with best practices, structure templates, and validation checklists |
-| [compact-document](skills/compact-document/) | CC / Cursor | Multi-mode document compaction framework — condenses articles, specs, transcripts, and more with minimal information loss |
-| [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller |
-| [revert](skills/revert/) | CC | Safely undo recent assistant actions using state-revert semantics — delegates judgment to a bias-isolated subagent to prevent over-removal |
-| [debug-isolate](skills/debug-isolate/) | CC | Isolate iterative debugging in a forked subagent — preserves working tree state with git stash checkpoints and automatic rollback on consecutive failures |
-| [run-sql](skills/run-sql/) | CC | Execute SQL against configured databases (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) and relay raw JSON results |
-| [generate-debug-handoff](skills/generate-debug-handoff/) | CC | Generate an E2E-test debug handoff Markdown; requires a `debugger:` arg (human/llm) selecting whether the LLM only formats the table (human approves) or acts as the debugger (no approval) |
-| [mode-orchestrator](skills/mode-orchestrator/) | CC | Read a document holding a todolist + context, then run each step as an isolated `general-purpose` subagent turn with a role-mode `mode:`/`role:` header — one mode (and optional role) per turn, never mixed; autonomous modes only |
-| [inspect-cc-log](skills/inspect-cc-log/) | CC | Investigate past Claude Code session logs with SQL over pre-built DuckDB views (conversation, tool calls with arguments, file changes, forks, compaction, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a fork tree via a self-contained query script |
+| Skill | Compat | Docs | Description |
+|---|---|---|---|
+| [create-skill](skills/create-skill/) | CC / Cursor | — | Guides through creating effective Agent Skills with best practices, structure templates, and validation checklists |
+| [compact-document](skills/compact-document/) | CC / Cursor | — | Multi-mode document compaction framework — condenses articles, specs, transcripts, and more with minimal information loss |
+| [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | — | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller |
+| [revert](skills/revert/) | CC | — | Safely undo recent assistant actions using state-revert semantics — delegates judgment to a bias-isolated subagent to prevent over-removal |
+| [debug-isolate](skills/debug-isolate/) | CC | — | Isolate iterative debugging in a forked subagent — preserves working tree state with git stash checkpoints and automatic rollback on consecutive failures |
+| [run-sql](skills/run-sql/) | CC | — | Execute SQL against configured databases (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) and relay raw JSON results |
+| [generate-debug-handoff](skills/generate-debug-handoff/) | CC | — | Generate an E2E-test debug handoff Markdown; requires a `debugger:` arg (human/llm) selecting whether the LLM only formats the table (human approves) or acts as the debugger (no approval) |
+| [mode-orchestrator](skills/mode-orchestrator/) | CC | — | Read a document holding a todolist + context, then run each step as an isolated `general-purpose` subagent turn with a role-mode `mode:`/`role:` header — one mode (and optional role) per turn, never mixed; autonomous modes only |
+| [inspect-cc-log](skills/inspect-cc-log/) | CC | — | Investigate past Claude Code session logs with SQL over pre-built DuckDB views (conversation, tool calls with arguments, file changes, forks, compaction, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a fork tree via a self-contained query script |
+| [inspect-pi-log](skills/inspect-pi-log/) | CC | — | Investigate past Pi Coding Agent session logs with SQL over pre-built DuckDB views (conversation, tool calls, file changes, session lineage/bundles, compaction, in-file branches, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a subagent/skill-fork/handoff/fork tree via a self-contained query script |
+| [write-get-started](skills/write-get-started/) | CC | — | Rewrite a builder-toned user guide into an inviting `GET_STARTED` onboarding doc plus an accuracy-first manual, shifting the axis from what the tool is made of to what the reader gets; can optionally build a slide deck from the result via OfficeCLI |
+| [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | Build, run, and resume XML v2 workflows: a task is decomposed into single-responsibility steps, each executed as an isolated `claude -p` subagent under an explicit role and mode, orchestrated deterministically by a bundled Python runner (`wfrun`) — not by an LLM |
 
 ### revert
 
@@ -103,7 +106,12 @@ ai-agent-toolkit/
 │   ├── run-sql/               Skill: run SQL against configured databases
 │   ├── generate-debug-handoff/ Skill: generate E2E debug handoff Markdown
 │   ├── mode-orchestrator/      Skill: run a todolist through role-mode subagent turns
-│   └── inspect-cc-log/         Skill: SQL views over CC logs for session investigation
+│   ├── inspect-cc-log/         Skill: SQL views over CC logs for session investigation
+│   ├── inspect-pi-log/         Skill: SQL views over Pi Coding Agent logs for session investigation
+│   ├── write-get-started/      Skill: rewrite a user guide into a GET_STARTED doc + manual
+│   └── xml-wf/                 Skill: deterministic XML v2 workflow runner (wfrun)
+├── docs/
+│   └── skills/xml-wf/          Docs: xml-wf reference README + user guide (EN/JA)
 ├── LICENSE
 ├── README.md
 └── README_ja.md

@@ -1,0 +1,13 @@
+{
+  "_doc": "Per-runner binding for the canonical model= vocabulary (haiku/sonnet/opus = difficulty classes). 'cc' feeds claude -p --model (must stay claude CLI names); 'llm' feeds the run-llm dispatch line (must be names the orchestrator's subagent facility accepts). Unmapped names pass through. Edit values, keep keys canonical.",
+  "cc": {
+    "haiku": "haiku",
+    "sonnet": "sonnet",
+    "opus": "opus"
+  },
+  "llm": {
+    "haiku": "haiku",
+    "sonnet": "sonnet",
+    "opus": "opus"
+  }
+}

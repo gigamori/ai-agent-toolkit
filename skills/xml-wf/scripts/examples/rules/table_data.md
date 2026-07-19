@@ -1,0 +1,3 @@
+- For schema definitions, consult db-spec first; use INFORMATION_SCHEMA only for what it lacks
+- SELECT only the columns you actually need
+- Every aggregation query must include a date-range condition
