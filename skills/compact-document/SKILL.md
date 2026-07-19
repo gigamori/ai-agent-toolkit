@@ -12,19 +12,20 @@ Multi-mode compaction framework that shortens, reorganizes, and deduplicates doc
 Two paths depending on source length:
 
 **Path A (no chunking):** Discovery -> render SubAgent -> final output
-**Path B (chunking):** Discovery -> chunk split -> chunk-brief SubAgents (parallel) -> merge (main thread) -> render SubAgent -> final output
+**Path B (chunking):** Discovery -> chunk split -> chunk-brief SubAgents (parallel) -> merge SubAgent -> render SubAgent -> final output
 
 ## SubAgent Delegation
 
-Protocol: compact-document/subagent-protocol.md
+Launch spec: subagents are launched via the Task tool with subagent_type="general-purpose" and no model override (they inherit the parent model).
 
 Task types:
 - chunk-brief: Extract structured brief from one source chunk (parallel, max 4)
+- merge: Consolidate chunk briefs into one merged_compacted_state
 - render: Produce final compacted output in mode-specific structure
 
 Runtime variables:
 - task_description: mode, axes, chunk text or merged state, source_name
-- output_file_path: `{working_dir}/compact-output/{source_name}-brief-{chunk_id}.md` or `{working_dir}/compact-output/{source_name}-compacted.md`
+- output_file_path: `{working_dir}/compact-output/{source_name}-brief-{chunk_id}.md`, `{working_dir}/compact-output/{source_name}-merged.md`, or `{working_dir}/compact-output/{source_name}-compacted.md`
 
 ## Discovery (Main Thread)
 
@@ -145,31 +146,40 @@ chunking: [yes|no]
 user_goal: [if specified]
 ```
 
+This handoff is written as an artifact. Its content is also inlined verbatim into every SubAgent's task_description in Step 8; SubAgents do not read this file.
+
 ### Step 8: Route to Execution
+
+For every SubAgent launch below (chunk-brief, merge, render), inline the Context Handoff content from Step 7 into task_description; SubAgents do not read the handoff file.
 
 **If chunking is off:**
 1. Read render/prompt.md, resolve runtime variables
-2. In task_description, include: "Chunking is off. Raw source follows:" then the full source text
-3. Launch render SubAgent -> output file is the final result
-4. Present result to user
+2. Inline the Context Handoff content into task_description
+3. Extract the selected mode's section from references/mode-definitions.md (for general_article, include the chosen article_subtype) and inline it into task_description. render does not read mode-definitions.md.
+4. In task_description, include: "Chunking is off. Raw source follows:" then the full source text
+5. Launch render SubAgent -> output file is the final result
+6. Present the render SubAgent's output to the user VERBATIM: do not add preamble, re-summarize, or re-template it.
 
 **If chunking is on:**
 1. Split source into chunks at natural boundaries decided in Step 6
 2. For each chunk, read chunk-brief/prompt.md, resolve variables:
-   - task_description: chunk_id, source_span, chunk_text
+   - task_description: inline the Context Handoff content, then chunk_id, source_span, chunk_text
    - output_file_path: `{working_dir}/compact-output/{source_name}-brief-{chunk_id}.md`
 3. Launch chunk-brief SubAgents in parallel (max 4)
 4. Collect all chunk briefs
-5. **Merge chunk briefs (main thread):** see Merge Procedure below
+5. **Launch merge SubAgent:** read merge/prompt.md, resolve variables:
+   - task_description: inline the Context Handoff content and all collected chunk briefs
+   - output_file_path: `{working_dir}/compact-output/{source_name}-merged.md`
+   The merge SubAgent writes the merged_compacted_state (see Merge Procedure below) to that file.
 6. Read render/prompt.md, resolve variables:
-   - task_description: "Chunking is on. Merged compacted state follows:" then the merged state
+   - task_description: inline the Context Handoff content; extract the selected mode's section from references/mode-definitions.md (for general_article, include the chosen article_subtype) and inline it (render does not read mode-definitions.md); then "Chunking is on. Merged compacted state follows:" then the merged_compacted_state from Step 5
    - output_file_path: `{working_dir}/compact-output/{source_name}-compacted.md`
 7. Launch render SubAgent -> output file is the final result
-8. Present result to user
+8. Present the render SubAgent's output to the user VERBATIM: do not add preamble, re-summarize, or re-template it.
 
-## Merge Procedure (Main Thread)
+## Merge Procedure (Merge SubAgent)
 
-When merging chunk briefs into consolidated state, follow these rules:
+The merge SubAgent (merge/prompt.md) consolidates chunk briefs into one merged_compacted_state, following these rules:
 
 1. Sort briefs by source order (chunk_id)
 2. Identify repeated background; keep it once
@@ -207,6 +217,7 @@ Conflict resolution: prefer latest explicit value. Note meaningful changes as "U
 
 ## Reference Files
 
-For detailed compaction rules and mode output structures, SubAgents read:
-- [shared-contract.md](references/shared-contract.md) - global compaction rules
-- [mode-definitions.md](references/mode-definitions.md) - mode-specific output structures and detail rules
+**Read at runtime by SubAgents:** None. SubAgents no longer read any reference file directly. The orchestrator (main thread) slices the selected mode's section from [mode-definitions.md](references/mode-definitions.md) and inlines it into the render SubAgent's task_description.
+
+**Authoring-only (NOT read at runtime):**
+- [shared-contract.md](only_for_human/shared-contract.md) - global compaction rules; inlined into prompts, not read at runtime.

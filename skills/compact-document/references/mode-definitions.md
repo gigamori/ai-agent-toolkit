@@ -89,7 +89,7 @@ A claim enters 4 only with explicit affirmative tokens from the deciding speaker
 8. Remaining risks and unknowns
 9. Recommended next action
 
-**Detail rules:** Include timestamps (if useful), summarized logs/errors/stack traces, environment conditions, reproduction clues, essential commands/config changes, what was ruled out, resolution status.
+**Detail rules:** Quote error messages, stack traces, log excerpts, and timestamps (if useful) verbatim (exact tokens); only the surrounding investigation narrative may be summarized. Include environment conditions, reproduction clues, essential commands/config changes, what was ruled out, resolution status.
 **Precision:** Distinguish observed fact vs hypothesis vs confirmed cause vs workaround vs permanent fix.
 **Status:** Final section reflects current operational state; say explicitly if issue remains active.
 

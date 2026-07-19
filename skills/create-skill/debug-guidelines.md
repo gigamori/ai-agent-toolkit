@@ -21,7 +21,6 @@ If the skill uses the SubAgent Delegation Protocol, add a `debug/` task type dir
 ```
 my-skill/
 ├── SKILL.md
-├── subagent-protocol.md
 ├── table-spec/
 │   └── prompt.md
 ├── integration/

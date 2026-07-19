@@ -40,6 +40,7 @@ of markdown body). Advanced mode adds:
 | `${CLAUDE_SESSION_ID}` | Current session ID |
 | `${CLAUDE_EFFORT}` | Current effort level |
 | `${CLAUDE_SKILL_DIR}` | Directory containing the skill's SKILL.md |
+| `${CLAUDE_PROJECT_DIR}` | Project root directory |
 
 ## Dynamic Context Injection
 
@@ -96,7 +97,7 @@ The `agent` field selects the execution environment:
 
 | Agent | Tools | Model |
 |-------|-------|-------|
-| `Explore` | Read-only | Haiku |
+| `Explore` | Read-only | Inherited |
 | `Plan` | Read-only | Inherited |
 | `general-purpose` (default) | All | Inherited |
 | Custom name | Per definition | Per definition |
@@ -176,8 +177,15 @@ hooks:
 
 Use for: input validation, output post-processing, conditional guards on tool use.
 
+Hooks (and schema/tool-call validation generally) are the actual enforcement
+point for anything that must be certain rather than merely likely — a wording
+requirement like "quote X or stop" only raises observability, it doesn't block
+a plausible-looking wrong answer. See `instruction-writing-tips.md` §
+Checkable-ization for the distinction.
+
 Hooks defined in skill frontmatter fire during inline execution. They do not
-fire for tool calls made inside a `context: fork` subagent.
+fire for tool calls made inside a `context: fork` subagent (observed behavior,
+not explicitly documented — verify on your Claude Code version).
 
 ## SubAgent Integration
 
@@ -192,8 +200,9 @@ A skill can involve subagents in four ways:
 
 ### Relationship to SubAgent Delegation Protocol
 
-The existing `subagent-protocol.md` defines a custom delegation pattern
-(role/rules/context/task/constraints sections with runtime variables).
+create-skill's `subagent-protocol.md` defines a custom delegation pattern
+(role/rules/context/task/constraints sections with runtime variables) that authors apply
+when filling in each prompt.md — it is not copied into the generated skill.
 This works on any agent platform.
 
 Claude Code's native `context: fork` provides platform-level isolation without
@@ -203,7 +212,7 @@ the custom protocol. Choose based on:
 |-----------|-------------------------------------------|-------------------------------|
 | Portability | Any agent platform | Claude Code only |
 | Setup | Structured prompt templates per task type | Single `context: fork` field |
-| Multi-task workflows | Yes (parallel chunk-brief + render) | Manual orchestration |
+| Multi-task workflows | Yes (parallel task types + integration) | Manual orchestration |
 | Platform features | Limited | Hooks, MCP, effort |
 
 Both can coexist in a single skill.

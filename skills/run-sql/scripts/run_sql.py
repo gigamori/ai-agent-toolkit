@@ -51,6 +51,57 @@ def resolve_connection(config: dict, name: str) -> str:
     return connections[name]["dsn"]
 
 
+def _dsn_password(dsn: str):
+    """DSN のパスワード成分を返す（無ければ None）。エラーメッセージからの秘匿用。"""
+    try:
+        from urllib.parse import urlsplit
+        return urlsplit(dsn).password or None
+    except Exception:
+        return None
+
+
+def _redact_secret(text: str, dsn: str) -> str:
+    """例外メッセージ等から DSN 全文とパスワードを除去する。
+
+    SQLAlchemy の create_engine は URL 解析失敗時に DSN 全文（資格情報込み）を
+    例外メッセージに載せる。そのまま出力すると秘匿情報が漏れるため除去する。
+    """
+    out = str(text)
+    if dsn and dsn in out:
+        out = out.replace(dsn, "<dsn hidden>")
+    pw = _dsn_password(dsn)
+    if pw:
+        out = out.replace(pw, "***")
+    return out
+
+
+# --read-only 時に許可する先頭キーワード（読み取り / introspection 系）
+_READONLY_ALLOWED = ("select", "with", "show", "describe", "desc", "explain", "values", "pragma")
+
+
+def _assert_read_only(sql: str) -> None:
+    """--read-only 指定時、先頭キーワードが読み取り系でない文を拒否する（DML/DDL 防止）。
+
+    先頭トークンによる簡易ガードであり完全な SQL パーサではない。build-db-spec のような
+    introspection 用途で DML/DDL の誤発行を防ぐことを目的とする。
+    """
+    import re
+    s = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    s = re.sub(r"--[^\n]*", " ", s)
+    s = s.strip()
+    if not s:
+        return
+    first = s.split(None, 1)[0].lower().lstrip("(")
+    if first not in _READONLY_ALLOWED:
+        print(
+            "Error: --read-only 指定時は読み取り文"
+            "（SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/VALUES/PRAGMA）のみ許可されます"
+            f"（検出: '{first.upper() or '(empty)'}'）。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def cmd_list(args: argparse.Namespace) -> None:
     config = load_config()
     connections = config.get("connections", {})
@@ -308,7 +359,7 @@ def cmd_query_simple(args: argparse.Namespace, sql: str, dsn: str) -> None:
                 print(json.dumps({"rowcount": result.rowcount}))
     except Exception as e:
         dialect = dsn.split(":")[0] if ":" in dsn else dsn
-        print(f"Error: Failed to connect [{dialect}]: {e}", file=sys.stderr)
+        print(f"Error: Failed to connect [{dialect}]: {_redact_secret(str(e), dsn)}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -319,7 +370,7 @@ def cmd_query_managed(args: argparse.Namespace, sql: str, control_stream, dsn: s
         sa_conn = engine.connect()
     except Exception as e:
         dialect = dsn.split(":")[0] if ":" in dsn else dsn
-        print(f"Error: Failed to connect [{dialect}]: {e}", file=sys.stderr)
+        print(f"Error: Failed to connect [{dialect}]: {_redact_secret(str(e), dsn)}", file=sys.stderr)
         sys.exit(1)
 
     raw = sa_conn.connection
@@ -405,7 +456,7 @@ def cmd_query_managed(args: argparse.Namespace, sql: str, control_stream, dsn: s
 
     # 正常完了 or エラー
     if state["error"] is not None:
-        print(f"Error: {state['error']}", file=sys.stderr)
+        print(f"Error: {_redact_secret(str(state['error']), dsn)}", file=sys.stderr)
         _safe_close(cursor, sa_conn)
         sys.exit(1)
 
@@ -430,9 +481,13 @@ def cmd_query(args: argparse.Namespace) -> None:
 
     if args.control_stdin:
         sql, control_stream = read_sql_and_control(args)
+        if getattr(args, "read_only", False):
+            _assert_read_only(sql)
         cmd_query_managed(args, sql, control_stream, dsn)
     else:
         sql = args.sql if args.sql is not None else sys.stdin.read()
+        if getattr(args, "read_only", False):
+            _assert_read_only(sql)
         cmd_query_simple(args, sql, dsn)
 
 
@@ -458,6 +513,8 @@ def main() -> None:
     query_parser.add_argument("--timeout-seconds", type=int, default=0, dest="timeout_seconds")
     query_parser.add_argument("--cancel-on-server", action="store_true", dest="cancel_on_server")
     query_parser.add_argument("--control-stdin", action="store_true", dest="control_stdin")
+    query_parser.add_argument("--read-only", action="store_true", dest="read_only",
+                              help="読み取り文(SELECT/SHOW/DESCRIBE/EXPLAIN/WITH/VALUES/PRAGMA)以外を拒否する簡易ガード")
 
     args = parser.parse_args()
 

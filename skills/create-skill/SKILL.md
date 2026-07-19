@@ -1,12 +1,37 @@
 ---
 name: create-skill
-description: Guides users through creating effective Agent Skills. Use when you want to create, write, or author a new skill, or asks about skill structure, best practices, or SKILL.md format.
+description: "Guides users through creating, fixing, and reviewing Agent Skills. Use when the user wants to create, write, or author a new skill; fix, update, or extend an existing skill; or review/audit a skill's structure, frontmatter, or SKILL.md format."
+argument-hint: "[--review|--fix] [path-to-skill]"
 ---
-# Creating Agent Skills
+# Creating, Fixing, and Reviewing Agent Skills
 
-This skill guides you through creating effective Agent Skills. Skills are markdown files that teach the agent how to perform specific tasks: reviewing PRs using team standards, generating commit messages in a preferred format, querying database schemas, or any specialized workflow. Skills work across various AI coding agents and API.
+This skill guides you through creating, fixing, and reviewing effective Agent Skills. Skills are markdown files that teach the agent how to perform specific tasks: reviewing PRs using team standards, generating commit messages in a preferred format, querying database schemas, or any specialized workflow. Skills work across various AI coding agents and API.
 
-## Before You Begin: Gather Requirements
+`argument-hint` is a Claude Code-only convenience (see `advanced-mode.md`); mode
+detection below works from natural language on any platform, with or without it.
+
+## Mode
+
+Three modes share this skill. Determine which applies before doing anything else:
+
+| Mode | When | What happens |
+|------|------|---------------|
+| **Create** (default) | No existing skill is referenced, or the user wants a brand-new skill | Full workflow below: Discovery → Design → Implementation → Verification |
+| **Review** | User asks to review, audit, or check an existing skill (or invokes with `--review`) | Read-only: evaluate the target against the Summary Checklist, Anti-Patterns, and `security-and-troubleshooting.md`; report findings; do not edit files unless separately asked |
+| **Fix** | User asks to fix, update, extend, or rename an existing skill (or invokes with `--fix`) | Read the target skill's existing files, apply only the requested change, then run Phase 4 (Verification) on the result |
+
+Detecting the mode:
+- If invoked as a slash command, check `$ARGUMENTS` for `--review` or `--fix`; treat the remaining text as the target skill's path.
+- Otherwise infer from the request: "review / audit / check / does this follow best practices" → Review; "fix / update / add to / rename / change" an existing skill → Fix; anything else → Create.
+- If a target path is given but has no `SKILL.md`, say so — don't silently fall back to Create mode for a path the user explicitly pointed at.
+
+**Review mode**: skip Phases 1-3 entirely. Go straight to the Phase 4 checks (Summary Checklist, Security & Naming, Structure, Scripts sections) against the existing files and report deviations.
+
+**Fix mode**: skip Phase 1 (Discovery) and Phase 2 (Design) unless the requested change is broad enough to need re-scoping. Go directly to the relevant part of Phase 3 (Implementation) for the specific change, then Phase 4 (Verification).
+
+---
+
+## Create Mode: Before You Begin — Gather Requirements
 
 Before creating a skill, gather essential information from the user about:
 
@@ -27,15 +52,15 @@ If you have previous conversation context, infer the skill from what was discuss
 
 ### Gathering Additional Information
 
-If you need clarification, use the AskQuestion tool when available:
+If you need clarification, use a structured question tool when available (e.g. `AskUserQuestion` in Claude Code — tool names vary by platform):
 
 ```
-Example AskQuestion usage:
+Example structured question usage:
 - "Where should this skill be stored?" with options like ["Personal (global)", "Project (repo-local)"]
 - "Should this skill include executable scripts?" with options like ["Yes", "No"]
 ```
 
-If the AskQuestion tool is not available, ask these questions conversationally.
+If no structured question tool is available, ask these questions conversationally.
 
 ---
 
@@ -88,7 +113,7 @@ Concrete examples of using this skill.
 
 | Field | Required | Requirements | Purpose |
 |-------|----------|--------------|---------|
-| `name` | Yes | Max 64 chars, lowercase letters/numbers/hyphens only, verb-object form. Must match folder name. | Unique identifier |
+| `name` | Yes | Max 64 chars, lowercase letters/numbers/hyphens only. Must match folder name. Verb-object form recommended (see Anti-Patterns §5). | Unique identifier |
 | `description` | Yes | Max 1024 chars, non-empty, no XML angle brackets (`<` `>`) | Helps agent decide when to apply the skill |
 | `license` | No | e.g., MIT, Apache-2.0 | Open-source distribution |
 | `allowed-tools` | No | e.g., `"Bash(python:*) WebFetch"` | Restrict tool access |
@@ -96,8 +121,7 @@ Concrete examples of using this skill.
 | `metadata` | No | Custom key-value pairs (author, version, mcp-server) | Additional info |
 
 Security restrictions in frontmatter:
-- XML angle brackets (`<` `>`) are forbidden (frontmatter appears in system prompt; injection risk)
-- Some platforms reserve certain name prefixes — check your agent's restrictions
+- Avoid XML angle brackets (`<` `>`) in frontmatter values. The Agent Skills open standard does not forbid them, but some platforms (e.g. claude.ai skill upload) reject them because frontmatter is injected into the system prompt (injection risk) — safest to omit them everywhere
 
 **Always wrap string values in double quotes** — especially `description`. Frontmatter is parsed as YAML, where an unquoted value breaks the parse when it contains a `:` followed by a space, contains a `#`, or *starts* with an indicator character (`# > | - ! & * ? : [ ] { } @ %`). Quoting neutralizes all of these:
 
@@ -304,20 +328,15 @@ Use verb-object form to make the action and target clear:
 
 ## Skill Creation Workflow
 
-When helping a user create a skill, follow this process:
+Phases 1-2 apply to **Create** mode only. **Fix** mode starts at Phase 3 for the specific
+change requested; **Review** mode starts at Phase 4, applied read-only against the
+existing skill. See § Mode above.
 
-### Phase 1: Discovery
+### Phase 1: Discovery (Create mode)
 
-Gather information about:
-1. The skill's purpose and primary use case
-2. Storage location (personal vs project)
-3. Trigger scenarios
-4. Any specific requirements or constraints
-5. Existing examples or patterns to follow
+Gather the requirements listed in "Before You Begin: Gather Requirements" above (purpose and scope, skill category, storage location, trigger scenarios, domain knowledge, output format, existing patterns), using a structured question tool if available.
 
-If you have access to the AskQuestion tool, use it for efficient structured gathering. Otherwise, ask conversationally.
-
-### Phase 2: Design
+### Phase 2: Design (Create mode)
 
 1. Draft the skill name (lowercase, hyphens, max 64 chars). Folder name must match.
 2. Write a specific, third-person description with WHAT + WHEN + trigger phrases
@@ -331,22 +350,28 @@ If you have access to the AskQuestion tool, use it for efficient structured gath
 3. Create any supporting reference files
 4. Create any utility scripts if needed
 
-### Phase 4: Verification
+**Fix mode**: apply only the requested change to the existing files above — don't
+redo steps that aren't affected by it, and don't refactor unrelated parts of the skill.
+
+### Phase 4: Verification (also the Review-mode checklist)
+
+In **Review mode**, run this list read-only against the existing skill and report
+each failing item as a finding (file + what's wrong); do not edit anything.
 
 1. Verify the SKILL.md is under 500 lines
 2. Check that the description is specific and includes trigger terms
 3. Ensure consistent terminology throughout
 4. Verify all file references are one level deep
 5. Security check:
-   - No XML angle brackets (`<` `>`) in frontmatter
-   - Name does not conflict with platform-reserved prefixes
-   - No `README.md` inside the skill folder
+   - No XML angle brackets (`<` `>`) in frontmatter (rejected by some platforms; see "Security restrictions in frontmatter")
+   - No `README.md` inside the skill folder (the spec allows extra files, but documentation belongs in SKILL.md or references/ — a README duplicates SKILL.md)
    - Folder name matches `name` field
 6. Validate that the frontmatter parses as YAML — run the bundled validator and confirm it prints `OK`:
    ```bash
-   uv run --script scripts/validate_frontmatter.py path/to/skill/SKILL.md
+   uv run --script ${CLAUDE_SKILL_DIR}/scripts/validate_frontmatter.py path/to/skill/SKILL.md
    ```
-   It checks that the frontmatter parses as YAML, that `name`/`description` are present, that `description` is ≤1024 chars with no `<`/`>`, and that `name` is kebab-case, ≤64 chars, and matches the folder name. If YAML parsing fails, the usual cause is an unquoted `description` — quote it (see "Security restrictions in frontmatter" above). If `uv`/`pyyaml` is unavailable, manually confirm every string value is double-quoted.
+   (`${CLAUDE_SKILL_DIR}` resolves to this skill's directory on Claude Code; on other platforms, use the path to this skill's `scripts/` folder.)
+   It checks that the frontmatter parses as YAML, that `name`/`description` are present, that `description` is ≤1024 chars, that no frontmatter value contains `<`/`>`, and that `name` is kebab-case, ≤64 chars, and matches the folder name. If YAML parsing fails, the usual cause is an unquoted `description` — quote it (see "Security restrictions in frontmatter" above). If `uv`/`pyyaml` is unavailable, manually confirm every string value is double-quoted.
 7. Test that the skill can be discovered and applied
 
 For common issues and their solutions, see [security-and-troubleshooting.md](security-and-troubleshooting.md).
@@ -367,9 +392,8 @@ Before finalizing a skill, verify:
 
 ### Security & Naming
 - [ ] No XML angle brackets in frontmatter
-- [ ] Name does not conflict with platform-reserved prefixes
 - [ ] Folder name matches `name` field
-- [ ] No `README.md` inside skill folder
+- [ ] No `README.md` inside skill folder (docs go in SKILL.md or references/)
 
 ### Structure
 - [ ] File references are one level deep
@@ -407,3 +431,32 @@ decomposed into multiple subtasks delegated to SubAgents. Indicators:
 - The workflow has 2+ distinct task types that can run independently
 - Sequential execution in a single thread would exhaust the context window
 - The user mentions parallel execution, delegation, or multi-agent orchestration
+
+It uses two companion files in this skill's directory: `subagent-protocol.md` (the generic
+delegation protocol — create-skill's authoring reference, applied when filling in each
+prompt.md, not copied into the new skill) and `prompt.md` (the prompt template stub,
+copied and filled in per task type).
+
+## Guidelines for writing instruction wording
+
+Read `instruction-writing-tips.md` when writing the wording of a skill's
+instructions — SKILL.md body, `prompt.md` templates, or `subagent-protocol.md`
+gates — and you need an agent to reliably follow a directive rather than
+merely be aware of it. Indicators:
+- The skill has an ordered set of instructions where later steps depend on
+  earlier ones being resolved correctly first
+- The skill includes a gate, validation step, or "if unsure, ask" branch
+- A `prompt.md` template will be reused across task types with values that
+  vary per invocation
+
+## Guidelines for Claude Code-specific features
+
+Read `advanced-mode.md` when the skill targets Claude Code and may benefit from platform
+extensions beyond the Agent Skills open standard. Indicators:
+- The skill needs slash-command arguments, autocomplete hints, or user-only invocation
+- The skill should run in an isolated context (`context: fork`) or restrict available tools
+- You want dynamic context injection (shell output embedded at render time), lifecycle
+  hooks, or model/effort overrides
+
+Note: these are Claude Code extensions — skills relying on them are not portable to other
+agent platforms.

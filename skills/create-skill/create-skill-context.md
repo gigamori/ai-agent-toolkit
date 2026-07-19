@@ -14,7 +14,7 @@ Apply this guide when any of the following conditions are met:
 
 | File | Purpose |
 |------|---------|
-| `subagent-protocol.md` | Protocol (B). Copy to skill_dir |
+| `subagent-protocol.md` | Protocol (B). create-skill's authoring reference (not copied into generated skills) |
 | `prompt.md` | Prompt Template stub (C). Copy and fill in per task type |
 
 ## Creation Process
@@ -94,16 +94,17 @@ Determine the following:
 Generate in the following order:
 
 1. Create skill_dir
-2. Copy `subagent-protocol.md` to skill_dir
-3. Create a directory for each task type
-4. Copy `prompt.md` to each directory
-5. Fill in domain-specific content from Step 3 into each prompt.md
-6. If delegating Integration to a SubAgent, create an Integration directory as well
-7. Generate SKILL.md (see template below)
+2. Create a directory for each task type
+3. Copy `prompt.md` to each directory
+4. Fill in domain-specific content from Step 3 into each prompt.md
+5. If delegating Integration to a SubAgent, create an Integration directory as well
+6. Generate SKILL.md (see template below)
+
+Generated skills do NOT receive a copy of `subagent-protocol.md`; it is create-skill's authoring reference, and its structural conventions are applied directly when filling in each prompt.md.
 
 ### Step 6: Verification
 
-- Does each prompt.md follow the structural conventions in subagent-protocol.md?
+- Does each prompt.md follow the structural conventions in create-skill's `subagent-protocol.md`?
 - Are runtime variables `{context_handoff_path}`, `{task_description}`, `{output_file_path}` correctly placed?
 - Does a `<constraints>` section exist in every prompt.md?
 - Does SKILL.md list all task types and naming conventions?
@@ -125,7 +126,6 @@ description: {description}
 {Types and formats of input}
 
 ## SubAgent Delegation
-Protocol: {skill_dir}/subagent-protocol.md
 
 Task types:
 - {task-type-a}: {overview}

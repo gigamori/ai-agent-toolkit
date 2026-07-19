@@ -6,9 +6,10 @@
 
 Frontmatter appears in the agent's system prompt. Malicious content could inject instructions.
 
-Forbidden:
-- XML angle brackets (`<` `>`) anywhere in frontmatter values
-- Skills named with platform-reserved prefixes (e.g. "claude", "anthropic")
+Forbidden or unsafe:
+- XML angle brackets (`<` `>`) anywhere in frontmatter values — not banned by the
+  Agent Skills open standard, but rejected by some platforms (e.g. claude.ai skill
+  upload) because frontmatter is injected into the system prompt; safest to omit
 - Characters conflicting with YAML syntax in unquoted values:
   `:`, `#`, `[`, `]`, `{`, `}`, `,`, `&`, `*`, `!`, `|`, `>`, `'`, `"`, `%`
 - Code execution constructs in YAML
@@ -26,7 +27,8 @@ Required — quote string values:
 
 ### Folder Rules
 
-- No `README.md` inside the skill folder (all documentation goes in SKILL.md or references/)
+- Avoid a `README.md` inside the skill folder — the spec permits extra files, but
+  documentation belongs in SKILL.md or references/ (a README duplicates SKILL.md)
 - Folder name must match the `name` field in frontmatter
 
 ## Troubleshooting

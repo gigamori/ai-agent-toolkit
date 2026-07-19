@@ -38,6 +38,21 @@ def extract_frontmatter(text):
     return m.group(1) if m else None
 
 
+def find_angle_brackets(value, path="frontmatter"):
+    """Yield the paths of frontmatter keys/values containing '<' or '>'."""
+    if isinstance(value, str):
+        if "<" in value or ">" in value:
+            yield path
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str) and ("<" in k or ">" in k):
+                yield f"{path}.{k} (key)"
+            yield from find_angle_brackets(v, f"{path}.{k}")
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            yield from find_angle_brackets(v, f"{path}[{i}]")
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("usage: validate_frontmatter.py path/to/SKILL.md")
@@ -97,8 +112,9 @@ def main():
             errors.append("description must not be empty")
         if len(desc) > 1024:
             errors.append(f"description exceeds 1024 chars: {len(desc)}")
-        if "<" in desc or ">" in desc:
-            errors.append("description must not contain angle brackets '<' or '>'")
+
+    for loc in find_angle_brackets(data):
+        errors.append(f"angle brackets '<' or '>' not allowed in frontmatter: {loc}")
 
     if errors:
         print("FAIL: frontmatter constraints violated")
