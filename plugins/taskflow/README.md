@@ -50,6 +50,20 @@ To set it permanently in Claude Code, add it to your `settings.json`:
 }
 ```
 
+### `TASKFLOW_GUIDELINES_REMINDER`
+
+Selects which per-turn guidelines reminder variant `session_init.py` injects: `full` (default, ~750 tok — the complete keyword reminder) or `manifest` (~460 tok — the same prohibitions/format/authority/notes/autosave/task-write rules compressed to recall labels; the per-turn ROUTER and RESPONSE LEADING LINES lines stay full text in both variants). Unknown or unset values fall back to `full`.
+
+```json
+{
+  "env": {
+    "TASKFLOW_GUIDELINES_REMINDER": "manifest"
+  }
+}
+```
+
+`manifest` trades lower per-turn cost for weaker inline visibility of the conditional rules (PROHIBIT/FORMAT/AUTHORITY/NOTES/AUTOSAVE/TASK WRITE) — it relies on the full guidelines injected at session start (and after compaction) rather than repeating them every turn.
+
 ## Usage
 
 ### Specifying a project
@@ -287,15 +301,15 @@ Seven hook scripts run automatically when the plugin is enabled, wired in `hooks
 
 Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Progress Session]` into the LLM context. Creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` if missing.
 
-Also handles guidelines injection: on the first turn of a session (and after compaction), the full content of `progress_guidelines.md`, `notes_guidelines.md`, and `tasks_guidelines.md` is injected. On subsequent turns, only a keyword reminder (`guidelines_reminder.md`) is injected to maintain attention to the guidelines at lower token cost.
+Also handles guidelines injection: on the first turn of a session (and after compaction), the full content of `progress_guidelines.md`, `notes_guidelines.md`, and `tasks_guidelines.md` is injected. On subsequent turns, a reminder is injected to maintain attention to the guidelines at lower token cost — `guidelines_reminder.md` (default) or `guidelines_reminder_manifest.md` (`TASKFLOW_GUIDELINES_REMINDER=manifest`; see [Configuration](#taskflow_guidelines_reminder)).
 
 ##### Maintaining guidelines_reminder.md
 
-`prompts/guidelines_reminder.md` is a keyword reminder injected every turn after the first. It works by re-activating the LLM's attention to the full guidelines injected earlier in the conversation.
+`prompts/guidelines_reminder.md` is a keyword reminder injected every turn after the first. It works by re-activating the LLM's attention to the full guidelines injected earlier in the conversation. `prompts/guidelines_reminder_manifest.md` is the lower-cost variant selected by `TASKFLOW_GUIDELINES_REMINDER=manifest`: its PROHIBIT/FORMAT/AUTHORITY/NOTES/AUTOSAVE/TASK WRITE content is compressed to recall labels, but its ROUTER and RESPONSE LEADING LINES lines (the rules that must fire every turn unconditionally, not just when relevant) are kept as full text and MUST stay byte-identical to the same lines in `guidelines_reminder.md` — enforced by `tests/test_guidelines_reminder_mode.sh`.
 
 **Design principle**: the reminder contains distinctive terms from the source guidelines — particularly prohibitions, format-specific patterns, and authority definitions — that boost attention weight on the corresponding full-text passages.
 
-**Maintenance rule**: when any source that feeds the reminder is updated — the 3 guidelines (`progress_guidelines.md`, `notes_guidelines.md`, `tasks_guidelines.md`) plus `project_routing.md` (source of the ROUTER cue) — `guidelines_reminder.md` MUST be updated in the same commit. Stale keywords that reference removed rules cause hallucinated constraints; missing keywords for new rules cause silent non-compliance.
+**Maintenance rule**: when any source that feeds the reminder is updated — the 3 guidelines (`progress_guidelines.md`, `notes_guidelines.md`, `tasks_guidelines.md`) plus `project_routing.md` (source of the ROUTER cue) — **both** `guidelines_reminder.md` and `guidelines_reminder_manifest.md` MUST be updated in the same commit. Stale keywords that reference removed rules cause hallucinated constraints; missing keywords for new rules cause silent non-compliance.
 
 **Keyword selection criteria** (in priority order):
 

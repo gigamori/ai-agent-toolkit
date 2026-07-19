@@ -49,6 +49,20 @@ Claude Code で恒久設定するには `settings.json` に追加:
 }
 ```
 
+### `TASKFLOW_GUIDELINES_REMINDER`
+
+`session_init.py` が毎ターン注入する guidelines reminder の variant を選択する: `full`（デフォルト、~750 tok — 完全版キーワードリマインダー）または `manifest`（~460 tok — PROHIBIT/FORMAT/AUTHORITY/NOTES/AUTOSAVE/TASK WRITE の各ルールを recall label に圧縮したもの。毎ターン無条件発火が要件の ROUTER と RESPONSE LEADING LINES の2行はどちらの variant でも全文のまま）。未知の値・未設定は `full` にフォールバックする。
+
+```json
+{
+  "env": {
+    "TASKFLOW_GUIDELINES_REMINDER": "manifest"
+  }
+}
+```
+
+`manifest` は毎ターンコストを下げる代わりに、条件付きルール（PROHIBIT/FORMAT/AUTHORITY/NOTES/AUTOSAVE/TASK WRITE）のインライン可視性が下がるトレードオフを伴う — セッション開始時（および compact 後）に注入された全文ガイドラインへの依存度が上がる。
+
 ## 使い方
 
 ### プロジェクト指定
@@ -286,15 +300,15 @@ _projects/
 
 毎ターン実行。`_projects/_state/{session_id}.json` を管理し、`[Progress Session]` を LLM コンテキストに注入する。`_projects/` が存在しない場合は自動生成する（`_state/` とテンプレート `index.md` も同時作成）。
 
-ガイドライン注入も担当: セッション初回ターン（および compact 後）に `progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md` の全文を注入し、以降のターンではキーワードリマインダー（`guidelines_reminder.md`）のみを注入してトークンコストを削減する。
+ガイドライン注入も担当: セッション初回ターン（および compact 後）に `progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md` の全文を注入し、以降のターンでは reminder のみを注入してトークンコストを削減する — `guidelines_reminder.md`（デフォルト）または `guidelines_reminder_manifest.md`（`TASKFLOW_GUIDELINES_REMINDER=manifest`。[設定](#taskflow_guidelines_reminder) 参照）。
 
 ##### guidelines_reminder.md のメンテナンス
 
-`prompts/guidelines_reminder.md` は初回以降の毎ターンに注入されるキーワードリマインダー。会話冒頭で注入された全文ガイドラインへの LLM のアテンションを再活性化する設計。
+`prompts/guidelines_reminder.md` は初回以降の毎ターンに注入されるキーワードリマインダー。会話冒頭で注入された全文ガイドラインへの LLM のアテンションを再活性化する設計。`prompts/guidelines_reminder_manifest.md` は `TASKFLOW_GUIDELINES_REMINDER=manifest` で選択される低コスト variant: PROHIBIT/FORMAT/AUTHORITY/NOTES/AUTOSAVE/TASK WRITE の内容は recall label に圧縮されているが、毎ターン無条件発火が要件の ROUTER・RESPONSE LEADING LINES の2行は全文のまま残し、`guidelines_reminder.md` の同じ2行と byte 一致でなければならない（`tests/test_guidelines_reminder_mode.sh` が機械検証）。
 
 **設計原則**: 元のガイドラインから特徴的な用語（特に禁止規則、フォーマット固有パターン、権威の定義）を抽出し、対応する全文パッセージへのアテンション重みを強化する。
 
-**メンテナンスルール**: reminder に供給するソース — 3 つのガイドライン（`progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md`）＋ `project_routing.md`（ROUTER cue のソース）— のいずれかを更新したら、`guidelines_reminder.md` も同じコミットで必ず更新すること。削除されたルールのキーワードが残ると幻覚的な制約を引き起こし、新ルールのキーワードが欠けるとサイレントな非準拠を招く。
+**メンテナンスルール**: reminder に供給するソース — 3 つのガイドライン（`progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md`）＋ `project_routing.md`（ROUTER cue のソース）— のいずれかを更新したら、`guidelines_reminder.md` と `guidelines_reminder_manifest.md` の**両方**を同じコミットで必ず更新すること。削除されたルールのキーワードが残ると幻覚的な制約を引き起こし、新ルールのキーワードが欠けるとサイレントな非準拠を招く。
 
 **キーワード選定基準**（優先順）:
 

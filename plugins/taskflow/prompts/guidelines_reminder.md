@@ -1,6 +1,7 @@
-<!-- taskflow guidelines keyword reminder -->
+<!-- taskflow guidelines keyword reminder — FULL variant (default). -->
+<!-- guidelines_reminder_manifest.md is a lower-cost sibling (env TASKFLOW_GUIDELINES_REMINDER=manifest); its ROUTER / RESPONSE LEADING LINES lines MUST stay byte-identical to this file's — enforced by tests/test_guidelines_reminder_mode.sh. -->
 <!-- Source: progress_guidelines.md, notes_guidelines.md, tasks_guidelines.md, project_routing.md -->
-<!-- When updating any of the source files listed above, update this file too (see README.md) -->
+<!-- When updating any of the source files listed above, update this file AND guidelines_reminder_manifest.md (see README.md) -->
 
 [taskflow guidelines reminder]
 PROHIBIT: no status: or summary: in task frontmatter, no category: in frontmatter, no hand-edit inside <!-- @table:begin/end -->, no multiple table regions (exactly 1 per project), no auto-move to 2_done/ without human approval, no edit/reorder/delete inside <!-- @log -->, no Session Log/Last Updated/Completed Tasks sections in progress.md

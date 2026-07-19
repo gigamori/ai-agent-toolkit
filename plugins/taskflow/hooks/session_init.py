@@ -8,7 +8,14 @@ Injection blocks per turn (decided from state file flags):
   - static_rules       (once per session): project_routing.md (~2700 tok)
   - project_index      (on project switch): _projects/<project>/index.md (~250 tok)
   - guidelines_full    (once per session): 3 guidelines files (~3250 tok)
-  - guidelines_reminder(subsequent turns): keyword reminder (~750 tok)
+  - guidelines_reminder(subsequent turns): keyword reminder (~750 tok). Two
+                       variants selected by env TASKFLOW_GUIDELINES_REMINDER:
+                       'full' (default, guidelines_reminder.md, ~750 tok) or
+                       'manifest' (guidelines_reminder_manifest.md, ~460 tok —
+                       PROHIBIT/FORMAT/etc. compressed to recall labels; the
+                       per-turn ROUTER/RESPONSE-LEADING-LINES lines stay full
+                       text in both, byte-identical between the two files).
+                       manifest falls back to full if its file is missing.
   - project_rules      (per-project rules.md, if present): on project switch the
                        full body ("primer"); on subsequent turns a compact
                        manifest of `##` headings ("effective file-mention").
@@ -58,6 +65,8 @@ GUIDELINES_FILES = [
     os.path.join(PLUGIN_ROOT, 'prompts', 'tasks_guidelines.md'),
 ]
 GUIDELINES_REMINDER_MD = os.path.join(PLUGIN_ROOT, 'prompts', 'guidelines_reminder.md')
+GUIDELINES_REMINDER_MANIFEST_MD = os.path.join(
+    PLUGIN_ROOT, 'prompts', 'guidelines_reminder_manifest.md')
 
 PARENT_SCAN_LINES = 50  # transcript head lines scanned for parent detection
 
@@ -342,11 +351,18 @@ if inject_guidelines_full:
   if parts:
     guidelines_content = '\n\n' + '\n\n'.join(parts)
 elif inject_guidelines_reminder:
-  try:
-    with open(GUIDELINES_REMINDER_MD, 'r', encoding='utf-8') as f:
-      guidelines_content = '\n\n' + f.read()
-  except Exception:
-    pass
+  reminder_mode = os.environ.get('TASKFLOW_GUIDELINES_REMINDER', 'full').strip().lower()
+  reminder_candidates = (
+    [GUIDELINES_REMINDER_MANIFEST_MD, GUIDELINES_REMINDER_MD]
+    if reminder_mode == 'manifest' else [GUIDELINES_REMINDER_MD]
+  )
+  for reminder_path in reminder_candidates:
+    try:
+      with open(reminder_path, 'r', encoding='utf-8') as f:
+        guidelines_content = '\n\n' + f.read()
+      break
+    except Exception:
+      continue
 
 # Build project_index block.
 index_content = ''
