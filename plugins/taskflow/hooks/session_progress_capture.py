@@ -94,6 +94,19 @@ try:
 except ValueError:
     _CAPTURE_EXPIRY_S = 15.0
 
+# Sweep blast-cap (project-notes/specs/capture-hook-sweep-sandbox.md): the
+# combined (json + sidecar) per-Stop delete budget for _cleanup_stale_markers.
+# Default 50 sits between the empirically observed healthy-steady-state count
+# (~2 per sweep, measured against a live _state/ directory) and the 2026-07-17
+# incident (250 files deleted in one sweep after an empty-project backlog
+# accumulated) — a wrong-cwd or mis-pointed-dir sweep is capped instead of
+# silently emptying the directory. env-overridable so a deliberate bulk cleanup
+# can raise it (mirrors TASKFLOW_CAPTURE_EXPIRY_S).
+try:
+    _SWEEP_MAX = int(os.environ.get('TASKFLOW_SWEEP_MAX', '50'))
+except ValueError:
+    _SWEEP_MAX = 50
+
 MAX_TOUCHED_IN_INJECTION = 30
 # `[tasks:]` exec-binding carry must appear in the leading lines; accept the
 # marker only when it starts within this window (LLM-non-exposed code bound;
@@ -161,7 +174,7 @@ def read_touched(touched_path: str, cwd: str) -> list[str]:
 def _cleanup_stale_markers(state_dir: str) -> None:
     """Remove stale files under STATE_DIR older than _MARKER_MAX_AGE_DAYS:
       - sidecar markers (`.bind` / `.touched` / `.capture`, plus legacy
-        `.captured`) — unconditional mtime sweep (unchanged).
+        `.captured`) — unconditional mtime sweep (unchanged predicate).
       - session-state `.json` (36-char-UUID stem) whose `project` is EMPTY
         (F5b / D-2): parse-guarded — a json that fails to parse or is not a
         dict is NEVER removed (conservative); a NON-EMPTY `project` state is
@@ -172,33 +185,78 @@ def _cleanup_stale_markers(state_dir: str) -> None:
         naturally protected (same property as the sidecar sweep).
     Non-UUID `.json` (e.g. kanban-port-*.json written by generate_kanban) is
     left untouched: the `len(stem) == 36` guard mirrors build_uuid_index's own
-    session-state filter."""
+    session-state filter.
+
+    Blast-cap (project-notes/specs/capture-hook-sweep-sandbox.md): deletion
+    candidates (json + sidecar, combined) are collected first, sorted
+    oldest-mtime-first, then only the first `_SWEEP_MAX` are actually removed
+    — a wrong-cwd or mis-pointed state_dir sweep is capped instead of silently
+    emptying the directory in one Stop. Deferred candidates are picked up on a
+    later Stop (oldest-first ordering makes the capped sweep monotonic —
+    it always makes progress rather than re-selecting the same fresh-side
+    subset). Any deletion, or a cap hit, is reported on stderr (F-OBS-1) since
+    this runs before stdin is read / the block-reason channel exists."""
     try:
         cutoff = datetime.datetime.now().timestamp() - _MARKER_MAX_AGE_DAYS * 86400
+        candidates = []  # list of (mtime, path, is_json)
         for name in os.listdir(state_dir):
             path = os.path.join(state_dir, name)
             stem, ext = os.path.splitext(name)
             if ext == '.json' and len(stem) == 36:
                 try:
-                    if os.path.getmtime(path) >= cutoff:
+                    mtime = os.path.getmtime(path)
+                    if mtime >= cutoff:
                         continue  # fresh mtime → live/recent session; keep
                     with open(path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                 except (OSError, ValueError):
                     continue  # unreadable / parse-unable → never delete (D-2)
                 if isinstance(data, dict) and not data.get('project'):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
+                    candidates.append((mtime, path, True))
                 continue
             if not name.endswith(_CLEANUP_SUFFIXES):
                 continue
             try:
-                if os.path.getmtime(path) < cutoff:
-                    os.remove(path)
+                mtime = os.path.getmtime(path)
             except OSError:
-                pass
+                continue
+            if mtime < cutoff:
+                candidates.append((mtime, path, False))
+
+        if not candidates:
+            return
+        candidates.sort(key=lambda c: c[0])  # oldest-first
+        total = len(candidates)
+        to_delete = candidates[:_SWEEP_MAX]
+        deferred = total - len(to_delete)
+
+        removed_json = 0
+        removed_sidecar = 0
+        for _mtime, path, is_json in to_delete:
+            try:
+                os.remove(path)
+            except OSError:
+                continue  # best-effort; not counted as removed
+            if is_json:
+                removed_json += 1
+            else:
+                removed_sidecar += 1
+
+        removed_total = removed_json + removed_sidecar
+        if removed_total:
+            print(
+                f'[progress capture] cleanup: removed {removed_total} stale '
+                f'file(s) under {state_dir} (json={removed_json} '
+                f'sidecar={removed_sidecar})',
+                file=sys.stderr,
+            )
+        if deferred:
+            print(
+                f'[progress capture] WARNING: sweep cap TASKFLOW_SWEEP_MAX='
+                f'{_SWEEP_MAX} hit — {total} candidates, removed '
+                f'{len(to_delete)}, {deferred} deferred under {state_dir}',
+                file=sys.stderr,
+            )
     except OSError:
         pass
 

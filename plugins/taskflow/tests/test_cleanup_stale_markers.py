@@ -12,6 +12,13 @@ Covers project-notes/specs/review-2026-07-17-fixes.md P4-1 (F5b, D-2):
   non-36-char-stem `.json`, e.g. `kanban-port-deadbeef.json`, is NEVER
   touched by the `.json` branch regardless of age/content).
 
+Also covers project-notes/specs/capture-hook-sweep-sandbox.md (blast-cap +
+F-OBS-1, 2026-07-19 follow-up to the 250-file sweep incident): a combined
+(json + sidecar) per-sweep delete budget `TASKFLOW_SWEEP_MAX` (default 50,
+monkeypatched here via `spc._SWEEP_MAX`), oldest-mtime-first ordering when
+candidates exceed the cap, and stderr logging of the removed count / a
+cap-hit warning.
+
 ABSOLUTE SAFETY: every fixture lives inside a `tempfile.TemporaryDirectory()`
 and is passed explicitly as `state_dir` to `_cleanup_stale_markers()`. This
 test NEVER imports/calls `main()`, NEVER reads stdin, and NEVER touches the
@@ -28,6 +35,8 @@ Exits 0 when all checks pass, 1 otherwise.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -189,6 +198,74 @@ def test_sidecar_suffix_sweep(state_dir: Path) -> None:
     check(not old_legacy.exists(), "old legacy .captured sidecar is removed")
 
 
+def test_no_log_when_nothing_removed(state_dir: Path) -> None:
+    print("--- observability: silent when there are no stale candidates ---")
+    stderr_buf = io.StringIO()
+    with contextlib.redirect_stderr(stderr_buf):
+        spc._cleanup_stale_markers(str(state_dir))
+    check(stderr_buf.getvalue() == "", "no stderr output when nothing is removed")
+
+
+def test_removal_logged_under_cap(state_dir: Path) -> None:
+    print("--- observability: removal count logged to stderr, no cap warning under budget ---")
+    p = state_dir / f"{uuid_stem()}.json"
+    write_json(p, {"project": ""}, days_old=_MAX_AGE + 1)
+    stderr_buf = io.StringIO()
+    with contextlib.redirect_stderr(stderr_buf):
+        spc._cleanup_stale_markers(str(state_dir))
+    out = stderr_buf.getvalue()
+    check("[progress capture] cleanup: removed 1 stale file(s)" in out,
+          f"removal count reported on stderr (F-OBS-1): {ascii(out)}")
+    check("(json=1 sidecar=0)" in out, f"json/sidecar breakdown reported: {ascii(out)}")
+    check("WARNING" not in out, f"no cap warning when under TASKFLOW_SWEEP_MAX: {ascii(out)}")
+
+
+def test_sweep_blast_cap_combined_oldest_first(state_dir: Path) -> None:
+    print("--- blast-cap: combined json+sidecar budget, oldest-mtime-first, cap warning ---")
+    orig_cap = spc._SWEEP_MAX
+    spc._SWEEP_MAX = 3
+    try:
+        # 3 empty-project stale json (10/11/12 days old) + 3 stale sidecars
+        # (20/21/22 days old, i.e. OLDER) = 6 candidates competing for cap=3.
+        entries = []  # (age_days, path)
+        for i in range(3):
+            p = state_dir / f"{uuid_stem()}.json"
+            age = 10 + i
+            write_json(p, {"project": ""}, days_old=age)
+            entries.append((age, p))
+        for i in range(3):
+            p = state_dir / f"{uuid.uuid4()}.touched"
+            age = 20 + i
+            p.write_text("tasks/0_todo/x.md\n", encoding="utf-8")
+            age_file(p, age)
+            entries.append((age, p))
+
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf):
+            spc._cleanup_stale_markers(str(state_dir))
+
+        removed = {p.name for _age, p in entries if not p.exists()}
+        kept = {p.name for _age, p in entries if p.exists()}
+        check(len(removed) == 3, f"exactly cap(=3) files removed (got {len(removed)}: {removed})")
+        oldest_three = {p.name for _age, p in sorted(entries, key=lambda t: -t[0])[:3]}
+        check(removed == oldest_three,
+              f"oldest-mtime-first: removed set is the 3 oldest candidates "
+              f"(removed={removed}, expected={oldest_three})")
+        check(len(kept) == 3, f"the 3 newest-of-the-stale candidates are deferred, not removed (kept={kept})")
+
+        out = stderr_buf.getvalue()
+        check("[progress capture] cleanup: removed 3 stale file(s)" in out,
+              f"removed-count logged: {ascii(out)}")
+        check("(json=0 sidecar=3)" in out,
+              f"json/sidecar breakdown reflects the 3 oldest being sidecars: {ascii(out)}")
+        check("WARNING: sweep cap TASKFLOW_SWEEP_MAX=3 hit" in out,
+              f"cap-hit warning logged: {ascii(out)}")
+        check("6 candidates, removed 3, 3 deferred" in out,
+              f"cap warning reports candidate/removed/deferred counts: {ascii(out)}")
+    finally:
+        spc._SWEEP_MAX = orig_cap
+
+
 def test_real_state_dir_untouched() -> None:
     print("--- ABSOLUTE SAFETY: real _projects/_state/ was never referenced ---")
     real_state_dir = Path(__file__).resolve().parent.parent.parent.parent / "_projects" / "_state"
@@ -215,6 +292,12 @@ def main() -> int:
         test_f1_guard_non_uuid_stem_never_swept(Path(d3))
     with tempfile.TemporaryDirectory() as d4:
         test_sidecar_suffix_sweep(Path(d4))
+    with tempfile.TemporaryDirectory() as d5:
+        test_no_log_when_nothing_removed(Path(d5))
+    with tempfile.TemporaryDirectory() as d6:
+        test_removal_logged_under_cap(Path(d6))
+    with tempfile.TemporaryDirectory() as d7:
+        test_sweep_blast_cap_combined_oldest_first(Path(d7))
     test_real_state_dir_untouched()
 
     print()

@@ -17,16 +17,27 @@
 #          write whose owner is known via the reverse index gets a `referenced`
 #          over-bind; an unlinked note is NOT established under judgment-absent expiry
 #
+# State-dir sandbox (plugins/taskflow/CLAUDE.md, project-notes/specs/
+# capture-hook-sweep-sandbox.md): the Stop hook runs an unconditional stale-marker
+# sweep on every invocation and resolves `_projects` via getcwd() (no env override).
+# This test therefore `cd`s into an isolated tempdir and builds `_projects/` there —
+# it NEVER cd's into $REPO_ROOT while invoking the hook, so the sweep can never
+# reach the real _projects/_state/ (2026-07-17 incident: a wrong-cwd run deleted
+# 250 real session-state files there).
+#
 # Usage:  bash plugins/taskflow/tests/test_note_links_apply.sh
 # Requires: bash (Git-Bash on win32 — primary), uv.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-cd "$REPO_ROOT"
 STOP="$REPO_ROOT/plugins/taskflow/hooks/session_progress_capture.py"
 NL="$REPO_ROOT/plugins/taskflow/hooks/note_links.py"
-PROJECTS="$REPO_ROOT/_projects"
+REAL_STATE_DIR="$REPO_ROOT/_projects/_state"
+
+TMP="$(mktemp -d)"
+cd "$TMP"
+PROJECTS="$TMP/_projects"
 STATE="$PROJECTS/_state"
 PROJ="_e2e-apply-$$"
 PDIR="$PROJECTS/$PROJ"
@@ -39,7 +50,14 @@ PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 cleanup() {
-  rm -rf "$PDIR"; rm -f "$SF" "$TF" "$BF" "$CF"
+  if [ -e "$REAL_STATE_DIR/$SID.json" ] || [ -e "$REAL_STATE_DIR/$SID.touched" ] \
+     || [ -e "$REAL_STATE_DIR/$SID.bind" ] || [ -e "$REAL_STATE_DIR/$SID.capture" ]; then
+    fail "real _projects/_state/ was touched by this test run (session $SID leaked there)"
+  else
+    pass "real _projects/_state/ untouched (session $SID artifacts never created there)"
+  fi
+  cd "$REPO_ROOT"
+  rm -rf "$TMP"
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
 }
@@ -89,14 +107,16 @@ priority: HIGH
 T
 }
 
-write_touched() {  # $1 = absolute path under repo → append repo-relative line
-  local rel="${1#$REPO_ROOT/}"; rel="${rel//\\//}"
+write_touched() {  # $1 = absolute path under $PROJECTS → append repo-relative-style line
+  local rel="${1#$PROJECTS/}"
+  rel="_projects/${rel}"
+  rel="${rel//\\//}"
   printf '%s\n' "$rel" >> "$TF"
 }
 
 # Simulate the capture subagent's sole artifact: write <sid>.capture JSON.
 write_capture() {  # $1=task base (summary) $2=summary $3=note projrel $4=note-link task base
-  uv run python - "$CF" "${1:-}" "${2:-}" "${3:-}" "${4:-}" << 'PY'
+  uv run --no-project python - "$CF" "${1:-}" "${2:-}" "${3:-}" "${4:-}" << 'PY'
 import json, sys
 cf, task, summary, note, ntask = (sys.argv + ["", "", "", "", ""])[1:6]
 obj = {"confirmed": [], "note_links": [], "proposals": []}
@@ -113,12 +133,12 @@ stop() {  # $1 = expiry seconds; $2 = optional last_assistant_message
   # an inline `VAR=x cmd1 | cmd2` prefix binds only cmd1, not the hook.
   export TASKFLOW_CAPTURE_EXPIRY_S="$1"
   TASKFLOW_LAM="${2:-}" TASKFLOW_SID="$SID" \
-    uv run python -c "import json,os,sys;p={'session_id':os.environ['TASKFLOW_SID']};lam=os.environ.get('TASKFLOW_LAM','');p.update({'last_assistant_message':lam} if lam else {});sys.stdout.write(json.dumps(p))" \
-    | uv run python "$(to_win "$STOP")"
+    uv run --no-project python -c "import json,os,sys;p={'session_id':os.environ['TASKFLOW_SID']};lam=os.environ.get('TASKFLOW_LAM','');p.update({'last_assistant_message':lam} if lam else {});sys.stdout.write(json.dumps(p))" \
+    | uv run --no-project python "$(to_win "$STOP")"
 }
 
 sidlines() {  # $1 = task md path → count [s:SID8] inside @log block
-  uv run python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID8" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -127,7 +147,7 @@ PY
 }
 
 notecount() {  # $1 = task md path, $2 = note project-rel → count in @notes block
-  uv run python - "$1" "$2" "$NL" << 'PY'
+  uv run --no-project python - "$1" "$2" "$NL" << 'PY'
 import sys, os
 task, note, nlpath = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, os.path.dirname(nlpath))
@@ -137,7 +157,7 @@ PY
 }
 
 echo "=== E2E: §10 async capture apply-path (note-task-link Phase B) ==="
-echo "  project=$PROJ  sid8=$SID8"
+echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
 echo ""
 
 # =====================================================================
@@ -177,13 +197,13 @@ echo "$O1A" | grep -q '"decision": *"block"' \
 
 # AC-8: the capture subagent writes ONLY the sidecar; the task md is untouched
 # until the Stop hook applies it.
-BEFORE_HASH=$(uv run python - "$T1" << 'PY'
+BEFORE_HASH=$(uv run --no-project python - "$T1" << 'PY'
 import hashlib, sys
 print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())
 PY
 )
 write_capture "$T1BASE" "REALSUMMARYAC1" "$N1REL" "$T1BASE"
-AFTER_HASH=$(uv run python - "$T1" << 'PY'
+AFTER_HASH=$(uv run --no-project python - "$T1" << 'PY'
 import hashlib, sys
 print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())
 PY

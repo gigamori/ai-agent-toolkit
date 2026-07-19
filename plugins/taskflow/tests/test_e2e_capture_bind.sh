@@ -12,20 +12,31 @@
 #   Stage 4  exec-binding: a task NOT in `.touched` is bound via a `[tasks:]` carry
 #   Stage 5  F7a membership containment: an out-of-request sidecar entry is skipped
 #
+# State-dir sandbox (plugins/taskflow/CLAUDE.md, project-notes/specs/
+# capture-hook-sweep-sandbox.md): the Stop hook runs an unconditional stale-marker
+# sweep on every invocation and resolves `_projects` via getcwd() (no env override).
+# This test therefore `cd`s into an isolated tempdir and builds `_projects/` there —
+# it NEVER cd's into $REPO_ROOT while invoking the hook, so the sweep can never
+# reach the real _projects/_state/ (2026-07-17 incident: a wrong-cwd run deleted
+# 250 real session-state files there).
+#
 # Usage:  bash plugins/taskflow/tests/test_e2e_capture_bind.sh
 # Requires: bash (Git-Bash on win32 — primary), uv.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-cd "$REPO_ROOT"
 # note-task-link.md §10 option-a: Round2 placeholder now backstops on capture
 # expiry. Force immediate expiry so the capture-spawn request (Stage 2) is
 # followed by the deterministic backstop bind (Stage 3) without a 15s wait.
 export TASKFLOW_CAPTURE_EXPIRY_S=0
 CAP="$REPO_ROOT/plugins/taskflow/hooks/touched_capture.py"
 STOP="$REPO_ROOT/plugins/taskflow/hooks/session_progress_capture.py"
-PROJECTS="$REPO_ROOT/_projects"
+REAL_STATE_DIR="$REPO_ROOT/_projects/_state"
+
+TMP="$(mktemp -d)"
+cd "$TMP"
+PROJECTS="$TMP/_projects"
 STATE="$PROJECTS/_state"
 PROJ="_e2e-cap-$$"
 PDIR="$PROJECTS/$PROJ"
@@ -38,7 +49,14 @@ PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 cleanup() {
-  rm -rf "$PDIR"; rm -f "$SF" "$TF" "$BF" "$STATE/$SID.capture"
+  if [ -e "$REAL_STATE_DIR/$SID.json" ] || [ -e "$REAL_STATE_DIR/$SID.touched" ] \
+     || [ -e "$REAL_STATE_DIR/$SID.bind" ] || [ -e "$REAL_STATE_DIR/$SID.capture" ]; then
+    fail "real _projects/_state/ was touched by this test run (session $SID leaked there)"
+  else
+    pass "real _projects/_state/ untouched (session $SID artifacts never created there)"
+  fi
+  cd "$REPO_ROOT"
+  rm -rf "$TMP"
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
 }
@@ -69,14 +87,14 @@ T
 }
 
 cap() {  # $1 = tool_input JSON — invoke the real PostToolUse capture hook
-  printf '{"session_id":"%s","tool_input":%s}' "$SID" "$1" | uv run python "$(to_win "$CAP")"
+  printf '{"session_id":"%s","tool_input":%s}' "$SID" "$1" | uv run --no-project python "$(to_win "$CAP")"
 }
 stop() {  # $1 = optional last_assistant_message — invoke the real Stop hook
-  TASKFLOW_LAM="${1:-}" TASKFLOW_SID="$SID" uv run python -c "import json,os,sys;p={'session_id':os.environ['TASKFLOW_SID']};lam=os.environ.get('TASKFLOW_LAM','');p.update({'last_assistant_message':lam} if lam else {});sys.stdout.write(json.dumps(p))" \
-    | uv run python "$(to_win "$STOP")"
+  TASKFLOW_LAM="${1:-}" TASKFLOW_SID="$SID" uv run --no-project python -c "import json,os,sys;p={'session_id':os.environ['TASKFLOW_SID']};lam=os.environ.get('TASKFLOW_LAM','');p.update({'last_assistant_message':lam} if lam else {});sys.stdout.write(json.dumps(p))" \
+    | uv run --no-project python "$(to_win "$STOP")"
 }
 sidlines() {  # $1 = task md path → count [s:SID8] inside @log block
-  uv run python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID8" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -85,7 +103,7 @@ PY
 }
 
 echo "=== E2E: touched_capture.py → <sid>.touched → session_progress_capture.py ==="
-echo "  project=$PROJ  sid8=$SID8"
+echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
 echo ""
 
 TASK="$PDIR/tasks/1_in_progress/2026-06-29_e2e.md"
@@ -126,7 +144,7 @@ echo "$O3" | grep -q "auto-bound: .*2026-06-29_exec.md \[s:$SID8\]" \
 echo "[Stage 5] capture membership containment (F7a)"
 IN="$PDIR/tasks/1_in_progress/2026-06-29_inset.md";  mk "$IN"
 OUT="$PDIR/tasks/1_in_progress/2026-06-29_outset.md"; mk "$OUT"   # exists, never touched
-NOW=$(uv run python -c "import time;print(time.time())")
+NOW=$(uv run --no-project python -c "import time;print(time.time())")
 cat > "$BF" << EOF
 {"reminded":{},"exec_tried":[],"capture":{"status":"requested","items":{"tasks":["2026-06-29_inset.md"],"notes":[]},"requested_ts":$NOW,"tried_notes":[],"tried_tasks":[]}}
 EOF

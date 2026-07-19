@@ -24,6 +24,14 @@
 # removed). Subagent writes (P3) are captured by touched_capture.py with the
 # parent sid (TBD-1 probe 2026-06-28) and so flow through the same .touched path.
 #
+# State-dir sandbox (plugins/taskflow/CLAUDE.md, project-notes/specs/
+# capture-hook-sweep-sandbox.md): the Stop hook runs an unconditional stale-marker
+# sweep on every invocation and resolves `_projects` via getcwd() (no env override).
+# This test therefore `cd`s into an isolated tempdir and builds `_projects/` there —
+# it NEVER cd's into $REPO_ROOT while invoking the hook, so the sweep can never
+# reach the real _projects/_state/ (2026-07-17 incident: a wrong-cwd run deleted
+# 250 real session-state files there).
+#
 # Usage:  bash plugins/taskflow/tests/test_sid_binding_gate.sh
 # Exit:   0 = all pass, 1 = failure
 # Requires: bash (Git-Bash on win32 — primary), uv.
@@ -31,7 +39,6 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-cd "$REPO_ROOT"
 
 # note-task-link.md §10 option-a: the Round1 reminder is superseded by an async
 # capture spawn-block, and the deterministic Round2 placeholder backstop now
@@ -42,7 +49,11 @@ export TASKFLOW_CAPTURE_EXPIRY_S=0
 
 HOOK="$REPO_ROOT/plugins/taskflow/hooks/session_progress_capture.py"
 LOCK_HELPER="$REPO_ROOT/plugins/taskflow/hooks/log_lock.py"
-PROJECTS_DIR="$REPO_ROOT/_projects"
+REAL_STATE_DIR="$REPO_ROOT/_projects/_state"
+
+TMP="$(mktemp -d)"
+cd "$TMP"
+PROJECTS_DIR="$TMP/_projects"
 STATE_DIR="$PROJECTS_DIR/_state"
 
 PROJECT_NAME="_test-sid-gate-$$"
@@ -63,8 +74,14 @@ pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 
 cleanup() {
-  rm -rf "$PROJECT_DIR"
-  rm -f "$STATE_FILE" "$BIND_FILE" "$TOUCHED_FILE"
+  if [ -e "$REAL_STATE_DIR/$SID.json" ] || [ -e "$REAL_STATE_DIR/$SID.touched" ] \
+     || [ -e "$REAL_STATE_DIR/$SID.bind" ] || [ -e "$REAL_STATE_DIR/$SID.capture" ]; then
+    fail "real _projects/_state/ was touched by this test run (session $SID leaked there)"
+  else
+    pass "real _projects/_state/ untouched (session $SID artifacts never created there)"
+  fi
+  cd "$REPO_ROOT"
+  rm -rf "$TMP"
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
 }
@@ -73,6 +90,7 @@ trap cleanup EXIT
 echo "=== Test: sid-binding gate (PostToolUse .touched + exec-binding) ==="
 echo "  project:  $PROJECT_DIR"
 echo "  session:  $SID  (sid8=$SID8)"
+echo "  isolated tempdir: $TMP"
 echo ""
 
 # ----------------------------------------------------------
@@ -137,7 +155,8 @@ EOF
 # Append a task md's repo-relative path to the <sid>.touched ledger (what
 # touched_capture.py would write at runtime).
 write_touched() {
-  local rel="${1#$REPO_ROOT/}"
+  local rel="${1#$PROJECTS_DIR/}"
+  rel="_projects/${rel}"
   rel="${rel//\\//}"
   printf '%s\n' "$rel" >> "$TOUCHED_FILE"
 }
@@ -146,17 +165,17 @@ write_touched() {
 # hook's stdout (block JSON, if any). The payload is built with python so the
 # message is safely JSON-encoded.
 invoke_hook() {
-  TASKFLOW_LAM="${1:-}" TASKFLOW_SID="$SID" uv run python -c "import json,os,sys; p={'session_id':os.environ['TASKFLOW_SID']}; lam=os.environ.get('TASKFLOW_LAM',''); p.update({'last_assistant_message':lam} if lam else {}); sys.stdout.write(json.dumps(p))" \
-    | uv run python "$(to_win "$HOOK")"
+  TASKFLOW_LAM="${1:-}" TASKFLOW_SID="$SID" uv run --no-project python -c "import json,os,sys; p={'session_id':os.environ['TASKFLOW_SID']}; lam=os.environ.get('TASKFLOW_LAM',''); p.update({'last_assistant_message':lam} if lam else {}); sys.stdout.write(json.dumps(p))" \
+    | uv run --no-project python "$(to_win "$HOOK")"
 }
 
 invoke_hook_stderr() {
-  TASKFLOW_LAM="${1:-}" TASKFLOW_SID="$SID" uv run python -c "import json,os,sys; p={'session_id':os.environ['TASKFLOW_SID']}; lam=os.environ.get('TASKFLOW_LAM',''); p.update({'last_assistant_message':lam} if lam else {}); sys.stdout.write(json.dumps(p))" \
-    | uv run python "$(to_win "$HOOK")" 2>&1 1>/dev/null
+  TASKFLOW_LAM="${1:-}" TASKFLOW_SID="$SID" uv run --no-project python -c "import json,os,sys; p={'session_id':os.environ['TASKFLOW_SID']}; lam=os.environ.get('TASKFLOW_LAM',''); p.update({'last_assistant_message':lam} if lam else {}); sys.stdout.write(json.dumps(p))" \
+    | uv run --no-project python "$(to_win "$HOOK")" 2>&1 1>/dev/null
 }
 
 count_sid_lines() {
-  uv run python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID8" << 'PY'
 import re, sys
 path, sid8 = sys.argv[1], sys.argv[2]
 try:
@@ -170,7 +189,7 @@ PY
 }
 
 assert_block_intact() {
-  uv run python - "$1" << 'PY'
+  uv run --no-project python - "$1" << 'PY'
 import sys
 content = open(sys.argv[1], encoding="utf-8").read()
 b = content.count("<!-- @log:begin -->"); e = content.count("<!-- @log:end -->")
@@ -185,7 +204,7 @@ PY
 echo "[AC-1a] append_auto_binding unit: code-append guarantees [s:sid8]"
 UNIT_TASK="$PROJECT_DIR/tasks/0_todo/2026-06-26_ac1-unit.md"
 make_task "$UNIT_TASK"
-AC1A=$(uv run python - "$(to_win "$HOOK")" "$(to_win "$UNIT_TASK")" "$SID8" << 'PY'
+AC1A=$(uv run --no-project python - "$(to_win "$HOOK")" "$(to_win "$UNIT_TASK")" "$SID8" << 'PY'
 import importlib.util, sys, os
 hook_path, task, sid8 = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, os.path.dirname(hook_path))
@@ -377,14 +396,14 @@ invoke_hook >/dev/null                         # Round2 binds the valid task
 # =====================================================================
 echo ""
 echo "[AC-7 lock] log_lock self-check + concurrent append integrity"
-LOCK_SELF=$(uv run python "$(to_win "$LOCK_HELPER")")
+LOCK_SELF=$(uv run --no-project python "$(to_win "$LOCK_HELPER")")
 echo "$LOCK_SELF" | grep -q "acquired" && echo "$LOCK_SELF" | grep -q "released" \
   && pass "log_lock self-check acquires and releases" || fail "log_lock self-check: $LOCK_SELF"
 
 LOCK_TASK="$PROJECT_DIR/tasks/1_in_progress/2026-06-26_lock-race.md"
 make_task "$LOCK_TASK"
 appender() {
-  uv run python - "$(to_win "$HOOK")" "$(to_win "$LOCK_TASK")" "$1" << 'PY'
+  uv run --no-project python - "$(to_win "$HOOK")" "$(to_win "$LOCK_TASK")" "$1" << 'PY'
 import importlib.util, sys, os, time
 hook_path, task, sid8 = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, os.path.dirname(hook_path))
@@ -397,7 +416,7 @@ PY
 appender "aaaaaaaa" & P1=$!
 appender "bbbbbbbb" & P2=$!
 wait "$P1"; wait "$P2"
-A_COUNT=$(uv run python - "$LOCK_TASK" << 'PY'
+A_COUNT=$(uv run --no-project python - "$LOCK_TASK" << 'PY'
 import re, sys
 content = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", content, re.DOTALL)
