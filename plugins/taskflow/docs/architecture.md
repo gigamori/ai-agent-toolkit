@@ -114,7 +114,9 @@ user prompt
   │  ├─ first turn: create state_file
   │  │   1. parse the first `pj:xx` (at start or after any whitespace; not necessarily line 1)
   │  │   2. if absent: keep empty — NO path-based inference
-  │  │   3. fork detection: if forked (shared message uuid in another JSONL),
+  │  │   3. fork detection: if forked (a parent `[Progress Session]` marker — or
+  │  │      a matching first user-entry — survives in a sibling JSONL; message
+  │  │      uuids are rewritten on fork, so they do NOT identify the parent),
   │  │      inherit `project` + `inherited_tasks` from the parent state
   │  │   4. write the state_file (see "state_file" schema below)
   │  │
@@ -215,7 +217,7 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
 
 | Actor | Timing | Condition |
 |---|---|---|
-| `session_init.py` (hook) | every turn (while project active or `pj:?`) | writes the full schema; project from explicit `pj:` only — **no path inference** |
+| `session_init.py` (hook) | every turn once the workspace is opted-in (`_projects/` exists) — including projectless turns, which write empty-`project` state (swept after 7 days; see below) | writes the full schema; project from explicit `pj:` only — **no path inference** |
 | `session_progress_capture.py` (hook) | session end | recovers `project` from a `[pj:...]` line (self-heal); union-merges `exec_bind` from a `[tasks:]` carry in the assistant's last message |
 | `scripts/pj_rules.py reset-indexed` (via `/pj-rules` skill) | after a confirmed `rules.md` write | merge-preserving reset of `project_rules_indexed` only, so the updated body re-primes next turn; never hand-edited by the skill |
 
@@ -260,7 +262,7 @@ The router subagent is intentionally lightweight: per-turn reads + decisions onl
 
 ### Fork inheritance
 
-When a session is forked, Claude Code copies the parent's JSONL transcript (rewriting `sessionId`) but preserves each message `uuid`. On the first turn of a new session, `session_init.py` reads the first transcript entry's `uuid` and looks for it in other recent JSONL files in the same directory; a match identifies the parent. The child then inherits the parent's `project` from the parent state file, and scans the project's `1_in_progress/` tasks for the parent session's `[s:<sid>]` log tag to populate `inherited_tasks`. A `[Forked Session]` block is injected on that first turn so the LLM continues the inherited tasks (logging under the new `session_id`).
+When a session is forked, Claude Code copies the parent's JSONL transcript, rewriting `sessionId` **and** — in current Claude Code — each message `uuid`, so uuid comparison cannot identify the parent. On the first turn of a new session, `session_init.py` (`detect_parent_session`) instead relies on two signals that survive the copy: (1) **primary** — the parent's injected `[Progress Session] session_id=<parent>` marker, preserved verbatim: it scans the transcript head (`PARENT_MARKER_RE`, first `PARENT_SCAN_LINES` lines) for a `session_id` other than its own; (2) **fallback** — the first `type=user` entry's `(timestamp, message content)` pair, matched against the head of recent sibling JSONLs in the same directory. The child then inherits the parent's `project` from the parent state file, and scans the project's `1_in_progress/` tasks for the parent session's `[s:<sid>]` log tag (an `sid8` substring match) to populate `inherited_tasks`. A `[Forked Session]` block is injected on that first turn so the LLM continues the inherited tasks (logging under the new `session_id`).
 
 ### `origin` field
 
@@ -289,9 +291,22 @@ While a project is active but its `progress.md` does not yet exist, `session_ini
 | `~/.claude/plans/` | `os.path.expanduser` |
 | `~/.claude/projects/.../memory/` | encode CWD (`lower().replace(':', '-').replace('/', '-')`) |
 
+### Hooks (CWD-fixed) vs. the command / viewer layer (`TASKFLOW_PROJECT_ROOTS`)
+
+Project-root resolution is **deliberately split** between two layers, and the two are NOT unified:
+
+| Layer | Resolves `_projects/` via | Rationale |
+|---|---|---|
+| **Hooks** (`session_init.py`, `session_sync.py`, `session_progress_capture.py`, `task_rebuild_progress.py`) | `os.getcwd()` — CWD-fixed, always the local `_projects/` | A hook fires inside one Claude Code session whose CWD *is* the workspace. Keeping it CWD-pure removes any cross-workspace ambiguity mid-session and needs no configuration. |
+| **Command / viewer layer** (`/progress` skill, `scripts/generate_kanban.py`) | `$TASKFLOW_PROJECT_ROOTS` — a `;`-separated list of root dirs, first existing `<root>/<project>/` wins; falls back to `_projects/` in the CWD when unset | These are explicitly user-invoked (a viewer, an on-demand command) and may legitimately need to reach a project that lives under a different root than the current CWD. |
+
+This boundary is intentional: the per-turn hook path stays CWD-local and side-effect-predictable, while the multi-root flexibility is confined to the on-demand command/viewer layer. (Unifying the two — e.g. making hooks honor `TASKFLOW_PROJECT_ROOTS` — was considered and rejected; a hook that silently retargets a different root mid-session would break the "one session ↔ one workspace" invariant the state files rely on.)
+
 ### When `_projects/` is absent
 
-`session_init.py` (UserPromptSubmit) **bootstraps** `_projects/`, `_projects/_state/`, and a template `_projects/index.md` when they are missing — but only on the first prompt that includes an explicit `pj:<project>` or `pj:?` discovery. Prompts without any `pj:` engagement exit immediately without creating `_projects/`, so the plugin can be enabled in any workspace without side-effects until the user actively assigns a project. The other hooks (`session_sync.py`, `session_progress_capture.py`, and `task_rebuild_progress.py`'s project-dir check) treat a missing `_projects/` as a harmless no-op and `sys.exit(0)`.
+`session_init.py` (UserPromptSubmit) **bootstraps** `_projects/`, `_projects/_state/`, and a template `_projects/index.md` when they are missing — but only on the first prompt that includes an explicit `pj:<project>` or `pj:?` discovery. In a workspace that has **not** been opted in (no `_projects/`), a prompt without any `pj:` engagement `sys.exit(0)`s immediately without creating `_projects/`, so the plugin can be enabled in any workspace without side-effects until the user first engages taskflow. The other hooks (`session_sync.py`, `session_progress_capture.py`, and `task_rebuild_progress.py`'s project-dir check) treat a missing `_projects/` as a harmless no-op and `sys.exit(0)`.
+
+Note: this no-side-effect property applies **only before opt-in**. Once `_projects/` exists, `session_init.py` writes a `_state/<session_id>.json` file **every turn**, including projectless turns (`pj:none`, `pj:?` discovery, a fork inheriting an empty parent, or simply no `pj:` while `_projects/` is present) — those produce an empty-`project` state file. This is deliberate (the F5a "stop writing projectless state" proposal was withdrawn: it would have broken the capture self-heal path and the fork-detection memo). Empty-`project` state is bounded by the 7-day stale-marker sweep in `session_progress_capture.py`'s `_cleanup_stale_markers` (non-empty `project` state is kept indefinitely, since `generate_kanban.py` resolves full UUIDs from it).
 
 ## Directory layout
 

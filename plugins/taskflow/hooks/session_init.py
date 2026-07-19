@@ -243,8 +243,10 @@ if not is_new_session:
     pass
 
 # Fork detection: on first turn of a new session, check if this session was
-# forked from another by comparing message uuids in JSONL transcripts.
-# If a parent is found, inherit its project from the parent state file.
+# forked from another (see detect_parent_session: message uuids are rewritten
+# on fork, so it matches on the parent's [Progress Session] marker or first
+# user-entry instead). If a parent is found, inherit its project from the
+# parent state file.
 if is_new_session:
   parent_id = detect_parent_session(
     transcript_path, session_id

@@ -246,6 +246,21 @@ def test_h_skill_single_source(router: str, skill: str) -> None:
           "SKILL.md unstart branch logs 'unstarted → 0_todo'")
 
 
+def test_i_a1_no_freeform_after_stop(skill: str) -> None:
+    print("--- (i) A1: stop verdicts are terminal - main agent bound, no freeform ---")
+    check("Stop verdicts are terminal" in skill,
+          "SKILL.md declares stop verdicts terminal (no freeform fulfillment)")
+    check("no freeform fulfillment" in skill.lower(),
+          "the rule names 'no freeform fulfillment'")
+    check(re.search(r"even under `-y`", skill) is not None,
+          "the no-freeform rule holds even under -y")
+    check(re.search(r"hook injected an instruction", skill) is not None,
+          "the rule explicitly overrides a hook-injected act/undo-first instruction")
+    check("terminal and\n  **terminal and mutates nothing**" in skill
+          or "**terminal and mutates nothing**" in skill,
+          "Restrictions carry the terminal/mutates-nothing invariant")
+
+
 def main() -> int:
     print("=== progress-router.md / SKILL.md state-goal text-contract tests ===")
     texts = test_files_exist()
@@ -262,6 +277,7 @@ def main() -> int:
     test_f_reach_state_tiebreak(router)
     test_g_json_contract(router)
     test_h_skill_single_source(router, skill)
+    test_i_a1_no_freeform_after_stop(skill)
 
     print()
     if FAIL == 0:
