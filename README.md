@@ -45,6 +45,7 @@ Standalone Agent Skills that can be dropped into any agent without a plugin.
 |---|---|---|---|
 | [create-skill](skills/create-skill/) | CC / Cursor | — | Guides through creating effective Agent Skills — best practices, structure templates, validation checklists, and a `validate_frontmatter.py` script — with bundled deep-dive references for advanced authoring, subagent protocols, patterns/examples, debugging, and security |
 | [compact-document](skills/compact-document/) | CC / Cursor | — | Multi-mode compaction framework (7 document types, automatic mode detection) — condenses articles, specs, transcripts, and more with minimal information loss; long documents run through a chunked map-reduce pipeline of parallel chunk-brief → merge → render subagents |
+| [compact](skills/compact/) | CC | — | Single-pass document compactor invoked as `/compact <text>` — shortens, reorganizes, and deduplicates in one turn with no confirmation gate, preserving named items, decisions, ordered steps, operational identifiers, and scoped definitions; applies type-specific preservation rules for papers, specs, procedures, conversations, debug logs, policies, and articles. Shadows the built-in `/compact` command |
 | [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | [docs](docs/skills/register-pi-tools/) | Migrates Python scripts to YAML-frontmatter `args` (JSON Schema) + `_tool.args()` runtime, then builds a `tools.yaml` registry consumable by pi or any Anthropic-API tool caller; ships a standalone EN/JA user guide and a `build_tools_yaml.py` builder |
 | [revert](skills/revert/) | CC | — | Safely undo recent assistant actions using state-revert semantics — delegates judgment to a bias-isolated subagent to prevent over-removal |
 | [debug-isolate](skills/debug-isolate/) | CC | — | Isolate iterative debugging in a forked subagent — preserves working tree state with git stash checkpoints and automatic rollback on consecutive failures |
@@ -99,6 +100,7 @@ ai-agent-toolkit/
 ├── skills/
 │   ├── create-skill/          Skill: author new skills
 │   ├── compact-document/      Skill: document compaction
+│   ├── compact/               Skill: single-pass document compaction (/compact)
 │   ├── register-pi-tools/     Skill: migrate Python scripts and build tools.yaml
 │   ├── revert/                Skill: safe undo with bias-isolated judgment
 │   ├── debug-isolate/         Skill: isolated debugging with forked subagent

@@ -45,6 +45,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 |---|---|---|---|
 | [create-skill](skills/create-skill/) | CC / Cursor | — | エージェントスキルの作成をガイド。ベストプラクティス、構造テンプレート、検証チェックリスト、`validate_frontmatter.py` スクリプトに加え、高度なスキル設計・subagent プロトコル・パターン/実例・デバッグ・セキュリティの深掘りリファレンスを同梱 |
 | [compact-document](skills/compact-document/) | CC / Cursor | — | マルチモードのドキュメント圧縮フレームワーク（7 文書タイプ・モード自動判定）。記事、仕様書、議事録などを最小限の情報損失で凝縮。長文は chunk-brief（並列）→ merge → render の chunked map-reduce パイプラインで処理 |
+| [compact](skills/compact/) | CC | — | `/compact <本文>` で呼び出す単発のドキュメント圧縮スキル。確認ゲートなしに 1 ターンで短縮・再構成・重複除去を行い、名前付き項目・決定・手順・運用識別子・スコープ付き定義を保全。論文/仕様/手順書/会話/デバッグログ/規約/記事の種別ごとの保全規則を適用する。組み込みの `/compact` コマンドを上書きする |
 | [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | [docs](docs/skills/register-pi-tools/) | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成。独立した EN/JA ユーザガイドと `build_tools_yaml.py` ビルダーを同梱 |
 | [revert](skills/revert/) | CC | — | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
 | [debug-isolate](skills/debug-isolate/) | CC | — | 反復デバッグを forked subagent に隔離。git stash チェックポイントと連続失敗時の自動ロールバックで作業ツリーの状態を保全 |
@@ -99,6 +100,7 @@ ai-agent-toolkit/
 ├── skills/
 │   ├── create-skill/          スキル: スキル作成ガイド
 │   ├── compact-document/      スキル: ドキュメント圧縮
+│   ├── compact/               スキル: 単発のドキュメント圧縮 (/compact)
 │   ├── register-pi-tools/     スキル: Python スクリプト移行と tools.yaml 生成
 │   ├── revert/                スキル: bias-isolated 判定による安全な undo
 │   ├── debug-isolate/         スキル: forked subagent による隔離デバッグ
