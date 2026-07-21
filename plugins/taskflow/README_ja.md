@@ -4,7 +4,7 @@ Claude Code プラグイン。同時並行するタスクの進捗とコンテ�
 
 [English README](README.md)
 
-> **taskflow は初めて？** まず [ユーザーガイド](USER_GUIDE_ja.md) から — 図つきのタスク指向な手引き。この README は機能リファレンス、[`docs/architecture.md`](docs/architecture.md) は内部設計。
+> **taskflow は初めて？** まず [はじめよう](GET_STARTED_ja.md) で最初の成功までをたどる。[ユーザーガイド](USER_GUIDE_ja.md) は詳しい利用リファレンス、この README は機能リファレンス、[`docs/architecture.md`](docs/architecture.md) は内部設計。
 
 ## インストール
 

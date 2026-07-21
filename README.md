@@ -53,7 +53,6 @@ Standalone Agent Skills that can be dropped into any agent without a plugin.
 | [mode-orchestrator](skills/mode-orchestrator/) | CC | — | Read a document holding a todolist + context, then run each step as an isolated `general-purpose` subagent turn with a role-mode `mode:`/`role:` header — one mode (and optional role) per turn, never mixed; autonomous modes only |
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | Investigate past Claude Code session logs with SQL over pre-built DuckDB views (conversation, tool calls with arguments, file changes, forks, compaction, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a fork tree via a self-contained query script |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | Investigate past Pi Coding Agent session logs with SQL over pre-built DuckDB views (conversation, tool calls, file changes, session lineage/bundles, compaction, in-file branches, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a subagent/skill-fork/handoff/fork tree via a self-contained query script |
-| [write-get-started](skills/write-get-started/) | CC | — | Rewrite a builder-toned user guide into an inviting `GET_STARTED` onboarding doc plus an accuracy-first manual, shifting the axis from what the tool is made of to what the reader gets; can optionally build a slide deck from the result via OfficeCLI |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | Build, run, and resume XML v2 workflows: a task is decomposed into single-responsibility steps, each executed as an isolated `claude -p` subagent under an explicit role and mode, orchestrated deterministically by a bundled Python runner (`wfrun`) — not by an LLM |
 
 ### revert
@@ -108,7 +107,6 @@ ai-agent-toolkit/
 │   ├── mode-orchestrator/      Skill: run a todolist through role-mode subagent turns
 │   ├── inspect-cc-log/         Skill: SQL views over CC logs for session investigation
 │   ├── inspect-pi-log/         Skill: SQL views over Pi Coding Agent logs for session investigation
-│   ├── write-get-started/      Skill: rewrite a user guide into a GET_STARTED doc + manual
 │   └── xml-wf/                 Skill: deterministic XML v2 workflow runner (wfrun)
 ├── docs/
 │   └── skills/                Non-runtime skill docs (user guides, authoring contracts)

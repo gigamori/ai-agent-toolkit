@@ -1,6 +1,7 @@
 ---
 name: compact-document
 description: Compact articles, papers, specs, runbooks, meeting transcripts, incident logs, policies, and contracts into dense structured representations with minimal information loss. Supports 7 document modes with automatic mode detection, configurable compaction axes (preservation, coverage, structure), and chunked processing for long documents. Use when the user says compact, summarize, condense, shorten, or compress a document, article, transcript, or text. Also use for conversation compaction, meeting notes extraction, or incident log summarization.
+disable-model-invocation: true
 ---
 
 # Document Compaction

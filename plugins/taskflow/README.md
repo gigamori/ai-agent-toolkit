@@ -4,7 +4,7 @@ A Claude Code plugin that manages progress and context across concurrent tasks. 
 
 [日本語版 README はこちら](README_ja.md)
 
-> **New to taskflow?** Start with the [User Guide](USER_GUIDE.md) — a task-oriented walkthrough with diagrams. This README is the feature reference; [`docs/architecture.md`](docs/architecture.md) is the internal design.
+> **New to taskflow?** Start with [Get Started](GET_STARTED.md) for the first-success walkthrough. The [user guide](USER_GUIDE.md) is the detailed usage reference; this README is the feature reference; [`docs/architecture.md`](docs/architecture.md) is the internal design.
 
 ## Installation
 

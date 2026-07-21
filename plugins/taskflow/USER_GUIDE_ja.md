@@ -1,6 +1,6 @@
 # taskflow — ユーザーガイド
 
-日常利用のための、タスク指向のやさしいガイド。内部設計は [`docs/architecture.md`](docs/architecture.md)、機能リファレンスは [README](README_ja.md) を参照。このページは taskflow の *使い方* を示す。
+正確さを重視した taskflow の利用リファレンス。初めてなら、まず [はじめよう](GET_STARTED_ja.md) を参照。内部設計は [`docs/architecture.md`](docs/architecture.md)、機能リファレンスは [README](README_ja.md) を参照。
 
 [English version](USER_GUIDE.md)
 

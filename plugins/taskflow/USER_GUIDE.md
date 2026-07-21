@@ -1,6 +1,6 @@
 # taskflow — User Guide
 
-A friendly, task-oriented guide for everyday use. If you want the internal design, read [`docs/architecture.md`](docs/architecture.md); for a feature reference read the [README](README.md). This page shows you how to *use* taskflow.
+The accuracy-first reference for using taskflow. New to taskflow? Start with [Get Started](GET_STARTED.md). For the internal design, read [`docs/architecture.md`](docs/architecture.md); for a feature reference read the [README](README.md).
 
 [日本語版はこちら](USER_GUIDE_ja.md)
 
