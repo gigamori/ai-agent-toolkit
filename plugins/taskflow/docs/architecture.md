@@ -128,6 +128,11 @@ user prompt
   │     "[Progress Session] session_id=... state_file=... current_project=..."
   │     + static_rules: body of project_routing.md (once per session)
   │     + guidelines:  full 3 files on first turn / after compact; keyword reminder otherwise
+  │                    (reminder variant via env TASKFLOW_GUIDELINES_REMINDER: `full` default =
+  │                    guidelines_reminder.md ~750 tok / `manifest` = guidelines_reminder_manifest.md
+  │                    ~460 tok — guideline rules compressed to recall labels; the ROUTER /
+  │                    RESPONSE-LEADING-LINES lines stay byte-identical full text in both;
+  │                    falls back to full if the manifest file is missing)
   │     + project_index: index.md on project switch
   │     + project_rules: rules.md full body on switch / `##` heading manifest otherwise
   │                      (full every turn if frontmatter inject_every_turn: true; absent if no rules.md)
@@ -306,7 +311,7 @@ This boundary is intentional: the per-turn hook path stays CWD-local and side-ef
 
 `session_init.py` (UserPromptSubmit) **bootstraps** `_projects/`, `_projects/_state/`, and a template `_projects/index.md` when they are missing — but only on the first prompt that includes an explicit `pj:<project>` or `pj:?` discovery. In a workspace that has **not** been opted in (no `_projects/`), a prompt without any `pj:` engagement `sys.exit(0)`s immediately without creating `_projects/`, so the plugin can be enabled in any workspace without side-effects until the user first engages taskflow. The other hooks (`session_sync.py`, `session_progress_capture.py`, and `task_rebuild_progress.py`'s project-dir check) treat a missing `_projects/` as a harmless no-op and `sys.exit(0)`.
 
-Note: this no-side-effect property applies **only before opt-in**. Once `_projects/` exists, `session_init.py` writes a `_state/<session_id>.json` file **every turn**, including projectless turns (`pj:none`, `pj:?` discovery, a fork inheriting an empty parent, or simply no `pj:` while `_projects/` is present) — those produce an empty-`project` state file. This is deliberate (the F5a "stop writing projectless state" proposal was withdrawn: it would have broken the capture self-heal path and the fork-detection memo). Empty-`project` state is bounded by the 7-day stale-marker sweep in `session_progress_capture.py`'s `_cleanup_stale_markers` (non-empty `project` state is kept indefinitely, since `generate_kanban.py` resolves full UUIDs from it).
+Note: this no-side-effect property applies **only before opt-in**. Once `_projects/` exists, `session_init.py` writes a `_state/<session_id>.json` file **every turn**, including projectless turns (`pj:none`, `pj:?` discovery, a fork inheriting an empty parent, or simply no `pj:` while `_projects/` is present) — those produce an empty-`project` state file. This is deliberate (the F5a "stop writing projectless state" proposal was withdrawn: it would have broken the capture self-heal path and the fork-detection memo). Empty-`project` state is bounded by the 7-day stale-marker sweep in `session_progress_capture.py`'s `_cleanup_stale_markers` (non-empty `project` state is kept indefinitely, since `generate_kanban.py` resolves full UUIDs from it). The sweep's per-Stop delete budget (json + sidecar markers, combined) is capped at `TASKFLOW_SWEEP_MAX` (default 50, env-overridable); past-cutoff candidates are removed oldest-mtime-first, so a capped sweep still makes monotonic progress across Stops instead of re-selecting the same subset, and any deletion (or a cap hit) is logged to stderr. This follows a 2026-07-17 incident where an uncapped, unlogged sweep run against the real `_projects/_state/` with the wrong CWD deleted 250 session-state files in one Stop (see `project-notes/specs/capture-hook-sweep-sandbox.md`).
 
 ## Directory layout
 

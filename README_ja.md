@@ -120,10 +120,6 @@ ai-agent-toolkit/
 └── README_ja.md
 ```
 
-## コントリビューション
-
-Issue や Pull Request を歓迎します。
-
 ## ライセンス
 
 [MIT](LICENSE)
