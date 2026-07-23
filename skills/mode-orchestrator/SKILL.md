@@ -1,6 +1,6 @@
 ---
 name: mode-orchestrator
-description: Read a document that holds a todolist (a list of instructions) plus related context, then run each step as an isolated general-purpose subagent turn prefixed with a role-mode mode:/role: header and the matching NEVER/DO rules — one mode and at most one role per turn, never mixed, autonomous modes only. First gates the input and rejects an insufficient todolist. Use when the user points at a design doc, plan, or handoff that contains a todolist and asks to orchestrate, run, or execute its steps mode-by-mode, or mentions role-mode driven subagent execution.
+description: "Read a document that holds a todolist (a list of instructions) plus related context, then run each step as an isolated general-purpose subagent turn prefixed with a role-mode mode:/role: header and the matching NEVER/DO rules — one mode and at most one role per turn, never mixed, autonomous modes only. Supports a per-turn model override, a bounded failed→debug→re-execute recovery loop, and optional per-task-type workflow specs that supply default step sequences and mode→model tables. First gates the input and rejects an insufficient todolist. Use when the user points at a design doc, plan, or handoff that contains a todolist and asks to orchestrate, run, or execute its steps mode-by-mode, or mentions role-mode driven subagent execution."
 ---
 
 # Mode Orchestrator
@@ -23,6 +23,7 @@ This skill does not decompose an unstructured task from scratch — the todolist
 
 - `--auto`: skip the approval gate and run all turns without per-plan confirmation. Default: present the turn plan and wait for approval.
 - `--roles` or `--roles=always`: infer and attach a fitting role to every turn. Default (`none`): do not infer roles, but honor any role explicitly stated in the todolist.
+- `--workflow=<name>`: load `workflows/<name>.md` and apply it as defaults (recommended step sequence, mode→model table, failure-policy parameters). A spec name declared inside the todolist document is honored the same way. Default: no spec — run exactly as the todolist dictates (backward compatible). A spec supplies defaults and warnings only; the todolist is always authoritative and the Step 0 gate is unchanged.
 
 Flags use the `--` form on purpose. Never use `mode:` / `role:` colon-prefixes for flags — the role-mode hook would capture them from the invocation prompt.
 
@@ -52,22 +53,32 @@ If a step resolves to an interactive mode, do not run it; note it for the user t
 
 The mode rules are bundled in this skill's `modes/` directory: `_meta.md`, `_common.md`, and one `<mode>.md` for each of the 6 autonomous modes above. Read them from there — do not improvise the rules. The interactive modes are not bundled, since they are never executed.
 
-## Mode and role decision (the generation step)
+## Mode, role, and model decision (the generation step)
 
 For each step:
 
 - **Mode — hybrid**: if the step explicitly names a mode, honor it; otherwise infer the fitting mode from the step's content.
 - **Role — hybrid**: if the step explicitly states a role, honor it; otherwise follow the `--roles` policy (default `none`: no role; `always`: infer one).
+- **Model — precedence, no inference**:
+  1. **Per-step explicit model** — named on the todolist step, or pinned for that step in the active spec's recommended sequence; the todolist wins on conflict — honor it.
+  2. **Spec mode→model table** — the active spec's blanket default for this mode.
+  3. **Inherit** — no override; the session model is used.
+
+  Never guess a model from the mode alone. Record which tier decided (step / table / inherit) so the turn plan can show it.
 
 ## Turn plan
 
 Build an ordered list of turn records. Each record:
 
-- `order`, `mode`, `role` (optional), `inputs` (file paths), `instruction`
+- `order`, `mode`, `role` (optional), `model` (optional), `inputs` (file paths), `instruction`
 
 One mode per record — a record never carries two modes or two roles. A single section or step may expand into multiple records when it needs different modes; split at every mode change. This record shape is what structurally guarantees no mixing.
 
-Unless `--auto`, present the turn plan (order / mode / role / one-line gist per turn) and wait for approval before executing.
+If a workflow spec is active, compare the todolist against the spec's recommended step sequence; note any mismatch (a step the spec does not anticipate, or a spec step the todolist omits) as a **warning** appended to the turn plan. A warning never blocks — the todolist is authoritative; only the Step 0 gate can reject.
+
+Include a **Failure policy** block in the turn plan, stated once up front: which turn kinds can enter recovery (execute turns that return `failed`), the per-turn cycle cap (default 2, or the active spec's value), and the exit rule (cap reached → escalate to `blocked` and stop). Approving the plan approves this policy; the recovery turns it later inserts are not re-approved individually (this holds even without `--auto`).
+
+Unless `--auto`, present the turn plan (order / mode / role / model + its decided tier / one-line gist per turn), the spec warnings, and the Failure policy block, then wait for approval before executing.
 
 ## Injection assembly (per subagent prompt)
 
@@ -83,7 +94,9 @@ With a role:
 
 Without a role: the same, omitting line 2.
 
-Then append the step's instruction, the inputs as file paths (not inlined content), and a deliverable-write clarification: writing the single deliverable file is this mode's own output document (per its DO — e.g., `create-process-documents` / `create-design-documents`, report findings, `report-completion`); the mode's `NO write/edit` is an OVERRIDE-clause constraint on editing target/source code under a fix/implement/edit demand, and does not forbid authoring this deliverable. (`execute`: editing target source is the task; the deliverable is a change-report.)
+The resolved `model` is **not** part of the prompt text — it is passed as the model override on the delegation call itself (see Execution). Do not write the model name into the assembled prompt.
+
+Then append the step's instruction, the inputs as file paths (not inlined content), and a deliverable-write clarification: writing the single deliverable file is this mode's own output document (per its DO — e.g., `create-process-documents` / `create-design-documents`, report findings, `report-completion`); the mode's `NO write/edit` is an OVERRIDE-clause constraint on editing target/source code under a fix/implement/edit demand, and does not forbid authoring this deliverable. (`execute`: editing target source is the task; the deliverable is a change-report. `debug`: the deliverable is a root-cause report plus a proposed minimal diff and a verification command; debug never applies the diff itself.)
 
 Worked example — a `plan` turn with a role, fully assembled:
 
@@ -107,18 +120,25 @@ Return only: status (ok|blocked|needs-human), the output file path, and a 3-line
 For each turn record, in order:
 
 1. Assemble the subagent prompt (above).
-2. Delegate to one general-purpose subagent. One turn = one subagent; never combine turns.
-3. The subagent writes its deliverable to the run directory as `NN-<mode>.md` and returns only: status (`ok` | `blocked` | `needs-human`), the file path, and a ≤3-line gist.
+2. Delegate to one general-purpose subagent, requesting the turn's resolved `model` as the delegation-call model override when the platform supports it; otherwise proceed with the inherited model and record that in the run index. One turn = one subagent; never combine turns.
+3. The subagent writes its deliverable to the run directory as `NN-<mode>.md` and returns only: status (`ok` | `failed` | `blocked` | `needs-human`), the file path, and a ≤3-line gist.
    - **execute exception**: an `execute` turn edits the actual source files; its file is a short change-report listing the touched paths, not a copy of the work.
+   - **`failed`** is emitted only by an `execute` turn: the turn's procedure completed but a planned check (e.g. a test) did not pass, and the failure looks fixable in-repo. On `failed`, the change-report must include a `## Failure report` section with five fields — **Error** (one sentence), **Reproduction** (the exact command), **Error output**, **Target file(s)**, **Context** (language / framework / OS / deps). These are the same fields a `debug` turn needs as input.
    - If the subagent reports `[BLOCKED: mode-rule <name>]`, relay it verbatim.
 4. **Chaining**: a later turn receives earlier artifacts by path in its `inputs` and reads the full files itself — never forward a gist as the next turn's input.
-5. On status `blocked` or `needs-human`: stop the run and report verbatim (a dependent step cannot run without its input). Record progress in the run index.
-6. After all turns: summarize the run directory's artifacts and gists.
+5. **Recovery loop** — when an `execute` turn returns `failed`:
+   1. Insert a `debug` turn: `inputs` = the plan artifact plus this `NN-execute.md` (with its Failure report); deliverable `NNa-debug.md` = root cause + proposed minimal diff + verification command. If the Failure report's five fields are absent, the `debug` turn returns `needs-human` (it cannot diagnose blind).
+   2. Insert a re-execute turn (`mode: execute`, model = the failed turn's model): apply the diff proposed in `NNa-debug.md` and re-run the original planned checks; deliverable `NNb-execute.md`.
+   3. If `NNb` returns `ok`, resume the main sequence. If it returns `failed`, run one more cycle (`NNc-debug` / `NNd-execute`).
+   4. **Cap**: at most 2 cycles per originating turn (or the active spec's value). When the cap is reached and the turn is still `failed`, escalate it to `blocked` and fall through to step 6.
+   - The `debug` turn's model follows the model precedence above (an active spec's `debug` entry applies).
+6. On status `blocked` or `needs-human`: stop the run and report verbatim (a dependent step cannot run without its input). Record progress in the run index.
+7. After all turns: summarize the run directory's artifacts and gists.
 
 ## Run directory (workspace)
 
 - Create one run directory in the workspace per invocation, e.g. `mode-orchestrator-runs/<run-slug>/` — derive the slug from the input document name.
-- Artifacts: `NN-<mode>.md` in order, plus a small index file recording the turn plan and each turn's status/path. This index is an artifact index for inspection, not a resumable scheduler.
+- Artifacts: `NN-<mode>.md` in order; recovery turns inserted for a failed turn use the suffix form `NNa-debug.md` / `NNb-execute.md` / `NNc` / `NNd`, preserving the originating order. Plus a small index file recording the turn plan, each turn's model (and its decided tier), status/path, and the recovery cycle count for any turn that entered the loop. This index is an artifact index for inspection, not a resumable scheduler.
 - These are runtime artifacts; do not commit them.
 
 ## Context discipline
@@ -136,4 +156,5 @@ For each turn record, in order:
 
 ## Known residual risks
 
-- Over a long run the orchestration context grows; this is mitigated by gist-only returns, short pipelines, and passing inputs by path.
+- Over a long run the orchestration context grows; this is mitigated by gist-only returns, short pipelines, and passing inputs by path. Recovery cycles add turns and enlarge context further; the per-turn cycle cap keeps this bounded.
+- A `debug` turn's quality depends on the failed turn's Failure report being complete; the five-field contract (and the `needs-human` fallback when fields are missing) mitigates but does not eliminate this.
