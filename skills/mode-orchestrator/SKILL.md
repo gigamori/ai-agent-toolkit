@@ -158,3 +158,4 @@ For each turn record, in order:
 
 - Over a long run the orchestration context grows; this is mitigated by gist-only returns, short pipelines, and passing inputs by path. Recovery cycles add turns and enlarge context further; the per-turn cycle cap keeps this bounded.
 - A `debug` turn's quality depends on the failed turn's Failure report being complete; the five-field contract (and the `needs-human` fallback when fields are missing) mitigates but does not eliminate this.
+- A change-report is self-attested: an `execute` turn's account of which file it edited (and whether it edited at all) is not independently guaranteed. Trust the run's end state (re-run the planned check), not the report's authorship claims.
