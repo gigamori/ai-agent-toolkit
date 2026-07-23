@@ -157,7 +157,7 @@ file path.</task>
   **インライン `<role>`** 子要素（その場で書く 1〜3 文）。名前付きロールは
   frontmatter の `model`/`tools` を伴い、インラインロールは `tools=` を明示すべき。
 - **モード**（`mode=`、任意）: `mode:<name>` とそのルールとして注入される処理規律。
-  自律モードのみ: `debug`・`execute`・`plan`・`review`・`review-design`・`survey`、
+  自律モードのみ: `debug`・`execute`・`plan`・`review`・`review-dev`・`survey`、
   さらにエイリアス `verify` → debug、`implement` → execute。
 - **モデル**（`model=`）: デプロイ名ではなく **難易度クラス**。正典の名前は
   `haiku`（機械的）・`sonnet`（標準・既定）・`opus`（設計/診断/レビュー）。

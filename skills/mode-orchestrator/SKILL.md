@@ -42,7 +42,7 @@ Hardcoded mode list (rules bundled under `modes/`). Aliases: `verify` → `debug
 
 Autonomous — executed as a subagent turn:
 
-- `survey`, `plan`, `execute`, `debug`, `review`, `review-design`
+- `survey`, `plan`, `execute`, `debug`, `review`, `review-dev`
 
 Interactive — NOT executed; surfaced as a suggestion to run natively with role-mode:
 

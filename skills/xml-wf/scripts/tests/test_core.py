@@ -322,7 +322,7 @@ class TestLint(unittest.TestCase):
 
     def test_mode_known_and_aliases(self):
         for mode in ("execute", "survey", "plan", "debug", "review",
-                     "review-design", "verify", "implement"):
+                     "review-dev", "verify", "implement"):
             findings = self.lint(self.wrap(
                 f'<step id="s1" role="w" mode="{mode}"><task>x</task></step>'))
             self.assertEqual(self.codes(findings, "error"), [], msg=mode)

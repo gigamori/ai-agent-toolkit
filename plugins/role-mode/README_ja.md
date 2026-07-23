@@ -101,7 +101,7 @@ nomode norole — mode:plan と mode:execute の違いは何ですか？
 | `mode:execute` | `implement` | 計画を厳密に適用、scope 拡張禁止 |
 | `mode:debug` | `verify` | 根本原因分析、早すぎる修正は禁止 |
 | `mode:review` | | プロセス評価と教訓抽出 |
-| `mode:review-design` | | システム設計を品質次元に照らして構造的にレビューしたい |
+| `mode:review-dev` | | 開発成果物（設計主・実装副次）を品質次元に照らして構造的にレビューしたい |
 
 各 mode の `NEVER` / `DO` ルール全文は [`prompts/modes/`](prompts/modes/) を参照。
 
@@ -166,7 +166,7 @@ plugins/role-mode/
     execute.md
     debug.md
     review.md
-    review-design.md
+    review-dev.md
 ```
 
 各 `<mode>.md` は `Basic Behavior` / `NEVER` / `DO` の 3 行が必須。加えて任意セクションが 2 種:

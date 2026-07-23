@@ -101,7 +101,7 @@ nomode norole — how does mode:plan differ from mode:execute?
 | `mode:execute` | `implement` | You want the plan applied strictly, no scope expansion |
 | `mode:debug` | `verify` | You want root-cause analysis, no premature fixes |
 | `mode:review` | | You want process evaluation and lessons learned |
-| `mode:review-design` | | You want a structured system-design review against quality dimensions |
+| `mode:review-dev` | | You want a structured development-artifact review (design-primary, implementation-secondary) against quality dimensions |
 
 The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/modes/).
 
@@ -166,7 +166,7 @@ plugins/role-mode/
     execute.md
     debug.md
     review.md
-    review-design.md
+    review-dev.md
 ```
 
 Each `<mode>.md` has three required lines — `Basic Behavior`, `NEVER`, `DO` — plus two optional sections:

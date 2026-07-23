@@ -162,7 +162,7 @@ file path.</task>
   their frontmatter `model`/`tools`; inline roles should set `tools=` explicitly.
 - **Mode** (`mode=`, optional): a processing discipline injected as `mode:<name>`
   plus its rules. Autonomous modes only: `debug`, `execute`, `plan`, `review`,
-  `review-design`, `survey`, plus aliases `verify` → debug and
+  `review-dev`, `survey`, plus aliases `verify` → debug and
   `implement` → execute.
 - **Model** (`model=`): a **difficulty class**, not a deployment — canonical
   names are `haiku` (mechanical), `sonnet` (standard, the default), `opus`

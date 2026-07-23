@@ -379,7 +379,7 @@ A mode sets *how* the step processes. Autonomous modes only:
 | `debug` | Diagnosis steps |
 | `plan` | Planning steps |
 | `review` | Review steps |
-| `review-design` | Design-review steps |
+| `review-dev` | Development-artifact review steps (design-primary) |
 
 Aliases: `verify` → `debug`, `implement` → `execute`. A step without `mode=`
 just runs under its role with no added discipline. An unknown mode name is a

@@ -367,7 +367,7 @@ data shows and never speculates.</role>
 | `debug` | 診断ステップ |
 | `plan` | 計画立案ステップ |
 | `review` | レビューステップ |
-| `review-design` | 設計レビューステップ |
+| `review-dev` | 開発成果物レビューステップ（設計主） |
 
 エイリアス: `verify` → `debug`、`implement` → `execute`。`mode=` の無いステップは、
 規律を追加せずロールの下で走ります。未知のモード名は検証エラーです。

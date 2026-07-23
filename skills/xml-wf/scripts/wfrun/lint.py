@@ -16,7 +16,7 @@ from .agents import discover_agents
 # Modes whose discipline is non-writing (mode-output goes to task-named paths;
 # target sources stay untouched). Write-capable tools= on such a step usually
 # means the tool grant, not the mode text, is what actually limits the agent.
-NON_WRITING_MODES = {"survey", "plan", "review", "review-design"}
+NON_WRITING_MODES = {"survey", "plan", "review", "review-dev"}
 
 
 @dataclass

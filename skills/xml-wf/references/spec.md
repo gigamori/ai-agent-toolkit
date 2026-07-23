@@ -243,7 +243,7 @@ framework header (`_meta.md`) is injected for every step, mode or not.
 
 Available modes (**autonomous only** — the plugin's interactive modes
 ask/brainstorm/discuss/organize need a live human exchange and are not
-bundled): `debug`, `execute`, `plan`, `review`, `review-design`, `survey` —
+bundled): `debug`, `execute`, `plan`, `review`, `review-dev`, `survey` —
 plus the aliases `verify` → debug and `implement` → execute (the alias picks
 the file; the declared name is preserved in the prompt). Unknown names are a
 validate error (`mode-unknown`).
@@ -443,7 +443,7 @@ expr/test allowlist checks, parallel constraints, replan constraints
 warn), expect-file variable references, and warnings (`on-error=ignore`,
 undersized `max`, `inline-role-no-tools` — an inline `<role>` without
 `tools=` runs with the CLI's default tool permissions — and
-`mode-write-tools` — a non-writing mode (survey/plan/review/review-design)
+`mode-write-tools` — a non-writing mode (survey/plan/review/review-dev)
 combined with write-capable `tools=` — and `model-not-canonical` — a `model=`
 outside the canonical haiku/sonnet/opus vocabulary; a broken
 `model_map.json` is the error `model-map-invalid`).

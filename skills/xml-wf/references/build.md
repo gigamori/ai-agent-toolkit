@@ -63,7 +63,7 @@ Design principles (follow "Workflow authoring guidelines" in spec.md):
   the user approves the tier judgments together with the plan
 - **Set `mode=` where processing discipline matters**: `execute` for strict
   do-exactly-this operations, `survey` for fact collection, `debug` for
-  diagnosis; also available: `plan`, `review`, `review-design` (aliases
+  diagnosis; also available: `plan`, `review`, `review-dev` (aliases
   verify→debug, implement→execute — autonomous modes only, see spec.md
   § Execution modes). Steps without an obvious discipline need no mode
 - **File-centric I/O**: agents write large data to files and pass the path via
