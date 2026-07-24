@@ -330,9 +330,9 @@ _projects/
 
 `_projects/<project>/project-notes/` 配下のファイル（`index.md` 自身は除く）への `Write`/`Edit` 直前に発火。`additionalContext` 経由で `[Project Notes Index Rule]` リマインダーを注入し、操作後に `project-notes/index.md` を同期するよう LLM に指示する（新規ファイルは行追加、Description/Tags 変更時は該当行更新、削除時は該当行除去）。
 
-#### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit)
+#### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit|Bash)
 
-`_projects/<project>/tasks/<status>/` 配下のファイルへの `Write`/`Edit` 直後に発火。`scripts/rebuild_progress.py` を実行して該当プロジェクトの `progress.md` テーブル領域を再生成し、手動の `/progress rebuild` なしでタスクインデックスを最新に保つ。
+`_projects/<project>/tasks/<status>/` 配下のファイルへの `Write`/`Edit` 直後、または当該パスを参照する `Bash` コマンド（例: `/progress start` / `approve` / `unstart` が使う `mv` — rename 単独では `Write`/`Edit` が発火しない）の直後に発火。`scripts/rebuild_progress.py` を実行して該当プロジェクトの `progress.md` テーブル領域を再生成し、手動の `/progress rebuild` なしでタスクインデックスを最新に保つ。
 
 #### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
 

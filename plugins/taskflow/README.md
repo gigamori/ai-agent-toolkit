@@ -331,9 +331,9 @@ The file is human-authored (no model-autonomous writes); the agent proposes a di
 
 Fires before a `Write`/`Edit` targeting a file under `_projects/<project>/project-notes/` (excluding `index.md` itself). Injects a `[Project Notes Index Rule]` reminder via `additionalContext`, instructing the LLM to keep `project-notes/index.md` in sync after the operation (add a row for new files, update on Description/Tags change, remove on delete).
 
-#### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit)
+#### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit|Bash)
 
-Fires after a `Write`/`Edit` targeting a file under `_projects/<project>/tasks/<status>/`. Runs `scripts/rebuild_progress.py` to regenerate the `progress.md` table region for that project, so the task index stays current without a manual `/progress rebuild`.
+Fires after a `Write`/`Edit` targeting a file under `_projects/<project>/tasks/<status>/`, or a `Bash` command referencing such a path (e.g. the `mv` used by `/progress start` / `approve` / `unstart` — a rename alone never triggers `Write`/`Edit`). Runs `scripts/rebuild_progress.py` to regenerate the `progress.md` table region for that project, so the task index stays current without a manual `/progress rebuild`.
 
 #### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
 

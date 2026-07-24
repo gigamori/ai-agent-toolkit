@@ -18,11 +18,21 @@ except Exception:
 tool_input = data.get('tool_input', {})
 
 TASKS_SEG = r'/tasks/(?:0_todo|1_in_progress|2_done)/'
+# Git-Bash/MSYS mounts C:\ as /c/; os.path.isdir under native Windows Python
+# does not resolve that convention (no drive letter). Windows only — a real
+# /c/... root is a legitimate absolute path on POSIX.
+_DRIVE_RE = re.compile(r'^/([A-Za-z])(?=/)')
+
+
+def to_native(p):
+    if os.name == 'nt':
+        return _DRIVE_RE.sub(lambda m: m.group(1) + ':', p)
+    return p
 
 
 def dirs_from_file_path(file_path):
     """Write|Edit: file_path IS the path — slice the project dir prefix."""
-    normalized = file_path.replace('\\', '/')
+    normalized = to_native(file_path.replace('\\', '/'))
     m = re.search(r'_projects/([^/]+)' + TASKS_SEG, normalized)
     if not m:
         return []
@@ -38,7 +48,7 @@ def dirs_from_command(command):
     dirs = []
     for m in re.finditer(r'[^\s"\']*_projects/[^/\s"\']+(?=' + TASKS_SEG + r')',
                          normalized):
-        d = os.path.normpath(m.group(0))
+        d = os.path.normpath(to_native(m.group(0)))
         if d not in dirs:
             dirs.append(d)
     return dirs
@@ -46,15 +56,32 @@ def dirs_from_command(command):
 
 file_path = tool_input.get('file_path', '')
 if file_path:
-    project_dirs = dirs_from_file_path(file_path)
+    candidate_dirs = dirs_from_file_path(file_path)
     from_bash = False
 else:
     command = tool_input.get('command', '')
-    project_dirs = dirs_from_command(command) if command else []
+    candidate_dirs = dirs_from_command(command) if command else []
     from_bash = True
 
-project_dirs = [d for d in project_dirs if os.path.isdir(d)]
+project_dirs = [d for d in candidate_dirs if os.path.isdir(d)]
 if not project_dirs:
+    if candidate_dirs:
+        # A task-path reference was found but none resolved to a real
+        # directory — a silently stale progress.md is exactly the defect
+        # class this hook exists to prevent (see the rebuild loop below).
+        session_id = data.get('session_id', '')
+        session_tag = f" session={session_id[:8]}" if session_id else ""
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": (
+                    f"[auto-rebuild]{session_tag} unresolved: "
+                    + " | ".join(candidate_dirs)
+                ),
+            }
+        }
+        sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode('utf-8'))
+        sys.stdout.buffer.write(b'\n')
     sys.exit(0)
 
 # Locate rebuild_progress.py relative to this hook
