@@ -31,7 +31,10 @@ A spec file has these sections:
    is guidance for writing the todolist and the basis for the turn-plan mismatch
    warnings.
 3. **mode→model defaults** — a blanket table mapping each mode to a default model.
-   These are tier-2 defaults in the model precedence.
+   These are tier-2 defaults in the model precedence. Include `debug` here even
+   though it never appears in the recommended step sequence: the engine's recovery
+   loop spawns `debug` turns dynamically and resolves their model from this table
+   (omit it and debug falls back to the inherited session model).
 4. **Failure policy** — the recovery cycle cap (engine default 2 if omitted).
 5. **Authoring guidance** — task-type-specific rules for writing a good todolist.
 
