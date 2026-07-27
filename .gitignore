@@ -16,6 +16,9 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 
+# Runtime artifacts of a mode-orchestrator run (never committed)
+mode-orchestrator-runs/
+
 # Temp / scratch
 **/ignore*/**
 **/tmp/**
