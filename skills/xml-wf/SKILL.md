@@ -2,7 +2,7 @@
 name: xml-wf
 description: "Build, run, and resume XML v2 workflows end to end. Use when the user wants to turn a task into an XML workflow (build, ワークフロー化), execute an existing workflow XML (--run-cc, 実行), resume a failed run (--resume, 再開), or have the LLM orchestrate step-by-step under supervision (--run-llm, 対話的に実行). The runner (wfrun) and the spec are bundled inside this skill."
 argument-hint: "[--build|--run-cc|--run-llm|--resume] [task description|xml path|run dir]"
-compatibility: "Requires Python 3.12+ and claude CLI v2.1.214+ (claude -p / --json-schema; role definitions are injected into prompts, --agent is not used). The skill definition and build/run-cc modes target Claude Code. The run-llm protocol (wfrun + file-based exchange) works on any agent platform with a subagent facility."
+compatibility: "Requires Python 3.12+ and claude CLI v2.1.214+ (claude -p / --json-schema; role definitions are injected into prompts, --agent is not used). The skill definition and build/run-cc modes target Claude Code. The run-llm protocol (wfrun + file-based exchange) works on any agent platform with a subagent facility. On Windows, wfrun resolves the real claude executable itself (bypassing the npm .cmd/.bat launcher, which corrupts multi-line/metachar prompts); if multiple claude installs are present, the one earlier on PATH wins -- see the skill README's Requirements section."
 ---
 
 # XML Workflow System v2 (xml-wf)
@@ -17,7 +17,7 @@ prompts). The canonical spec is `references/spec.md`.
 Always invoke the runner as (`${CLAUDE_SKILL_DIR}` resolves to this skill's directory):
 ```bash
 WFRUN="env PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts uv run python -m wfrun"
-$WFRUN {validate|run|resume|plan|viz|prompt|record|interp|eval|ask} ...
+$WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eval|ask} ...
 ```
 
 ## Mode dispatch (decide from the arguments)

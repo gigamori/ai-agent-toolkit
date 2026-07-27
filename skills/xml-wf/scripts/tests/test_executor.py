@@ -430,6 +430,130 @@ class TestErrorsAndResume(ExecutorTestCase):
             ex.run()
         self.assertEqual(len(self.fake.calls), 2)  # original + one debug retry
 
+    def test_guardrail_skips_deterministic_retry_but_allows_debug(self):
+        # reliability-spec.md §3.1/§3.2: guardrail (ERROR:) is not retried
+        # identically, but on-error="debug" may still fire.
+        self.fake.handlers.append(
+            (lambda p: "guarded" in p,
+             CliResult(ok=False, error="ERROR: boom", error_class="guardrail",
+                      cost_usd=0.01)))
+        diagnoses = []
+
+        def fake_diag(step, prompt, failure, **kwargs):
+            diagnoses.append(step.id)
+            return Diagnosis("FAIL", "no fix")
+
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="3" on-error="debug">'
+            '<task>guarded</task></step>'), diagnose=fake_diag)
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        # 1 initial attempt only -- retry was skipped (not 4)
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertEqual(diagnoses, ["s1"])  # debug still ran
+
+    def test_refusal_skips_debug(self):
+        # reliability-spec.md §3.1/§3.2: [BLOCKED:] refusal is neither
+        # retried nor handed to debug (current behavior, made explicit).
+        self.fake.handlers.append(
+            (lambda p: "guarded" in p,
+             CliResult(ok=True, text="[BLOCKED: mode-rule x] no", cost_usd=0.01)))
+        diagnoses = []
+
+        def fake_diag(step, prompt, failure, **kwargs):
+            diagnoses.append(step.id)
+            return Diagnosis("RETRY", "try", fix_instruction="fix")
+
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="3" on-error="debug">'
+            '<task>guarded</task></step>'), diagnose=fake_diag)
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertEqual(diagnoses, [])  # debug never invoked
+
+    def test_denied_skips_retry_and_debug(self):
+        self.fake.handlers.append(
+            (lambda p: "guarded" in p,
+             CliResult(ok=False, error="claude reported permission_denials for: Write",
+                      error_class="denied", cost_usd=0.01)))
+        diagnoses = []
+
+        def fake_diag(step, prompt, failure, **kwargs):
+            diagnoses.append(step.id)
+            return Diagnosis("RETRY", "try", fix_instruction="fix")
+
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="3" on-error="debug">'
+            '<task>guarded</task></step>'), diagnose=fake_diag)
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertEqual(diagnoses, [])
+
+    def test_transient_retries_but_skips_debug(self):
+        # reliability-spec.md §13.5: transient is retried (it's a
+        # technical/upstream hiccup) but never handed to debug -- treating
+        # it as a fixable "failed" is the P3/C3 retry-storm mechanism.
+        self.fake.handlers.append(
+            (lambda p: "flaky" in p,
+             CliResult(ok=False, error="claude reported api_error (status=529)",
+                      error_class="transient", cost_usd=0.01)))
+        diagnoses = []
+
+        def fake_diag(step, prompt, failure, **kwargs):
+            diagnoses.append(step.id)
+            return Diagnosis("RETRY", "try", fix_instruction="fix")
+
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="2" on-error="debug">'
+            '<task>flaky</task></step>'), diagnose=fake_diag)
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        # 1 initial + 2 retries consumed (all failed identically) = 3 calls
+        self.assertEqual(len(self.fake.calls), 3)
+        self.assertEqual(diagnoses, [])  # debug never invoked
+
+    def test_env_skips_retry_and_goes_straight_to_on_error(self):
+        # reliability-spec.md §3.3: env -> retry not consumed, straight to
+        # on-error (here: fail, the default).
+        self.fake.handlers.append(
+            (lambda p: "guarded" in p,
+             CliResult(ok=False, error="claude CLI not found on PATH",
+                      error_class="env", cost_usd=0)))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="3"><task>guarded</task></step>'))
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_timeout_consumes_retry(self):
+        self.fake.handlers.append(
+            (lambda p: "flaky" in p,
+             CliResult(ok=False, error="timeout after 60s",
+                      error_class="timeout", cost_usd=0)))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="2"><task>flaky</task></step>'))
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        self.assertEqual(len(self.fake.calls), 3)  # 1 initial + 2 retries
+
+    def test_empty_body_via_fake_run_claude_is_behavioral_and_retries(self):
+        # End-to-end through the executor with a fake run_claude, matching
+        # reliability-spec.md §3.3's literal test list ("空本文->behavioral
+        # 失敗"). The classification itself is unit-tested directly against
+        # classify_result() in test_claude_cli.py.
+        self.fake.handlers.append(
+            (lambda p: "flaky" in p,
+             CliResult(ok=False, error="empty result",
+                      error_class="behavioral", cost_usd=0)))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="1"><task>flaky</task></step>'))
+        with self.assertRaises(WorkflowFailure) as ctx:
+            ex.run()
+        self.assertIn("empty result", str(ctx.exception))
+        self.assertEqual(len(self.fake.calls), 2)  # 1 initial + 1 retry (behavioral retries)
+
     def test_resume_skips_recorded_successes(self):
         xml = self.wrap('''
             <step id="s1" role="w" output="p"><task>first</task></step>

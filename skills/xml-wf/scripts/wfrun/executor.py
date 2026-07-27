@@ -219,11 +219,16 @@ class Executor:
                 blocked_line = modes.blocked_line(res.text)
                 if blocked_line is not None:
                     res.ok = False
+                    res.error_class = "refusal"
                     res.error = blocked_line[:500]
             if res.ok and step.expect_file:
                 missing = self._missing_expected(step)
                 if missing:
                     res.ok = False
+                    # reliability-spec.md §3.1: expect-file failures are a
+                    # CLI/model hiccup (the file didn't materialize), not a
+                    # step-level refusal or permission problem -- retryable.
+                    res.error_class = "behavioral"
                     res.error = ("expect-file: not produced: "
                                  + ", ".join(missing))
 
@@ -240,14 +245,17 @@ class Executor:
 
             self.state.event("step", key=step.id, status="attempt-failed",
                              attempt=seq, error=(res.error or "")[:1000],
+                             error_class=res.error_class,
                              cost_usd=res.cost_usd)
-            refused = (res.error or "").startswith("[BLOCKED:")
-            if attempt <= step.retry and not refused:
-                # deterministic retry, identical prompt — skipped for a mode/
-                # rules refusal, which the same prompt would just repeat
+            if attempt <= step.retry and claude_cli.is_retryable(res.error_class):
+                # deterministic retry, identical prompt — skipped for
+                # error_class in NON_RETRYABLE_CLASSES (env/guardrail/
+                # refusal/denied), where the same prompt would just repeat
+                # the same outcome (reliability-spec.md §3.2)
                 continue
 
-            if step.on_error == "debug" and not debug_used:
+            if (step.on_error == "debug" and not debug_used
+                    and claude_cli.is_debuggable(res.error_class)):
                 diagnosis = self._diagnose(step, f"{system}\n\n{prompt}", res,
                                            cwd=str(self.base_dir))
                 self._add_cost(diagnosis.cost_usd)

@@ -332,24 +332,72 @@ the map as it is at resume time.
 
 ### Error detection (priority order)
 
-1. `claude` non-zero exit / `is_error` in the result JSON
-2. `timeout` exceeded (SIGKILL)
-3. Response body starts with `ERROR:` (guardrail protocol)
-4. Response body's first line starts with `[BLOCKED:` (mode/rules refusal —
-   the line is recorded as the error reason; deterministic retry is skipped)
-5. `schema` was given but no structured output came back
-6. A path named in `expect-file` does not exist after the response
+Each check below assigns an `error_class` (`claude_cli.classify_result()`),
+which is what retry/debug policy (next section) actually keys on — not
+string-matching `error`.
 
-Items 3–4 are single-token-prefix protocols and catch only *compliant*
+1. `permission_denials` present in the result JSON → `denied`. Checked
+   first and independent of `is_error` (observed with `is_error:false`,
+   exit 0)
+2. `claude` result JSON reports `is_error` — the exit code is not checked
+   first: a non-zero exit can still carry a fully-formed error JSON on
+   stdout (e.g. an unknown `--model` exits 1 with a JSON body), so JSON
+   parsing is attempted before the exit code is consulted; only an
+   unparseable stdout counts as a launch failure (`env`). Do not classify
+   on the result JSON's `subtype` field — it is not a reliable
+   success/error signal (`is_error:true` has been observed together with
+   `subtype:"success"`); classify on `terminal_reason` / `api_error_status`
+   instead: `terminal_reason:"api_error"` with a retry-safe HTTP status
+   (429/5xx) → `transient`; with any other status (including a
+   missing/unrecognized one — fail-closed) → `env`; any other
+   `terminal_reason` → `behavioral`
+3. `timeout` exceeded (SIGKILL) → `timeout`
+4. Response body starts with `ERROR:` (guardrail protocol) → `guardrail`
+5. Response body's first line starts with `[BLOCKED:` (mode/rules refusal —
+   the line is recorded as the error reason) → `refusal`
+6. Response body is empty (after stripping the `[Mode: x]` line) and no
+   structured output came back → `behavioral`
+7. `schema` was given but no structured output came back → `behavioral`
+8. A path named in `expect-file` does not exist after the response
+   (checked by the executor, not `classify_result()`) → `behavioral`
+
+Items 4–5 are single-token-prefix protocols and catch only *compliant*
 refusals (an agent that narrates before the marker, or half-works then
 apologizes, classifies as success). They are likelihood levers, not gates —
-the deterministic layer is items 5–6 plus downstream `test=` checks; give
+the deterministic layer is items 7–8 plus downstream `test=` checks; give
 every file-producing step an `expect-file`.
 
 ### Error handling (modernized ADP)
 
+This table and the executor logic behind it (`claude_cli.is_retryable()` /
+`is_debuggable()`) are shared verbatim by run-llm's layer A (`wfrun
+dispatch`/`wait`): the wrapper process calls `classify_result()` directly,
+so an A-layer step is retried/debugged under exactly this policy, not a
+separate one. Layer B (`wfrun record`) has its own, text-based decision
+table instead (ok/error/aborted, no `error_class`) — see `run-llm.md`.
+
+Retry and debug are gated on `error_class`, not on error text:
+
+| error_class | deterministic retry | `on-error="debug"` |
+|---|---|---|
+| `timeout`, `behavioral` | consumed | eligible |
+| `transient` | consumed | **not eligible** |
+| `guardrail` | skipped (identical prompt hits the same guardrail) | eligible |
+| `env` | skipped | eligible |
+| `refusal`, `denied` | skipped | **not eligible** |
+
+`refusal`/`denied` are the step agent's or the permission system's final
+word on this exact request — not a bug a debug re-diagnosis could fix.
+`transient` is retried (an upstream hiccup can clear on its own) but is
+*never* handed to debug even when retries are exhausted: classifying a
+transient API error as a fixable "failed" and routing it into the debug/
+recovery loop is the exact misclassification that produced a retry-storm
+incident this design responds to (a permission-denied `bash` tool call,
+misclassified as fixable, spawned dozens of child sessions per minute).
+
 1. **Deterministic retry**: re-run `retry` times with the identical prompt
-   (absorbs transient failures)
+   (absorbs transient failures), skipped for `error_class` in
+   `{env, guardrail, refusal, denied}`
 2. After retries are exhausted, `on-error="debug"` hands the failing step's
    definition, sent prompt, execution result, and stderr to the **debug role**
    (`.claude/agents/debug.md`, injected as a `<role>` block like any step
@@ -423,8 +471,9 @@ wfrun viz <wf.xml> [--out FILE]                         # mermaid flowchart of t
   write approval under its own config tree, so file-writing steps would fail;
   `wfrun run`/`resume` reject this at startup — copy bundled examples to a
   normal project directory before running them)
-- The helper subcommands `interp` / `eval` / `ask` / `prompt` / `record` exist
-  for LLM-orchestrated execution; see `references/run-llm.md`
+- The helper subcommands `interp` / `eval` / `ask` / `prompt` / `record` /
+  `poll` (layer B) and `dispatch` / `wait` (layer A) exist for
+  LLM-orchestrated execution; see `references/run-llm.md`
 - `viz` renders branch diamonds, loop-back edges, and parallel fan-out for
   docs and the build-mode approval gate. Its labels carry control-plane facts
   only (ids, roles, modes, models, conditions — never task bodies). `plan`'s

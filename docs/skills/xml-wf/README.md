@@ -53,6 +53,16 @@ The runner uses the standard library only. `build` and `run-cc` modes target
 Claude Code; the `run-llm` protocol works on any agent platform with a subagent
 facility.
 
+**Multiple `claude` installs (Windows):** wfrun resolves the actual `claude`
+executable itself rather than launching whatever `PATH` returns verbatim —
+launching the npm `.cmd`/`.bat` launcher directly (without a shell) either
+fails to start or corrupts prompts containing `& | % ^ < >` or newlines,
+since Windows will not resolve `claude` to `claude.cmd` without a shell, and
+that shim's own `cmd.exe` layer mangles such argv. There is no dedicated
+environment variable for this: if more than one `claude` is installed,
+**the one that appears earlier on `PATH` wins**. Reorder `PATH` to choose
+between them.
+
 ---
 
 ## Skill layout
@@ -88,7 +98,7 @@ the skill's directory on Claude Code):
 
 ```bash
 WFRUN="env PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts uv run python -m wfrun"
-$WFRUN {validate|run|resume|plan|viz|prompt|record|interp|eval|ask} ...
+$WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eval|ask} ...
 ```
 
 Through the skill, the four modes are selected from natural language or flags:
@@ -187,8 +197,22 @@ Helper subcommands for `run-llm` orchestration (task content never passes
 through the caller):
 
 ```
-wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT]
-wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG]
+wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT] [--attempt N]
+wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE]
+wfrun poll   <handle.json>              # layer B: done(0) / running(10) / deadline-exceeded(11)
+```
+
+Layer A (environments where `claude --version` succeeds: no subagent
+delegation -- `wfrun` itself calls `claude -p` via a detached wrapper
+process. See `references/run-llm.md` for the full protocol):
+
+```
+wfrun dispatch <wf.xml> <id> --vars V --run-dir D [--permission-mode M] [--fix TEXT] [--new-cycle]
+wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
+               # ok(0) / error: <class>(1) / running(10) / aborted(3)
+```
+
+```
 wfrun interp <text> --vars V            # interpolate {var} references
 wfrun eval   <expr> --vars V            # evaluate a test= expression → true/false
 wfrun ask    <question> [--vars V] [--model haiku] [--quiet] [--log LOG]

@@ -96,6 +96,74 @@ the cap is reached and the turn is still failing, it is escalated to `blocked` a
 the run stops. A `debug` turn returning `needs-human` (e.g. the fix is out of the
 task's authorized scope) also stops the run.
 
+### What does *not* enter the recovery loop
+
+Only `failed` — "the work ran, a check didn't pass, and it looks fixable here" —
+is worth diagnosing. Three other outcomes deliberately bypass the loop:
+
+- **`blocked`** — including any turn whose tool call the **permission system
+  denied**. A denial is not an in-repo bug: re-running the turn hits the same
+  wall every cycle, so the run stops and asks you instead.
+- **`needs-human`** — the turn needs a decision only you can make.
+- **`aborted`** — the turn said *nothing* about the task. Either its reply
+  arrived without the required status line (interrupted, killed, or
+  off-contract), or it never replied at all and the **turn watchdog** ended it
+  (see below). There is no failure to diagnose, so the orchestrator re-runs that
+  turn **once** and, if it is still unreadable, stops with `needs-human`. This
+  re-run does not consume the cycle cap.
+
+Each turn ends its reply with a fixed final line — `status: <...>; file: <path>`
+— and the orchestrator reads the outcome from that line alone. That is why a
+turn that omits it is treated as `aborted` rather than guessed at: a silent or
+broken turn fails loudly instead of passing as success.
+
+**Only `execute` turns are even offered `failed`.** The status is defined as "a
+planned check did not pass", and running such a check is what an `execute` turn
+does; every other mode gets a three-value contract (`ok` / `blocked` /
+`needs-human`). If some other turn returns `failed` anyway, it is out of
+contract — the run stops as `needs-human` rather than starting a recovery loop
+that would have no Failure report to diagnose.
+
+## Turn watchdog
+
+The status line only classifies turns that answer. A subagent can also stop
+answering entirely — killed, interrupted, or simply hung — and no notification
+ever arrives. The orchestrator cannot notice that on its own: it only acts when
+something wakes it, so an answer that never comes is a wait that never ends.
+
+So every turn is started alongside a **watchdog** (`scripts/watchdog.sh`) running
+in the background. It reports whichever of these happens first, then exits — and
+that exit is what wakes the orchestrator:
+
+- the turn's **deliverable file** appears and is non-empty — `DONE`;
+- the turn's **wall-clock deadline** passes with no deliverable — `TIMEOUT`;
+- the subagent's transcript **stops growing** for the stall threshold — `STALL`.
+
+The watchdog only reports; it never stops anything itself. On `TIMEOUT` or
+`STALL` the orchestrator stops the turn and classifies it `aborted`, then re-runs
+it once — exactly as it would an unreadable reply. Nothing is diagnosed, because
+a turn that never reported gives nothing to diagnose.
+
+Defaults are at the top of the script — edit them there:
+
+| Setting | Default |
+|---|---|
+| Stall threshold | 600s |
+| Deadline, `survey` | 600s |
+| Deadline, `plan` / `execute` | 1500s |
+| Deadline, every other mode | 900s |
+| Poll interval | 15s |
+
+They are deliberately generous. A long tool call looks exactly like a hang from
+outside — the transcript is idle either way — so the stall threshold is set well
+above the longest tool call a turn is expected to make. That detects a real hang
+late rather than cutting a working turn short. If a run keeps aborting turns that
+were still making progress, the budget is too tight; the run index records which
+check fired, so you can see that and raise it.
+
+The watchdog bounds time, not correctness. It can tell you a turn ran too long;
+it cannot tell you a turn did the wrong thing.
+
 ## Workflow specs
 
 A workflow spec supplies **defaults and guidance** for one task type — a
@@ -117,8 +185,11 @@ Each invocation creates one run directory in the workspace, e.g.
 - `NN-<mode>.md` — one deliverable per turn, in order. Recovery turns use the
   suffix form `NNa-debug.md` / `NNb-execute.md` / `NNc` / `NNd`.
 - `index.md` — the turn plan (with each turn's model and tier), the spec warnings,
-  the Failure policy, and each turn's status. It is an inspection index, not a
-  resumable scheduler.
+  the Failure policy, and each turn's status. Any turn that had to be re-run after
+  an `aborted` reply is noted here too, along with which check caught it — a
+  missing status line, or the watchdog's `TIMEOUT` or `STALL`. An aborted turn
+  writes no deliverable, so this is the only place that records it happened. It is
+  an inspection index, not a resumable scheduler.
 
 These are runtime artifacts — they are not committed.
 

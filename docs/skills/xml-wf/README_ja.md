@@ -50,6 +50,15 @@
 向け、`run-llm` プロトコルはサブエージェント機能を持つ任意のエージェント基盤で動作
 します。
 
+**複数の `claude` インストール（Windows）:** wfrun は `PATH` が返す値をそのまま
+起動するのではなく、実際に起動する `claude` 実行ファイルを自前で解決します。
+npm の `.cmd`/`.bat` ランチャーをシェルなしで直接起動すると、Windows は
+`claude` を `claude.cmd` に解決しないため起動に失敗するか、その shim 自身の
+`cmd.exe` 層が `& | % ^ < >` や改行を含むプロンプトを壊すためです。専用の
+環境変数は用意していません。複数の `claude` がインストールされている場合は
+**`PATH` 上で先に現れるものが優先されます**。どちらを使うかは `PATH` の並び順
+で選んでください。
+
 ---
 
 ## スキル構成
@@ -85,7 +94,7 @@ xml-wf/                        # スキル本体
 
 ```bash
 WFRUN="env PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts uv run python -m wfrun"
-$WFRUN {validate|run|resume|plan|viz|prompt|record|interp|eval|ask} ...
+$WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eval|ask} ...
 ```
 
 スキル経由では、4 つのモードを自然言語またはフラグから選択します。
@@ -182,8 +191,21 @@ wfrun viz      <wf.xml> [--out FILE]    # 制御フローの mermaid フロー�
 経由しない）:
 
 ```
-wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT]
-wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG]
+wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT] [--attempt N]
+wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE]
+wfrun poll   <handle.json>              # B層: done(0) / running(10) / deadline-exceeded(11)
+```
+
+A層（`claude --version` が成功する環境向け。サブエージェント委譲なしで `wfrun` 自身が
+detach したラッパープロセス経由で `claude -p` を呼ぶ。詳細は `references/run-llm.md`）:
+
+```
+wfrun dispatch <wf.xml> <id> --vars V --run-dir D [--permission-mode M] [--fix TEXT] [--new-cycle]
+wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
+               # ok(0) / error: <class>(1) / running(10) / aborted(3)
+```
+
+```
 wfrun interp <text> --vars V            # {var} 参照を補間
 wfrun eval   <expr> --vars V            # test= 式を評価 → true/false
 wfrun ask    <question> [--vars V] [--model haiku] [--quiet] [--log LOG]

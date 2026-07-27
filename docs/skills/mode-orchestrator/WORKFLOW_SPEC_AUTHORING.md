@@ -36,6 +36,17 @@ A spec file has these sections:
    loop spawns `debug` turns dynamically and resolves their model from this table
    (omit it and debug falls back to the inherited session model).
 4. **Failure policy** — the recovery cycle cap (engine default 2 if omitted).
+   This is the only failure parameter a spec controls. Which outcomes reach the
+   loop at all is fixed by the engine and not spec-tunable: only `failed` enters
+   recovery, while `blocked` (including a permission denial), `needs-human`, and
+   `aborted` (a turn that reported nothing — either a reply missing its `status:`
+   final line, or one the watchdog ended with `TIMEOUT` / `STALL` — re-run once,
+   then `needs-human`) bypass it. Do not restate or attempt to override those in a
+   spec. The watchdog's own thresholds are likewise not spec parameters: they are
+   per-mode wall-clock values at the top of `scripts/watchdog.sh`. A spec that
+   pinned them would let one task type silently widen the bound that keeps every
+   run terminating, so tune them in the script, where the change is visible to
+   every task type at once.
 5. **Authoring guidance** — task-type-specific rules for writing a good todolist.
 
 ## Model precedence (how the spec's models are applied)

@@ -9,6 +9,7 @@ ids, file paths, and ok/error signals.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -22,10 +23,95 @@ class StepIOError(Exception):
     pass
 
 
+def write_text_atomic(path: str | Path, text: str) -> None:
+    """Write `text` such that a concurrent reader never observes a partial
+    file: write a sibling temp file, then `os.replace` onto the target
+    (atomic on both POSIX and Windows).
+
+    Required for the A layer's cross-process files: `wait` polls exit.json
+    from another process while the wrapper is writing it (a torn read used
+    to crash `wait` outright), and `dispatch` reads attempts.json while a
+    finishing wrapper appends to it -- a torn attempts.json reads back as
+    "no attempts yet" through `load_attempts`'s error fallback, silently
+    resetting the runaway cap."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _missing_expected(expect_file: str, variables: dict, step_id: str,
+                      base_dir: str | Path | None) -> list[str]:
+    """expect-file paths (comma-separated, {var}-interpolated) that do not
+    exist. Relative paths resolve against `base_dir` when given -- the same
+    directory the step's subprocess ran in -- mirroring
+    executor._missing_expected. With base_dir=None they resolve against the
+    caller's cwd (the B layer's documented "orchestrator cwd = subagent
+    cwd" premise)."""
+    paths = interpolate(expect_file, variables)
+    missing = []
+    for part in (p.strip() for p in paths.split(",")):
+        if not part:
+            continue
+        path = Path(part)
+        if not path.is_absolute() and base_dir is not None:
+            path = Path(base_dir) / path
+        if not path.is_file():
+            missing.append(part)
+    return missing
+
+
+def sentinel_line(step_id: str) -> str:
+    """The completion marker a run-llm step must write as the LAST non-empty
+    line of its result file (reliability-spec.md §4.1). Absence of this line
+    is what lets `record`/`poll` tell "still writing" or "died mid-write"
+    apart from "wrote a genuinely short/empty answer" -- the well-formedness
+    of a <replan> continuation's own XML already proves completeness, so
+    replans are deliberately exempted (reliability-spec.md §0, §4.1)."""
+    return f"[[WFRUN-END step={step_id}]]"
+
+
+def strip_sentinel_line(text: str, step_id: str) -> tuple[str, bool]:
+    """Drop this step's trailing sentinel line, if the last non-empty line
+    of `text` is exactly `sentinel_line(step_id)`. Returns (text, present).
+    A sentinel for a *different* step id counts as absent -- record/poll
+    only ever look for their own step's marker.
+
+    Call this (and modes.strip_mode_line) before any value extraction or
+    file-content check: the sentinel is protocol furniture, not part of the
+    step's actual output (reliability-spec.md §4.2)."""
+    lines = text.splitlines()
+    idx = len(lines) - 1
+    while idx >= 0 and lines[idx].strip() == "":
+        idx -= 1
+    if idx >= 0 and lines[idx].strip() == sentinel_line(step_id):
+        return "\n".join(lines[:idx]), True
+    return text, False
+
+
+def handle_path(step_id: str, result_path: str | Path) -> Path:
+    """Sibling `<id>_handle.json` next to a step's result file (written by
+    `wfrun prompt --result`, read by `wfrun record`/`wfrun poll`;
+    reliability-spec.md §4.1/§4.3). Its absence means a pre-Phase-2.2
+    ("legacy") caller: no sentinel/aborted machinery applies then."""
+    return Path(result_path).parent / f"{step_id}_handle.json"
+
+
+def load_handle(step_id: str, result_path: str | Path) -> dict | None:
+    path = handle_path(step_id, result_path)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 RESULT_PROTOCOL = """\
 ## Response protocol
 Write your full final response to this file: {result_path}
-Your reply to the caller must be a single line starting with "OK" or "ERROR:"."""
+The LAST non-empty line of that file must be exactly this marker, with \
+nothing after it: {sentinel}
+Your reply to the caller must be a single line starting with "OK {step_id}" \
+or "ERROR:"."""
 
 REPLAN_PROMPT = """\
 You are a continuation planner inside a running workflow. Based on the results
@@ -148,7 +234,9 @@ def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dic
         task += f"\n\n## Fix instructions for the previous failure\n{fix}"
     user_parts = [task]
     if result_path:
-        user_parts.append(RESULT_PROTOCOL.format(result_path=result_path))
+        user_parts.append(RESULT_PROTOCOL.format(
+            result_path=result_path, step_id=step.id,
+            sentinel=sentinel_line(step.id)))
     user_parts.append(GUARDRAILS)
     return "\n\n".join(sys_parts), "\n\n".join(user_parts)
 
@@ -233,22 +321,215 @@ def unwrap_value(structured, text: str):
     return modes.strip_mode_line(text).strip()
 
 
+def _log_status(status: str) -> str:
+    """steps.log entry status: aborted joins the pre-existing success/error
+    (reliability-spec.md §4.2)."""
+    return {"ok": "success"}.get(status, status)
+
+
+def _append_log(log_path, step: model.Step, status: str, result_path):
+    if not log_path:
+        return
+    entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "step": step.id,
+             "status": _log_status(status),
+             "output_var": step.output, "result_file": str(result_path)}
+    with Path(log_path).open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def append_attempt(attempts_path: str | Path, seq, status: str):
+    """Append one {seq, class, ended_at} entry to a JSON-array attempts file
+    (reliability-spec.md §4.2/§5.1). Shared by both run-llm layers: the B
+    layer's `record` (via `_append_attempt` below) and the A layer's
+    dispatch wrapper (`wfrun _wrapper`, §5.1), which is also what
+    `wfrun dispatch` reads back to enforce the attempt cap (§5.1, F4/P5)."""
+    attempts_path = Path(attempts_path)
+    try:
+        attempts = json.loads(attempts_path.read_text(encoding="utf-8"))
+        if not isinstance(attempts, list):
+            attempts = []
+    except (OSError, json.JSONDecodeError):
+        attempts = []
+    attempts.append({"seq": seq, "class": status, "ended_at": time.time()})
+    write_text_atomic(attempts_path,
+                      json.dumps(attempts, ensure_ascii=False, indent=2))
+
+
+def load_attempts(attempts_path: str | Path) -> list:
+    try:
+        attempts = json.loads(Path(attempts_path).read_text(encoding="utf-8"))
+        return attempts if isinstance(attempts, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def apply_result(step: model.Step, res, vars_path: str | Path,
+                 log_path: str | Path | None = None,
+                 result_path: str | Path = "<result>",
+                 outputs_dir: str | Path | None = None,
+                 base_dir: str | Path | None = None) -> tuple[str, str]:
+    """The shared second half of `record_result` (B layer) and `wfrun wait`
+    (A layer, reliability-spec.md §5.1: "B層 record 相当を兼ねる"): given an
+    ALREADY-CLASSIFIED `claude_cli.CliResult`, update vars.json and append
+    the log. Only how each layer got to a CliResult differs -- B parses a
+    sentinel-terminated result file itself; A already has one straight from
+    `claude_cli.classify_result()`.
+
+    `result_path` is used only for error-message pointers (never read), and
+    `outputs_dir` only for `output-type="file"` steps (B passes the result
+    file itself instead; A has no such file and writes one here, mirroring
+    run-cc's `runs/<ts>/outputs/<id>.md`).
+
+    `base_dir` resolves relative `expect-file` paths. The A layer MUST pass
+    the same directory it gave the wrapper as cwd (the XML's parent):
+    unlike the B layer -- where the orchestrator and the subagent share a
+    cwd by construction -- an A-layer `wait` can be invoked from anywhere,
+    so checking expect-file against the caller's cwd would report a
+    correctly-written artifact as missing.
+
+    Returns (status, message) like record_result ("aborted" is decided
+    before a CliResult exists at all, by the caller -- never returned here).
+    """
+    ok = res.ok
+    message = "ok"
+    value = None
+    variables = None
+    if ok and (step.expect_file or step.output):
+        vars_path = Path(vars_path)
+        try:
+            variables = json.loads(vars_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            _append_log(log_path, step, "error", result_path)
+            return "error", f"error: cannot load vars file {vars_path}: {e}"
+
+    if ok and step.expect_file:
+        try:
+            missing = _missing_expected(step.expect_file, variables, step.id,
+                                        base_dir)
+        except InterpError as e:
+            ok = False
+            message = f"error: step '{step.id}' expect-file: {e}"
+        else:
+            if missing:
+                ok = False
+                message = "error: expect-file: not produced: " + ", ".join(missing)
+
+    if ok and step.output:
+        if step.output_type == "file":
+            value = str(result_path)
+            if outputs_dir:
+                out_path = Path(outputs_dir) / f"{step.id}.md"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(modes.strip_mode_line(res.text), encoding="utf-8")
+                value = str(out_path)
+        else:
+            value = unwrap_value(res.structured, res.text)
+        variables[step.output] = value
+        vars_path.write_text(json.dumps(variables, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        message = f"ok (set {step.output})"
+
+    if not ok and message == "ok":
+        # Content-hiding parity with record_result: guardrail/refusal carry
+        # the step's own reported text in res.error/res.text, which must
+        # never reach the orchestrator's context (run-llm.md's no-task-
+        # content design); point at the result file instead. Other classes'
+        # messages (claude_cli.classify_result()'s own strings) are already
+        # generic/content-free.
+        if res.error_class == "guardrail":
+            message = f"error: step reported ERROR (details: {result_path})"
+        elif res.error_class == "refusal":
+            message = f"error: step blocked by a mode/rules constraint (details: {result_path})"
+        else:
+            message = res.error or f"error: {res.error_class or 'failed'}"
+
+    status = "ok" if ok else "error"
+    _append_log(log_path, step, status, result_path)
+    return status, message
+
+
+def _append_attempt(step_id: str, result_path, handle: dict, status: str):
+    """B-layer (`record`) attempts file: steps/<id>_attempts.json next to
+    the handle, keyed by the handle's own recorded `attempt` (reliability-
+    spec.md §4.2). Handle-bearing runs only — legacy callers get no attempts
+    file, matching their no-handle, no-sentinel treatment throughout this
+    module."""
+    path = handle_path(step_id, result_path).with_name(f"{step_id}_attempts.json")
+    append_attempt(path, handle.get("attempt"), status)
+
+
+def _reply_claim(reply: str | None) -> str | None:
+    """'ok' / 'error' / None (no usable claim) from the orchestrator-supplied
+    --reply line. Only a clean prefix counts as a claim — anything else
+    (garbled, empty, unrelated text) is treated the same as no reply at all
+    for the liveness decision below (reliability-spec.md §4.2, F3)."""
+    if not reply:
+        return None
+    head = reply.strip().upper()
+    if head.startswith("OK"):
+        return "ok"
+    if head.startswith("ERROR"):
+        return "error"
+    return None
+
+
 def record_result(step: model.Step, result_path: str | Path,
-                  vars_path: str | Path, log_path: str | Path | None = None
-                  ) -> tuple[bool, str]:
+                  vars_path: str | Path, log_path: str | Path | None = None,
+                  reply: str | None = None) -> tuple[str, str]:
     """Read a subagent's result file, update the vars file, append the log.
 
-    Returns (ok, message). message never contains step output content —
-    failures point at the result file instead of quoting it.
+    Returns (status, message): status is "ok" / "error" / "aborted"
+    (reliability-spec.md §4.2's decision table; CLI exit codes 0/1/3 are
+    __main__.cmd_record's job, not this function's). message never contains
+    step output content — failures point at the result file instead of
+    quoting it.
+
+    `reply` is the single line the orchestrator received back from the
+    subagent (the reply CHANNEL), independent of the result FILE this
+    function otherwise reads — the two are cross-checked below. Passing
+    None reproduces pre-Phase-2.2 behavior exactly for callers with no
+    handle file (a "legacy" run: no `wfrun prompt --result` ever wrote one),
+    with one exception made deliberately non-legacy: a genuinely missing
+    result file used to report "error"/exit 1 for every caller; it now
+    reports "aborted"/exit 3 unless `reply` claims "ok" — reply presence is
+    the liveness signal that tells a dead/interrupted subagent (no reply at
+    all) apart from one that finished but never touched the file (reply
+    claims ok) (reliability-spec.md §1.3, §4.2).
 
     expect-file paths are checked here too (relative paths resolve against the
     orchestrator's cwd — where the subagent also ran).
     """
     result_path = Path(result_path)
+    claim = _reply_claim(reply)
+    handle = load_handle(step.id, result_path)
+
     if not result_path.is_file():
-        return False, f"error: result file not found: {result_path}"
+        status = "error" if claim == "ok" else "aborted"
+        message = ("error: claimed-ok-but-no-result" if status == "error"
+                   else "aborted: result file not found")
+        _append_log(log_path, step, status, result_path)
+        if handle is not None:
+            _append_attempt(step.id, result_path, handle, status)
+        return status, message
+
     raw = result_path.read_text(encoding="utf-8")
     text = modes.strip_mode_line(raw)
+
+    if handle is not None:
+        text, sentinel_ok = strip_sentinel_line(text, step.id)
+        if not sentinel_ok:
+            status = "error" if claim == "ok" else "aborted"
+            message = ("error: claimed-ok-but-no-result" if status == "error"
+                       else "aborted: incomplete (no end marker)")
+            _append_log(log_path, step, status, result_path)
+            _append_attempt(step.id, result_path, handle, status)
+            return status, message
+
+    if text.strip() == "":
+        _append_log(log_path, step, "error", result_path)
+        if handle is not None:
+            _append_attempt(step.id, result_path, handle, "error")
+        return "error", "error: empty result"
 
     ok = True
     message = "ok"
@@ -259,21 +540,31 @@ def record_result(step: model.Step, result_path: str | Path,
         try:
             variables = json.loads(vars_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
-            return False, f"error: cannot load vars file {vars_path}: {e}"
+            status, message = "error", f"error: cannot load vars file {vars_path}: {e}"
+            _append_log(log_path, step, status, result_path)
+            if handle is not None:
+                _append_attempt(step.id, result_path, handle, status)
+            return status, message
     if text.lstrip().startswith("ERROR:"):
         ok = False
         message = f"error: step reported ERROR (details: {result_path})"
-    elif modes.blocked_line(raw) is not None:
+    elif modes.blocked_line(text) is not None:
         ok = False
         message = f"error: step blocked by a mode/rules constraint (details: {result_path})"
     else:
         if step.expect_file:
             try:
-                paths = interpolate(step.expect_file, variables)
+                # base_dir=None: cwd-relative, per this layer's documented
+                # "orchestrator cwd = subagent cwd" premise (see the
+                # docstring above and apply_result's base_dir note).
+                missing = _missing_expected(step.expect_file, variables,
+                                            step.id, None)
             except InterpError as e:
-                return False, f"error: step '{step.id}' expect-file: {e}"
-            missing = [p.strip() for p in paths.split(",")
-                       if p.strip() and not Path(p.strip()).is_file()]
+                status, message = "error", f"error: step '{step.id}' expect-file: {e}"
+                _append_log(log_path, step, status, result_path)
+                if handle is not None:
+                    _append_attempt(step.id, result_path, handle, status)
+                return status, message
             if missing:
                 ok = False
                 message = "error: expect-file: not produced: " + ", ".join(missing)
@@ -292,16 +583,21 @@ def record_result(step: model.Step, result_path: str | Path,
                 if ok:
                     value = unwrap_value(structured, text)
 
+    if ok and claim == "error":
+        # The file looks like a clean success, but the reply channel
+        # explicitly claimed ERROR: do not silently trust the file over a
+        # deliberate error claim (reliability-spec.md §4.2, row 6).
+        ok = False
+        message = "error: reply/file mismatch"
+
     if ok and step.output:
         variables[step.output] = value
         vars_path.write_text(json.dumps(variables, ensure_ascii=False, indent=2),
                              encoding="utf-8")
         message = f"ok (set {step.output})"
 
-    if log_path:
-        entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "step": step.id,
-                 "status": "success" if ok else "error",
-                 "output_var": step.output, "result_file": str(result_path)}
-        with Path(log_path).open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return ok, message
+    status = "ok" if ok else "error"
+    _append_log(log_path, step, status, result_path)
+    if handle is not None:
+        _append_attempt(step.id, result_path, handle, status)
+    return status, message
