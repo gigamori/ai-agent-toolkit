@@ -12,3 +12,8 @@ execution spec is `SKILL.md` under `skills/mode-orchestrator/` (not here).
 Runtime files (read during execution) live inside the skill dir:
 `SKILL.md`, `modes/`, `workflows/` (e.g. the bundled `dev` spec), and
 `scripts/watchdog.sh` (started per turn to bound it in wall-clock time).
+
+`scripts/watchdog_test.sh` ships alongside the watchdog but is not runtime: run
+it with `bash scripts/watchdog_test.sh` after touching the watchdog or its
+thresholds. It builds its own fake session logs, so it needs no `claude` CLI and
+no prior run.

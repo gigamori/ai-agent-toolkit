@@ -135,9 +135,16 @@ So every turn is started alongside a **watchdog** (`scripts/watchdog.sh`) runnin
 in the background. It reports whichever of these happens first, then exits — and
 that exit is what wakes the orchestrator:
 
-- the turn's **deliverable file** appears and is non-empty — `DONE`;
+- the turn's **deliverable file** is written during the turn and is non-empty — `DONE`;
 - the turn's **wall-clock deadline** passes with no deliverable — `TIMEOUT`;
 - the subagent's transcript **stops growing** for the stall threshold — `STALL`.
+
+"During the turn" is load-bearing: a re-run writes to the same path as the
+attempt it replaces, so the file is often already there when the second attempt
+starts. The watchdog therefore requires the deliverable to be newer than its own
+start. Without that it would report `DONE` immediately against the dead
+attempt's leftovers and the re-run would go unwatched — silently, since a
+premature `DONE` looks exactly like a real one.
 
 The watchdog only reports; it never stops anything itself. On `TIMEOUT` or
 `STALL` the orchestrator stops the turn and classifies it `aborted`, then re-runs
@@ -150,7 +157,8 @@ Defaults are at the top of the script — edit them there:
 |---|---|
 | Stall threshold | 600s |
 | Deadline, `survey` | 600s |
-| Deadline, `plan` / `execute` | 1500s |
+| Deadline, `plan` | 2400s |
+| Deadline, `execute` | 1500s |
 | Deadline, every other mode | 900s |
 | Poll interval | 15s |
 

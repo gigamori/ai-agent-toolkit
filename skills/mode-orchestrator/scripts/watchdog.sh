@@ -30,6 +30,9 @@
 #     completion. It is NOT a liveness signal and is deliberately unused here.
 #   - A legitimate long tool call idles the transcript for the whole duration of
 #     that call, so STALL must exceed the longest tool call a turn may make.
+#   - A deliverable path is REUSED across attempts: SKILL.md re-runs an aborted
+#     turn onto the same file. So "the file exists" cannot mean "this turn wrote
+#     it", and DONE additionally requires the file to be newer than t0.
 
 set -u
 
@@ -42,7 +45,7 @@ STALL=600
 
 # Wall-clock budget per turn mode, in seconds.
 DEADLINE_SURVEY=600
-DEADLINE_PLAN=1500
+DEADLINE_PLAN=2400
 DEADLINE_EXECUTE=1500
 DEADLINE_DEBUG=900
 DEADLINE_REVIEW=900
@@ -168,10 +171,20 @@ EOF
 t0=$(date +%s)
 
 STAMP="$(mktemp)"
-trap 'rm -f "$STAMP"' EXIT
+DELIV_STAMP="$(mktemp)"
+trap 'rm -f "$STAMP" "$DELIV_STAMP"' EXIT
 touch -d "@$((t0 - RESOLVE_BACKDATE))" "$STAMP" 2>/dev/null || true
 
+# The deliverable stamp is t0 exactly, with NO backdating. `meta.json` gets a
+# grace window because the delegation call and this script start together and
+# their order is not guaranteed; a deliverable has no such race, since the turn
+# cannot have written its output before it started. Widening this window would
+# re-admit the previous attempt's leftover file, which is the whole failure this
+# check exists to stop — a re-run's deliverable path is the SAME path.
+touch -d "@$t0" "$DELIV_STAMP" 2>/dev/null || true
+
 TRANS=""
+STALE_NOTED=""
 trace "start deliv=$DELIV mode=${MODE:-<unset>} deadline=${DEADLINE}s stall=${STALL}s poll=${POLL}s"
 
 while :; do
@@ -179,7 +192,15 @@ while :; do
   elapsed=$((now - t0))
 
   if [ "$DELIV" != "-" ] && [ -s "$DELIV" ]; then
-    verdict DONE "deliverable written after ${elapsed}s"
+    if [ "$DELIV" -nt "$DELIV_STAMP" ]; then
+      verdict DONE "deliverable written after ${elapsed}s"
+    elif [ -z "$STALE_NOTED" ]; then
+      # Left by an earlier attempt at this same turn. Say so once: a run that
+      # keeps starting against a stale deliverable is worth seeing in the trace,
+      # and silence here is what made the original defect invisible.
+      STALE_NOTED=1
+      trace "deliverable exists but is not newer than t0 — stale, ignoring: $DELIV"
+    fi
   fi
 
   if [ -z "$TRANS" ] && [ "$elapsed" -lt "$RESOLVE_GRACE" ]; then
