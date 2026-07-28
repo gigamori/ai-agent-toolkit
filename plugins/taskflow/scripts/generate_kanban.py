@@ -20,6 +20,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import hmac
 import json
@@ -1339,6 +1340,49 @@ def detect_scheme() -> str:
     return "vscodium" if shutil.which("codium") else "vscode"
 
 
+CLAUDE_CODE_EXT_ID = "anthropic.claude-code"
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_cc_launcher() -> tuple[str | None, bool]:
+    """Resolve the VS Code / VSCodium CLI and whether the Claude Code extension
+    is installed in it.
+
+    Returns ``(cmd, has_ext)`` where ``cmd`` is the launcher path (or ``None``
+    if neither ``codium`` nor ``code`` is on PATH) and ``has_ext`` is whether
+    ``anthropic.claude-code`` appears in ``<cmd> --list-extensions``.
+
+    ``lru_cache`` makes this probe run at most once per process — the
+    ``--list-extensions`` call (~0.36s) happens on the first ``/open`` and is
+    cached for the server's lifetime.
+    """
+    cmd = shutil.which("codium") or shutil.which("code")
+    if not cmd:
+        return None, False
+    try:
+        proc = subprocess.run(
+            [cmd, "--list-extensions"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return cmd, False
+    exts = {line.strip().lower() for line in proc.stdout.splitlines()}
+    return cmd, CLAUDE_CODE_EXT_ID in exts
+
+
+def _launch_error_html(message: str, manual_hint: str) -> bytes:
+    """Small HTML page shown when a CC link cannot be launched, carrying the
+    session UUID / prompt so the user can open it manually."""
+    return (
+        "<!DOCTYPE html><html><head><meta charset=UTF-8>"
+        "<title>Claude Code launch failed</title></head><body>"
+        "<h3>Could not open in Claude Code</h3>"
+        f"<p>{esc(message)}</p>"
+        f"<p>Open it manually — {esc(manual_hint)}</p>"
+        "</body></html>"
+    ).encode("utf-8")
+
+
 def open_browser(url: str) -> None:
     if sys.platform == "win32":
         os.startfile(url)
@@ -1586,24 +1630,55 @@ def make_handler(
                 if not hmac.compare_digest(provided_t, open_token):
                     self._respond(403, b"forbidden")
                     return
-                cmd = shutil.which("codium") or shutil.which("code") or "code"
                 if "session" in qs:
                     session = qs["session"][0]
                     if not session or not SESSION_RE.match(session):
                         self._respond(400, b"bad session")
                         return
                     uri = f"{scheme}://anthropic.claude-code/open?session={session}"
+                    manual_hint = f"session {session}"
                 elif "prompt" in qs:
                     prompt = qs["prompt"][0][:500]
                     uri = f"{scheme}://anthropic.claude-code/open?prompt={quote(prompt)}"
+                    manual_hint = prompt
                 else:
                     self._respond(400, b"missing param")
                     return
-                subprocess.Popen(
-                    [cmd, "--open-url", uri],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                cmd, has_ext = _resolve_cc_launcher()
+                if cmd is None:
+                    self._respond(
+                        200,
+                        _launch_error_html(
+                            "No VS Code / VSCodium CLI (code / codium) found on PATH.",
+                            manual_hint,
+                        ),
+                        content_type="text/html; charset=utf-8",
+                    )
+                    return
+                if not has_ext:
+                    self._respond(
+                        200,
+                        _launch_error_html(
+                            f"The Claude Code extension ({CLAUDE_CODE_EXT_ID}) is not "
+                            "installed in the detected editor.",
+                            manual_hint,
+                        ),
+                        content_type="text/html; charset=utf-8",
+                    )
+                    return
+                try:
+                    subprocess.Popen(
+                        [cmd, "--open-url", uri],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except OSError as e:
+                    self._respond(
+                        200,
+                        _launch_error_html(f"Failed to launch editor: {e}", manual_hint),
+                        content_type="text/html; charset=utf-8",
+                    )
+                    return
                 self._respond(200, b"<!DOCTYPE html><html><head><meta charset=UTF-8>"
                              b"<script>window.close();</script></head>"
                              b"<body>opening...</body></html>",

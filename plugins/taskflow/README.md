@@ -150,6 +150,8 @@ Invocation:
 
 Each workspace's server binds a port derived from its `_projects` roots (base `17329`, span 64 — deterministic across processes via `hashlib`, so a later `--stop` from the same workspace finds the same server). Running `/kanban` from multiple VSCode workspaces at once no longer collides: each gets its own port, and `/health` carries a workspace-identity key so a same-port hash collision between two different workspaces is never mistaken for "already serving".
 
+> **Claude Code open links** (the **▶ CC** button and session / prompt launches) require the Claude Code VS Code / VSCodium extension (`anthropic.claude-code`). In serve mode the launcher CLI and the extension are probed once per server; if neither `code` nor `codium` is on `PATH`, or the extension is not installed, the link returns a short page carrying the session UUID / prompt so you can open it manually — instead of failing silently or crashing the request.
+
 Options for the script:
 
 - `--out PATH` — Write HTML to a custom path (default: system temp directory / `taskflow-kanban.html`)
