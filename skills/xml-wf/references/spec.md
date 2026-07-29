@@ -318,11 +318,15 @@ against these anchor words; `scripts/wfrun/model_map.json` binds them to the
 models that actually run, **once, deterministically, at dispatch**:
 
 - the `cc` table covers everything dispatched through the claude CLI —
-  run-cc steps, `ask=` judgments (both runners), debug diagnoses, replan
-  builders — and must hold claude CLI model names
-- the `llm` table covers run-llm step delegation: `wfrun prompt` prints the
-  resolved name on the dispatch line (as `model=X (mapped from Y)` when a
-  mapping applied) and the orchestrator passes it through verbatim
+  run-cc steps, debug diagnoses, replan builders, and `ask=` when its
+  `--backend` resolves to `cc` (the default `auto` does this whenever
+  `CLAUDE_CODE_SESSION_ID` is set) — and must hold claude CLI model names
+- the `llm` table covers run-llm step delegation (`wfrun prompt` prints the
+  resolved name on the dispatch line, as `model=X (mapped from Y)` when a
+  mapping applied, and the orchestrator passes it through verbatim) and
+  `ask=` when `--backend` resolves to `pi` — both read names meant for
+  "the orchestrator's own execution facility", not the claude CLI, so `pi`
+  canonical names live in this table, not `cc`'s
 
 The bundled map is the identity (zero-config = current behavior). Unmapped
 names pass through. Applied mappings are recorded as `model-map` events;

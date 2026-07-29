@@ -168,7 +168,14 @@ has returned.
 - `test=` : `$WFRUN eval "<expr>" --vars vars.json` — branch only on the
   literal `true`/`false` it prints
 - `ask=` : `$WFRUN ask "<question>" --vars vars.json --quiet --log steps.log` —
-  same (the reason goes straight to the log file; you do not see it)
+  same (the reason goes straight to the log file; you do not see it). The
+  dispatch string above stays fixed — do not add `--backend`: `ask` detects
+  the running harness on its own (`CLAUDE_CODE_SESSION_ID` set → the claude
+  CLI, unset → the pi CLI) and logs which one ran under `"backend"` in each
+  steps.log entry. When it ran against the pi CLI, `cost_usd` in that entry
+  is always `0.0` — Pi's non-interactive mode reports no cost figure, so a
+  `0.0` there is "not measured", not "measured zero"; only claude-CLI entries
+  carry a real cost
 - `while`/`each` : repeat the full 4-move protocol every iteration. Stop and
   report when the workflow's `max` is reached — count only steps.log's
   **step-execution** entries (the ones carrying a `"step"` field). `ask`
@@ -282,6 +289,12 @@ mode; know them, do not paper over them:
   subagent its result file) — a broader deny would break them. And any hook
   can be bypassed via Bash file reads, so this closes the *accidental* read
   path, not the deliberate one. The primary defense remains ⟦STEP-GATE⟧ below.
+
+  The hook is a Claude Code mechanism, so this mechanical backstop only
+  exists there. Outside Claude Code, `wfrun prompt --result` prints a note
+  that the firewall is prompt-level only rather than searching for the
+  marker (there is no `.claude/settings.json` hook system to check) —
+  ⟦STEP-GATE⟧ is what carries the guarantee in that case.
 
 ---
 

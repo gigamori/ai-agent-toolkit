@@ -54,7 +54,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [mode-orchestrator](skills/mode-orchestrator/) | CC | — | todolist と context を含むドキュメントを読み、各ステップを role-mode の `mode:`/`role:` ヘッダ付きで隔離 `general-purpose` subagent ターンとして実行。1ターン 1 mode（+任意 role）、混在なし。autonomous mode 限定。ターンごとの model override、ターンごとに固定した status 行の返答契約（権限拒否や status 行の欠落はリカバリに入らず run を停止）、各ターンをウォールクロックで有界化し生成停止を検出する背景 watchdog、有界な `failed`→`debug`→再 execute リカバリループ、タスク種別ごとの workflow spec（`dev` 同梱）に対応 |
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | 過去の Claude Code セッションログを、事前構築した DuckDB ビュー（会話・引数付き tool 呼び出し・ファイル変更・fork・compaction・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | 過去の Pi Coding Agent セッションログを、事前構築した DuckDB ビュー（会話・tool 呼び出し・ファイル変更・セッション系譜/bundle・compaction・in-file branch・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、subagent/skill-fork/handoff/fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
-| [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。各ステップは明示的なロールとモードの下、独立した `claude -p` subagent として実行され、同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする |
+| [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。run-cc モードでは各ステップが明示的なロールとモードの下、独立した `claude -p` subagent として実行される。run-llm プロトコルはホスト側エージェント自身の subagent 機能へ委譲し、`ask=` 判定は harness に応じて claude / pi CLI を自動選択する |
 
 ### revert
 

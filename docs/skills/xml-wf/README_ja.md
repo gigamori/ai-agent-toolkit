@@ -43,12 +43,17 @@
 
 - **Python 3.12+**
 - **uv**（Python はすべて `uv run` 経由で起動）
-- **claude CLI v2.1.214+**（`claude -p` / `--json-schema` を使用。ロール定義は
-  プロンプトに注入され、`--agent` は使わない）
+- **claude CLI v2.1.214+** — `run-cc` が必要とする（各ステップ・debug 診断・
+  replan builder はすべて `claude -p` / `--json-schema` で実行。ロール定義は
+  プロンプトに注入され、`--agent` は使わない）。`ask=` 判定も Claude Code 上で
+  実行される場合はこの CLI を使う。Claude Code 以外では `wfrun ask` は代わりに
+  **pi CLI** へ dispatch する（自動判定。後述 CLI リファレンスの `--backend` 参照）
 
-ランナーは標準ライブラリのみで動作します。`build` と `run-cc` モードは Claude Code
-向け、`run-llm` プロトコルはサブエージェント機能を持つ任意のエージェント基盤で動作
-します。
+ランナーは標準ライブラリのみで動作します。`build` モードは CLI を起動しません —
+セッションの LLM 自身が XML を書き、`wfrun validate` で完結します（ただしロール
+収集は `.claude/agents` / `$CLAUDE_CONFIG_DIR`、`tools=` の語彙は Claude Code の
+ツール名を前提とします）。`run-cc` は Claude Code 向け、`run-llm` プロトコルは
+サブエージェント機能を持つ任意のエージェント基盤で動作します。
 
 **複数の `claude` インストール（Windows）:** wfrun は `PATH` が返す値をそのまま
 起動するのではなく、実際に起動する `claude` 実行ファイルを自前で解決します。
@@ -208,8 +213,15 @@ wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
 ```
 wfrun interp <text> --vars V            # {var} 参照を補間
 wfrun eval   <expr> --vars V            # test= 式を評価 → true/false
-wfrun ask    <question> [--vars V] [--model haiku] [--quiet] [--log LOG]
+wfrun ask    <question> [--vars V] [--model haiku] [--backend auto|cc|pi] [--quiet] [--log LOG]
 ```
+
+`--backend`（既定 `auto`）: 判定を `claude` CLI（`cc`）または `pi` CLI（`pi`）の
+どちらへ dispatch するかを指定する。`auto` は `CLAUDE_CODE_SESSION_ID`（非空なら
+`cc`、空なら `pi`）から実行中の harness を判定する — PATH 上にどのバイナリが
+あるかは見ない。Pi backend には構造化出力を強制するフラグが無く（プロンプト指示
+＋二段パースで代替）、`cost_usd` は常に `0.0` になる。`--log` の各行には
+どちらの backend が動いたかが `"backend"` として記録される。
 
 注意:
 - `--permission-mode` は、解決後のツールが書き込み可能なステップにのみ転送される。

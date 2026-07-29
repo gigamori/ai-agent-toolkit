@@ -46,12 +46,18 @@ recorded under `runs/`, and a run can resume from the point of failure).
 
 - **Python 3.12+**
 - **uv** (all Python is launched via `uv run`)
-- **claude CLI v2.1.214+** (uses `claude -p` / `--json-schema`; role definitions
-  are injected into prompts, `--agent` is not used)
+- **claude CLI v2.1.214+** — required by `run-cc` (every step, debug diagnosis,
+  and replan builder runs as `claude -p` / `--json-schema`; role definitions
+  are injected into prompts, `--agent` is not used), and by `ask=` judgments
+  when running under Claude Code. Outside Claude Code, `wfrun ask` dispatches
+  through the **pi CLI** instead (auto-detected; see `--backend` in the CLI
+  reference below)
 
-The runner uses the standard library only. `build` and `run-cc` modes target
-Claude Code; the `run-llm` protocol works on any agent platform with a subagent
-facility.
+The runner uses the standard library only. `build` mode invokes no CLI — the
+session LLM authors the XML and finishes at `wfrun validate` — though its role
+discovery (`.claude/agents`, `$CLAUDE_CONFIG_DIR`) and `tools=` vocabulary
+target Claude Code. `run-cc` targets Claude Code; the `run-llm` protocol works
+on any agent platform with a subagent facility.
 
 **Multiple `claude` installs (Windows):** wfrun resolves the actual `claude`
 executable itself rather than launching whatever `PATH` returns verbatim —
@@ -215,8 +221,16 @@ wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
 ```
 wfrun interp <text> --vars V            # interpolate {var} references
 wfrun eval   <expr> --vars V            # evaluate a test= expression → true/false
-wfrun ask    <question> [--vars V] [--model haiku] [--quiet] [--log LOG]
+wfrun ask    <question> [--vars V] [--model haiku] [--backend auto|cc|pi] [--quiet] [--log LOG]
 ```
+
+`--backend` (default `auto`): dispatches the judgment through the `claude` CLI
+(`cc`) or the `pi` CLI (`pi`). `auto` detects the running harness from
+`CLAUDE_CODE_SESSION_ID` (set → `cc`, unset → `pi`) — it does not inspect
+which binaries happen to be on `PATH`. The Pi backend has no forced
+structured-output flag (prompted instead, with a two-pass JSON parse) and
+never reports `cost_usd` (always `0.0`); `--log` entries record which
+backend ran under `"backend"`.
 
 Notes:
 - `--permission-mode` is forwarded only to steps whose resolved tools can write.

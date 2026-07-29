@@ -10,8 +10,12 @@ execution spec is `SKILL.md` under `skills/mode-orchestrator/` (not here).
 | [WORKFLOW_SPEC_AUTHORING.md](WORKFLOW_SPEC_AUTHORING.md) | Spec authors | How to author a `workflows/<name>.md` spec: required sections, weak coupling, model precedence, adding a task type. |
 
 Runtime files (read during execution) live inside the skill dir:
-`SKILL.md`, `modes/`, `workflows/` (e.g. the bundled `dev` spec), and
-`scripts/watchdog.sh` (started per turn to bound it in wall-clock time).
+`SKILL.md`, `modes/`, `workflows/` (e.g. the bundled `dev` spec),
+`references/` (harness-specific delegation and time-bound mechanics — `SKILL.md`
+Step -1 resolves Claude Code vs. Pi and reads `harness-cc.md` or
+`harness-pi.md` accordingly), and `scripts/watchdog.sh` (Claude Code only —
+started per turn to bound it in wall-clock time; Pi uses the `bash` tool's
+native `timeout` instead, see `references/harness-pi.md`).
 
 `scripts/watchdog_test.sh` ships alongside the watchdog but is not runtime: run
 it with `bash scripts/watchdog_test.sh` after touching the watchdog or its

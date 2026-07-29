@@ -223,8 +223,18 @@ def cmd_eval(args) -> int:
     return 0
 
 
+def _detect_ask_backend() -> str:
+    """Deterministic `--backend auto` resolution: the same env signal
+    mode-orchestrator's Step -1 uses for harness detection (non-empty
+    CLAUDE_CODE_SESSION_ID => Claude Code => "cc"; empty => "pi"). See
+    mode-orchestrator-runs/phase5-item1-cc-inventory-design.md §2.3 -- this
+    is deliberately NOT left to the calling orchestrator's own judgment: a
+    forgotten/wrong flag would otherwise fail silently (ask would just run
+    against whichever CLI happens to be on PATH)."""
+    return "cc" if os.environ.get("CLAUDE_CODE_SESSION_ID") else "pi"
+
+
 def cmd_ask(args) -> int:
-    from .claude_cli import ask_llm  # deferred: needs claude CLI only here
     question = args.question
     if args.vars:
         try:
@@ -232,20 +242,36 @@ def cmd_ask(args) -> int:
         except interp_mod.InterpError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
-    try:  # wfrun ask always dispatches through the claude CLI -> "cc" table
-        ask_model = modelmap.resolve(args.model, "cc")
+
+    detected = _detect_ask_backend()
+    backend = detected if args.backend == "auto" else args.backend
+    if args.backend != "auto" and args.backend != detected:
+        print(f"warning: --backend {args.backend} given but the environment "
+              f"looks like '{detected}' (CLAUDE_CODE_SESSION_ID is "
+              f"{'set' if detected == 'cc' else 'unset'}); proceeding with "
+              f"the explicit --backend {args.backend} anyway", file=sys.stderr)
+
+    try:  # "cc" table for the claude CLI, "llm" table for everything else
+        ask_model = modelmap.resolve(args.model, "cc" if backend == "cc" else "llm")
     except modelmap.ModelMapError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    answer, reason, cost = ask_llm(question, model=ask_model, cwd=args.base_dir)
+
+    if backend == "cc":
+        from .claude_cli import ask_llm  # deferred: needs claude CLI only here
+        answer, reason, cost = ask_llm(question, model=ask_model, cwd=args.base_dir)
+    else:
+        from .pi_cli import ask_llm_pi  # deferred: needs pi CLI only here
+        answer, reason, cost = ask_llm_pi(question, model=ask_model, cwd=args.base_dir)
+
     if answer is None:
         print(f"error: ask judgment failed: {reason}", file=sys.stderr)
         return 2
     payload = {"answer": answer, "reason": reason, "cost_usd": round(cost, 6)}
     if args.log:
         with Path(args.log).open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"kind": "ask", "question": question, **payload},
-                               ensure_ascii=False) + "\n")
+            f.write(json.dumps({"kind": "ask", "backend": backend, "question": question,
+                               **payload}, ensure_ascii=False) + "\n")
     if args.quiet:
         print("true" if answer else "false")
     else:
@@ -260,6 +286,17 @@ LLM_GUARD_MARKER = "xml-wf-llm-guard"
 
 
 def _warn_if_no_llm_guard():
+    # The hook is a Claude Code PreToolUse mechanism; only under CC is
+    # "is it configured" even a meaningful question (see
+    # mode-orchestrator-runs/phase5-item1-cc-inventory-design.md §3.2).
+    # An unset CLAUDE_CODE_SESSION_ID means "not CC" -- not "Pi": the same
+    # signal is unset when wfrun is run from a plain terminal.
+    if not os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        print("note: not running under Claude Code — the run-llm content "
+              "firewall is prompt-level only (no mechanical backstop "
+              "available; see references/run-llm.md, Enforcement "
+              "boundaries)", file=sys.stderr)
+        return
     user_settings = [d / "settings.json" for d in claude_config_dirs()]
     for settings in (Path(".claude/settings.json"),
                      Path(".claude/settings.local.json"),
@@ -901,6 +938,9 @@ def main(argv=None) -> int:
     p_ask.add_argument("--vars", metavar="VARS_JSON",
                        help="optional vars file for {var} interpolation in the question")
     p_ask.add_argument("--model", default=model.DEFAULT_ASK_MODEL)
+    p_ask.add_argument("--backend", choices=("auto", "cc", "pi"), default="auto",
+                       help="dispatch CLI; auto detects from CLAUDE_CODE_SESSION_ID "
+                            "(default: auto)")
     p_ask.add_argument("--base-dir", help="cwd for the judgment agent (file reads)")
     p_ask.add_argument("--quiet", action="store_true",
                        help="print only true/false (keeps reason out of the caller)")

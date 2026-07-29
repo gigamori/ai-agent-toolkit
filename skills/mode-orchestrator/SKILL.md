@@ -1,13 +1,13 @@
 ---
 name: mode-orchestrator
-description: "Read a document that holds a todolist (a list of instructions) plus related context, then run each step as an isolated general-purpose subagent turn prefixed with a role-mode mode:/role: header and the matching NEVER/DO rules — one mode and at most one role per turn, never mixed, autonomous modes only. Supports a per-turn model override, a bounded failed→debug→re-execute recovery loop, and optional per-task-type workflow specs that supply default step sequences and mode→model tables. First gates the input and rejects an insufficient todolist. Use when the user points at a design doc, plan, or handoff that contains a todolist and asks to orchestrate, run, or execute its steps mode-by-mode, or mentions role-mode driven subagent execution."
+description: "Read a document that holds a todolist (a list of instructions) plus related context, then run each step as an isolated turn (Claude Code: a general-purpose subagent; Pi: a blocking `pi -p` call) prefixed with a mode:/role: header and the matching NEVER/DO rules — one mode and at most one role per turn, never mixed, autonomous modes only. Supports a per-turn model override, a bounded failed→debug→re-execute recovery loop, and optional per-task-type workflow specs that supply default step sequences and mode→model tables. First gates the input and rejects an insufficient todolist. Use when the user points at a design doc, plan, or handoff that contains a todolist and asks to orchestrate, run, or execute its steps mode-by-mode, or mentions role-mode driven subagent execution."
 ---
 
 # Mode Orchestrator
 
 ## Overview
 
-Takes a document that contains a todolist (a list of instructions) and related context. For each step it generates a role-mode-tagged prompt (picks the mode, optionally a role) and runs it as a separate, isolated subagent turn. One mode — and at most one role — per turn; modes and roles are never mixed within a single turn. Only autonomous modes are executed; interactive modes are surfaced as suggestions, not run.
+Takes a document that contains a todolist (a list of instructions) and related context. For each step it generates a role-mode-tagged prompt (picks the mode, optionally a role) and runs it as a separate, isolated turn — delegated per the harness's own method (see Step -1). One mode — and at most one role — per turn; modes and roles are never mixed within a single turn. Only autonomous modes are executed; interactive modes are surfaced as suggestions, not run.
 
 This skill does not decompose an unstructured task from scratch — the todolist must already be present in the input (see Step 0).
 
@@ -26,6 +26,27 @@ This skill does not decompose an unstructured task from scratch — the todolist
 - `--workflow=<name>`: load `workflows/<name>.md` and apply it as defaults (recommended step sequence, mode→model table, failure-policy parameters). A spec name declared inside the todolist document is honored the same way. Default: no spec — run exactly as the todolist dictates (backward compatible). A spec supplies defaults and warnings only; the todolist is always authoritative and the Step 0 gate is unchanged.
 
 Flags use the `--` form on purpose. Never use `mode:` / `role:` colon-prefixes for flags — the role-mode hook would capture them from the invocation prompt.
+
+## Step -1 — Harness resolution (run first)
+
+Before Step 0, resolve which harness is running this skill and confirm this is not a nested invocation. Run exactly one command:
+
+```
+echo "harness-probe:[${CLAUDE_CODE_SESSION_ID:-}] depth:[${MODE_ORCH_DEPTH:-}]"
+```
+
+**Read `depth:` first.**
+
+- `depth:` is non-empty → **STOP immediately.** This orchestrator is running inside a turn that another orchestrator delegated. Report the nesting and hand the run to the user. A run that orchestrates itself recursively is the failure this guard exists to prevent — do not proceed on the reasoning that one more level is harmless.
+- `depth:` is empty → continue to the harness branch.
+
+Then read `harness-probe:`.
+
+- Brackets contain a non-empty value → Claude Code. Read `references/harness-cc.md`.
+- Brackets are empty → Pi. Read `references/harness-pi.md`.
+- The command did not run, or its output does not match the shape above → STOP. Report that the harness could not be resolved and hand the run to the user. Do not guess and do not pick a reference.
+
+Resolve once per invocation and record both results in the run index. Every delegation (Execution step 2) and every wall-clock bound (Execution step 4) is defined by the reference read here; the rest of this file is harness-neutral.
 
 ## Step 0 — Todolist sufficiency gate (reject)
 
@@ -76,7 +97,7 @@ One mode per record — a record never carries two modes or two roles. A single 
 
 If a workflow spec is active, compare the todolist against the spec's recommended step sequence; note any mismatch (a step the spec does not anticipate, or a spec step the todolist omits) as a **warning** appended to the turn plan. A warning never blocks — the todolist is authoritative; only the Step 0 gate can reject.
 
-Include a **Failure policy** block in the turn plan, stated once up front: which turn kinds can enter recovery (execute turns that return `failed` — no other mode is even offered that status), the per-turn cycle cap (default 2, or the active spec's value), the exit rule (cap reached → escalate to `blocked` and stop), the wall-clock budget each turn is given (the watchdog's per-mode deadline, and its stall threshold); and everything that bypasses recovery — `blocked` / `needs-human` stop immediately; an `aborted` turn — one with no status line, or one the watchdog ended with `TIMEOUT` or `STALL` — is re-run once outside the cap, then stops with `needs-human`; and `failed` from a non-`execute` turn is out of contract and stops as `needs-human`. Approving the plan approves this policy; the recovery turns it later inserts are not re-approved individually (this holds even without `--auto`).
+Include a **Failure policy** block in the turn plan, stated once up front: which turn kinds can enter recovery (execute turns that return `failed` — no other mode is even offered that status), the per-turn cycle cap (default 2, or the active spec's value), the exit rule (cap reached → escalate to `blocked` and stop), the wall-clock budget each turn is given (per the harness reference's P2 time-bound); and everything that bypasses recovery — `blocked` / `needs-human` stop immediately; an `aborted` turn — one with no status line, or one the harness's P2 mechanism ended early — is re-run once outside the cap, then stops with `needs-human`; and `failed` from a non-`execute` turn is out of contract and stops as `needs-human`. Approving the plan approves this policy; the recovery turns it later inserts are not re-approved individually (this holds even without `--auto`).
 
 Unless `--auto`, present the turn plan (order / mode / role / model + its decided tier / one-line gist per turn), the spec warnings, and the Failure policy block, then wait for approval before executing.
 
@@ -153,12 +174,8 @@ system, the status is `blocked`.
 For each turn record, in order:
 
 1. Assemble the subagent prompt (above).
-2. Delegate to one general-purpose subagent, requesting the turn's resolved `model` as the delegation-call model override when the platform supports it; otherwise proceed with the inherited model and record that in the run index. One turn = one subagent; never combine turns.
-   - **Start the turn watchdog in the same message as the delegation call**, as a background command: `bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable path> --desc "<the description given on the delegation call, verbatim>" --mode <the turn's mode>`. Use `--deliv -` for a turn that writes no file. **Every delegation in the run needs its own description**, re-runs and recovery turns included — that string is the watchdog's only key, so two turns sharing one can be confused for each other.
-   - The watchdog is what bounds the turn in wall-clock time. The orchestrator is event-driven: it cannot poll, and the only asynchronous wake available to it is the completion of a background command it started itself. Without the watchdog a subagent that never returns leaves the run waiting indefinitely, which is the failure this whole step exists to prevent.
-   - It exits with one word — `DONE`, `TIMEOUT`, or `STALL` — and that exit is the wake. Thresholds live at the top of the script; do not pass the delegation call's agent id to it, since it resolves the transcript from `--desc` on its own.
-   - `DONE` means the deliverable was written *during this turn* — the file must also be newer than the watchdog's start, not merely present. This matters because a re-run reuses the deliverable path (step 4), so on any second attempt the file is already there from the first.
-   - Whichever finishes first wins. When the turn's own completion notification arrives first, stop the watchdog task: a verdict that lands after the turn already has a readable status is stale and must be ignored, never re-classified.
+2. Delegate the turn per the harness reference's **P1 delegation method** (read in Step -1), requesting the turn's resolved `model` as that method's model override when supported; otherwise proceed with the inherited model and record that in the run index. One turn = one delegated call; never combine turns.
+   - **Start the turn's P2 time-bound in the same step as the delegation**, per the harness reference. Follow the reference for how it is keyed (if at all), how it signals `DONE`/timeout/stall-equivalent, and how a stale signal is discarded in favor of a turn's own completion.
 3. The subagent writes its deliverable to the run directory as `NN-<mode>.md` and returns only a ≤3-line gist followed, as its **final line**, by `status: <...>; file: <path>` — the status drawn from the vocabulary that turn's contract offered it (`ok|failed|blocked|needs-human` for `execute`, `ok|blocked|needs-human` for every other mode), and `file: -` when the turn produced no file. Read the status from that line and nothing else — prose elsewhere in the reply is not a status.
    - **execute exception**: an `execute` turn edits the actual source files; its file is a short change-report listing the touched paths, not a copy of the work.
    - **`failed`** is emitted only by an `execute` turn: the turn's procedure completed but a planned check (e.g. a test) did not pass, and the failure looks fixable in-repo. On `failed`, the change-report must include a `## Failure report` section with five fields — **Error** (one sentence), **Reproduction** (the exact command), **Error output**, **Target file(s)**, **Context** (language / framework / OS / deps). These are the same fields a `debug` turn needs as input.
@@ -166,12 +183,11 @@ For each turn record, in order:
    - **`failed` from a non-`execute` turn is out of contract** (that turn was never offered the value): read it as `needs-human` and stop at step 7. Do not enter the recovery loop — the loop's first move is a `debug` turn fed by a `## Failure report`, which only an `execute` turn produces, so it would be diagnosing a report that does not exist. Report the turn's own gist verbatim so the user can see what it was signalling.
    - If the subagent reports `[BLOCKED: mode-rule <name>]`, relay it verbatim.
 4. **A turn that reports nothing is `aborted` — infrastructure failure, not a task outcome.** Two paths reach it:
-   - **The watchdog wakes first with `TIMEOUT` or `STALL`.** The turn is over its wall-clock budget, or its subagent stopped generating. Stop the turn and classify it `aborted`. Do not wait for a reply that the watchdog has already established is not coming — waiting for it is the exact failure the watchdog was added to end. Do not try to read the stopped turn's output first: a subagent's output file is its entire transcript, and pulling that into the orchestrator's context to describe a turn that is being discarded anyway can end the run outright. Note the verdict in the run index and move on; the transcript stays on disk for a human to read.
+   - **The harness's P2 time-bound fires first** (see the harness reference for its exact signal). The turn is over its wall-clock budget, or — where the reference's mechanism can detect it — its subagent stopped generating. Stop the turn and classify it `aborted`. Do not wait for a reply the time-bound has already established is not coming — waiting for it is the exact failure P2 exists to end. Do not try to read the stopped turn's output first: a subagent's output file is its entire transcript, and pulling that into the orchestrator's context to describe a turn that is being discarded anyway can end the run outright. Note the verdict in the run index and move on; the transcript stays on disk for a human to read.
    - **The reply arrives but its final line is not a well-formed `status:` line** (interrupted, killed, or simply off-contract). The turn reported *nothing* about the task.
 
-   In both cases: do not read it as `failed` and do not enter the recovery loop — there is no diagnosable failure, and a `debug` turn would be diagnosing an absence. Instead: **re-run the identical turn exactly once**, watchdog included; if that re-run is also `aborted`, stop the run with `needs-human`. An `aborted` re-run does not consume the originating turn's recovery-cycle cap (that cap counts `failed` cycles).
-   - The prompt is identical, but **the re-run's description must not be** — give it a distinct one (e.g. suffix `(re-run)`). The description is the watchdog's only key, and the aborted turn's own record is still on disk and still recent; reuse the string and the re-run's watchdog can latch onto its dead predecessor, whose transcript by definition stopped growing, and report `STALL` immediately against a turn that is working fine.
-   - The deliverable path, by contrast, stays the same on a re-run, and that is fine: the watchdog requires the file to be newer than its own start, so a partial file the aborted attempt managed to write is ignored rather than read as an instant `DONE`. Pass the same `--deliv` you passed the first time.
+   In both cases: do not read it as `failed` and do not enter the recovery loop — there is no diagnosable failure, and a `debug` turn would be diagnosing an absence. Instead: **re-run the identical turn exactly once**, its P2 time-bound included; if that re-run is also `aborted`, stop the run with `needs-human`. An `aborted` re-run does not consume the originating turn's recovery-cycle cap (that cap counts `failed` cycles).
+   - Follow the harness reference for how to key the re-run (if its P2 mechanism keys off an identifier) and how to pass the deliverable path, so the re-run cannot be confused with, or short-circuited by, its aborted predecessor.
 5. **Chaining**: a later turn receives earlier artifacts by path in its `inputs` and reads the full files itself — never forward a gist as the next turn's input.
 6. **Recovery loop** — when an `execute` turn returns `failed`:
    1. Insert a `debug` turn: `inputs` = the plan artifact plus this `NN-execute.md` (with its Failure report); deliverable `NNa-debug.md` = root cause + proposed minimal diff + verification command. If the Failure report's five fields are absent, the `debug` turn returns `needs-human` (it cannot diagnose blind).
@@ -185,7 +201,7 @@ For each turn record, in order:
 ## Run directory (workspace)
 
 - Create one run directory in the workspace per invocation, e.g. `mode-orchestrator-runs/<run-slug>/` — derive the slug from the input document name.
-- Artifacts: `NN-<mode>.md` in order; recovery turns inserted for a failed turn use the suffix form `NNa-debug.md` / `NNb-execute.md` / `NNc` / `NNd`, preserving the originating order. Plus a small index file recording the turn plan, each turn's model (and its decided tier), status/path, the recovery cycle count for any turn that entered the loop, and — for any turn re-run after an `aborted` reply — that it was re-run, which path detected the abort (a missing status line, or the watchdog's `TIMEOUT` / `STALL`), and whether the re-run produced a readable status. Record the `aborted` event even when the re-run then succeeds: an aborted turn writes no deliverable and leaves no other trace, so without this line a post-hoc reader of a stalled or slow run cannot tell that a turn was silently lost and repeated. Recording which path caught it is what makes the thresholds reviewable — a run that keeps hitting `TIMEOUT` on turns that were still working is telling you the budget is too tight, and that is invisible if every abort looks the same. This index is an artifact index for inspection, not a resumable scheduler.
+- Artifacts: `NN-<mode>.md` in order; recovery turns inserted for a failed turn use the suffix form `NNa-debug.md` / `NNb-execute.md` / `NNc` / `NNd`, preserving the originating order. Plus a small index file recording the turn plan, each turn's model (and its decided tier), status/path, the recovery cycle count for any turn that entered the loop, and — for any turn re-run after an `aborted` reply — that it was re-run, which path detected the abort (a missing status line, or the harness's P2 mechanism ending the turn early), and whether the re-run produced a readable status. Record the `aborted` event even when the re-run then succeeds: an aborted turn writes no deliverable and leaves no other trace, so without this line a post-hoc reader of a stalled or slow run cannot tell that a turn was silently lost and repeated. Recording which path caught it is what makes P2's thresholds reviewable — a run that keeps hitting its time-bound on turns that were still working is telling you the budget is too tight, and that is invisible if every abort looks the same. This index is an artifact index for inspection, not a resumable scheduler.
 - These are runtime artifacts; do not commit them.
 
 ## Context discipline
@@ -198,7 +214,7 @@ For each turn record, in order:
 
 - No rollback / checkpoint / worktree around `execute` turns — working-tree safety is the user's git hygiene (and CLAUDE.md) concern, not this skill's.
 - No mid-run interactive handoff and no resume scheduler.
-- No helper scripts beyond the turn watchdog (`scripts/watchdog.sh`, with `scripts/watchdog_test.sh` covering it) — prompt assembly and the Step 0 gate are done in-prompt. The watchdog is a script on purpose: it is the one part of a turn that must behave identically every time, and re-typing it per turn would put the wall-clock bound back under the same improvisation it exists to bound. Its tests ship with it for the same reason — a bound nobody re-checks is a bound that quietly stops holding.
+- No helper scripts beyond what a harness's P2 time-bound mechanism requires (see `references/harness-*.md`) — prompt assembly and the Step 0 gate are done in-prompt.
 - No zero-decomposition of an unstructured task — the todolist must be in the input.
 
 ## Known residual risks
@@ -207,5 +223,5 @@ For each turn record, in order:
 - A `debug` turn's quality depends on the failed turn's Failure report being complete; the five-field contract (and the `needs-human` fallback when fields are missing) mitigates but does not eliminate this.
 - A change-report is self-attested: an `execute` turn's account of which file it edited (and whether it edited at all) is not independently guaranteed. Trust the run's end state (re-run the planned check), not the report's authorship claims.
 - The status line is prompt-level, not machine-enforced — a subagent can omit or malform it. The design is deliberately fail-safe in one direction: an absent line reads as `aborted` (abnormal), never as success, so the cost of non-compliance is one extra re-run rather than a silently accepted turn. It gives no protection in the other direction — a subagent that emits `status: ok` without doing the work is indistinguishable from one that did (same limitation as the self-attestation risk above).
-- The status-line contract only classifies turns that reply; the watchdog is what covers a subagent that never returns. That split means neither half is sufficient alone, and the watchdog's own guarantee is bounded: it proves a turn exceeded a budget, never that the turn was wrong. Its thresholds are wall-clock guesses, so they are calibrated to over-wait rather than cut a slow turn short.
-- `STALL` cannot distinguish a hung subagent from one that is thinking or sitting in a long tool call — the transcript looks identical in all three. The threshold is therefore set well above the longest tool call a turn is expected to make, which means a genuine hang is detected late rather than not at all. Lowering it trades that delay for turns killed while still working.
+- The status-line contract only classifies turns that reply; the harness's P2 mechanism is what covers a turn that never returns. That split means neither half is sufficient alone, and P2's own guarantee is bounded: it proves a turn exceeded a budget, never that the turn was wrong.
+- Each harness reference documents residual risks specific to its own P1/P2 mechanism (see `references/harness-cc.md`, `references/harness-pi.md`).
