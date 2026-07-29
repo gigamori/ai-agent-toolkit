@@ -73,15 +73,41 @@ end the run outright.
   partial file the aborted attempt managed to write is ignored rather than
   read as an instant `DONE`. Pass the same `--deliv` you passed the first time.
 
+## Denial check (after each turn's status line)
+
+After reading a turn's status line, run once:
+
+```
+bash <this skill's dir>/scripts/deny_scan.sh --desc "<the delegation description, verbatim>"
+```
+
+It resolves the turn's transcript the same way the watchdog does (the
+description is the key) and greps it for permission-denial tool results
+(`"is_error":true` plus the measured denial phrases). Verdicts:
+
+- `CLEAN` (exit 0) — keep the turn's self-reported status.
+- `DENIED <n>` (exit 1) — the turn's status is `blocked` regardless of what
+  its reply said; record in the run index that the denial was
+  machine-detected. This is the backstop for a turn that judged its own
+  denial inessential and reported `ok` — a measured incident, not a
+  hypothetical.
+- `NO-TRANSCRIPT` (exit 2) — the check could not run; say so in the run
+  index. Do not treat it as `CLEAN`.
+
+Unlike the watchdog this is not a race: the transcript is complete when the
+status line has arrived, so the scan runs synchronously after it.
+
 ## Out-of-scope note
 
 No helper scripts beyond the turn watchdog (`scripts/watchdog.sh`, with
-`scripts/watchdog_test.sh` covering it) — prompt assembly and the Step 0 gate
-are done in-prompt. The watchdog is a script on purpose: it is the one part of
-a turn that must behave identically every time, and re-typing it per turn
-would put the wall-clock bound back under the same improvisation it exists to
-bound. Its tests ship with it for the same reason — a bound nobody re-checks is
-a bound that quietly stops holding.
+`scripts/watchdog_test.sh` covering it) and the denial check
+(`scripts/deny_scan.sh`, with `scripts/deny_scan_test.sh`) — prompt assembly
+and the Step 0 gate are done in-prompt. Both are scripts on purpose: they are
+the parts of a turn that must behave identically every time, and re-typing
+them per turn would put the wall-clock bound and the denial evidence back
+under the same improvisation they exist to bound. Their tests ship with them
+for the same reason — a bound nobody re-checks is a bound that quietly stops
+holding.
 
 ## Residual risks specific to this harness
 

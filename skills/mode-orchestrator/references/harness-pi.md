@@ -168,6 +168,14 @@ distinct description is needed, since nothing keys off one. The child's own
 session file is named by a pi-generated UUID, so a re-run does not overwrite
 its aborted predecessor's transcript.
 
+## Denial check
+
+None exists, and none is needed: pi has no permission layer at all (its
+CLI and core were grepped for a permission concept — zero hits), so a
+tool call cannot be "denied by the permission system" and the reply
+contract's denial clause can never trigger on this harness. There is no
+Pi counterpart to `scripts/deny_scan.sh`.
+
 ## Residual risks specific to this harness
 
 - The bash tool's `timeout` bounds wall-clock time exactly, with no separate

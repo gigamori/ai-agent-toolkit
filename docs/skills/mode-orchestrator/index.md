@@ -13,11 +13,14 @@ Runtime files (read during execution) live inside the skill dir:
 `SKILL.md`, `modes/`, `workflows/` (e.g. the bundled `dev` spec),
 `references/` (harness-specific delegation and time-bound mechanics — `SKILL.md`
 Step -1 resolves Claude Code vs. Pi and reads `harness-cc.md` or
-`harness-pi.md` accordingly), and `scripts/watchdog.sh` (Claude Code only —
+`harness-pi.md` accordingly), `scripts/watchdog.sh` (Claude Code only —
 started per turn to bound it in wall-clock time; Pi uses the `bash` tool's
-native `timeout` instead, see `references/harness-pi.md`).
+native `timeout` instead, see `references/harness-pi.md`), and
+`scripts/deny_scan.sh` (Claude Code only — run once after each turn's status
+line to detect permission denials the turn did not report; Pi has no
+permission layer, so no counterpart exists).
 
-`scripts/watchdog_test.sh` ships alongside the watchdog but is not runtime: run
-it with `bash scripts/watchdog_test.sh` after touching the watchdog or its
-thresholds. It builds its own fake session logs, so it needs no `claude` CLI and
-no prior run.
+`scripts/watchdog_test.sh` and `scripts/deny_scan_test.sh` ship alongside
+those scripts but are not runtime: run them with `bash scripts/<name>_test.sh`
+after touching the script they cover. Both build their own fake session logs,
+so they need no `claude` CLI and no prior run.
