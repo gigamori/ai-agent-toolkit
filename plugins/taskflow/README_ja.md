@@ -151,6 +151,8 @@ kanban ボードの特性:
 
 > **Claude Code を開くリンク**（**▶ CC** ボタンおよびセッション・プロンプト起動）は、Claude Code の VS Code / VSCodium 拡張（`anthropic.claude-code`）を必要とする。serve モードでは起動用 CLI と拡張をサーバーごとに 1 回だけプローブし、`code`・`codium` のいずれも `PATH` に無い、または拡張が未インストールの場合、リンクは無音で失敗したりリクエストを落としたりせず、手動で開けるようセッション UUID / プロンプトを載せた簡易ページを返す。
 
+> **`CLAUDE_CONFIG_DIR`** — Claude Code の config ディレクトリを移設する場合は、**マシン全体で 1 つの値**を、**絶対パス**で、Claude Code セッション・`kanban serve` プロセス・VS Code 拡張ホストのすべてで同一に設定すること。ワークスペース別に異なる値を持つ運用は**非サポート**：拡張ホストの環境変数は taskflow の制御外であり、taskflow のデータモデルはセッション UUID しか記録せず、どの config ディレクトリ由来かの情報を持たないため、値が分岐した構成は無音で失敗する（▶ CC リンクやセッションリンクが解決不能になる）。kanban のリーダーは `$CLAUDE_CONFIG_DIR` と `~/.claude` の両方を走査し、UUID が衝突した場合は env 側を優先する。session-sync フックは env の値のみを使う。なお Claude Code はこの値を**リテラル**として解釈する — `~` は展開されず、相対値はカレントディレクトリ基準で解決されるため、`~/foo` を指定すると CWD 配下に `~` という名前のディレクトリが作られる。
+
 script のオプション:
 
 - `--out PATH` — HTML 出力先を指定（デフォルト：システム一時ディレクトリ / `taskflow-kanban.html`）

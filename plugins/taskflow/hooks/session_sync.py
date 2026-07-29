@@ -4,8 +4,11 @@ Stop hook: Sync plan files and memory files to _projects/<project>/.
 
 Reads project state from _projects/_state/{session_id}.json.
 If a project is set, copies:
-  - Recently modified plan files from ~/.claude/plans/ -> _projects/<project>/plans/
-  - Recently modified memory files from ~/.claude/projects/.../memory/ -> _projects/<project>/memory/
+  - Recently modified plan files from $CLAUDE_CONFIG_DIR (default ~/.claude)/plans/
+    -> _projects/<project>/plans/
+  - Recently modified memory files from
+    $CLAUDE_CONFIG_DIR (default ~/.claude)/projects/.../memory/
+    -> _projects/<project>/memory/
 
 Only copies files modified within the last 10 minutes to avoid stale copies.
 Files in _projects/<project>/plans/ and _projects/<project>/memory/ are
@@ -15,11 +18,16 @@ import json, sys, os, shutil, glob, time
 
 PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
-PLANS_DIR = os.path.expanduser('~/.claude/plans')
+# CC treats CLAUDE_CONFIG_DIR literally (no ~-expansion; relative values resolve
+# against the process cwd). This hook runs inside the writer's process tree, so
+# it inherits the writer's env and resolves a single dir.
+_cfg = os.environ.get('CLAUDE_CONFIG_DIR', '').strip()
+CLAUDE_DIR = os.path.abspath(_cfg) if _cfg else os.path.expanduser('~/.claude')
+PLANS_DIR = os.path.join(CLAUDE_DIR, 'plans')
 # Dynamically compute memory dir from CWD encoding
 _cwd = os.getcwd().replace('\\', '/')
 _encoded = _cwd.lower().replace(':', '-').replace('/', '-')
-MEMORY_DIR = os.path.expanduser(f'~/.claude/projects/{_encoded}/memory')
+MEMORY_DIR = os.path.join(CLAUDE_DIR, 'projects', _encoded, 'memory')
 STALENESS_THRESHOLD = 600  # 10 minutes
 
 # Guard: skip if _projects/ does not exist in CWD

@@ -11,7 +11,7 @@ Internal design document for developers — read this when you need to understan
 | `progress.md` | Task index: TODO / In Progress / Completed tables + free-text sections (Architecture / Key Decisions / Open Issues / Reference Materials) | Project lifetime | Human + AI | On apply, subagent reads the full file and returns it to the main agent |
 | `tasks/` | One file per task; status by folder (`0_todo`/`1_in_progress`/`2_done`); body + append-only `<!-- @log -->` block | Task lifetime | AI + Human | Subagent lists `1_in_progress/`, selectively reads files relevant to the prompt, and returns them |
 | `project-notes/` | Project-specific persistent knowledge, organized by category (`specs/`, `investigations/`, `checks/`, `procedures/`, `backlog/`, `_archive/`) | Project lifetime | AI | Subagent returns **pointers only** — the file list plus verbatim matching rows of `index.md`; it does NOT read or return note bodies (the main agent reads note files itself when needed) |
-| `plans/`, `memory/` | Auto-archived copies of `~/.claude/` | Archive | Human | Never injected. Not to be referenced. |
+| `plans/`, `memory/` | Auto-archived copies of the Claude config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`) | Archive | Human | Never injected. Not to be referenced. |
 
 ### Role boundaries
 
@@ -19,7 +19,7 @@ Internal design document for developers — read this when you need to understan
 - `progress.md` free-text sections: hand-edited; both LLM and human contribute.
 - `tasks/<status>/<file>.md`: each file has frontmatter (priority, created, updated, optional dependencies), an H1 title (=summary shown in progress.md), a mutable body, and an append-only log block.
 - `project-notes/<category>/`: reusable knowledge across tasks. Distill durable findings from `2_done/` tasks here.
-- `auto-memory` (`~/.claude/projects/.../memory/`): a human-facing artifact; the LLM does not reference it directly.
+- `auto-memory` (`$CLAUDE_CONFIG_DIR`, default `~/.claude`, `/projects/.../memory/`): a human-facing artifact; the LLM does not reference it directly.
 
 ## Single authority (v0.2.2 core principle)
 
@@ -175,8 +175,9 @@ session end
   │  1. read `project` from state_file
   │  2. empty project or directory missing → skip
   │  3. copy files modified in the last 10 minutes:
-  │     ~/.claude/plans/*.md                          → _projects/<project>/plans/
-  │     ~/.claude/projects/{encoded_cwd}/memory/*.md  → _projects/<project>/memory/
+  │     <config dir>/plans/*.md                          → _projects/<project>/plans/
+  │     <config dir>/projects/{encoded_cwd}/memory/*.md  → _projects/<project>/memory/
+  │     (<config dir> = $CLAUDE_CONFIG_DIR if set, else ~/.claude)
   │     Note: the 10-minute window selects ALL recently-modified plans regardless
   │     of which project they belong to. The plans/ directory is an archive that
   │     may contain cross-project plans copied in the same window. This is
@@ -293,8 +294,10 @@ While a project is active but its `progress.md` does not yet exist, `session_ini
 |---|---|
 | `_projects/` | `os.getcwd() + '/_projects'` (CWD-based) |
 | `prompts/` | derived from `__file__` back to the plugin root |
-| `~/.claude/plans/` | `os.path.expanduser` |
-| `~/.claude/projects/.../memory/` | encode CWD (`lower().replace(':', '-').replace('/', '-')`) |
+| `<config dir>/plans/` | `<config dir>` = `$CLAUDE_CONFIG_DIR` if set, else `os.path.expanduser('~/.claude')` |
+| `<config dir>/projects/.../memory/` | same `<config dir>` + encode CWD (`lower().replace(':', '-').replace('/', '-')`) |
+
+`$CLAUDE_CONFIG_DIR` is read **literally**, replicating Claude Code's own behavior (verified 2026-07-28): no `expanduser` and no variable expansion, so `~/x` is a cwd-relative literal path, and relative values are resolved with `os.path.abspath` against the process CWD. `session_sync.py` runs inside the writer session's process tree and therefore resolves a **single** config dir (env if set, else `~/.claude`). The kanban reader (`generate_kanban.py`'s `build_cc_session_index`) is the exception: it scans the **union** of `$CLAUDE_CONFIG_DIR` and `~/.claude` (`_cc_config_dirs()`), env first, so a UUID present in both universes resolves to the env one. Per-workspace divergence of `CLAUDE_CONFIG_DIR` is unsupported — see the note in `README.md`.
 
 ### Hooks (CWD-fixed) vs. the command / viewer layer (`TASKFLOW_PROJECT_ROOTS`)
 

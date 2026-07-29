@@ -152,6 +152,8 @@ Each workspace's server binds a port derived from its `_projects` roots (base `1
 
 > **Claude Code open links** (the **▶ CC** button and session / prompt launches) require the Claude Code VS Code / VSCodium extension (`anthropic.claude-code`). In serve mode the launcher CLI and the extension are probed once per server; if neither `code` nor `codium` is on `PATH`, or the extension is not installed, the link returns a short page carrying the session UUID / prompt so you can open it manually — instead of failing silently or crashing the request.
 
+> **`CLAUDE_CONFIG_DIR`** — if you relocate Claude Code's config directory, use **one value machine-wide**, as an **absolute path**, identical across the Claude Code session, the `kanban serve` process, and the VS Code extension host. Per-workspace values are **not supported**: the extension host's environment is outside taskflow's control, and taskflow's data model records only session UUIDs, not which config dir they came from — so a divergent setup fails silently (▶ CC links and session links stop resolving). The kanban reader scans both `$CLAUDE_CONFIG_DIR` and `~/.claude` and prefers the env one on a UUID collision; the session-sync hook uses the env value alone. Note that Claude Code reads the value **literally** — `~` is not expanded and relative values resolve against the current working directory, so `~/foo` creates a config dir named `~` under your CWD.
+
 Options for the script:
 
 - `--out PATH` — Write HTML to a custom path (default: system temp directory / `taskflow-kanban.html`)

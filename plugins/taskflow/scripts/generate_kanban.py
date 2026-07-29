@@ -282,24 +282,45 @@ def load_tasks(
 SESSION_HEAD_BYTES = 8192
 
 
+def _cc_config_dirs() -> list[Path]:
+    """Claude config dirs to scan, replicating CC's own resolution.
+
+    CC treats CLAUDE_CONFIG_DIR literally (no ~-expansion; relative values
+    resolve against the process cwd — verified 2026-07-28). Scan order is
+    [env value, ~/.claude] deduped; callers relying on first-wins get
+    env-universe priority.
+    """
+    dirs: list[Path] = []
+    env = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if env:
+        dirs.append(Path(os.path.abspath(env)))
+    default = Path.home() / ".claude"
+    if not any(os.path.normcase(str(d)) == os.path.normcase(str(default)) for d in dirs):
+        dirs.append(default)
+    return dirs
+
+
 def build_cc_session_index() -> dict[str, Path]:
-    """Scan ``~/.claude/projects/*/`` for ``<uuid>.jsonl`` → path.
+    """Scan ``<config dir>/projects/*/`` for ``<uuid>.jsonl`` → path.
 
     Scans every project dir (rather than guessing the cwd encoding) so a
-    session started in any workspace can be resolved by its UUID.
+    session started in any workspace can be resolved by its UUID. The scan
+    covers the union of ``$CLAUDE_CONFIG_DIR`` and ``~/.claude``; on a UUID
+    collision the env universe wins (first-wins ``setdefault``).
     """
     index: dict[str, Path] = {}
-    base = Path.home() / ".claude" / "projects"
-    if not base.is_dir():
-        return index
-    for proj_dir in base.iterdir():
-        if not proj_dir.is_dir():
+    for base_root in _cc_config_dirs():
+        base = base_root / "projects"
+        if not base.is_dir():
             continue
-        try:
-            for f in proj_dir.glob("*.jsonl"):
-                index.setdefault(f.stem, f)
-        except OSError:
-            continue
+        for proj_dir in base.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            try:
+                for f in proj_dir.glob("*.jsonl"):
+                    index.setdefault(f.stem, f)
+            except OSError:
+                continue
     return index
 
 
