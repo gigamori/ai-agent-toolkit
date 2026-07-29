@@ -103,7 +103,9 @@ is worth diagnosing. Three other outcomes deliberately bypass the loop:
 
 - **`blocked`** — including any turn whose tool call the **permission system
   denied**. A denial is not an in-repo bug: re-running the turn hits the same
-  wall every cycle, so the run stops and asks you instead.
+  wall every cycle, so the run stops and asks you instead. The turn cannot
+  waive this itself: even a denial it judged inessential — one it worked
+  around and still finished the task — must end as `blocked`, never `ok`.
 - **`needs-human`** — the turn needs a decision only you can make.
 - **`aborted`** — the turn said *nothing* about the task. Either its reply
   arrived without the required status line (interrupted, killed, or
