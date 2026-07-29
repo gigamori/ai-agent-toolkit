@@ -50,7 +50,7 @@ role:"<value>"
 次の2種類の入力は発火しない:
 
 - **backtick で囲まれた slug** — `` `mode:execute` `` は言及であって呼び出しではない。インラインコード span は検出前にマスクされる（単一行 span のみ）
-- **システム生成ターン** — task-notification マーカー（`<task-notification>` / `[SYSTEM NOTIFICATION - NOT USER INPUT]`）を含む入力は、バックグラウンドタスク／subagent の完了通知が user ターンとして中継されたもの。その中の slug はエージェント出力の引用なので、hook 全体をスキップする。subagent の返答が自分のモード規則を引用しただけで呼び出し元セッションがそのモードに切り替わる、という実測済みの注入経路を塞ぐ
+- **システム生成ターン** — task-notification マーカー（`<task-notification>` / `[SYSTEM NOTIFICATION - NOT USER INPUT]`）を含む入力は、バックグラウンドタスク／subagent の完了通知が user ターンとして中継されたもの。その中の slug はエージェント出力の引用なので、hook 全体をスキップする（stderr に `role-mode: skipped` の1行を出す。verbose の hook ログで確認できる）。subagent の返答が自分のモード規則を引用しただけで呼び出し元セッションがそのモードに切り替わる、という実測済みの注入経路を塞ぐ
 
 #### `mode:<name>`
 

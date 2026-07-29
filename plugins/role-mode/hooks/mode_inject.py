@@ -101,8 +101,14 @@ prompt = data.get('prompt', '')
 if not prompt:
   sys.exit(0)
 
-if any(marker in prompt for marker in NOTIFICATION_MARKERS):
-  sys.exit(0)
+for marker in NOTIFICATION_MARKERS:
+  if marker in prompt:
+    # Visible skip (stderr shows up in verbose hook logs): without this, a
+    # hand-typed prompt that both mentions a marker string and carries a
+    # mode: slug loses its mode with no way to tell why.
+    print(f"role-mode: skipped (notification marker {marker!r} in prompt)",
+          file=sys.stderr)
+    sys.exit(0)
 
 # Mask inline code spans so `mode:x` quoted in backticks never invokes.
 scan_text = CODE_SPAN_RE.sub(' ', prompt)

@@ -50,7 +50,7 @@ Both `mode:` and `role:` are optional. The hook fires when at least one is prese
 Two kinds of input never invoke:
 
 - **Backtick-quoted slugs** — `` `mode:execute` `` is a mention, not an invocation. Inline code spans are masked before detection (single-line spans only).
-- **System-generated turns** — a prompt carrying a task-notification marker (`<task-notification>` or `[SYSTEM NOTIFICATION - NOT USER INPUT]`) is a background-task/subagent completion notice relayed as a user turn; slugs inside it are quoted agent output, so the hook skips it entirely. This closes a measured injection path where a subagent's reply that quoted its own mode rule flipped the calling session into that mode.
+- **System-generated turns** — a prompt carrying a task-notification marker (`<task-notification>` or `[SYSTEM NOTIFICATION - NOT USER INPUT]`) is a background-task/subagent completion notice relayed as a user turn; slugs inside it are quoted agent output, so the hook skips it entirely (with a one-line `role-mode: skipped` note on stderr, visible in verbose hook logs). This closes a measured injection path where a subagent's reply that quoted its own mode rule flipped the calling session into that mode.
 
 #### `mode:<name>`
 

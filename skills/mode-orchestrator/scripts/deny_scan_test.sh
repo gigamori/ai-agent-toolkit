@@ -117,6 +117,19 @@ T="$(mk_agent "$R" sess1 ggg 'turn eight desc')"
 run_ds --desc 'turn eight desc' --project-root "$R"
 expect "meta without transcript fails visible" "NO-TRANSCRIPT" 2
 
+# --- 9. duplicate description (contract violation): newest meta wins.
+# Exercises the portable mtime path (stat -c / stat -f fallback): the stale
+# duplicate holds a denial, the newest is clean -> CLEAN proves selection.
+R="$WORK/t9"
+T_OLD="$(mk_agent "$R" sessOld hhh 'turn nine desc')"
+printf '%s\n' "$DENIAL_CLASSIFIER" > "$T_OLD"
+touch -d '2001-01-01 00:00:00' "${T_OLD%.jsonl}.meta.json" 2>/dev/null \
+  || touch -t 200101010000 "${T_OLD%.jsonl}.meta.json"
+T_NEW="$(mk_agent "$R" sessNew iii 'turn nine desc')"
+printf '%s\n' "$OK_RESULT" > "$T_NEW"
+run_ds --desc 'turn nine desc' --project-root "$R"
+expect "newest meta wins on duplicate desc" "CLEAN" 0
+
 echo
 echo "passed $PASS / $N"
 [ "$FAIL" -eq 0 ]

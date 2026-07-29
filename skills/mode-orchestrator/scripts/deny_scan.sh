@@ -67,13 +67,21 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$DESC" ] || { echo "deny_scan: --desc is required" >&2; usage; }
 
+# File mtime, portable across GNU coreutils (stat -c) and BSD/macOS
+# (stat -f). Either failing falls through to 0, which only matters when
+# several meta files match the same description — a contract violation to
+# begin with; the unique-description case never compares mtimes.
+mtime_of() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
 needle="\"description\":\"$DESC\""
 transcript=""
 best_mtime=0
 while IFS= read -r meta; do
   [ -n "$meta" ] || continue
   if grep -qF "$needle" "$meta" 2>/dev/null; then
-    mtime=$(stat -c %Y "$meta" 2>/dev/null || echo 0)
+    mtime=$(mtime_of "$meta")
     if [ "$mtime" -ge "$best_mtime" ]; then
       best_mtime=$mtime
       transcript="${meta%.meta.json}.jsonl"

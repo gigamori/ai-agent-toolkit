@@ -26,6 +26,14 @@ def run_hook(prompt):
     return proc.returncode, json.loads(proc.stdout.decode("utf-8"))
 
 
+def run_hook_stderr(prompt):
+    proc = subprocess.run(
+        [sys.executable, str(HOOK)],
+        input=json.dumps({"prompt": prompt}).encode("utf-8"),
+        capture_output=True, timeout=30)
+    return proc.stderr.decode("utf-8")
+
+
 def context_of(out):
     return out["hookSpecificOutput"]["additionalContext"]
 
@@ -89,6 +97,13 @@ class NotificationGateTests(unittest.TestCase):
                   "Agent finished. It said: use mode:execute next time.")
         code, out = run_hook(prompt)
         self.assertIsNone(out)
+
+    def test_notification_skip_is_visible_on_stderr(self):
+        # A silent skip would leave "why didn't my mode fire" undiagnosable
+        # for a hand-typed prompt that mentions a marker string.
+        stderr = run_hook_stderr("<task-notification> mode:survey")
+        self.assertIn("role-mode: skipped", stderr)
+        self.assertIn("task-notification", stderr)
 
 
 if __name__ == "__main__":

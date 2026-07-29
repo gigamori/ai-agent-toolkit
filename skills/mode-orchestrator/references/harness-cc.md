@@ -97,6 +97,17 @@ description is the key) and greps it for permission-denial tool results
 Unlike the watchdog this is not a race: the transcript is complete when the
 status line has arrived, so the scan runs synchronously after it.
 
+**Known fragility — serialization drift.** The scan matches the transcript's
+literal serialization (`"is_error":true`, no space) and the measured denial
+phrases. If a Claude Code update changes either, the scan stops detecting —
+silently, in the fail-open direction (the reply-contract clause remains as
+the only layer). `deny_scan_test.sh` runs on fixed fake transcripts, so it
+cannot notice such drift. Canary: after any Claude Code upgrade — or
+whenever a run's turn is *known* to have been denied — run the scan against
+a transcript that contains a real denial and confirm it still reports
+`DENIED`; a `CLEAN` there means the serialization moved and the patterns at
+the top of `deny_scan.sh` need re-measuring.
+
 ## Out-of-scope note
 
 No helper scripts beyond the turn watchdog (`scripts/watchdog.sh`, with
