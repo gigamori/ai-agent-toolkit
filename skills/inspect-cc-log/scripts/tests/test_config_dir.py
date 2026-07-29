@@ -113,6 +113,25 @@ class GlobRewriteTest(unittest.TestCase):
         expected = (cwd / "~" / "cfgtest" / "projects" / "**/*.jsonl").as_posix()
         self.assertEqual(query._cc_projects_universes()[0][1], expected)
 
+    def test_nested_env_universe_collapses_to_the_default_root(self):
+        """A config dir nested inside the default's `projects` tree is dropped:
+        reading it as well would double every row it holds (its glob is a
+        subset of the default's own recursive `**` reach)."""
+        nested_cfg = self.home / ".claude" / "projects" / "nested-cfg"
+        os.environ["CLAUDE_CONFIG_DIR"] = str(nested_cfg)
+        roots = [root for root, _g in query._cc_projects_universes()]
+        self.assertEqual(roots, [self.home / ".claude" / "projects"])
+
+    def test_sibling_prefix_root_is_not_treated_as_nested(self):
+        """`<default>/projectsX` merely shares a string prefix with
+        `<default>/projects` -- not a real path segment -- so both roots survive."""
+        sibling_cfg = self.home / ".claude" / "projectsX"
+        os.environ["CLAUDE_CONFIG_DIR"] = str(sibling_cfg)
+        roots = [root for root, _g in query._cc_projects_universes()]
+        self.assertEqual(len(roots), 2)
+        self.assertIn(self.home / ".claude" / "projects", roots)
+        self.assertIn(sibling_cfg / "projects", roots)
+
 
 class AnchorContractTest(unittest.TestCase):
     """AC-A5: the literal-replace contract the rewrite depends on."""
@@ -187,6 +206,19 @@ class EndToEndTest(unittest.TestCase):
             out = self._run_query(
                 home, None, "SELECT DISTINCT session_id FROM cc_event")
             self.assertEqual([r[0] for r in out["rows"]], ["sid-def"])
+
+    def test_nested_env_universe_does_not_double_session_rows(self):
+        """A config dir nested inside `~/.claude/projects` must not be read
+        twice: the file would otherwise match both the env glob and the
+        default's own recursive `**` glob, doubling its event rows."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            home = tmp / "home"
+            nested_cfg = home / ".claude" / "projects" / "nested-cfg"
+            _write_log(nested_cfg / "projects", "p-nested", "sid-nested")
+            out = self._run_query(
+                home, nested_cfg, "SELECT session_id FROM cc_event")
+            self.assertEqual(len(out["rows"]), 1)
 
 
 if __name__ == "__main__":

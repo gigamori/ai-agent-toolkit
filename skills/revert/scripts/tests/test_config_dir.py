@@ -88,6 +88,23 @@ class RootsTest(_TmpHomeCase):
         self.assertEqual(first, Path(os.path.abspath("~/cfgtest")) / "projects")
         self.assertNotEqual(first, self.home / "cfgtest" / "projects")
 
+    def test_nested_env_universe_collapses_to_the_default_root(self):
+        """Env root nested inside the default's `projects` tree must be
+        dropped, keeping only the maximal (default) root."""
+        nested_cfg = self.default_projects / "nested-cfg"
+        os.environ["CLAUDE_CONFIG_DIR"] = str(nested_cfg)
+        self.assertEqual(rx.cc_projects_roots(), [self.default_projects])
+
+    def test_sibling_prefix_root_is_not_treated_as_nested(self):
+        """`<default>/projectsX` merely shares a string prefix with
+        `<default>/projects` -- not a real path segment -- so both roots survive."""
+        sibling_cfg = self.home / ".claude" / "projectsX"
+        os.environ["CLAUDE_CONFIG_DIR"] = str(sibling_cfg)
+        roots = rx.cc_projects_roots()
+        self.assertEqual(len(roots), 2)
+        self.assertIn(self.default_projects, roots)
+        self.assertIn(sibling_cfg / "projects", roots)
+
 
 class ResolveTest(_TmpHomeCase):
     def test_sid_found_in_the_default_universe(self):

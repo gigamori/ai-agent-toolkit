@@ -49,19 +49,44 @@ import duckdb
 _CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 
 
+def _norm_parts(root: Path) -> tuple[str, ...]:
+    """A root as normcased path components — the unit of root comparison.
+
+    Comparing components rather than the joined string keeps `<x>/projectsX`
+    from reading as nested under `<x>/projects`.
+    """
+    return tuple(os.path.normcase(part) for part in root.parts)
+
+
+def _covers(outer: tuple[str, ...], inner: tuple[str, ...]) -> bool:
+    """True when an `<outer>` rglob already matches everything under `inner`.
+
+    Equality counts — a root covers itself.
+    """
+    return inner[: len(outer)] == outer
+
+
 def cc_projects_roots() -> list[Path]:
     """The CC `projects` dirs to search: `[$CLAUDE_CONFIG_DIR, ~/.claude]`, env first.
 
-    Deduped case-insensitively (Windows), so an env value pointing at the default
-    dir yields one root. Used only when --projects-dir is NOT given.
+    Deduped by containment (normcased path components), not just equality: each
+    root is rglob'd recursively, so a root NESTED under the other is scanned
+    twice — e.g. `$CLAUDE_CONFIG_DIR` pointed inside `~/.claude/projects`. Only
+    maximal roots are kept. Used only when --projects-dir is NOT given.
     """
     roots: list[Path] = []
+
+    def add(root: Path) -> None:
+        parts = _norm_parts(root)
+        if any(_covers(_norm_parts(kept), parts) for kept in roots):
+            return
+        roots[:] = [kept for kept in roots if not _covers(parts, _norm_parts(kept))]
+        roots.append(root)
+
     env = os.environ.get(_CONFIG_DIR_ENV, "").strip()
     if env:
-        roots.append(Path(os.path.abspath(env)) / "projects")
-    default = Path(os.path.expanduser("~/.claude")) / "projects"
-    if not any(os.path.normcase(str(r)) == os.path.normcase(str(default)) for r in roots):
-        roots.append(default)
+        add(Path(os.path.abspath(env)) / "projects")
+    add(Path(os.path.expanduser("~/.claude")) / "projects")
     return roots
 
 

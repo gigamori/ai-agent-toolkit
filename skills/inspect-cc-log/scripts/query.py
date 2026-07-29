@@ -61,19 +61,49 @@ def _escape_glob_dir(dir_path: str) -> str:
     return "".join("[" + ch + "]" if ch in "[]*?" else ch for ch in dir_path)
 
 
+def _norm_parts(root: Path) -> "tuple[str, ...]":
+    """A root as normcased path components — the unit of root comparison.
+
+    Comparing components rather than the joined string keeps `<x>/projectsX`
+    from reading as nested under `<x>/projects`.
+    """
+    return tuple(os.path.normcase(part) for part in root.parts)
+
+
+def _covers(outer: "tuple[str, ...]", inner: "tuple[str, ...]") -> bool:
+    """True when an `<outer>/**` glob already matches everything under `inner`.
+
+    Equality counts — a root covers itself.
+    """
+    return inner[: len(outer)] == outer
+
+
 def _cc_projects_universes() -> "list[tuple[Path, str]]":
-    """`[(projects_dir, duckdb_glob), ...]`, env universe first, deduped."""
+    """`[(projects_dir, duckdb_glob), ...]`, env universe first, deduped.
+
+    Dedup is not cosmetic — DuckDB reads a glob list once per entry, so a root
+    read twice DOUBLES every row of it. Equality alone does not catch that:
+    every root is globbed as `<root>/**/*.jsonl`, so a root NESTED under the
+    other is read twice as well — e.g. `$CLAUDE_CONFIG_DIR` pointed inside
+    `~/.claude/projects`. Only maximal roots are kept; dropping a covered root
+    loses no file because the covering root's glob already matches it.
+    """
     universes: "list[tuple[Path, str]]" = []
+
+    def add(root: Path, glob: str) -> None:
+        parts = _norm_parts(root)
+        if any(_covers(_norm_parts(kept), parts) for kept, _g in universes):
+            return
+        universes[:] = [(kept, kept_glob) for kept, kept_glob in universes
+                        if not _covers(parts, _norm_parts(kept))]
+        universes.append((root, glob))
+
     env = _env_config_dir()
     if env:
         root = Path(env) / "projects"
-        universes.append((root, f"{_escape_glob_dir(root.as_posix())}/**/*.jsonl"))
+        add(root, f"{_escape_glob_dir(root.as_posix())}/**/*.jsonl")
     default = Path(os.path.expanduser("~/.claude")) / "projects"
-    if not any(
-        os.path.normcase(str(root)) == os.path.normcase(str(default))
-        for root, _glob in universes
-    ):
-        universes.append((default, _DEFAULT_PROJECTS_GLOB))
+    add(default, _DEFAULT_PROJECTS_GLOB)
     return universes
 
 
@@ -90,7 +120,7 @@ def _apply_cc_projects_glob(sql: str) -> str:
     Returns the input unchanged when `$CLAUDE_CONFIG_DIR` is unset. A glob that
     matches no file aborts CREATE VIEW in DuckDB (an existing-but-empty dir
     counts as no match), so empty universes are filtered out first; if none has
-    logs, the configured dir alone is injected so the error names it.
+    logs, the highest-priority root alone is injected so the error names it.
     """
     if _env_config_dir() is None:
         return sql

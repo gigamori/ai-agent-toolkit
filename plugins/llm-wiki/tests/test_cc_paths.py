@@ -107,6 +107,31 @@ def test_relative_env_value_resolves_against_cwd(tmp_path, monkeypatch):
     assert cc_paths.cc_projects_roots()[0] == tmp_path / "rel-cfg" / "projects"
 
 
+def test_nested_env_universe_collapses_to_the_default_root(tmp_path, monkeypatch):
+    """A config dir nested inside the default's `projects` tree must be dropped:
+    reading it as well would double every row it holds."""
+    _redirect_home(monkeypatch, tmp_path)
+    default = tmp_path / ".claude" / "projects"
+    nested_cfg = default / "nested-cfg"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(nested_cfg))
+
+    assert cc_paths.cc_projects_roots() == [default]
+
+
+def test_sibling_prefix_root_is_not_treated_as_nested(tmp_path, monkeypatch):
+    """`<default>/projectsX` merely shares a string prefix with
+    `<default>/projects` -- not a real path segment -- so both roots survive."""
+    _redirect_home(monkeypatch, tmp_path)
+    default = tmp_path / ".claude" / "projects"
+    sibling_cfg = tmp_path / ".claude" / "projectsX"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(sibling_cfg))
+
+    roots = cc_paths.cc_projects_roots()
+    assert len(roots) == 2
+    assert default in roots
+    assert sibling_cfg / "projects" in roots
+
+
 # --------------------------------------------------------------------------- #
 # A-D3': loader-side SQL rewrite
 # --------------------------------------------------------------------------- #
@@ -328,6 +353,44 @@ def test_views_unchanged_path_reads_only_the_default_universe(tmp_path):
     _write_log(cfg / "projects", "proj-env", "sid-env")  # must NOT be read
 
     assert _sids_via_subprocess(tmp_path, home, cfg=None) == {"sid-def"}
+
+
+_ROW_COUNT_PROBE = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import duckdb
+from llmwiki.ingest import cc_log_project, cc_paths
+con = duckdb.connect()
+con.execute(cc_paths.read_cc_views_sql(cc_log_project._VIEWS_SQL))
+rows = con.execute("SELECT COUNT(*) FROM cc_event").fetchall()
+print(json.dumps(rows[0][0]))
+"""
+
+
+def test_nested_env_universe_does_not_double_session_rows(tmp_path):
+    """Env root nested inside the default's `projects` tree must not be read
+    twice through the DuckDB views (each event row would double)."""
+    pytest.importorskip("duckdb")
+    import subprocess
+
+    home = tmp_path / "home"
+    nested_cfg = home / ".claude" / "projects" / "nested-cfg"
+    _write_log(nested_cfg / "projects", "proj-nested", "sid-nested")
+
+    pkg_root = str(Path(__file__).resolve().parents[1])
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "CLAUDE_CONFIG_DIR")
+    }
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env["CLAUDE_CONFIG_DIR"] = str(nested_cfg)
+    proc = subprocess.run(
+        [sys.executable, "-c", _ROW_COUNT_PROBE, pkg_root],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path),
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert json.loads(proc.stdout) == 1
 
 
 def test_real_claude_dir_is_never_resolved_once_home_is_redirected(tmp_path, monkeypatch):

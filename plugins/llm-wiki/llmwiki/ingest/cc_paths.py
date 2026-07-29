@@ -78,15 +78,39 @@ def _escape_glob_dir(dir_path: str) -> str:
 def cc_projects_roots() -> list[Path]:
     """The CC `projects` dirs to scan: `[$CLAUDE_CONFIG_DIR, ~/.claude]`, env first.
 
-    Deduped with `os.path.normcase` (Windows case-insensitivity), so an env value
-    pointing at the default dir yields a single root. Callers that take the first
-    match get env-universe priority.
+    Deduped by containment (normcased path components), not just equality, so
+    an env value pointing at the default dir — or nested inside it — yields a
+    single root. Callers that take the first match get env-universe priority.
     """
     return [root for root, _glob in _cc_projects_universes()]
 
 
+def _norm_parts(root: Path) -> tuple[str, ...]:
+    """A root as normcased path components — the unit of root comparison.
+
+    Comparing components rather than the joined string keeps `<x>/projectsX`
+    from reading as nested under `<x>/projects`.
+    """
+    return tuple(os.path.normcase(part) for part in root.parts)
+
+
+def _covers(outer: tuple[str, ...], inner: tuple[str, ...]) -> bool:
+    """True when an `<outer>/**` glob already matches everything under `inner`.
+
+    Equality counts — a root covers itself.
+    """
+    return inner[: len(outer)] == outer
+
+
 def _cc_projects_universes() -> list[tuple[Path, str]]:
     """`[(projects_root, duckdb_glob), ...]` in scan order (env first).
+
+    Dedup is not cosmetic — DuckDB reads a glob list once per entry, so a root
+    read twice DOUBLES every row of it. Equality alone does not catch that:
+    every root is globbed as `<root>/**/*.jsonl`, so a root NESTED under the
+    other is read twice as well — e.g. `$CLAUDE_CONFIG_DIR` pointed inside
+    `~/.claude/projects`. Only maximal roots are kept; dropping a covered root
+    loses no file because the covering root's glob already matches it.
 
     The default universe keeps its `~/...` glob literal rather than an absolute
     path: DuckDB expands `~` itself (`USERPROFILE` on Windows, matching
@@ -94,16 +118,21 @@ def _cc_projects_universes() -> list[tuple[Path, str]]:
     absolute path is baked in.
     """
     universes: list[tuple[Path, str]] = []
+
+    def add(root: Path, glob: str) -> None:
+        parts = _norm_parts(root)
+        if any(_covers(_norm_parts(kept), parts) for kept, _g in universes):
+            return
+        universes[:] = [(kept, kept_glob) for kept, kept_glob in universes
+                        if not _covers(parts, _norm_parts(kept))]
+        universes.append((root, glob))
+
     env = _env_config_dir()
     if env:
         root = Path(env) / _PROJECTS
-        universes.append((root, f"{_escape_glob_dir(root.as_posix())}/{_GLOB_TAIL}"))
+        add(root, f"{_escape_glob_dir(root.as_posix())}/{_GLOB_TAIL}")
     default = _default_projects_root()
-    if not any(
-        os.path.normcase(str(root)) == os.path.normcase(str(default))
-        for root, _glob in universes
-    ):
-        universes.append((default, CC_PROJECTS_DEFAULT_GLOB))
+    add(default, CC_PROJECTS_DEFAULT_GLOB)
     return universes
 
 
@@ -129,9 +158,9 @@ def apply_cc_projects_glob(sql: str) -> str:
     With `$CLAUDE_CONFIG_DIR` unset the input is returned UNCHANGED (byte for
     byte). With it set, the single anchor literal becomes a DuckDB glob LIST of
     the universes that actually contain logs, env universe first. When neither
-    universe has logs, the env glob alone is injected: the read still fails as it
-    would today, but the error names the configured dir instead of misdirecting
-    at `~/.claude`.
+    universe has logs, the highest-priority root's glob alone is injected: the
+    read still fails as it would today, but the error names the configured dir
+    instead of misdirecting at `~/.claude`.
     """
     if _env_config_dir() is None:
         return sql
