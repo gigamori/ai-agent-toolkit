@@ -12,7 +12,8 @@ Covers WP-D of
   - `~` IS expanded (pi semantics, the opposite of CLAUDE_CONFIG_DIR), but only
     the forms pi itself expands -- `~user` stays literal;
   - a blank/whitespace value counts as unset;
-  - an explicit `output_path` keeps its original handling and ignores the env;
+  - an explicit `output_path` keeps its original handling and ignores the env,
+    and a BLANK one is rejected rather than quietly redirected to the default;
   - the frontmatter declares no static `default` for `output_path`, because
     `_tool.args()` would inject it and shadow the resolution above.
 
@@ -20,6 +21,7 @@ Hermetic: HOME *and* USERPROFILE are redirected to a tmp dir, so the real
 `~/.pi/agent/tools.yaml` is never written. USERPROFILE is the one that matters
 on Windows (`ntpath.expanduser` reads it first).
 """
+import json
 import os
 import subprocess
 import sys
@@ -175,13 +177,15 @@ class EndToEndTest(_EnvSandbox):
         self.src.mkdir()
         (self.src / "demo.py").write_text(_DEMO_SCRIPT, encoding="utf-8")
 
-    def _run(self, *extra_args: str, agent_dir: "str | None" = None) -> str:
+    def _spawn(
+        self, *extra_args: str, agent_dir: "str | None" = None
+    ) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         if agent_dir is None:
             env.pop("PI_CODING_AGENT_DIR", None)
         else:
             env["PI_CODING_AGENT_DIR"] = agent_dir
-        proc = subprocess.run(
+        return subprocess.run(
             [sys.executable, str(_BUILD), "--input-dir", str(self.src), *extra_args],
             capture_output=True,
             text=True,
@@ -189,6 +193,9 @@ class EndToEndTest(_EnvSandbox):
             env=env,
             stdin=subprocess.DEVNULL,
         )
+
+    def _run(self, *extra_args: str, agent_dir: "str | None" = None) -> str:
+        proc = self._spawn(*extra_args, agent_dir=agent_dir)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout
 
@@ -218,6 +225,39 @@ class EndToEndTest(_EnvSandbox):
     def test_explicit_output_path_still_expands_tilde(self):
         self._run("--output-path", "~/custom/tools.yaml", agent_dir=str(self.tmp / "iso"))
         self.assertTrue((self.home / "custom" / "tools.yaml").is_file())
+
+    def test_blank_output_path_is_rejected_not_defaulted(self):
+        """A caller who passed the flag must not be silently redirected.
+
+        Falling through to `<agent-dir>/tools.yaml` here would write the
+        registry somewhere the caller never named -- the same silent-misplace
+        failure the env resolution exists to prevent.
+        """
+        agent = self.tmp / "isolated" / "agent"
+        for blank in ("", "   "):
+            with self.subTest(value=repr(blank)):
+                proc = self._spawn(
+                    "--output-path", blank, agent_dir=str(agent)
+                )
+                self.assertEqual(proc.returncode, 1, proc.stdout)
+                self.assertIn("output_path is blank", proc.stderr)
+                self.assertFalse(agent.exists())
+                self.assertFalse((self.home / ".pi").exists())
+
+    def test_blank_output_path_from_stdin_json_is_rejected(self):
+        """argv is not the only input route -- `_tool.args()` also reads stdin."""
+        env = dict(os.environ)
+        env["PI_CODING_AGENT_DIR"] = str(self.tmp / "isolated" / "agent")
+        proc = subprocess.run(
+            [sys.executable, str(_BUILD)],
+            input='{"input_dir": %s, "output_path": ""}' % json.dumps(str(self.src)),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("output_path is blank", proc.stderr)
 
 
 if __name__ == "__main__":

@@ -280,7 +280,16 @@ def main() -> None:
     a = args()
     src_dir = _resolve_path(a["input_dir"])
     # An explicit value keeps its original handling; only the default is env-aware.
+    # A blank one is rejected rather than falling through to the default: the
+    # caller did ask for a path, and silently writing somewhere else is the very
+    # failure this default resolution exists to prevent.
     requested_output = a.get("output_path")
+    if requested_output is not None and not requested_output.strip():
+        sys.stderr.write(
+            "Error: output_path is blank. Omit it to write to the default "
+            f"{_default_output_path().as_posix()}, or pass a real path.\n"
+        )
+        sys.exit(1)
     output_path = (
         _resolve_path(requested_output) if requested_output else _default_output_path()
     )
