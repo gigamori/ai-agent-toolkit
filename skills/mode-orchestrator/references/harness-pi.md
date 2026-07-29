@@ -11,18 +11,36 @@ both implemented through the `bash` tool.
 ## P1 — Delegation
 
 Delegate the turn as a blocking, non-interactive `pi -p` call from the `bash`
-tool. Write the assembled prompt (Injection assembly's output) to a file in
-the run directory first, then pass it with the `@<path>` include syntax rather
-than as an inline argument — `pi @<prompt-file> -p` includes the file's
-content as the initial message (confirmed via `pi --help`'s "Include files in
-initial message" example). This avoids shell-quoting a long, multi-section
-prompt.
+tool, passing the assembled prompt (Injection assembly's output) as the
+**positional message argument**.
 
-Recommended invocation shape:
+Two things that look like the obvious way to do this are wrong; both were
+measured on 2026-07-29 against pi v0.80.6 / win32.
+
+- **Do not deliver the prompt with `@<file>`.** The include syntax attaches
+  the file as *content to reason about*, not as the turn's instruction. A
+  probe whose file said "reply with exactly this JSON object and nothing
+  else" came back with a refusal that named it an embedded-instruction
+  (prompt-injection) attempt and asked what the user actually wanted. The
+  identical text passed positionally was obeyed.
+- **Do not invoke the npm `pi` shim with a multi-line prompt on argv.** On
+  Windows `pi` resolves to `pi.CMD`, and its cmd.exe layer **truncates the
+  argument at the first newline** — a two-line probe reached the model as
+  line one only, exit code 0, nothing on stderr. This is the same corruption
+  class `reliability-spec.md` §13.2 measured for the claude shim, and the
+  assembled prompt is always multi-line. The shim's own body is just
+  `node <entry> %*`, so launch that entry through node directly:
+  `node <npm-prefix>/node_modules/@earendil-works/pi-coding-agent/dist/cli.js`.
+  Verified: with the shim bypassed, a two-line prompt containing `&` and `|`
+  arrived intact.
+
+Recommended invocation shape (write it to a shell variable first so the
+multi-line prompt is quoted exactly once):
 
 ```
-MODE_ORCH_DEPTH=1 pi @<prompt-file> -p --mode json --model <the turn's resolved model> \
-   --no-skills --session-dir <run-dir>/sessions
+MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
+   --model <the turn's resolved model> \
+   --no-skills --session-dir <run-dir>/sessions "$PROMPT"
 ```
 
 - `MODE_ORCH_DEPTH=1`: **recursion guard, layer 1.** `SKILL.md` Step -1 reads
@@ -44,8 +62,17 @@ MODE_ORCH_DEPTH=1 pi @<prompt-file> -p --mode json --model <the turn's resolved 
   `opus` → `pi-claude-agent-sdk/claude-opus-4-8[1m]` — provided the
   `pi-claude-agent-sdk` provider is loaded. Do not pass `--no-extensions`: it
   unloads that provider and every canonical name then fails to resolve.
-- `--mode json`: structured output mode, easier to extract the reply-contract
-  status line from than the default text mode.
+- `--mode json`: an **event JSONL stream**, one JSON object per line — not a
+  single result object like `claude -p --output-format json`. Measured shape
+  (19 lines for a trivial turn): `session`, `agent_start`, `turn_start`, then
+  `message_start` / `message_update`* / `message_end` per message, then
+  `turn_end`, `agent_end`, `agent_settled`. **Read the turn's reply from the
+  `turn_end` line**: `.message.content` is a block array (`{"type":"text",
+  "text":...}`, plus `thinking` blocks when the model reasons) and
+  `.message.stopReason` is `"stop"` on a clean finish. Concatenate the `text`
+  blocks in order to get the reply whose final line must carry the
+  reply-contract `status:` line. `.message.usage` carries
+  `{input, output, cacheRead, cacheWrite, totalTokens, cost:{...,total}}`.
 - `--session-dir <run-dir>/sessions`: keeps the child's transcript **on disk**
   — `SKILL.md` Execution step 4 tells the orchestrator to discard an aborted
   turn's output and leave "the transcript on disk for a human to read", and
@@ -53,19 +80,14 @@ MODE_ORCH_DEPTH=1 pi @<prompt-file> -p --mode json --model <the turn's resolved 
   of the real session store. **Do not use `--no-session`**: it satisfies
   neither half.
 
-**Unverified (flag before relying on in a live run).** Neither of these has
-been confirmed against a real run in this project; confirm both once, on a
-throwaway prompt, before the first real Phase 5 E2E run, and do not assume
-either.
-
-1. The exact shape of `--mode json`'s stdout — specifically where the model's
-   final assistant text sits in the emitted JSON. Do not assume a schema.
-2. Whether `pi @<prompt-file> -p` processes the included file as the turn's
-   message with **no additional message argument**. `pi --help`'s worked
-   example for `@file` pairs it with a message string
-   (`pi @prompt.md @image.png "What color is the sky?"`), so the
-   file-only form is an extrapolation. If it turns out a message argument is
-   required, pass a short fixed one (the prompt file stays the real payload).
+**Cold-start cost.** A one-shot `pi -p` run is not instant: five consecutive
+cold judgment calls (`haiku`, trivial question) took 16.2–16.5 s each, 5/5
+successful. Treat ~15 s as the floor of any turn's wall-clock, and do not read
+a turn that has been running for well under a minute as stalled. The
+flakiness pitfall recorded for cold `pi -p` in
+`_projects/pi-extensions-dev/rules.md` did **not** reproduce for this call
+shape (no in-process child session is spawned here); it remains relevant for
+delegations that load extensions which start their own child sessions.
 
 ## P2 — Time-bound (the bash tool's native `timeout`)
 

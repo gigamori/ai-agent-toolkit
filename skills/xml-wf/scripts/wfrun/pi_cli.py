@@ -6,19 +6,33 @@ wrapper -- see `mode-orchestrator-runs/phase5-item1-cc-inventory-design.md`
 for the fuller CC<->Pi feature-parity survey (structured-output forcing,
 cost reporting, and general delegation are all still CC-only there).
 
-Differences from claude_cli.py's approach, and why:
+Differences from claude_cli.py's approach, and why (all measured 2026-07-29
+against pi v0.80.6 / win32):
+
 - No `--json-schema` on Pi (`pi --help` has no equivalent) -- forced instead
   by appending an instruction to the prompt, then parsed with a two-pass
-  fallback (full-body parse, then brace-extraction) since the model may wrap
-  the JSON in prose or a code fence despite the instruction.
-- Prompt is passed via `@<file>` (pi's file-include syntax), not stdin -- a
-  `pi -p` call left with stdin open as a pipe blocks forever before dispatch
-  (a documented, reproduced pitfall for this CLI; see
-  `_projects/pi-extensions-dev/rules.md`, "Known pitfalls"). Passing the
-  prompt as a file and explicitly closing stdin (DEVNULL) avoids it.
-- `cost_usd` is always 0.0: `--mode text` (used here) reports no cost figure,
-  and `--mode json`'s event-stream usage schema is unverified (see the design
-  doc above). Callers must not treat 0.0 as a real zero-cost measurement.
+  fallback (full-body parse, then brace-extraction). The fallback is load
+  bearing, not defensive: the measured replies wrap the object in a
+  ```json fence despite the instruction.
+- The prompt is passed as a **positional message argument**, NOT via pi's
+  `@<file>` include syntax. `@file` attaches the file as *content to reason
+  about*, not as the turn's instruction: a probe whose file said "reply with
+  exactly this JSON" got back a refusal that named it an embedded-instruction
+  (prompt-injection) attempt and asked what the user actually wanted. The
+  same text as a positional argument was obeyed.
+- stdin is closed (DEVNULL). A `pi -p` call left with stdin open as a pipe
+  blocks forever before dispatch (`_projects/pi-extensions-dev/rules.md`,
+  "Known pitfalls").
+- `cost_usd` is always 0.0 because `--mode text` prints no cost figure. Pi
+  *can* report cost, but only in `--mode json`, whose `message_end` /
+  `turn_end` lines carry `.message.usage.cost.total`. Switching this module
+  to that mode would recover the figure for natively-priced providers
+  (measured: `google/gemini-3.1-flash-lite` reported 0.00123875 for a
+  one-word turn) but not for the models the canonical names resolve to:
+  `pi-claude-agent-sdk/*` is a bridge to the claude binary and pi has no
+  price table for it, so it reports a real token count with `cost.total` 0.
+  Since ask defaults to those canonical names, text mode loses nothing today
+  -- but callers must still not read 0.0 as a measured zero.
 """
 from __future__ import annotations
 
@@ -27,7 +41,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 
 from .guardrails import ASK_PROMPT
 
@@ -40,29 +53,54 @@ code fence, just: {"answer": true or false, "reason": "..."}"""
 
 _BRACE_RE = re.compile(r"\{.*\}", re.DOTALL)
 
+# Where npm's Windows shim keeps the actual CLI entry, relative to the shim.
+_NPM_ENTRY = ("node_modules", "@earendil-works", "pi-coding-agent", "dist",
+              "cli.js")
+
 _resolution_cache: dict[str, object] = {}
 
 
-def _resolve_pi_bin() -> str | None:
-    """Resolve the `pi` executable once per process.
+def resolve_pi_launcher() -> list[str] | None:
+    """Resolve the argv prefix that launches pi, once per process.
 
-    Unlike claude_cli.py's `_resolve_claude_bin()`, no shim/metachar handling
-    is needed: this module's argv is a fixed flag set plus a temp-file path
-    and a model name, none of which can contain shell metacharacters (see
-    the design doc's "binary 解決" section for why this differs from the
-    claude case).
+    Returns the prefix (e.g. `["/usr/local/bin/pi"]`, or
+    `["node", ".../dist/cli.js"]` on Windows), or None when pi cannot be
+    launched safely.
+
+    Windows: npm installs `pi` as a `.CMD` shim. Launching that shim with a
+    multi-line prompt on argv **silently truncates the prompt at the first
+    newline** -- measured: a two-line probe reached the model as line one
+    only, exit code 0, nothing on stderr. This is the same cmd.exe argv
+    corruption reliability-spec.md §13.2 measured for the claude shim, and
+    the ask prompt is always multi-line, so every call would be affected.
+    The shim itself just runs `node <entry> %*`, so we resolve that entry and
+    launch it through node directly, bypassing cmd.exe.
+
+    Fail-closed: if only the shim is reachable (no entry file, or no node on
+    PATH), return None rather than launch a call whose prompt would arrive
+    truncated -- the same loud-failure choice as §13.3.3.
     """
-    if "path" in _resolution_cache:
-        return _resolution_cache["path"]
-    path = shutil.which("pi")
-    _resolution_cache["path"] = path
-    return path
+    if "launcher" in _resolution_cache:
+        return _resolution_cache["launcher"]
+
+    which_path = shutil.which("pi")
+    if which_path is None:
+        launcher = None
+    elif os.path.splitext(which_path)[1].lower() not in (".cmd", ".bat"):
+        launcher = [which_path]
+    else:
+        entry = os.path.join(os.path.dirname(which_path), *_NPM_ENTRY)
+        node = shutil.which("node")
+        launcher = [node, entry] if (node and os.path.isfile(entry)) else None
+
+    _resolution_cache["launcher"] = launcher
+    return launcher
 
 
 def _extract_json(text: str) -> dict | None:
     """Two-pass parse: try the whole (stripped) body first, then fall back
-    to the first-brace-to-last-brace span (handles a stray code fence or
-    a leading/trailing sentence the model added despite the instruction)."""
+    to the first-brace-to-last-brace span. The fallback is what handles the
+    ```json fence the model emits in practice."""
     stripped = text.strip()
     try:
         obj = json.loads(stripped)
@@ -89,43 +127,33 @@ def ask_llm_pi(question: str, *, model: str = "haiku", cwd: str | None = None,
     cost is always 0.0 (see module docstring) -- kept in the return shape
     for drop-in parity with the cc backend, not because it is measured.
     """
-    pi_bin = _resolve_pi_bin()
-    if pi_bin is None:
-        return None, "pi CLI not found on PATH", 0.0
+    launcher = resolve_pi_launcher()
+    if launcher is None:
+        return None, ("pi CLI not launchable: not on PATH, or only the "
+                      "Windows npm .CMD shim is reachable (it truncates a "
+                      "multi-line prompt at the first newline) and no "
+                      "node + dist/cli.js could be resolved to bypass it"), 0.0
 
     prompt = ASK_PROMPT.format(question=question) + _JSON_INSTRUCTION
+    cmd = [*launcher, "-p", "--mode", "text", "--tools", "read",
+           "--no-session", "--model", model, prompt]
 
-    fd, prompt_file = tempfile.mkstemp(prefix="wfrun-ask-", suffix=".md")
-    # UTF-8 explicitly -- same cp932-corruption concern as claude_cli.py's
-    # sys_prompt_file (questions and interpolated vars routinely carry
-    # non-ASCII text on JA Windows).
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(prompt)
-
-    try:
-        cmd = [pi_bin, f"@{prompt_file}", "-p", "--mode", "text",
-               "--tools", "read", "--no-session", "--model", model]
-        reason = "no structured answer"
-        for _ in range(2):
-            try:
-                proc = subprocess.run(
-                    cmd, stdin=subprocess.DEVNULL, capture_output=True,
-                    text=True, timeout=timeout, cwd=cwd)
-            except subprocess.TimeoutExpired:
-                reason = f"timeout after {timeout}s"
-                continue
-            except FileNotFoundError:
-                return None, "pi CLI not found on PATH", 0.0
-            if proc.returncode != 0:
-                reason = (proc.stderr or "").strip()[:500] or f"pi exited {proc.returncode}"
-                continue
-            obj = _extract_json(proc.stdout)
-            if obj is not None and isinstance(obj.get("answer"), bool):
-                return obj["answer"], str(obj.get("reason", "")), 0.0
-            reason = "no structured answer"
-        return None, reason, 0.0
-    finally:
+    reason = "no structured answer"
+    for _ in range(2):
         try:
-            os.remove(prompt_file)
-        except OSError:
-            pass
+            proc = subprocess.run(
+                cmd, stdin=subprocess.DEVNULL, capture_output=True,
+                text=True, timeout=timeout, cwd=cwd)
+        except subprocess.TimeoutExpired:
+            reason = f"timeout after {timeout}s"
+            continue
+        except FileNotFoundError:
+            return None, "pi CLI not found on PATH", 0.0
+        if proc.returncode != 0:
+            reason = (proc.stderr or "").strip()[:500] or f"pi exited {proc.returncode}"
+            continue
+        obj = _extract_json(proc.stdout)
+        if obj is not None and isinstance(obj.get("answer"), bool):
+            return obj["answer"], str(obj.get("reason", "")), 0.0
+        reason = "no structured answer"
+    return None, reason, 0.0

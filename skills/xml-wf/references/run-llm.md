@@ -173,9 +173,8 @@ has returned.
   the running harness on its own (`CLAUDE_CODE_SESSION_ID` set → the claude
   CLI, unset → the pi CLI) and logs which one ran under `"backend"` in each
   steps.log entry. When it ran against the pi CLI, `cost_usd` in that entry
-  is always `0.0` — Pi's non-interactive mode reports no cost figure, so a
-  `0.0` there is "not measured", not "measured zero"; only claude-CLI entries
-  carry a real cost
+  is always `0.0` — a `0.0` there means "not measured", not "measured zero";
+  only claude-CLI entries carry a real cost
 - `while`/`each` : repeat the full 4-move protocol every iteration. Stop and
   report when the workflow's `max` is reached — count only steps.log's
   **step-execution** entries (the ones carrying a `"step"` field). `ask`
