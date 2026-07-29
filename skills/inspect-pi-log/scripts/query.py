@@ -79,22 +79,47 @@ def _escape_glob_dir(dir_path: str) -> str:
     return "".join("[" + ch + "]" if ch in "[]*?" else ch for ch in dir_path)
 
 
+def _norm_parts(root: Path) -> "tuple[str, ...]":
+    """A root as normcased path components — the unit of root comparison.
+
+    Comparing components rather than the joined string keeps `<x>/sessionsX`
+    from reading as nested under `<x>/sessions`.
+    """
+    return tuple(os.path.normcase(part) for part in root.parts)
+
+
+def _covers(outer: "tuple[str, ...]", inner: "tuple[str, ...]") -> bool:
+    """True when an `<outer>/**` glob already matches everything under `inner`.
+
+    Equality counts — a root covers itself.
+    """
+    return inner[: len(outer)] == outer
+
+
 def _pi_session_universes() -> "list[tuple[Path, str]]":
     """`[(sessions_root, duckdb_glob), ...]`, env universes first, deduped.
 
     The priority mirrors pi's own session-dir resolution (main.ts): the flat
     `$PI_CODING_AGENT_SESSION_DIR` store wins over `$PI_CODING_AGENT_DIR`, which
-    wins over the home default. Dedupe is not cosmetic — DuckDB reads a glob
-    list once per entry, so a root listed twice DOUBLES every row.
+    wins over the home default.
+
+    Dedupe is not cosmetic — DuckDB reads a glob list once per entry, so a root
+    read twice DOUBLES every row of it. Equality alone does not catch that:
+    every root is globbed as `<root>/**/*.jsonl`, so a root NESTED under
+    another is read twice as well — e.g. `$PI_CODING_AGENT_SESSION_DIR` aimed
+    at one of the per-cwd subdirectories under `$PI_CODING_AGENT_DIR/sessions`.
+    Only maximal roots are kept. Dropping a covered root loses no file, because
+    the covering root's glob already matches every file the covered one had.
     """
     universes: "list[tuple[Path, str]]" = []
-    seen: "set[str]" = set()
 
     def add(root: Path, glob: str) -> None:
-        key = os.path.normcase(str(root))
-        if key not in seen:
-            seen.add(key)
-            universes.append((root, glob))
+        parts = _norm_parts(root)
+        if any(_covers(_norm_parts(kept), parts) for kept, _g in universes):
+            return
+        universes[:] = [(kept, kept_glob) for kept, kept_glob in universes
+                        if not _covers(parts, _norm_parts(kept))]
+        universes.append((root, glob))
 
     def add_env(root: Path) -> None:
         add(root, f"{_escape_glob_dir(root.as_posix())}/**/*.jsonl")

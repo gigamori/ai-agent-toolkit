@@ -34,12 +34,18 @@ one `select` per call.
 
 ## Which session store gets scanned
 
-`query.py` scans the **union** of every store it can see, in this order, and dedupes
-the resolved roots (a root listed twice would double every row):
+`query.py` scans the **union** of every store it can see, in this order:
 
 1. `$PI_CODING_AGENT_SESSION_DIR` — pi's flat store override (no per-cwd subdirectory)
 2. `$PI_CODING_AGENT_DIR/sessions`
 3. `~/.pi/agent/sessions` — **always scanned**, even when the vars above are set
+
+Each root is read as `<root>/**/*.jsonl`, so any root a *different* root already
+covers is dropped before scanning — whether it is the same directory or one nested
+inside it (e.g. `$PI_CODING_AGENT_SESSION_DIR` aimed at a per-cwd subdirectory of
+`$PI_CODING_AGENT_DIR/sessions`). Reading it under both globs would return every one
+of its rows twice; dropping it loses nothing, since the covering glob still matches
+its files.
 
 Both variables are trimmed (blank counts as unset) and **`~` is expanded**, matching
 pi's own `expandTildePath`. Note this is the opposite of `CLAUDE_CONFIG_DIR` in

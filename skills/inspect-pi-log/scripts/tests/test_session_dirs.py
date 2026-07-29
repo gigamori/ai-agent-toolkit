@@ -139,6 +139,38 @@ class UniverseResolutionTest(unittest.TestCase):
         roots = [root for root, _glob in query._pi_session_universes()]
         self.assertEqual(roots, [self.agent / "sessions", self._home_sessions()])
 
+    def test_a_root_nested_under_another_is_dropped(self):
+        """SESSION_DIR aimed at a per-cwd subdir of AGENT_DIR/sessions: the
+        parent's `**` glob already reads it, so keeping both doubles its rows."""
+        os.environ["PI_CODING_AGENT_DIR"] = str(self.agent)
+        os.environ["PI_CODING_AGENT_SESSION_DIR"] = str(
+            self.agent / "sessions" / "--c--home--proj--")
+        roots = [root for root, _glob in query._pi_session_universes()]
+        self.assertEqual(roots, [self.agent / "sessions", self._home_sessions()])
+
+    def test_a_root_nested_under_the_home_default_is_dropped(self):
+        os.environ["PI_CODING_AGENT_SESSION_DIR"] = str(
+            self._home_sessions() / "sub")
+        roots = [root for root, _glob in query._pi_session_universes()]
+        self.assertEqual(roots, [self._home_sessions()])
+
+    def test_a_root_containing_the_home_default_absorbs_it(self):
+        """The covering root wins even when it is the env one: its glob is a
+        superset, so no session file is lost by dropping the home default."""
+        os.environ["PI_CODING_AGENT_SESSION_DIR"] = str(self.home / ".pi")
+        roots = [root for root, _glob in query._pi_session_universes()]
+        self.assertEqual(roots, [self.home / ".pi"])
+
+    def test_a_sibling_root_sharing_a_name_prefix_is_kept(self):
+        """`<agent>/sessionsX` is NOT nested under `<agent>/sessions` — a
+        string-prefix containment test would wrongly drop it."""
+        os.environ["PI_CODING_AGENT_DIR"] = str(self.agent)
+        os.environ["PI_CODING_AGENT_SESSION_DIR"] = str(self.agent / "sessionsX")
+        roots = [root for root, _glob in query._pi_session_universes()]
+        self.assertEqual(roots, [self.agent / "sessionsX",
+                                 self.agent / "sessions",
+                                 self._home_sessions()])
+
     def test_empty_universe_is_dropped(self):
         os.environ["PI_CODING_AGENT_DIR"] = str(self.agent)
         _write_log(self.agent / "sessions", _SID_ENV)
@@ -234,6 +266,20 @@ class EndToEndTest(unittest.TestCase):
             out = self._run_query(
                 home, "SELECT count(*) FROM pi_record",
                 agent_dir=agent, session_dir=agent / "sessions")
+            self.assertEqual(out["rows"][0][0], 2)  # the fixture's 2 lines
+
+    def test_nested_roots_do_not_double_the_rows(self):
+        """The containment case end to end: equality-only dedupe read the
+        per-cwd subdir once via each glob and returned every row twice."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            home, agent = tmp / "home", tmp / "agent"
+            per_cwd = agent / "sessions" / "--c--home--proj--"
+            _write_log(per_cwd, _SID_ENV)
+            (home / ".pi" / "agent" / "sessions").mkdir(parents=True)
+            out = self._run_query(
+                home, "SELECT count(*) FROM pi_record",
+                agent_dir=agent, session_dir=per_cwd)
             self.assertEqual(out["rows"][0][0], 2)  # the fixture's 2 lines
 
     def test_without_env_only_the_home_universe_is_read(self):
