@@ -1,10 +1,15 @@
-"""`pi -p` subprocess invocation for `wfrun ask --backend pi`.
+"""`pi -p` subprocess invocation: `wfrun ask --backend pi` (`ask_llm_pi`) and
+`wfrun run --backend pi` (`run_pi`, the step-execution counterpart to
+claude_cli.run_claude -- mode-orchestrator-runs/phase6-run-pi-design.md).
 
-Sibling of `claude_cli.py`, scoped to the single Pi-backed capability xml-wf
-needs today: LLM condition judgment for `ask=`. Not a general `pi -p`
-wrapper -- see `mode-orchestrator-runs/phase5-item1-cc-inventory-design.md`
-for the fuller CC<->Pi feature-parity survey (structured-output forcing,
-cost reporting, and general delegation are all still CC-only there).
+Sibling of `claude_cli.py`. `ask_llm_pi` predates `run_pi`: see
+`mode-orchestrator-runs/phase5-item1-cc-inventory-design.md` for the
+original CC<->Pi feature-parity survey that scoped this module to condition
+judgment only ("not a general pi -p wrapper"); phase6-run-pi-design.md §4
+lifted that scope to full step execution. Structured-output forcing
+(schema=) is still refused outright -- pi has no equivalent -- but general
+delegation and (for natively-priced providers) real cost reporting are
+covered now via run_pi.
 
 Differences from claude_cli.py's approach, and why (all measured 2026-07-29
 against pi v0.80.6 / win32):
@@ -41,8 +46,11 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 
+from . import claude_cli, model
 from .guardrails import ASK_PROMPT
+from .modes import blocked_line, strip_mode_line
 
 # Appended to ASK_PROMPT since pi has no --json-schema equivalent to force
 # structured output the way claude_cli.py's run_claude() does.
@@ -157,3 +165,328 @@ def ask_llm_pi(question: str, *, model: str = "haiku", cwd: str | None = None,
             return obj["answer"], str(obj.get("reason", "")), 0.0
         reason = "no structured answer"
     return None, reason, 0.0
+
+
+# pi's built-in tool set is fixed by type (dist/core/tools/index.d.ts
+# ToolName, design phase6-run-pi-design.md §4.2, checked 2026-07-29):
+# read | bash | edit | write | grep | find | ls. --tools has no alias
+# normalization and silently grants zero tools on an unrecognized name
+# (measured) -- names outside this table, or a converted set that comes out
+# empty, must be refused by _convert_tools() rather than forwarded.
+TOOL_NAME_MAP = {
+    "Read": "read",
+    "Write": "write",
+    "Edit": "edit",
+    "Grep": "grep",
+    "Bash": "bash",
+    "Glob": "find",
+}
+
+
+def _convert_tools(tools: str) -> tuple[str | None, str | None]:
+    """CC tool names -> pi tool names (TOOL_NAME_MAP, design §4.2).
+
+    Returns (converted, None) on success, or (None, error_message) when any
+    name is outside TOOL_NAME_MAP -- MultiEdit/NotebookEdit/Task/Agent and
+    any unknown name are rejected, not silently dropped (design §4.2) -- or
+    the converted set would be empty.
+    """
+    names = [t.strip() for t in tools.split(",") if t.strip()]
+    unknown = [t for t in names if t not in TOOL_NAME_MAP]
+    if unknown:
+        return None, (
+            "tools= names not supported by the pi backend: "
+            + ", ".join(unknown)
+            + " (pi's --tools has no alias normalization and silently "
+              "grants zero tools on an unrecognized name rather than "
+              "erroring, so an unconvertible name is refused here instead)")
+    converted = [TOOL_NAME_MAP[t] for t in names]
+    if not converted:
+        return None, "tools= resolved to an empty tool set"
+    return ",".join(converted), None
+
+
+def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.CliResult:
+    """Turn a completed `pi -p --mode json` invocation's (returncode,
+    stdout, stderr) into a CliResult (design phase6-run-pi-design.md §4.1).
+
+    stdout is a JSONL event stream -- one JSON object per line
+    (mode-orchestrator's harness-pi.md, measured: session, agent_start,
+    turn_start, then message_start/message_update*/message_end per message,
+    then turn_end, agent_end, agent_settled) -- NOT a single result object
+    like `claude -p --output-format json`. Errors never surface on exit code
+    or stderr (measured: an invalid API key still exits 0 with empty
+    stderr); they appear only inside the JSONL, as a turn_end whose
+    message.stopReason is "error".
+
+    There is no `transient` class here (design §4.1): errorMessage is a
+    provider-shaped raw string with no field equivalent to claude's
+    api_error_status, so a retryable upstream hiccup cannot be told apart
+    from anything else -- everything that is not guardrail/refusal/empty
+    falls to `behavioral` (design §4.1.1 accepts the resulting double-retry
+    against pi's own internal retry).
+    """
+    events = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue  # a stray non-JSON line is not fatal; turn_end absence is
+
+    turn_end = next((e for e in events
+                     if isinstance(e, dict) and e.get("type") == "turn_end"), None)
+    if turn_end is None:
+        # Interrupted mid-stream (external kill, or the process died before
+        # finishing) -- measured (§9.4.1): turn_end/agent_end/agent_settled
+        # never appear when the process is killed externally. A timeout is
+        # caught earlier, at the launch layer (run_pi), so this branch means
+        # the process ended on its own without ever reaching turn_end.
+        last_type = (events[-1].get("type")
+                    if events and isinstance(events[-1], dict) else None)
+        return claude_cli.CliResult(
+            ok=False, exit_code=returncode, stderr=stderr,
+            error_class="behavioral",
+            error=("pi JSONL stream ended without a turn_end event "
+                  f"(last observed event: {last_type!r})"),
+            raw={"last_event_type": last_type})
+
+    message = turn_end.get("message") or {}
+    content = message.get("content") or []
+    text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+    text = "".join(b.get("text", "") for b in text_blocks)
+    stop_reason = message.get("stopReason")
+    usage = message.get("usage") or {}
+    cost_usd = float(((usage.get("cost") or {}).get("total")) or 0.0)
+
+    # CliResult.raw reduction rule (design §4.1, review point 3): a
+    # sub-dict pulled from turn_end.message, NOT the full JSONL -- thinking
+    # blocks and the other event types would bloat the result.json audit
+    # trail executor.py writes per attempt.
+    raw = {
+        "content": text_blocks,
+        "stopReason": stop_reason,
+        "errorMessage": message.get("errorMessage"),
+        "usage": usage,
+        "model": message.get("model"),
+        "provider": message.get("provider"),
+    }
+
+    result = claude_cli.CliResult(ok=True, text=text, cost_usd=cost_usd,
+                                  exit_code=returncode, stderr=stderr, raw=raw)
+
+    if stop_reason in ("error", "aborted"):
+        result.ok = False
+        result.error_class = "behavioral"
+        error_message = message.get("errorMessage")
+        result.error = (f"pi reported stopReason={stop_reason}"
+                        + (f": {error_message}" if error_message else ""))
+        return result
+
+    # _common.md (mode injection) mandates a leading [Mode: x] line; shared
+    # with claude_cli.classify_result so the ERROR:/[BLOCKED: protocols are
+    # detected identically regardless of backend.
+    body = strip_mode_line(text)
+    if body.lstrip().startswith("ERROR:"):
+        result.ok = False
+        result.error_class = "guardrail"
+        result.error = body.strip()
+        return result
+
+    blocked = blocked_line(text)
+    if blocked is not None:
+        result.ok = False
+        result.error_class = "refusal"
+        result.error = blocked[:500]
+        return result
+
+    if body.strip() == "":
+        result.ok = False
+        result.error_class = "behavioral"
+        result.error = "empty result"
+        return result
+
+    return result
+
+
+def run_pi(prompt: str, *, system_prompt: str | None = None,
+          model: str | None = None, effort: str | None = None,
+          tools: str | None = None, schema: str | None = None,
+          timeout: int = 600, cwd: str | None = None,
+          permission_mode: str | None = None,
+          kill_tree: bool = False) -> claude_cli.CliResult:
+    """`pi -p --mode json` counterpart to claude_cli.run_claude() -- same
+    signature (design phase6-run-pi-design.md §4), so Executor's
+    run_claude= injection point (executor.py) can take either
+    interchangeably.
+
+    Differences from run_claude(), all decided/measured in the design doc:
+    - schema is rejected outright (error_class="env"): pi has no
+      --json-schema equivalent. This is the second line of defense; the
+      first is the startup fail-fast in __main__.py (pi_compat_errors
+      below) that refuses a schema= workflow before any process launches
+      (design §2.2, "案S1").
+    - permission_mode is accepted for signature parity but silently
+      dropped: pi has no permission-mode concept (design §4 point 2).
+    - effort is forwarded verbatim to --thinking, unconverted: claude's
+      five values (low/medium/high/xhigh/max) are all accepted by
+      --thinking without warning (measured, design §6).
+    - tools is translated from CC names to pi names (TOOL_NAME_MAP, design
+      §4.2) and rejected (error_class="env") if any name is outside the
+      table or the converted set would be empty.
+    - --no-session and --no-skills are always passed (design §4 point 5):
+      one run launches "steps x attempts" child pi processes, and wfrun
+      already persists prompt/result under steps/<id>_NN/ itself, so
+      per-child transcripts and skill discovery are both unneeded overhead
+      (and skills reopen a recursive-invocation surface). --no-extensions
+      is deliberately NOT passed: canonical model names resolve through the
+      pi-claude-agent-sdk extension (design §9.3).
+    - the prompt travels as a positional argv argument, not stdin (as
+      ask_llm_pi already does) -- pi's `@<file>` include syntax attaches a
+      file as content to reason about, not as the turn's instruction.
+    """
+    if schema is not None:
+        return claude_cli.CliResult(
+            ok=False, exit_code=-1, error_class="env",
+            error="schema= is not supported by the pi backend (no "
+                  "forced-structured-output equivalent exists); this call "
+                  "should have been rejected before launch by the startup "
+                  "fail-fast check (pi_compat_errors)")
+
+    launcher = resolve_pi_launcher()
+    if launcher is None:
+        return claude_cli.CliResult(
+            ok=False, exit_code=-1, error_class="env",
+            error="pi CLI not launchable: not on PATH, or only the Windows "
+                  "npm .CMD shim is reachable (it truncates a multi-line "
+                  "prompt at the first newline) and no node + dist/cli.js "
+                  "could be resolved to bypass it")
+
+    mapped_tools = None
+    if tools:
+        mapped_tools, tools_error = _convert_tools(tools)
+        if tools_error:
+            return claude_cli.CliResult(ok=False, exit_code=-1,
+                                        error_class="env", error=tools_error)
+
+    cmd = [*launcher, "-p", "--mode", "json", "--no-session", "--no-skills"]
+
+    sys_prompt_file: str | None = None
+    try:
+        if system_prompt:
+            fd, sys_prompt_file = tempfile.mkstemp(
+                prefix="wfrun-pi-sysprompt-", suffix=".txt")
+            # UTF-8 explicitly: role/mode/rules bodies routinely contain
+            # non-ASCII text (claude_cli._launch does the same, for the
+            # same reason).
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(system_prompt)
+            cmd += ["--append-system-prompt", sys_prompt_file]
+        if model:
+            cmd += ["--model", model]
+        if effort:
+            cmd += ["--thinking", effort]
+        if mapped_tools:
+            cmd += ["--tools", mapped_tools]
+        cmd += [prompt]  # positional message argument -- never @<file>
+
+        try:
+            if kill_tree:
+                # The real prompt already rides on argv (above); pi does not
+                # read it from stdin the way claude does, so the "prompt"
+                # this shares with claude_cli's stdin-writing helper is "".
+                proc = claude_cli._run_with_tree_kill(cmd, "", timeout, cwd)
+            else:
+                proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                                      capture_output=True, text=True,
+                                      timeout=timeout, cwd=cwd)
+        except subprocess.TimeoutExpired:
+            return claude_cli.CliResult(ok=False, exit_code=-1,
+                                        error_class="timeout",
+                                        error=f"timeout after {timeout}s")
+        except FileNotFoundError:
+            return claude_cli.CliResult(ok=False, exit_code=-1,
+                                        error_class="env",
+                                        error="pi CLI not found on PATH")
+    finally:
+        if sys_prompt_file:
+            try:
+                os.remove(sys_prompt_file)
+            except OSError:
+                pass
+
+    return classify_result_pi(proc.returncode, proc.stdout, proc.stderr)
+
+
+def diagnose_stub_pi(step, prompt, failure, *, cwd=None):
+    """Injected as Executor's diagnose= under the pi backend (design §1,
+    §2.3) -- the second line of defense behind the startup fail-fast
+    (pi_compat_errors below), which rejects any on-error="debug" workflow
+    before a run starts. adp.diagnose hardcodes run_claude + schema=
+    DEBUG_SCHEMA, neither of which the pi backend can satisfy, so
+    on-error="debug" is a dead feature here; this stub exists so that if
+    Executor._diagnose is ever reached anyway (a bug, or a future change
+    bypassing the fail-fast), it fails loudly instead of limping into a
+    broken diagnosis.
+    """
+    from .executor import WorkflowFailure  # deferred: avoids a module-level
+                                           # pi_cli <-> executor coupling
+    raise WorkflowFailure(
+        "diagnose was invoked under the pi backend, which has no debug "
+        "implementation (mode-orchestrator-runs/phase6-run-pi-design.md "
+        "§2.3); this should be unreachable, since on-error=\"debug\" "
+        "workflows are rejected at startup -- if you are seeing this, that "
+        "fail-fast check (pi_cli.pi_compat_errors) was bypassed")
+
+
+# Startup fail-fast rejection messages (design §2.2, §2.3) -- verbatim per
+# the design doc's own fenced text, `{id}` filled in with the offending
+# step's id. Reproduced exactly (including the 7/9-space continuation
+# indentation) since these are meant to be read literally by whoever hits
+# them, and the design doc gives them as fixed text, not a paraphrase.
+_SCHEMA_FAIL_FAST = '''\
+error: step '{id}' declares schema=, which the pi backend cannot enforce
+       (no forced-structured-output equivalent exists).
+       Rebuild this workflow as pi-compatible: run the skill in build mode
+       on this XML and ask for a pi-compatible version. The conversion
+       rules are in references/run-pi.md, "Replacing schema=".'''
+
+_ON_ERROR_DEBUG_FAIL_FAST = '''\
+error: step '{id}' uses on-error="debug", which the pi backend does not
+       support (debug diagnosis has no pi implementation).
+       Rebuild this workflow as pi-compatible. Replacement hints:
+       - on-error="fail" (default) — stop the run and let resume handle it
+       - retry=N — for steps that fail transiently, a plain retry often
+         covers what a debug-retry cycle did
+       - on-error="ignore" + a follow-up verification step — when the run
+         should continue and the failure needs recording instead of fixing
+       See references/run-pi.md, "Replacing on-error=debug".'''
+
+
+def pi_compat_errors(wf: model.Workflow) -> list[str]:
+    """Startup fail-fast for `wfrun run --backend pi` (design §2.2, §2.3):
+    reject, before any pi process launches, a workflow whose steps declare
+    schema= (no forced-structured-output equivalent on pi) or
+    on-error="debug" (adp.diagnose hardcodes run_claude + schema=
+    DEBUG_SCHEMA, neither of which pi can satisfy).
+
+    Only <step> is checked: <replan> cannot carry schema= at all
+    (parser.py's _REPLAN_ATTRS excludes it -- a parse-time error already),
+    and its on-error="debug" is already inert under every backend today
+    (Executor._exec_replan never calls self._diagnose), so it is not a
+    pi-specific gap this check needs to close.
+
+    Returns one fully-formatted rejection message per violation, in step
+    order (empty list when the workflow is pi-compatible).
+    """
+    errors = []
+    for node in wf.iter_steps():
+        if not isinstance(node, model.Step):
+            continue
+        if node.schema:
+            errors.append(_SCHEMA_FAIL_FAST.format(id=node.id))
+        if node.on_error == "debug":
+            errors.append(_ON_ERROR_DEBUG_FAIL_FAST.format(id=node.id))
+    return errors

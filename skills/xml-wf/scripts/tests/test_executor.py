@@ -81,7 +81,7 @@ class ExecutorTestCase(unittest.TestCase):
         self.tmp.cleanup()
 
     def execute(self, xml, params=None, ask=None, diagnose=None, events=None,
-                permission_mode=None):
+                permission_mode=None, model_runner="cc"):
         wf = parser.parse_string(xml, base_dir=self.tmp.name)
         executor = Executor(
             wf, params or {}, self.run_dir, base_dir=self.tmp.name,
@@ -90,6 +90,7 @@ class ExecutorTestCase(unittest.TestCase):
             run_claude=self.fake,
             ask_llm=ask or fake_ask_factory([]),
             diagnose=diagnose or (lambda *a, **k: Diagnosis("FAIL", "no")),
+            model_runner=model_runner,
         )
         return executor
 
@@ -220,6 +221,27 @@ class TestBasics(ExecutorTestCase):
         mapped = [e for e in load_events(self.run_dir) if e["kind"] == "model-map"]
         self.assertEqual((mapped[0]["canonical"], mapped[0]["resolved"]),
                          ("opus", "mapped-opus"))
+
+    def test_model_runner_selects_the_llm_table(self):
+        # design phase6-run-pi-design.md §1: _map_model's runner table is
+        # selectable at construction ("llm" for run-pi) rather than
+        # hardcoded to "cc" -- this one path also carries ask=/replan
+        # model resolution, but a step model= is the simplest probe.
+        from wfrun import modelmap
+        map_path = Path(self.tmp.name) / "mm.json"
+        map_path.write_text(
+            json.dumps({"cc": {"opus": "cc-opus"}, "llm": {"opus": "llm-opus"}}),
+            encoding="utf-8")
+        old = modelmap.MAP_PATH
+        modelmap.MAP_PATH = map_path
+        try:
+            ex = self.execute(self.wrap(
+                '<step id="s1" role="w" model="opus"><task>x</task></step>'),
+                model_runner="llm")
+            ex.run()
+        finally:
+            modelmap.MAP_PATH = old
+        self.assertEqual(self.fake.calls[0]["model"], "llm-opus")
 
     def test_permission_mode_reaches_only_write_capable_steps(self):
         ex = self.execute(self.wrap(

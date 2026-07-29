@@ -81,8 +81,31 @@ def _report(executor: Executor, status: str):
             print(f"  {p}")
 
 
+def _backend_executor_kwargs(backend: str) -> dict:
+    """The Executor constructor kwargs (run_claude=/ask_llm=/diagnose=/
+    model_runner=) for a resolved backend ("cc" or "pi" -- never "auto").
+    Shared by cmd_run and cmd_resume so a resumed run always reconstructs
+    the same execution facility it started with (design §1, §3.3)."""
+    if backend == "cc":
+        return dict(run_claude=claude_cli.run_claude, ask_llm=claude_cli.ask_llm,
+                    diagnose=adp.diagnose, model_runner="cc")
+    from . import pi_cli  # deferred: needs the pi CLI only when backend=="pi"
+    return dict(run_claude=pi_cli.run_pi, ask_llm=pi_cli.ask_llm_pi,
+                diagnose=pi_cli.diagnose_stub_pi, model_runner="llm")
+
+
 def cmd_run(args) -> int:
     wf = _load_validated(args.workflow, args.no_role_check)
+    backend = _resolve_backend(args.backend)
+
+    if backend == "pi":
+        from . import pi_cli  # deferred: needs the pi CLI only for this check
+        violations = pi_cli.pi_compat_errors(wf)
+        if violations:
+            for msg in violations:
+                print(msg, file=sys.stderr)
+            return 1
+
     params = _parse_params(args.param)
     base_dir = Path(args.workflow).resolve().parent
 
@@ -95,10 +118,17 @@ def cmd_run(args) -> int:
     shutil.copy(args.workflow, run_dir / "workflow.xml")
     (run_dir / "params.json").write_text(
         json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Recorded so `resume` inherits the same backend rather than
+    # re-detecting it -- a switch mid-run would break event consistency
+    # (design §3.3).
+    (run_dir / "backend.json").write_text(
+        json.dumps({"backend": backend}, ensure_ascii=False, indent=2),
+        encoding="utf-8")
 
     try:
         executor = Executor(wf, params, run_dir, base_dir=base_dir,
-                            permission_mode=args.permission_mode)
+                            permission_mode=args.permission_mode,
+                            **_backend_executor_kwargs(backend))
     except WorkflowFailure as e:
         sys.exit(f"error: {e}")
     try:
@@ -123,10 +153,20 @@ def cmd_resume(args) -> int:
     events = load_events(run_dir)
     base_dir = Path(args.base_dir).resolve() if args.base_dir else Path.cwd()
 
+    # Backend is inherited from the original run, never re-detected: a
+    # resume whose environment now looks different must not switch
+    # execution facilities mid-run (design §3.3). A run predating backend
+    # tracking (no backend.json) defaults to "cc", the only backend that
+    # existed before this file existed.
+    backend_path = run_dir / "backend.json"
+    backend = (json.loads(backend_path.read_text(encoding="utf-8"))["backend"]
+              if backend_path.is_file() else "cc")
+
     try:
         executor = Executor(wf, params, run_dir, base_dir=base_dir,
                             permission_mode=args.permission_mode,
-                            replay_events=events)
+                            replay_events=events,
+                            **_backend_executor_kwargs(backend))
     except WorkflowFailure as e:
         sys.exit(f"error: {e}")
     try:
@@ -234,6 +274,24 @@ def _detect_ask_backend() -> str:
     return "cc" if os.environ.get("CLAUDE_CODE_SESSION_ID") else "pi"
 
 
+def _resolve_backend(explicit: str) -> str:
+    """`--backend {auto,cc,pi}` resolution shared by `run` and `ask`
+    (mode-orchestrator-runs/phase6-run-pi-design.md §3.1: "same determinant,
+    same default" as `ask --backend`, _detect_ask_backend promoted to
+    shared use). auto detects from CLAUDE_CODE_SESSION_ID; an explicit
+    cc/pi that disagrees with the detected environment is honored but
+    warned about -- a forgotten/wrong flag would otherwise silently
+    dispatch against the wrong CLI."""
+    detected = _detect_ask_backend()
+    backend = detected if explicit == "auto" else explicit
+    if explicit != "auto" and explicit != detected:
+        print(f"warning: --backend {explicit} given but the environment "
+              f"looks like '{detected}' (CLAUDE_CODE_SESSION_ID is "
+              f"{'set' if detected == 'cc' else 'unset'}); proceeding with "
+              f"the explicit --backend {explicit} anyway", file=sys.stderr)
+    return backend
+
+
 def cmd_ask(args) -> int:
     question = args.question
     if args.vars:
@@ -243,13 +301,7 @@ def cmd_ask(args) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 2
 
-    detected = _detect_ask_backend()
-    backend = detected if args.backend == "auto" else args.backend
-    if args.backend != "auto" and args.backend != detected:
-        print(f"warning: --backend {args.backend} given but the environment "
-              f"looks like '{detected}' (CLAUDE_CODE_SESSION_ID is "
-              f"{'set' if detected == 'cc' else 'unset'}); proceeding with "
-              f"the explicit --backend {args.backend} anyway", file=sys.stderr)
+    backend = _resolve_backend(args.backend)
 
     try:  # "cc" table for the claude CLI, "llm" table for everything else
         ask_model = modelmap.resolve(args.model, "cc" if backend == "cc" else "llm")
@@ -900,6 +952,9 @@ def main(argv=None) -> int:
     p_run.add_argument("--permission-mode",
                        help="forwarded to every claude -p call (e.g. acceptEdits)")
     p_run.add_argument("--no-role-check", action="store_true")
+    p_run.add_argument("--backend", choices=("auto", "cc", "pi"), default="auto",
+                       help="dispatch CLI; auto detects from CLAUDE_CODE_SESSION_ID "
+                            "(default: auto)")
     p_run.set_defaults(func=cmd_run)
 
     p_res = sub.add_parser("resume", help="resume a failed run (skips recorded successes)")

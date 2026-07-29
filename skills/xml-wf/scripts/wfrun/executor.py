@@ -32,7 +32,8 @@ class Executor:
                  replay_events: list[dict] | None = None,
                  run_claude=claude_cli.run_claude,
                  ask_llm=claude_cli.ask_llm,
-                 diagnose=adp.diagnose):
+                 diagnose=adp.diagnose,
+                 model_runner: str = "cc"):
         self.wf = wf
         self.base_dir = Path(base_dir)
         self.run_dir = Path(run_dir)
@@ -43,6 +44,7 @@ class Executor:
         self._run_claude = run_claude
         self._ask_llm = ask_llm
         self._diagnose = diagnose
+        self._model_runner = model_runner
 
         self.vars: dict = {}
         self.step_count = 0
@@ -285,8 +287,12 @@ class Executor:
 
     def _map_model(self, name: str | None, where: str) -> str | None:
         """Canonical name -> the model this runner actually dispatches
-        (model_map.json, "cc" table). Mappings are recorded for audit."""
-        resolved = modelmap.resolve(name, "cc")
+        (model_map.json, runner table selected at construction -- "cc" for
+        run-cc, "llm" for run-pi, design phase6-run-pi-design.md §1). This
+        one path also carries ask='s model resolution (_eval_cond) and
+        replan's (_exec_replan), so making it variable here covers all
+        three call sites. Mappings are recorded for audit."""
+        resolved = modelmap.resolve(name, self._model_runner)
         if resolved != name:
             self.state.event("model-map", key=where,
                              canonical=name, resolved=resolved)
