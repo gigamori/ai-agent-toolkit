@@ -183,17 +183,39 @@ session end
   │     may contain cross-project plans copied in the same window. This is
   │     intentional archive behavior, not a bug.
   │
-  ▼ [Stop hook #2] session_progress_capture.py  (design: project-notes/specs/exec-binding.md)
+  ▼ [Stop hook #2] session_progress_capture.py  (design: project-notes/specs/exec-binding.md
+     and note-task-link.md §10 for the async capture apply-path)
      1. read `project` from state_file
         (self-heal: if empty, recover from a `[pj:...]` line in the assistant's last message)
      2. read the per-session `{session_id}.touched` ledger written by the PostToolUse hook
         `touched_capture.py` (NOT a jsonl scan / git diff); resolve touched task md by basename
      3. exec-binding: union-merge any `[tasks: a.md b.md]` carry from the assistant's last
         message into state `exec_bind`, then code-bind those owning tasks' `@log`
-     4. gate (INV-1, no-loop): return {"decision":"block", ...} ONLY to (a) Round1-remind a
-        missing touched task, (b) report a code auto-bind, or (c) report a new exec-bind skip
-        — each bounded by the `{session_id}.bind` sidecar (reminded rounds + `exec_tried`).
-        A task that can never be bound (no `@log:end`) does NOT loop the gate.
+     4. async capture apply-path (§10): if a `{session_id}.capture` sidecar is present, APPLY it
+        deterministically first (`confirmed` → `@log` summaries, `note_links` → task `@notes`),
+        then consume it. Applying before the placeholder backstop is what lets a real summary
+        win over a placeholder (`@log` is append-only, so a placeholder cannot be overwritten).
+        Entries outside the request-time closed set `capture.items` are skipped (F7a), and a
+        `note_links[].note` that is not project-relative under `project-notes/` is rejected
+        outright — independent of that membership set.
+     5. novelty → request capture: when a touched task still needs a summary or a freshly
+        written `project-notes/` deliverable has no owning task, commit `capture.status=requested`
+        and block once with an instruction to spawn the `taskflow:progress-capture` subagent.
+        The context block handed to it carries ABSOLUTE, forward-slashed `sidecar_path` /
+        `project_root` (the same values this hook reads), so the subagent's write/read basis
+        cannot drift from the hook's regardless of its cwd
+        (project-notes/specs/capture-context-abs-path.md).
+     6. expiry (15 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
+        backstop takes over — placeholder-bind every still-missing touched task and
+        `referenced` over-bind note-write owners resolvable via the reverse index.
+     7. gate (INV-1, no-loop): return {"decision":"block", ...} ONLY to (b) report a code
+        auto-bind / applied capture entry, (c) report a NEW exec-bind skip, (d) spawn capture,
+        or to surface `proposals` — each bounded by the `{session_id}.bind` sidecar
+        (`exec_tried` / `tried_notes` / `tried_tasks` 打止め sets). `requested` is committed
+        BEFORE the block, so the next Stop re-enters via the requested/pending branch and never
+        re-blocks. A task that can never be bound (no `@log:end`) does NOT loop the gate.
+        (The former "(a) Round1-remind a missing touched task" condition was REMOVED when the
+        inline Round1 reminder was replaced by the async capture path — option-a, §10.2.)
      bind writes are serialized by the bounded per-task advisory lock `log_lock.py` (INV-2)
 ```
 
@@ -201,7 +223,7 @@ session end
 
 Path: `_projects/_state/{session_id}.json`
 
-The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (Round1/Round2 reminder rounds + `exec_tried` skip records) and `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
+The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` plus `exec_tried` skip records; writer = this hook only), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.capture` (the async judgment sidecar; writer = the `taskflow:progress-capture` subagent only, consumed and unlinked by the hook after a successful apply). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
 
 ```json
 {

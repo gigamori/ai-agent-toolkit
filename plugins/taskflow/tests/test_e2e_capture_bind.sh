@@ -118,11 +118,48 @@ else
   fail "<sid>.touched missing the path: $(cat "$TF" 2>/dev/null)"
 fi
 
-# Stage 2 — Stop Round1 reminder (reads the produced .touched).
+# Stage 2 — Stop Round1 reminder (reads the produced .touched). This is also
+# the capture-spawn block (§10.5), so it carries the context block +
+# instructions checked below (project-notes/specs/capture-context-abs-path.md
+# AC-1/AC-2/AC-6/AC-7).
 echo "[Stage 2] Stop Round1"
 O1=$(stop)
 echo "$O1" | grep -q '"decision": *"block"' && pass "Round1 block reminder" || fail "no Round1 block: $O1"
 [ "$(sidlines "$TASK")" = "0" ] && pass "not yet bound (LLM step pending)" || fail "premature bind"
+
+# --- AC-1/AC-2/AC-6: context block + prose carry ABSOLUTE sidecar_path /
+# project_root (never a relative "_projects/..." literal), and both agree on
+# the same value. Expected values are derived at runtime via the existing
+# to_win() helper (cygpath -m), never hardcoded (repo rule: no absolute local
+# paths in tracked files).
+EXP_SIDECAR="$(to_win "$STATE/$SID.capture")"
+EXP_PROJECT_ROOT="$(to_win "$PDIR")"
+# NOTE: $O1 is itself JSON-encoded (`{"decision":"block","reason":"..."}`), so
+# the embedded context-block quotes appear in $O1's literal text as
+# BACKSLASH-escaped quotes (\" not "). Patterns below match that escaped form
+# — an unescaped `"key":"..."` pattern would never match and any assertion
+# built on it would silently false-pass regardless of the fix (caught while
+# authoring this test: the naive pattern below matched the step-3 prose,
+# which is embedded as plain backticks, no escaping — but not the quoted JSON
+# field, which needed the backslash).
+echo "$O1" | grep -qF "\\\"sidecar_path\\\":\\\"$EXP_SIDECAR\\\"" \
+  && pass "AC-1: context sidecar_path is absolute (matches STATE_DIR)" \
+  || fail "context sidecar_path missing/wrong: $O1"
+echo "$O1" | grep -qF "\\\"project_root\\\":\\\"$EXP_PROJECT_ROOT\\\"" \
+  && pass "AC-1: context project_root is absolute (matches project dir)" \
+  || fail "context project_root missing/wrong: $O1"
+echo "$O1" | grep -qF "\`$EXP_SIDECAR\` and write nothing else" \
+  && pass "AC-2: step-3 prose carries the SAME absolute sidecar_path as the context block" \
+  || fail "step-3 prose sidecar path missing/mismatched: $O1"
+# AC-6/AC-7 negative: no relative "_projects/_state/" literal survives, in
+# EITHER quoted-JSON form (escaped-quote anchor) or backtick-prose form
+# (F-R1: a single anchor only covers one of the two sites).
+echo "$O1" | grep -q '\"_projects/_state/' \
+  && fail "relative sidecar_path literal (quoted form) leaked into context: $O1" \
+  || pass "AC-6: no quoted relative _projects/_state/ literal in context"
+echo "$O1" | grep -q '`_projects/_state/' \
+  && fail "relative sidecar_path literal (backtick form) leaked into prose: $O1" \
+  || pass "AC-2/AC-6: no backtick relative _projects/_state/ literal in prose"
 
 # Stage 3 — Stop Round2 backstop binds.
 echo "[Stage 3] Stop Round2 → bind"

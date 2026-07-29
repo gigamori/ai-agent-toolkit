@@ -543,6 +543,13 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, 
             if not path:
                 continue
             note_rel = normalize_note_rel(_to_project_rel(note, project))
+            # D-7 (capture-context-abs-path.md Q6): reject any note path that
+            # is not project-relative under project-notes/ — regardless of
+            # `items` membership. Closes the legacy-sidecar (`items=None`)
+            # fail-open path through which a subagent's absolute/off-contract
+            # note path could otherwise be burned into a task's `@notes`.
+            if not note_rel.startswith('project-notes/'):
+                continue
             if not is_note_deliverable(note_rel):
                 continue
             if note_set is not None and note_rel not in note_set:
@@ -594,6 +601,30 @@ def merge_exec_bind(state, state_path, data):
 
 def _rel(path, cwd):
     return os.path.relpath(path, cwd).replace('\\', '/')
+
+
+def build_capture_context(sid8, iso_ts, capture_path, project_root,
+                           task_basenames, note_writes):
+    """Build the JSON context block handed to the capture subagent (§10.5).
+
+    `sidecar_path` / `project_root` are forward-slashed absolute paths (same
+    objects the hook itself reads/resolves — `capture_path` / `project_root`
+    in `main()`), so the subagent's write/read basis can never drift from the
+    hook's regardless of its cwd (project-notes/specs/capture-context-abs-path.md
+    D-1/D-2). `task_basenames` / `note_writes` are emitted via `json.dumps`
+    (not space-joined) so the array is valid JSON with 2+ entries (D-6).
+    """
+    return json.dumps(
+        {
+            'sid8': sid8,
+            'iso_ts': iso_ts,
+            'sidecar_path': capture_path.replace('\\', '/'),
+            'project_root': project_root.replace('\\', '/'),
+            'touched_tasks': list(task_basenames),
+            'note_writes': list(note_writes),
+        },
+        ensure_ascii=False, separators=(',', ':'),
+    )
 
 
 def main() -> int:
@@ -862,16 +893,10 @@ def main() -> int:
         shown = touched[:MAX_TOUCHED_IN_INJECTION]
         tail = '' if len(touched) <= MAX_TOUCHED_IN_INJECTION else \
             f' ...({len(touched) - MAX_TOUCHED_IN_INJECTION} more)'
-        task_list = ' '.join(f'"{b}"' for b in sorted(missing_novel.keys()))
-        note_list = ' '.join(f'"{n}"' for n in novel_notes)
-        context = (
-            '{'
-            f'"sid8":"{sid8}","iso_ts":"{iso_ts}",'
-            f'"sidecar_path":"_projects/_state/{session_id}.capture",'
-            f'"project_root":"_projects/{project}",'
-            f'"touched_tasks":[{task_list}],'
-            f'"note_writes":[{note_list}]'
-            '}'
+        sidecar_path_display = capture_path.replace('\\', '/')
+        context = build_capture_context(
+            sid8, iso_ts, capture_path, project_root,
+            sorted(missing_novel.keys()), novel_notes,
         )
         reason = (
             f'{auto_lines}'
@@ -888,7 +913,7 @@ def main() -> int:
             f'file yet):\n'
             f'   {context}\n'
             f'3. The subagent MUST write its judgment as JSON to '
-            f'`_projects/_state/{session_id}.capture` and write nothing else. '
+            f'`{sidecar_path_display}` and write nothing else. '
             f'If you judge there is genuinely no task work, you may instead '
             f'reply `[progress capture] skip — no task work`; the deterministic '
             f'backstop will still bind touched tasks on a later Stop.'

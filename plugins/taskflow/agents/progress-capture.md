@@ -42,20 +42,32 @@ read, whether new task-worthy work appeared). Context block shape:
 {
   "sid8": "<8-char session id>",
   "iso_ts": "<ISO8601 T-separated timestamp>",
-  "sidecar_path": "_projects/_state/<session_id>.capture",
-  "project_root": "_projects/<project>",
+  "sidecar_path": "<absolute path to the .capture sidecar, forward-slashed>",
+  "project_root": "<absolute path to the project's _projects/<project> dir, forward-slashed>",
   "touched_tasks": ["<task-basename>.md", ...],
   "note_writes": ["project-notes/<category>/<file>.md", ...]
 }
 ```
 
+`sidecar_path` / `project_root` are **absolute** (e.g.
+`/path/to/workspace/_projects/_state/<session_id>.capture`) —
+they are the same values the taskflow Stop hook itself reads/resolves, handed
+to you verbatim so your write/read basis can never drift from the hook's
+regardless of your own cwd (project-notes/specs/capture-context-abs-path.md).
+**Never re-derive these from your own cwd** — use them exactly as given.
+
 - `touched_tasks` — task md files this session wrote to. Each needs a one-line
   summary of what changed (this is the work the deterministic gate cannot
   describe). A task you judge truly unrelated may be omitted; the hook will
   still bind it with a placeholder, so omit only when a real summary would be
-  misleading.
+  misleading. These are **basenames** — to `Read` one for grounding, resolve
+  it under `<project_root>/tasks/<status>/` (try `0_todo/`, `1_in_progress/`,
+  `2_done/`), never under your own cwd.
 - `note_writes` — project-notes deliverables written this session whose owning
-  task is not yet recorded. For each, judge which task (by basename) owns it.
+  task is not yet recorded. Each is **project-relative** (begins with
+  `project-notes/`) — to `Read` one for grounding, join it onto `project_root`
+  (e.g. `<project_root>/project-notes/specs/foo.md`), never resolve it
+  against your own cwd. For each, judge which task (by basename) owns it.
   If no task clearly owns it, set `task` to `"none"` (do NOT guess — a wrong
   link is burned in permanently, §3.1).
 - Use the prose the main agent added plus, if needed, `Read` on a task or note
@@ -63,10 +75,21 @@ read, whether new task-worthy work appeared). Context block shape:
 
 ## Path convention (hard rule)
 
-Note paths in your output MUST be **project-relative** — i.e. begin with
-`project-notes/` (e.g. `project-notes/specs/foo.md`), NOT `_projects/...`,
-NOT absolute. Task references are **basenames** only (e.g. `2026-07-01_x.md`),
-never a path. The hook resolves basenames to their current folder.
+This is an **input/output asymmetry** — do not let the absolute input paths
+above leak into your output:
+
+- **Input** (`sidecar_path` / `project_root`, given to you): absolute, for
+  `Write`/`Read` resolution only.
+- **Output** (the sidecar JSON you write, below): note paths MUST be
+  **project-relative** — i.e. begin with `project-notes/` (e.g.
+  `project-notes/specs/foo.md`), NOT `_projects/...`, NOT absolute. Task
+  references are **basenames** only (e.g. `2026-07-01_x.md`), never a path.
+  The hook resolves basenames to their current folder.
+
+An output note path that is not project-relative is deterministically
+rejected by the hook regardless of anything else in your sidecar (D-7) — it
+will never reach a task's `@notes` block, so there is no benefit to writing
+one anyway.
 
 ## Output (the sidecar JSON)
 
