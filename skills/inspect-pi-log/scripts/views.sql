@@ -4,6 +4,12 @@
 -- DuckDB and stored literally in the catalog (no absolute path baked in). The
 -- glob also captures children under `subagents/` subdirectories.
 --
+-- That glob below is an ANCHOR: when $PI_CODING_AGENT_SESSION_DIR or
+-- $PI_CODING_AGENT_DIR is set, scripts/query.py replaces it (literal string
+-- match, exactly one occurrence) with the list of every session root that has
+-- logs, env universes first. Keep it spelled out once, quoted, in the FROM
+-- clause only — the mentions in these comments stay unquoted on purpose.
+--
 -- scripts/query.py applies these definitions into an in-memory DuckDB on every
 -- run, then executes the user's SQL. The views read the logs lazily, so results
 -- are always fresh (each query re-reads the logs). No persistent database.

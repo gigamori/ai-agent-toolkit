@@ -15,9 +15,9 @@ allowed-tools: "Bash(uv run *query.py *)"
 
 # Inspect Pi Log
 
-Nine layered DuckDB **views** over `~/.pi/agent/sessions/**/*.jsonl` (Pi Coding Agent
-session logs; the glob also captures `subagents/` children). Pick a view, then
-`select`/`where` on its columns; `join` across views by the ids below.
+Nine layered DuckDB **views** over the Pi Coding Agent session logs — by default
+`~/.pi/agent/sessions/**/*.jsonl`, which also captures `subagents/` children. Pick a
+view, then `select`/`where` on its columns; `join` across views by the ids below.
 
 ## Run a query
 
@@ -31,6 +31,26 @@ are always fresh (each query re-reads the logs, a few seconds). Output is JSON
 
 Defaults: 200 rows / 50KB output (`--max-rows` / `--max-bytes` to change). Keep it to
 one `select` per call.
+
+## Which session store gets scanned
+
+`query.py` scans the **union** of every store it can see, in this order, and dedupes
+the resolved roots (a root listed twice would double every row):
+
+1. `$PI_CODING_AGENT_SESSION_DIR` — pi's flat store override (no per-cwd subdirectory)
+2. `$PI_CODING_AGENT_DIR/sessions`
+3. `~/.pi/agent/sessions` — **always scanned**, even when the vars above are set
+
+Both variables are trimmed (blank counts as unset) and **`~` is expanded**, matching
+pi's own `expandTildePath`. Note this is the opposite of `CLAUDE_CONFIG_DIR` in
+inspect-cc-log, where the value is literal. Roots holding no logs are skipped rather
+than failing the query.
+
+**Cross-harness caveat**: environment variables are not inherited across harnesses. If
+you moved pi's store with either variable, set it as an **OS user environment variable**
+(machine-wide) — otherwise this skill, run from Claude Code or any other harness that
+never saw pi's env, sees only the `~/.pi` fallback and silently reports an empty or
+stale universe.
 
 ## Pi vs Claude Code (if you know inspect-cc-log)
 
