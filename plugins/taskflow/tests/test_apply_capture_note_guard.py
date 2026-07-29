@@ -33,6 +33,8 @@ Exits 0 when all checks pass, 1 otherwise.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 from pathlib import Path
@@ -129,6 +131,32 @@ def test_absolute_note_rejected_even_when_in_membership_set(root: Path) -> None:
     check(nl.NOTES_BEGIN not in content, "@notes block was NOT created on the task file")
 
 
+def test_reject_is_logged_to_stderr(root: Path) -> None:
+    print("--- T-5d: D-7 reject is reported to stderr, not silent (review F-I1) ---")
+    # Before this fix, the D-7 guard's `continue` had no observability at
+    # all: unlike the pre-existing membership_skipped path, a reject firing
+    # ahead of membership left zero trace anywhere. That silence is exactly
+    # the failure class this task exists to eliminate (2026-07-28 incident).
+    task_path = make_task(root, "task4.md")
+    current_index = {"task4.md": str(task_path)}
+    evil_note = "C:/other-repo/project-notes/specs/evil.md"
+    sidecar = {
+        "confirmed": [],
+        "note_links": [{"note": evil_note, "task": "task4.md"}],
+        "proposals": [],
+    }
+    stderr_buf = io.StringIO()
+    with contextlib.redirect_stderr(stderr_buf):
+        spc._apply_capture(
+            sidecar, current_index, "harness-taskflow", str(root), "abcd1234", "2026-07-30T01:00:00+09:00",
+            items=None,
+        )
+    out = stderr_buf.getvalue()
+    check("note-path-reject" in out, f"reject is logged to stderr: {ascii(out)}")
+    check(evil_note in out, f"logged line names the offending note path: {ascii(out)}")
+    check("[s:abcd1234]" in out, f"logged line carries the session tag: {ascii(out)}")
+
+
 def test_normal_project_relative_note_still_applies(root: Path) -> None:
     print("--- T-5c: regression - normal project-relative note still applies ---")
     task_path = make_task(root, "task3.md")
@@ -154,6 +182,7 @@ def main() -> int:
         root = Path(d)
         test_absolute_note_rejected_under_legacy_fail_open(root)
         test_absolute_note_rejected_even_when_in_membership_set(root)
+        test_reject_is_logged_to_stderr(root)
         test_normal_project_relative_note_still_applies(root)
 
     print()

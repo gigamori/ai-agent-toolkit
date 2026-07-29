@@ -548,7 +548,14 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, 
             # `items` membership. Closes the legacy-sidecar (`items=None`)
             # fail-open path through which a subagent's absolute/off-contract
             # note path could otherwise be burned into a task's `@notes`.
+            # Logged to stderr (review F-I1): this reject sits BEFORE the
+            # membership check, so it would otherwise be a silent drop with
+            # no F5 observability at all — the exact failure class this task
+            # exists to eliminate.
             if not note_rel.startswith('project-notes/'):
+                print(f'[progress capture] note-path-reject: {note!r} '
+                      f'(not project-relative under project-notes/) [s:{sid8}]',
+                      file=sys.stderr)
                 continue
             if not is_note_deliverable(note_rel):
                 continue
@@ -603,6 +610,16 @@ def _rel(path, cwd):
     return os.path.relpath(path, cwd).replace('\\', '/')
 
 
+def _to_forward_slash(path):
+    """Single source of truth for the sidecar-path display form (review
+    F-I3): both `build_capture_context()` and its caller's step-3 prose need
+    the identical forward-slashed value, so both call this instead of each
+    inlining their own `.replace('\\\\', '/')` — two independent expressions
+    for 'the same value' is exactly the kind of duplication that can drift
+    silently if only one side is ever edited."""
+    return path.replace('\\', '/')
+
+
 def build_capture_context(sid8, iso_ts, capture_path, project_root,
                            task_basenames, note_writes):
     """Build the JSON context block handed to the capture subagent (§10.5).
@@ -618,8 +635,8 @@ def build_capture_context(sid8, iso_ts, capture_path, project_root,
         {
             'sid8': sid8,
             'iso_ts': iso_ts,
-            'sidecar_path': capture_path.replace('\\', '/'),
-            'project_root': project_root.replace('\\', '/'),
+            'sidecar_path': _to_forward_slash(capture_path),
+            'project_root': _to_forward_slash(project_root),
             'touched_tasks': list(task_basenames),
             'note_writes': list(note_writes),
         },
@@ -893,7 +910,7 @@ def main() -> int:
         shown = touched[:MAX_TOUCHED_IN_INJECTION]
         tail = '' if len(touched) <= MAX_TOUCHED_IN_INJECTION else \
             f' ...({len(touched) - MAX_TOUCHED_IN_INJECTION} more)'
-        sidecar_path_display = capture_path.replace('\\', '/')
+        sidecar_path_display = _to_forward_slash(capture_path)
         context = build_capture_context(
             sid8, iso_ts, capture_path, project_root,
             sorted(missing_novel.keys()), novel_notes,

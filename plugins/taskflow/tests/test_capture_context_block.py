@@ -26,6 +26,7 @@ Exits 0 when all checks pass, 1 otherwise.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
@@ -118,11 +119,14 @@ def test_empty_arrays_are_valid_json() -> None:
 
 def test_no_filesystem_io() -> None:
     print("--- pure function: no I/O side effects ---")
-    # build_capture_context takes no `state_dir`/writable path and this test
-    # never calls spc.main() or reads stdin — nothing is created on disk.
-    # Structural guarantee (see module docstring), asserted by absence of
-    # any Write/open call in the function body being reachable from here.
-    check(True, "build_capture_context performs no filesystem I/O (by construction)")
+    # review F-I2: the prior version of this check was `check(True, ...)` — a
+    # vacuous assertion that always passed regardless of the function's real
+    # body. Inspect the actual source instead, so an accidental future I/O
+    # call (open/Write/os.remove/os.rename) would fail this test.
+    source = inspect.getsource(spc.build_capture_context)
+    io_markers = ("open(", "os.remove", "os.rename", ".write(", "Write(")
+    hits = [m for m in io_markers if m in source]
+    check(not hits, f"build_capture_context source contains no I/O calls (found: {hits})")
 
 
 def main() -> int:
