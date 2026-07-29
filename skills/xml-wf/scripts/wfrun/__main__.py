@@ -17,6 +17,7 @@ from . import adp, claude_cli
 from . import interp as interp_mod
 from . import lint as lint_mod
 from . import model, modelmap, modes, parser, stepio, viz
+from .ccdirs import claude_config_dirs
 from .executor import Executor, WorkflowFailure
 from .state import load_events
 
@@ -259,9 +260,10 @@ LLM_GUARD_MARKER = "xml-wf-llm-guard"
 
 
 def _warn_if_no_llm_guard():
+    user_settings = [d / "settings.json" for d in claude_config_dirs()]
     for settings in (Path(".claude/settings.json"),
                      Path(".claude/settings.local.json"),
-                     Path.home() / ".claude" / "settings.json"):
+                     *user_settings):
         try:
             if LLM_GUARD_MARKER in settings.read_text(encoding="utf-8"):
                 return
@@ -406,14 +408,17 @@ WAIT_ABORT_MARGIN = 30
 def _check_base_dir(base_dir: Path) -> str | None:
     """Same guard as Executor._check_base_dir (executor.py), for the A-layer
     commands below, which don't go through Executor. Returns an error
-    message, or None if the directory is fine."""
-    protected = (Path.home() / ".claude").resolve()
+    message, or None if the directory is fine. Protects both `~/.claude` and
+    the `CLAUDE_CONFIG_DIR` dir when set (union) — see executor.py's
+    docstring for why union rather than env-only."""
     base = base_dir.resolve()
-    if base == protected or protected in base.parents:
-        return (f"base dir {base} is inside ~/.claude — the claude CLI "
-               "requires interactive write approval there, so steps cannot "
-               "write files; copy the workflow to a normal project "
-               "directory and run it from there")
+    for protected in (d.resolve() for d in claude_config_dirs()):
+        if base == protected or protected in base.parents:
+            return (f"base dir {base} is inside Claude's config tree "
+                   f"({protected}) — the claude CLI requires interactive "
+                   "write approval there, so steps cannot write files; copy "
+                   "the workflow to a normal project directory and run it "
+                   "from there")
     return None
 
 

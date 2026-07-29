@@ -178,7 +178,7 @@ def resolve_role(node, agents_cache: dict[str, AgentDef]
     if agent is None:
         raise StepIOError(
             f"step '{node.id}': role '{node.role}' not found in .claude/agents "
-            "(project) or ~/.claude/agents")
+            "(project) or the user agents dir ($CLAUDE_CONFIG_DIR or ~/.claude)/agents")
     return agent.prompt, agent
 
 

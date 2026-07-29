@@ -35,19 +35,71 @@ from pathlib import Path
 import duckdb
 
 
-def resolve_session_jsonl(session_id_arg: str | None, projects_dir: str) -> Path | None:
+# --- CLAUDE_CONFIG_DIR support ------------------------------------------------
+# Duplicated on purpose: these skill scripts are self-contained (`uv run` with
+# PEP 723 deps, no shared package). The same logic lives in
+# `skills/inspect-cc-log/scripts/query.py` and in
+# `plugins/llm-wiki/llmwiki/ingest/cc_paths.py`. Design:
+# `_projects/llm-wiki/project-notes/specs/cc-config-dir-skills.md`.
+#
+# Semantics replicate Claude Code's own handling of the value (verified on
+# Windows, 2026-07-28): it is LITERAL — no `~`-expansion, no env-var expansion —
+# and a relative value resolves against the process cwd. Only the built-in
+# default `~/.claude` is expanduser'd.
+_CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
+
+
+def cc_projects_roots() -> list[Path]:
+    """The CC `projects` dirs to search: `[$CLAUDE_CONFIG_DIR, ~/.claude]`, env first.
+
+    Deduped case-insensitively (Windows), so an env value pointing at the default
+    dir yields one root. Used only when --projects-dir is NOT given.
+    """
+    roots: list[Path] = []
+    env = os.environ.get(_CONFIG_DIR_ENV, "").strip()
+    if env:
+        roots.append(Path(os.path.abspath(env)) / "projects")
+    default = Path(os.path.expanduser("~/.claude")) / "projects"
+    if not any(os.path.normcase(str(r)) == os.path.normcase(str(default)) for r in roots):
+        roots.append(default)
+    return roots
+
+
+def resolve_session_jsonl(session_id_arg: str | None, projects_dir: str | None) -> Path | None:
     """Locate the target session jsonl.
 
-    Precedence: --session-id arg → $CLAUDE_SESSION_ID env → mtime-latest *.jsonl under projects_dir.
+    Precedence: --session-id arg → $CLAUDE_CODE_SESSION_ID env → mtime-latest
+    *.jsonl under the search roots.
+
+    $CLAUDE_CODE_SESSION_ID is the env var Claude Code actually sets for child
+    processes (probed 2026-07-29 in a live session: it is SET, len 36, while the
+    previously-read $CLAUDE_SESSION_ID is UNSET — that name is a harness
+    prompt-template substitution, not an OS env var; same D5 diagnosis as
+    llm-wiki's ingest_driver). With the old name the env branch never fired and
+    every sid-less run silently fell through to mtime-latest, which can pick a
+    concurrent session's log.
+
+    Search roots: an explicit `projects_dir` (--projects-dir) is used VERBATIM and
+    alone — behaviour unchanged from before CLAUDE_CONFIG_DIR support. When it is
+    None the roots are `cc_projects_roots()`: a sid is looked up in each root in
+    order and the FIRST hit wins (env universe priority), while the mtime-latest
+    fallback takes the newest file ACROSS all roots.
     """
-    sid = session_id_arg or os.environ.get("CLAUDE_SESSION_ID")
-    root = Path(os.path.expanduser(projects_dir))
-    if not root.is_dir():
+    sid = session_id_arg or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if projects_dir is not None:
+        roots = [Path(os.path.expanduser(projects_dir))]
+    else:
+        roots = cc_projects_roots()
+    roots = [r for r in roots if r.is_dir()]
+    if not roots:
         return None
     if sid:
-        matches = list(root.rglob(f"{sid}.jsonl"))
-        return matches[0] if matches else None
-    candidates = list(root.rglob("*.jsonl"))
+        for root in roots:
+            matches = list(root.rglob(f"{sid}.jsonl"))
+            if matches:
+                return matches[0]
+        return None
+    candidates = [p for root in roots for p in root.rglob("*.jsonl")]
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
@@ -331,12 +383,13 @@ def main() -> None:
     ap.add_argument(
         "--session-id",
         default=None,
-        help="Target session id (default: $CLAUDE_SESSION_ID or mtime-latest jsonl under --projects-dir).",
+        help="Target session id (default: $CLAUDE_CODE_SESSION_ID or mtime-latest jsonl under --projects-dir).",
     )
     ap.add_argument(
         "--projects-dir",
-        default="~/.claude/projects",
-        help="jsonl search root. Default: ~/.claude/projects",
+        default=None,
+        help="jsonl search root, used verbatim and alone. Default (unset): search "
+        "$CLAUDE_CONFIG_DIR/projects then ~/.claude/projects.",
     )
     ap.add_argument(
         "--until-message",
@@ -348,7 +401,7 @@ def main() -> None:
 
     jsonl = resolve_session_jsonl(args.session_id, args.projects_dir)
     if jsonl is None:
-        sid_disp = args.session_id or os.environ.get("CLAUDE_SESSION_ID") or "(mtime-latest)"
+        sid_disp = args.session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or "(mtime-latest)"
         print(f"session not found: {sid_disp}", file=sys.stderr)
         sys.exit(2)
 

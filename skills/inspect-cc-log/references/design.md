@@ -4,6 +4,12 @@ Design rationale for the layered views, plus the empirical facts they rest on.
 Investigated against the local corpus (`~/.claude/projects/**/*.jsonl`,
 ~1.78k files / ~160k records).
 
+Log location: `~/.claude/projects` by default. `$CLAUDE_CONFIG_DIR` moves Claude
+Code's config dir, and the session logs follow it (verified 2026-07-28), so
+`scripts/query.py` rewrites the views' single anchor glob into a list covering
+both universes when that variable is set — see the header comment in `views.sql`
+and `scripts/tests/test_config_dir.py`.
+
 ## Goals & decisions
 
 - Investigate past CC sessions by SQL: conversation, tool calls + arguments, file

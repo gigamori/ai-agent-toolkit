@@ -88,7 +88,7 @@ instruction body; `<role>` (see below) may hold an inline role definition.
 | Attribute | Required | Default | Meaning |
 |---|---|---|---|
 | `id` | ✔ | - | Unique identifier. Key for logs, the steps/ directory, and resume |
-| `role` | (✔) | - | Named role: a `.claude/agents/*.md` definition (project first, then `~/.claude/agents/`) whose **body is injected** as the `<role>` block. Exactly one of `role=` or an inline `<role>` child is required |
+| `role` | (✔) | - | Named role: a `.claude/agents/*.md` definition (project first, then the user agents dir — `$CLAUDE_CONFIG_DIR` or `~/.claude` — `/agents/`) whose **body is injected** as the `<role>` block. Exactly one of `role=` or an inline `<role>` child is required |
 | `mode` | - | - | Execution mode (see "Execution modes" below) |
 | `model` | - | role frontmatter | Canonical difficulty name — `haiku`/`sonnet`/`opus` only (step attribute wins over the named role's frontmatter). Bound to an actual model per runner at dispatch (see "Model resolution"); other strings pass through but warn (`model-not-canonical`) |
 | `effort` | - | - | `low`…`max` (forwarded to `--effort`) |
@@ -467,10 +467,11 @@ wfrun viz <wf.xml> [--out FILE]                         # mermaid flowchart of t
   `tools=` so the widened permission never reaches them
 - Named-role resolution, rules-relative paths, and the subprocess cwd are all
   based on **the directory containing the XML file**
-- That directory must not be inside `~/.claude` (the CLI demands interactive
-  write approval under its own config tree, so file-writing steps would fail;
-  `wfrun run`/`resume` reject this at startup — copy bundled examples to a
-  normal project directory before running them)
+- That directory must not be inside Claude's config tree — `~/.claude`, or the
+  `$CLAUDE_CONFIG_DIR` dir when set (both protected) — the CLI demands
+  interactive write approval under its own config tree, so file-writing steps
+  would fail; `wfrun run`/`resume` reject this at startup — copy bundled
+  examples to a normal project directory before running them
 - The helper subcommands `interp` / `eval` / `ask` / `prompt` / `record` /
   `poll` (layer B) and `dispatch` / `wait` (layer A) exist for
   LLM-orchestrated execution; see `references/run-llm.md`

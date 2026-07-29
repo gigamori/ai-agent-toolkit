@@ -27,7 +27,9 @@ treat only the holes as work to do. Do not silently rewrite parts the user
 already committed to.
 
 ### 2. Collect roles
-List `.claude/agents/*.md` and `~/.claude/agents/*.md` (name/description/tools).
+List `.claude/agents/*.md` and the user agents dir's `agents/*.md`
+(`$CLAUDE_CONFIG_DIR` or `~/.claude`, project overwrites env overwrites default
+on a name collision) (name/description/tools).
 Every step needs a role, filled one of two ways:
 - **Named role** (`role="name"`): a definition that exists in the list above,
   when one genuinely fits the step. Never invent names

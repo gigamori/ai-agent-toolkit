@@ -37,7 +37,8 @@ def diagnose(step: model.Step, prompt: str, failure: CliResult, *,
     if debug_def is None:
         return Diagnosis(action="FAIL",
                          reason=f"debug role '{debug_role}' not found in "
-                                ".claude/agents (project) or ~/.claude/agents")
+                                ".claude/agents (project) or the user agents dir "
+                                "($CLAUDE_CONFIG_DIR or ~/.claude)/agents")
     debug_prompt = DEBUG_PROMPT.format(
         step_xml=json.dumps(asdict(step), ensure_ascii=False, indent=2),
         prompt=prompt[:8000],

@@ -224,7 +224,8 @@ Notes:
   reaches them.
 - Named-role resolution, rules-relative paths, and the subprocess cwd are all
   based on **the directory containing the XML file**. That directory must not be
-  inside `~/.claude`.
+  inside Claude's config tree (`~/.claude`, or the `$CLAUDE_CONFIG_DIR` dir
+  when set — both are protected).
 
 ---
 

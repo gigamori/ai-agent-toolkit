@@ -97,18 +97,27 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from llmwiki.ingest import cc_paths
+
 try:
     import duckdb
 except ImportError:  # pragma: no cover - dependency declared in script header
     duckdb = None
 
 
-# Vendored inspect-cc-log views (T1). Sibling of this module. The views read
-# ~/.claude/projects/**/*.jsonl lazily (hardcoded glob in cc_record), exactly as
+# Vendored inspect-cc-log views (T1). Sibling of this module. The views read the
+# CC session logs lazily through one anchor glob literal in cc_record, exactly as
 # skills/inspect-cc-log/scripts/query.py applies them; a single sid is selected
 # with WHERE session_id = ? (sid lives inside the JSON, not the filename, so no
 # file pruning — accepted per design.md). Fork/agent children carry the parent
 # session_id, so this one predicate co-locates them.
+#
+# The file keeps `'~/.claude/projects/**/*.jsonl'` verbatim (so it stays valid
+# stand-alone SQL and stays byte-equal to the canonical skills copy); every load
+# goes through `cc_paths.read_cc_views_sql`, which — and only when
+# `$CLAUDE_CONFIG_DIR` is set — rewrites that literal into the glob list of the
+# universes that actually hold logs. See cc_paths and
+# `_projects/llm-wiki/project-notes/specs/cc-config-dir-ingest.md`.
 _VIEWS_SQL = Path(__file__).resolve().parent / "cc_views.sql"
 
 
@@ -353,7 +362,7 @@ def _fetch_turns(sid: str) -> list[_Turn]:
         raise ProjectionError("duckdb not available")
     try:
         con = duckdb.connect()
-        con.execute(_VIEWS_SQL.read_text(encoding="utf-8"))
+        con.execute(cc_paths.read_cc_views_sql(_VIEWS_SQL))
         rows = con.execute(_PROJECT_SQL, [sid]).fetchall()
     except Exception as e:  # noqa: BLE001 - surface as ProjectionError per contract
         raise ProjectionError(f"projection failure for sid {sid!r}: {e}") from e
@@ -445,7 +454,7 @@ def extract_turns_batch(sids: "list[str]", *, ledger) -> "dict[str, list[dict]]"
         return result
     try:
         con = duckdb.connect()
-        con.execute(_VIEWS_SQL.read_text(encoding="utf-8"))
+        con.execute(cc_paths.read_cc_views_sql(_VIEWS_SQL))
         placeholders = ",".join("?" for _ in sids)
         sql = (
             f"SELECT\n{_PROJECT_COLUMNS}\n"

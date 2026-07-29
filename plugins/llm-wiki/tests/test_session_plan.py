@@ -8,10 +8,12 @@ Covers the T9 locked spec for session-plan:
   - zero matches is an explicit DriverError (fail-closed, like enumerate);
   - the returned sids are ordered by session-start ts ASCENDING.
 
-The state dir is keyed off the process CWD and the CC log dir off $HOME/env; the
-ts ordering queries the live cc store via DuckDB. To keep the tests hermetic and
+The state dir is keyed off the process CWD and the CC log dirs off
+`$CLAUDE_CONFIG_DIR` + `~/.claude` (the roots union `cc_paths` resolves); the ts
+ordering queries the live cc store via DuckDB. To keep the tests hermetic and
 deterministic we monkeypatch the resolver's own module-level seams:
   - `_state_dir` -> a tmp state dir we populate;
+  - `_cc_projects_roots` -> tmp CC log roots;
   - `_cc_project_dir_from_running_session` / `_cc_project_dir_from_cwd` ->
     controlled dir Paths;
   - `_order_sids_by_started_ts` -> a fixed ts map (the ordering assertion below
@@ -21,6 +23,7 @@ deterministic we monkeypatch the resolver's own module-level seams:
 `.llmwiki` directory (like the sibling driver tests).
 """
 import json
+import re
 
 import pytest
 
@@ -362,12 +365,64 @@ def test_running_session_dir_reads_the_fixed_env_var(tmp_path, monkeypatch):
     cc_dir.mkdir()
     sid = "env-resolved-sid"
     (cc_dir / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(drv, "_CC_PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr(drv, "_cc_projects_roots", lambda: [tmp_path])
     monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
 
     resolved = drv._cc_project_dir_from_running_session()
     assert resolved == cc_dir
+
+
+# --------------------------------------------------------------------------- #
+# CLAUDE_CONFIG_DIR (A class): the CC log dir lookups scan the roots UNION
+# `[$CLAUDE_CONFIG_DIR, ~/.claude]` with the env universe first. Resolution
+# semantics live in `cc_paths` (tested in test_cc_paths.py); these cover the two
+# driver-side lookups that consume them. Spec:
+# `_projects/llm-wiki/project-notes/specs/cc-config-dir-ingest.md` C2.
+# --------------------------------------------------------------------------- #
+def test_running_session_dir_falls_through_to_the_second_root(tmp_path, monkeypatch):
+    """A sid present only in the DEFAULT universe is still found."""
+    env_root, default_root = tmp_path / "env", tmp_path / "default"
+    env_root.mkdir()
+    cc_dir = default_root / "cc-project"
+    cc_dir.mkdir(parents=True)
+    sid = "only-in-default"
+    (cc_dir / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(drv, "_cc_projects_roots", lambda: [env_root, default_root])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+
+    assert drv._cc_project_dir_from_running_session() == cc_dir
+
+
+def test_running_session_dir_prefers_the_env_universe_on_collision(tmp_path, monkeypatch):
+    """AC-A2: the same sid in both universes resolves to the env one (first-wins)."""
+    env_root, default_root = tmp_path / "env", tmp_path / "default"
+    sid = "in-both"
+    env_dir = env_root / "cc-project"
+    default_dir = default_root / "cc-project"
+    for d in (env_dir, default_dir):
+        d.mkdir(parents=True)
+        (d / f"{sid}.jsonl").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(drv, "_cc_projects_roots", lambda: [env_root, default_root])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+
+    assert drv._cc_project_dir_from_running_session() == env_dir
+
+
+def test_cwd_fallback_scans_every_root_env_first(tmp_path, monkeypatch):
+    """The slug-dir fallback checks each root in order and takes the first hit."""
+    env_root, default_root = tmp_path / "env", tmp_path / "default"
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    slug = re.sub(r"[\\/:]", "-", str(workspace.resolve()))
+    env_root.mkdir()
+    (default_root / slug).mkdir(parents=True)
+    monkeypatch.setattr(drv, "_cc_projects_roots", lambda: [env_root, default_root])
+
+    assert drv._cc_project_dir_from_cwd(workspace) == default_root / slug
+
+    (env_root / slug).mkdir()
+    assert drv._cc_project_dir_from_cwd(workspace) == env_root / slug
 
 
 # --------------------------------------------------------------------------- #

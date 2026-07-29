@@ -202,6 +202,8 @@ uv run scripts/revert_cc_log_extract.py --until-message "commitして"
 
 `--until-message` 指定時は、該当文字列を含む user message が boundary となり、それ以降（新しい方）の全アクションが出力される。boundary message 自体は `--- Turn (target boundary, ...) ---` として表示される。
 
+session jsonl の探索先は既定で `$CLAUDE_CONFIG_DIR/projects` → `~/.claude/projects` の順（設定されていれば両方を横断し、sid 衝突時は `$CLAUDE_CONFIG_DIR` 側が優先）。`--projects-dir` を明示した場合はその値のみを、従来どおりそのまま使う。
+
 log 取得に失敗した場合は `confidence: low` フラグを subagent 入力に付加し、ask_user 寄りに判定を倒す。
 
 ## additional resources

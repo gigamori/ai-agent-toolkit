@@ -200,8 +200,9 @@ driver resolve the current project's CC directory as ground truth (`scope: "cwd"
 ## Step 2b — `project-batch`: extract all sessions' turns in one scan (read-only, F-H1)
 
 Before the loop, call the read-only `project-batch` verb once for the whole `sids` set.
-This runs the expensive projection (a single scan of `~/.claude/projects/**/*.jsonl` for
-all sids at once) and writes each session's extracted turns to a per-sid JSON file under a
+This runs the expensive projection (a single scan of the CC session logs —
+`~/.claude/projects/**/*.jsonl`, plus `$CLAUDE_CONFIG_DIR/projects` when that variable is
+set — for all sids at once) and writes each session's extracted turns to a per-sid JSON file under a
 fresh temp dir. Without this, each `begin` would re-scan the entire corpus (N sessions → N
 full scans); with it, the corpus is scanned exactly once. This verb opens no transaction
 (no lock, no checkpoint, no sidecar) and writes only outside the wiki root (the temp dir is

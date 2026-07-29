@@ -510,7 +510,8 @@ What each piece does:
 
 - **Absolute paths.** The working directory is the folder holding the XML. Write
   `output/x.csv`, not `/home/…/output/x.csv`, and tell agents not to absolutize.
-- **Running from inside `~/.claude`.** File-writing steps fail there; keep your
+- **Running from inside Claude's config tree.** `~/.claude`, or the
+  `$CLAUDE_CONFIG_DIR` dir when set — file-writing steps fail there; keep your
   workflow in a normal project folder.
 - **Referring to "the previous step" in a task.** There is no shared context —
   pass data by variable/file and re-state what the step needs.

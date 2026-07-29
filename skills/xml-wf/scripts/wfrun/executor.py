@@ -16,6 +16,7 @@ from pathlib import Path
 from . import adp, claude_cli, model, modelmap, modes, parser, stepio
 from . import lint as lint_mod
 from .agents import discover_agents
+from .ccdirs import claude_config_dirs
 from .interp import InterpError, interpolate, safe_eval
 from .state import ReplayCursor, RunState
 
@@ -60,20 +61,27 @@ class Executor:
 
     # ------------------------------------------------------------- setup ---
     def _check_base_dir(self):
-        """Fail fast when the step subprocess cwd would be inside ~/.claude.
+        """Fail fast when the step subprocess cwd would be inside Claude's config tree.
 
         The claude CLI demands interactive write approval under its own config
         tree even with --permission-mode acceptEdits, so file-writing steps
         fail there in confusing ways (approval-denied errors, or claimed
-        writes that never landed)."""
-        protected = (Path.home() / ".claude").resolve()
+        writes that never landed). Both `~/.claude` and, when
+        `CLAUDE_CONFIG_DIR` is set, that env dir are protected (union, not
+        env-only) — CC's config tree at runtime is the env dir when it is set,
+        but a workflow started from a `~/.claude`-relative path is rejected
+        too regardless (safety margin costs little, a false negative here
+        reproduces the confusing approval failures this guard exists to
+        avoid)."""
         base = self.base_dir.resolve()
-        if base == protected or protected in base.parents:
-            raise WorkflowFailure(
-                f"base dir {base} is inside ~/.claude — the claude CLI "
-                "requires interactive write approval there, so steps cannot "
-                "write files; copy the workflow to a normal project "
-                "directory and run it from there")
+        for protected in (d.resolve() for d in claude_config_dirs()):
+            if base == protected or protected in base.parents:
+                raise WorkflowFailure(
+                    f"base dir {base} is inside Claude's config tree "
+                    f"({protected}) — the claude CLI requires interactive "
+                    "write approval there, so steps cannot write files; copy "
+                    "the workflow to a normal project directory and run it "
+                    "from there")
 
     def _resolve_params(self, params: dict[str, str]):
         declared = {p.name for p in self.wf.params}

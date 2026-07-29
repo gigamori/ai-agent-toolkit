@@ -102,7 +102,8 @@ def lint(wf: model.Workflow, base_dir: str | Path = ".",
             if step.role and step.role not in agents:
                 err("role-missing",
                     f"step '{step.id}': role '{step.role}' not found in "
-                    f"{base_dir / '.claude/agents'} or ~/.claude/agents")
+                    f"{base_dir / '.claude/agents'} or the user agents dir "
+                    "($CLAUDE_CONFIG_DIR or ~/.claude)/agents")
 
     # --- modes ----------------------------------------------------------------
     for step in steps:

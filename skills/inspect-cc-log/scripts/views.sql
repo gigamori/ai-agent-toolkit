@@ -3,6 +3,15 @@
 -- so heterogeneous record shapes never collide. `~` is expanded by DuckDB and stored
 -- literally in the catalog (no absolute path baked in).
 --
+-- CLAUDE_CONFIG_DIR: the quoted glob literal in cc_record below is an ANCHOR, not
+-- just a path. When that env var is set, the loader (scripts/query.py here, and
+-- llmwiki.ingest.cc_paths for the vendored copy) rewrites that one literal into a
+-- DuckDB glob LIST covering the configured config dir as well as ~/.claude, and
+-- drops any universe that holds no logs (a glob matching nothing aborts the whole
+-- CREATE VIEW). Keep the literal exactly as written — editing it breaks that
+-- rewrite. Run stand-alone through the DuckDB CLI, the file reads the default
+-- ~/.claude universe only.
+--
 -- scripts/query.py applies these definitions into an in-memory DuckDB on every run,
 -- then executes the user's SQL. The views read the logs lazily, so results are always
 -- fresh (each query re-reads the logs). No persistent database, no materialization.

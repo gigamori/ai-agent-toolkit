@@ -216,8 +216,9 @@ wfrun ask    <question> [--vars V] [--model haiku] [--quiet] [--log LOG]
   survey/review ステップには読み取り専用の `tools=` を与え、広げた権限が届かない
   ようにする。
 - 名前付きロールの解決・rules 相対パス・サブプロセス cwd はすべて **XML ファイルを
-  含むディレクトリ** を基準とする。そのディレクトリは `~/.claude` 配下にあっては
-  ならない。
+  含むディレクトリ** を基準とする。そのディレクトリは Claude の config tree
+  （`~/.claude`、および設定時は `$CLAUDE_CONFIG_DIR` — 両方が保護対象）配下に
+  あってはならない。
 
 ---
 

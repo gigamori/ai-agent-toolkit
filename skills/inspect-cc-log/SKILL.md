@@ -17,6 +17,10 @@ allowed-tools: "Bash(uv run *query.py *)"
 Eight layered DuckDB **views** over `~/.claude/projects/**/*.jsonl`. Pick a view,
 then `select`/`where` on its columns; `join` across views by the ids below.
 
+If `$CLAUDE_CONFIG_DIR` is set, the views read that config dir's `projects/`
+**and** `~/.claude/projects` (whichever actually holds logs), so a moved config
+dir needs no flag.
+
 ## Run a query
 
 ```bash

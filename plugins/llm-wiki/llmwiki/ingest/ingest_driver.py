@@ -119,8 +119,10 @@ budget, opening no transaction):
         - --pj/--workspace both omitted, --scope in (None, cwd) (D4,
           UNCHANGED from before kind/sid/scope existed): resolve the CC
           project dir from the RUNNING session's own log location as ground
-          truth (U3) — find `~/.claude/projects/*/<current-
-          sid>.jsonl` (current-sid = $CLAUDE_CODE_SESSION_ID — D5 fix, was
+          truth (U3) — find `<cc-projects-root>/*/<current-
+          sid>.jsonl` (cc-projects-root = `$CLAUDE_CONFIG_DIR/projects` then
+          `~/.claude/projects`, first hit wins; current-sid =
+          $CLAUDE_CODE_SESSION_ID — D5 fix, was
           the wrong env name — or `--sid` if given — F-13: an explicit `--sid`
           takes priority over the env var) and take its PARENT dir
           (CC-internal-encoding independent), then the sids are that dir's
@@ -228,6 +230,7 @@ from llmwiki.ingest import frontends
 from llmwiki.core import wiki_index
 from llmwiki.core import wiki_log
 from llmwiki.ingest import cc_log_project
+from llmwiki.ingest import cc_paths
 from llmwiki.ingest import pi_log_project
 from llmwiki.ingest import ledger
 
@@ -1087,10 +1090,31 @@ def enumerate_files(wiki_root: str, glob: str) -> dict:
 # `<sid>.json` with a `{"project": ...}` body). We locate it the same way.
 _STATE_SUBPATH = ("_projects", "_state")
 
-# The CC session-log root (U3 ground truth). `~` is expanded at runtime; no
-# absolute path is baked in (repo secret rule). Mirrors the vendored views'
-# `~/.claude/projects/**/*.jsonl` glob and revert_cc_log_extract's default.
-_CC_PROJECTS_DIR = "~/.claude/projects"
+# The CC session-log roots (U3 ground truth) come from `cc_paths`, which owns the
+# ONE `$CLAUDE_CONFIG_DIR`-aware resolution rule: the union
+# `[$CLAUDE_CONFIG_DIR, ~/.claude]`, env universe first (first-wins = env
+# priority), env value taken literally (no expanduser) exactly as CC takes it.
+# No absolute path is baked in anywhere (repo secret rule).
+#
+# SYNC CONTRACT (4 points, all `~/.claude/projects`-shaped, all env-aware):
+#   1. `cc_views.sql` keeps its single quoted anchor glob literal
+#      `'~/.claude/projects/**/*.jsonl'` UNCHANGED — `cc_paths` rewrites that one
+#      literal in the loader (`cc_paths.read_cc_views_sql`), so the file itself
+#      stays valid stand-alone SQL. Its canonical copy is
+#      `skills/inspect-cc-log/scripts/views.sql` (byte-equal, contract-tested).
+#   2. this module's dir lookups below (`cc_paths.cc_projects_roots()`).
+#   3. `skills/inspect-cc-log/scripts/query.py` (same loader rewrite, helper
+#      duplicated in-file because the skill scripts are self-contained).
+#   4. `skills/revert/scripts/revert_cc_log_extract.py`'s `--projects-dir`
+#      (unset = the same roots union; an explicit value is used verbatim).
+# Design: `_projects/llm-wiki/project-notes/specs/cc-config-dir-ingest.md` and
+# its sibling `specs/cc-config-dir-skills.md`.
+_CC_PROJECTS_ROOTS_DOC = "$CLAUDE_CONFIG_DIR/projects or ~/.claude/projects"
+
+
+def _cc_projects_roots() -> "list[Path]":
+    """Seam over `cc_paths.cc_projects_roots` (tests monkeypatch this one name)."""
+    return cc_paths.cc_projects_roots()
 
 # The env var that exposes the RUNNING session's id to a runtime script.
 # D5 fix (workspace-session-ingest.md): the OS process env var Claude Code
@@ -1195,7 +1219,7 @@ def _active_project_for_sid(sid: "str | None", cwd: "Path | None" = None) -> "st
 def _cc_project_dir_from_running_session(sid: "str | None" = None) -> "Path | None":
     """U3 PRIMARY: the CC project dir of the RUNNING session, as ground truth.
 
-    Find `~/.claude/projects/*/<current-sid>.jsonl` (current-sid = the `sid`
+    Find `<cc-projects-root>/*/<current-sid>.jsonl` (current-sid = the `sid`
     argument if given, else $CLAUDE_CODE_SESSION_ID (D5) — F-13 arg-over-env: an explicit
     `sid` takes priority over the env var, but the DEFAULT no-arg call is
     byte-identical to before this parameter existed) and return its PARENT dir
@@ -1203,17 +1227,21 @@ def _cc_project_dir_from_running_session(sid: "str | None" = None) -> "Path | No
     the dir by the session file that lives in it, never by reconstructing the
     slug. Returns None if no sid is resolved (arg absent + env unset) or no
     such jsonl exists (the caller then tries the fallback).
+
+    Searches every root in `_cc_projects_roots()` in order and takes the FIRST
+    hit, so a `$CLAUDE_CONFIG_DIR` universe wins over `~/.claude` when the same
+    sid exists in both (e.g. a half-migrated corpus).
     """
     effective_sid = sid or os.environ.get(_CURRENT_SID_ENV)
     if not effective_sid:
         return None
-    root = Path(os.path.expanduser(_CC_PROJECTS_DIR))
-    if not root.is_dir():
-        return None
-    matches = sorted(root.rglob(f"{effective_sid}.jsonl"))
-    if not matches:
-        return None
-    return matches[0].parent
+    for root in _cc_projects_roots():
+        if not root.is_dir():
+            continue
+        matches = sorted(root.rglob(f"{effective_sid}.jsonl"))
+        if matches:
+            return matches[0].parent
+    return None
 
 
 def _cc_project_dir_from_cwd(cwd: "Path | None" = None) -> "Path | None":
@@ -1222,15 +1250,18 @@ def _cc_project_dir_from_cwd(cwd: "Path | None" = None) -> "Path | None":
     CC encodes a project dir as the absolute cwd with path separators AND the
     drive colon replaced by `-`. This is a best-effort fallback used ONLY when
     the running session's own log cannot be located (primary path). Returns the
-    dir Path if it exists under `~/.claude/projects`, else None.
+    dir Path if the slug dir exists under one of `_cc_projects_roots()` (env
+    universe first), else None.
     """
     base = (cwd if cwd is not None else Path.cwd()).resolve()
     # Replace every path separator and the drive colon with `-` (e.g.
     # `C:\a\b` / `/home/a/b` -> `C--a-b` / `-home-a-b`).
     slug = re.sub(r"[\\/:]", "-", str(base))
-    root = Path(os.path.expanduser(_CC_PROJECTS_DIR))
-    candidate = root / slug
-    return candidate if candidate.is_dir() else None
+    for root in _cc_projects_roots():
+        candidate = root / slug
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def _sids_in_project_dir(project_dir: Path) -> list[str]:
@@ -1271,7 +1302,9 @@ def _order_sids_by_started_ts(sids: list[str]) -> list[str]:
         con = duckdb.connect()
         # Reuse the projector's vendored views (single source of truth for the
         # cc-log DuckDB schema — cc_log_project._VIEWS_SQL points at cc_views.sql).
-        con.execute(cc_log_project._VIEWS_SQL.read_text(encoding="utf-8"))
+        # Loaded through cc_paths so the base glob covers the same universes the
+        # dir lookups above do (`$CLAUDE_CONFIG_DIR` union `~/.claude`).
+        con.execute(cc_paths.read_cc_views_sql(cc_log_project._VIEWS_SQL))
         placeholders = ",".join("?" for _ in sids)
         rows = con.execute(
             f"SELECT session_id, started FROM cc_session "
@@ -1516,7 +1549,7 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
             raise DriverError(
                 "session-plan could not resolve the CC project dir: "
                 f"${_CURRENT_SID_ENV} did not locate a session jsonl under "
-                f"{_CC_PROJECTS_DIR}, and the cwd-reverse-generated slug dir "
+                f"{_CC_PROJECTS_ROOTS_DOC}, and the cwd-reverse-generated slug dir "
                 "does not exist (fail-closed)")
         sids = _sids_in_project_dir(project_dir)
         scope_out = "cwd"
