@@ -326,7 +326,11 @@ models that actually run, **once, deterministically, at dispatch**:
   mapping applied, and the orchestrator passes it through verbatim) and
   `ask=` when `--backend` resolves to `pi` — both read names meant for
   "the orchestrator's own execution facility", not the claude CLI, so `pi`
-  canonical names live in this table, not `cc`'s
+  canonical names live in this table, not `cc`'s. **Which facility that is
+  depends on the harness**: the table has one set of values, so a map
+  hand-edited for one orchestrator's names will not resolve under another.
+  The bundled identity map avoids the problem entirely — the canonical names
+  resolve as-is on both the claude CLI and pi
 
 The bundled map is the identity (zero-config = current behavior). Unmapped
 names pass through. Applied mappings are recorded as `model-map` events;

@@ -35,10 +35,22 @@ ok/error, and true/false**. All content flows through wfrun and files:
 5. **Choose the protocol layer** (reliability-spec.md §5.2): run
    `claude --version`. Success → **layer A** (`dispatch`/`wait`, next
    section — deterministic timeout/kill, no subagent delegation needed);
-   failure or unavailable → **layer B** (Agent-tool delegation +
+   failure or unavailable → **layer B** (subagent delegation +
    `record`/`poll`, the section after that). An explicit user instruction
    to use one layer overrides this probe. Layer choice is made once per
    run, not per step.
+
+   **What the layer actually decides is who executes the steps** — layer A
+   runs every step through the claude CLI, layer B runs it through your own
+   subagent facility. The probe only asks whether the claude CLI is
+   available, so on a non-Claude-Code harness that also has claude installed
+   it selects A, and **the steps then run on claude rather than on the agent
+   you are orchestrating from**. That is usually what you want (A is the
+   layer with deterministic timeout, kill, and attempt caps), but when the
+   point of the run is to execute on this harness, say so and select layer B
+   explicitly. Layer B's model names come from `model_map.json`'s `llm`
+   table — the names *your* execution facility accepts — while layer A's
+   come from the `cc` table.
 
 ## Layer A: step execution protocol (`claude --version` succeeded)
 
@@ -154,6 +166,44 @@ $WFRUN poll steps/<id>_handle.json
 # 4. Report one line to the user ("<id>: ok/error/aborted", progress =
 #    steps.log lines / max), move on
 ```
+
+### Delegating without a subagent tool
+
+Move 2 assumes you have a subagent facility. Some harnesses do not — Pi's
+built-in tool set is `read | bash | edit | write | grep | find | ls` and
+nothing else. There, spawn a **fresh non-interactive agent process from
+`bash`** and hand it the same fixed message. The message is unchanged: it
+carries only control facts, so it is harness-neutral. Only the delivery
+differs.
+
+```bash
+# Pi: one blocking call per step, from the bash tool
+node <npm-prefix>/node_modules/@earendil-works/pi-coding-agent/dist/cli.js \
+     -p --mode text --tools <tools, in this CLI's own names> \
+     --no-session --no-skills --model <the dispatch line's resolved name> \
+     "<the fixed message above, verbatim>"
+```
+
+Four things this depends on, each measured rather than assumed:
+
+- **Go through `node` and the CLI entry, not the `pi` command.** On Windows
+  `pi` is an npm `.CMD` shim whose cmd.exe layer truncates an argument at
+  the first newline — silently, exit 0. The fixed message is one line so it
+  would survive today, but the shim is not a safe channel and the entry it
+  wraps is `node <entry> %*` anyway.
+- **Pass a timeout well above the step's.** The bash tool has no default
+  one. A step doing real work does not finish inside 120 s: in testing, a
+  child had already written its deliverable and its result file when a
+  120 s ceiling cut it off before it could reply.
+- **That cut-off is survivable, by design.** A missing reply is exactly what
+  `poll` is for: it returned `done`, and `record` without `--reply` then
+  produced `ok` from the completed result file. Do not re-dispatch a step
+  just because you did not see its reply — poll first.
+- **`--tools` here is a real restriction, not advice.** Unlike the Agent
+  tool, this CLI enforces the list, so a read-only step can be made
+  genuinely read-only. Translate the dispatch line's names into the CLI's
+  own (`Read` → `read`, `Write` → `write`, …); keep the **untranslated**
+  names in the message text, which quotes the dispatch line verbatim.
 
 ## No `<parallel>` support
 

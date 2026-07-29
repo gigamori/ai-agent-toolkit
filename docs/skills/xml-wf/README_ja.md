@@ -201,6 +201,12 @@ wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE]
 wfrun poll   <handle.json>              # B層: done(0) / running(10) / deadline-exceeded(11)
 ```
 
+レイヤが決めるのは**誰がステップを実行するか**である。A層は claude CLI、B層は
+オーケストレータ自身の subagent 機能で実行する。判定は claude CLI の有無しか見ないため、
+Claude Code 以外の harness でも claude が入っていれば A層 が選ばれる。その harness 上で
+実行させたい場合は B層 を明示的に選ぶこと。B層 は subagent ツールを一切持たない harness
+（Pi）でも動作する。配送形は `references/run-llm.md` を参照。
+
 A層（`claude --version` が成功する環境向け。サブエージェント委譲なしで `wfrun` 自身が
 detach したラッパープロセス経由で `claude -p` を呼ぶ。詳細は `references/run-llm.md`）:
 

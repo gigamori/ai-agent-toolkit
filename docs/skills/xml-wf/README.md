@@ -208,6 +208,14 @@ wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE]
 wfrun poll   <handle.json>              # layer B: done(0) / running(10) / deadline-exceeded(11)
 ```
 
+The layer decides **who executes the steps**: layer A runs them through the
+claude CLI, layer B through the orchestrating agent's own subagent facility.
+The probe only checks whether the claude CLI exists, so on a non-Claude-Code
+harness that also has claude installed it picks A — select B explicitly when
+the steps are meant to run on that harness. Layer B also works on a harness
+with no subagent tool at all (Pi); `references/run-llm.md` gives the delivery
+shape.
+
 Layer A (environments where `claude --version` succeeds: no subagent
 delegation -- `wfrun` itself calls `claude -p` via a detached wrapper
 process. See `references/run-llm.md` for the full protocol):
