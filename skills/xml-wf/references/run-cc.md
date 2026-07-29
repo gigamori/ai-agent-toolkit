@@ -3,6 +3,13 @@
 **Control flow is handled deterministically by wfrun. Never interpret the XML
 yourself and perform steps on its behalf.**
 
+This is the **claude CLI backend** of batch execution: every step, debug
+diagnosis and replan builder runs as an isolated `claude -p` call. `wfrun run`
+selects it with `--backend cc`, and the default `--backend auto` picks it when
+`CLAUDE_CODE_SESSION_ID` is set. Where claude is unavailable or unwanted, the
+pi backend runs the same workflows with two exceptions it refuses at startup —
+see `references/run-pi.md`.
+
 ## Procedure
 
 ### 1. Static validation

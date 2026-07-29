@@ -121,7 +121,33 @@ that are not intentional. Finally report the XML path together with the output
 of `$WFRUN plan <path>`; when the flow has branches/loops/parallel worth
 seeing, also attach a diagram via `$WFRUN viz <path> --out <path>.mmd`.
 
+## Backend compatibility
+
+When the request is to make an existing workflow **pi-compatible** — typically
+relayed from a `run --backend pi` startup rejection — the attributes
+`references/run-pi.md` lists as unsupported are **holes to fix, not decisions
+to preserve**. The verbatim rule in step 1 does not cover them; everything else
+in the input still does.
+
+Two attributes are affected. Apply the replacements in `run-pi.md`
+("Replacing `schema=`" and "Replacing `on-error=\"debug\"`") — do not invent
+your own.
+
+Both replacements **reduce a guarantee**, so surface each one in the plan table
+(step 3) as its own row, saying what the step loses:
+
+| id | change | what it costs |
+|---|---|---|
+| `s2_count` | `schema=` → `expect-file=` + `output-type="value"` | shape guarantee → existence guarantee; the value's format is no longer enforced (moves to `ask=`, a likelihood) |
+| `s4_build` | `on-error="debug"` → `retry="2"` | diagnosis before retry is gone; a retry now repeats the identical attempt |
+
+A conversion that silently swaps these attributes is worse than no conversion:
+the workflow keeps running and the guarantee it was written against is gone.
+The approval gate exists so the user chooses that trade, not discovers it.
+
 ## Forbidden
 - Using named roles not listed in step 2 (author an inline `<role>` instead)
 - Executing the task itself (running SQL, processing data, generating reports)
 - Reporting completion while validation errors remain
+- Silently rewriting a backend-unsupported attribute without showing the
+  guarantee it costs (see Backend compatibility)

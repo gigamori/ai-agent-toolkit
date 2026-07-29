@@ -1,8 +1,8 @@
 ---
 name: xml-wf
 description: "Build, run, and resume XML v2 workflows end to end. Use when the user wants to turn a task into an XML workflow (build, ワークフロー化), execute an existing workflow XML (--run-cc, 実行), resume a failed run (--resume, 再開), or have the LLM orchestrate step-by-step under supervision (--run-llm, 対話的に実行). The runner (wfrun) and the spec are bundled inside this skill."
-argument-hint: "[--build|--run-cc|--run-llm|--resume] [task description|xml path|run dir]"
-compatibility: "Requires Python 3.12+. The claude CLI v2.1.214+ is required by run-cc mode -- every step, debug diagnosis, and replan builder runs as an isolated claude -p call (--json-schema; role definitions are injected into prompts, --agent is not used) -- and by ask= judgments when running under Claude Code; elsewhere wfrun ask auto-detects the harness and dispatches through the pi CLI instead. Build mode invokes no CLI (the session LLM authors the XML, ending at wfrun validate) but targets Claude Code's namespaces: roles are collected from its config tree (.claude/agents, $CLAUDE_CONFIG_DIR) and tools= uses its tool names. The run-llm protocol (wfrun + file-based exchange) works on any agent platform with a subagent facility. On Windows, wfrun resolves the real claude executable itself (bypassing the npm .cmd/.bat launcher, which corrupts multi-line/metachar prompts); if multiple claude installs are present, the one earlier on PATH wins -- see the skill README's Requirements section."
+argument-hint: "[--build|--run-cc|--run-pi|--run-llm|--resume] [task description|xml path|run dir]"
+compatibility: "Requires Python 3.12+ and at least one agent CLI. Batch execution has two backends, selected by `wfrun run --backend` (default auto, from CLAUDE_CODE_SESSION_ID): run-cc needs the claude CLI v2.1.214+ (every step, debug diagnosis and replan builder is an isolated claude -p call; --json-schema; roles are injected into prompts, --agent is not used), run-pi needs only the pi CLI and refuses schema= and on-error=debug at startup because pi cannot enforce them -- references/run-pi.md gives the rewrites. ask= judgments follow the same auto-detection. Build mode invokes no CLI (the session LLM authors the XML, ending at wfrun validate) but targets Claude Code's namespaces: roles are collected from its config tree (.claude/agents, $CLAUDE_CONFIG_DIR) and tools= uses its tool names, which run-pi translates (Glob->find, and an unmappable name stops the step). The run-llm protocol (wfrun + file-based exchange) works on any agent platform with a subagent facility. On Windows both backends bypass the npm .cmd/.bat launcher, which corrupts multi-line/metachar prompts; for claude, if multiple installs are present the one earlier on PATH wins -- see the skill README's Requirements section."
 ---
 
 # XML Workflow System v2 (xml-wf)
@@ -26,12 +26,19 @@ $WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eva
 |---|---|---|
 | `--build`, a task description, "create/build a workflow", 「ワークフロー化」, or a **partial/sketch `.xml` to complete/finish** | **Build** | Read and follow `references/build.md` |
 | `--run-cc`, a **complete** `.xml` path, "run/execute" | **Run (batch)** | Read and follow `references/run-cc.md` |
+| `--run-pi`, "run on pi", "run without claude" | **Run (batch, pi backend)** | Read and follow `references/run-pi.md` |
 | `--resume`, a run dir path (contains `state.json`), "resume" | **Resume** | `references/run-cc.md`, section "On failure / resume" |
 | `--run-llm`, "run interactively", "supervise step by step" | **LLM orchestration** | Read and follow `references/run-llm.md` |
 
 - For compound requests ("build it and run it"): Build → user approval → Run, in sequence
-- The default execution mode is **--run-cc (wfrun batch, deterministic)**.
+- The default execution mode is **batch (`wfrun run`, deterministic)**.
   Use --run-llm only when the user explicitly wants interactive, step-supervised execution
+- **Batch has two backends and `wfrun run --backend` picks one.** The default
+  `auto` reads `CLAUDE_CODE_SESSION_ID`: set → the claude CLI (run-cc), unset →
+  the pi CLI (run-pi). `--run-cc` / `--run-pi` are the explicit forms. The
+  backends are not interchangeable: run-pi refuses `schema=` and
+  `on-error="debug"` at startup, and `references/run-pi.md` gives the rewrites.
+  `resume` inherits the backend recorded in the run dir and never re-detects
 - A bare `.xml` path is ambiguous between Run and Build. Resolve by intent, not
   by guessing: a complete workflow the user wants **executed** → Run; an
   incomplete sketch, or an explicit "complete/finish/fill in this XML" → Build.

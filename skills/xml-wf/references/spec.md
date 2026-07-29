@@ -94,13 +94,13 @@ instruction body; `<role>` (see below) may hold an inline role definition.
 | `effort` | - | - | `low`…`max` (forwarded to `--effort`) |
 | `output` | - | - | Variable name that receives the result |
 | `output-type` | - | `file` | See below |
-| `schema` | - | - | JSON Schema (inline, or `@path` for a file reference). Forwarded to `--json-schema`; forces structured output |
+| `schema` | - | - | JSON Schema (inline, or `@path` for a file reference). Forwarded to `--json-schema`; forces structured output. **run-cc only** — the pi backend has no equivalent and refuses such a workflow at startup (`references/run-pi.md`, "Replacing `schema=`") |
 | `rules` | - | - | Comma-separated rules ids to inject |
-| `tools` | - | role frontmatter | Forwarded to `--allowedTools` (e.g. `"Read,Write"`; step attribute wins) |
+| `tools` | - | role frontmatter | Forwarded to `--allowedTools` (e.g. `"Read,Write"`; step attribute wins). Names are Claude Code's; run-pi translates them to pi's (`Glob` → `find`, the rest lowercased) and **stops the step** on a name it cannot map (`MultiEdit`, `NotebookEdit`, `Task`, `Agent`, typos) rather than dropping it silently |
 | `expect-file` | - | - | Comma-separated paths (`{var}`-interpolated; relative to the XML dir) that must exist after the step. Missing = step failure (retry / on-error apply). The deterministic deliverable check — a compliant-looking response without the artifact is caught |
 | `retry` | - | `0` | Deterministic retry count (re-run with the identical prompt) |
 | `timeout` | - | `600` | Seconds. Process is killed on overrun → error |
-| `on-error` | - | `fail` | `fail` (stop immediately) / `ignore` (record and continue) / `debug` (debug-role diagnosis) |
+| `on-error` | - | `fail` | `fail` (stop immediately) / `ignore` (record and continue) / `debug` (debug-role diagnosis). **`debug` is run-cc only** — it is built on the claude CLI's structured output and Claude Code's config tree, so the pi backend refuses such a workflow at startup (`references/run-pi.md`, "Replacing `on-error=\"debug\"`") |
 
 **The `<role>` child** — when no suitable `.claude/agents` definition exists,
 the builder authors the role inline:
@@ -323,9 +323,9 @@ models that actually run, **once, deterministically, at dispatch**:
   `CLAUDE_CODE_SESSION_ID` is set) — and must hold claude CLI model names
 - the `llm` table covers run-llm step delegation (`wfrun prompt` prints the
   resolved name on the dispatch line, as `model=X (mapped from Y)` when a
-  mapping applied, and the orchestrator passes it through verbatim) and
-  `ask=` when `--backend` resolves to `pi` — both read names meant for
-  "the orchestrator's own execution facility", not the claude CLI, so `pi`
+  mapping applied, and the orchestrator passes it through verbatim), **run-pi
+  steps** and `ask=` when `--backend` resolves to `pi` — all read names meant
+  for "the orchestrator's own execution facility", not the claude CLI, so `pi`
   canonical names live in this table, not `cc`'s. **Which facility that is
   depends on the harness**: the table has one set of values, so a map
   hand-edited for one orchestrator's names will not resolve under another.

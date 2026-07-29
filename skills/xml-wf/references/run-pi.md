@@ -1,0 +1,143 @@
+# Run mode (run-pi): execute the workflow on the pi CLI
+
+Same batch execution as run-cc — **control flow is handled deterministically by
+wfrun; never interpret the XML yourself and perform steps on its behalf** — but
+each step, and each `ask=` judgment, runs as a `pi -p` call instead of a
+`claude -p` one. Use it where claude is not available or not wanted; nothing in
+this mode requires the claude CLI.
+
+The procedure is run-cc's (validate → confirm parameters → execute → report).
+Only the backend differs, and one flag selects it:
+
+```bash
+$WFRUN run <xml> -p key=value ... --backend pi
+```
+
+`--backend` takes `auto` (the default), `cc`, or `pi`. `auto` reads
+`CLAUDE_CODE_SESSION_ID`: set → `cc`, unset → `pi`. The detection is done in
+code, not left to the caller to remember — a forgotten flag would otherwise
+run the whole workflow on whichever CLI happened to be installed. An explicit
+`cc`/`pi` overrides the probe, and a mismatch between the two prints a warning
+without stopping.
+
+`resume` does **not** re-detect. `run` records the resolved backend in
+`<run-dir>/backend.json`, and `resume` reads it, so a run cannot execute its
+first half on one CLI and its second on another. A run directory from before
+this was tracked has no `backend.json` and resumes as `cc`.
+
+## What is not available here
+
+Two workflow features are **refused before any pi process starts**. Neither is
+degraded silently: the run stops at startup and names the step.
+
+### `schema=`
+
+pi has no forced-structured-output flag. Prompting for JSON and parsing it
+back would replace a guarantee with a likelihood, which is not what `schema=`
+promises, so the workflow is rejected instead.
+
+### `on-error="debug"`
+
+Debug diagnosis has no pi implementation: it is built on the claude CLI's
+structured output and finds its debug role in Claude Code's own config tree.
+Left enabled it would fail every diagnosis while still looking like a working
+feature.
+
+Both rejections point at build mode for a compatible rewrite — see the two
+sections below for what the rewrite looks like.
+
+## Replacing `schema=`
+
+`schema=` is refused, so a step that needs a value downstream has to put that
+value **in a file** and let `expect-file` police it.
+
+| What `schema=` was doing | Rewrite |
+|---|---|
+| Handing one scalar to a later `test=` | Have the step write the value to a file, declare it in `expect-file=`, and pass the **path** downstream with `output-type="value"`. Branch on the file with `ask=`, or with a step that reads and checks it |
+| Packing several properties into one variable | Split into one step (and one file) per property, each with its own `expect-file=` |
+| Producing JSON as the deliverable itself | Write the JSON to a file, declare it in `expect-file=`, and let a following step parse it — a parse failure fails that step |
+
+Worked example. Before, with `schema=` guaranteeing an integer:
+
+```xml
+<step id="s2_count" role="writer" output="line_count" output-type="value"
+      schema='{"type":"object","properties":{"line_count":{"type":"integer"}},"required":["line_count"]}'>
+  <task>Read the file {poem_path} and return its line count.</task>
+</step>
+<if test="int({line_count}) &gt;= 1"> ... </if>
+```
+
+After, with `expect-file` guaranteeing the artifact:
+
+```xml
+<step id="s2_count" role="writer" output="count_path" output-type="value"
+      expect-file="output/line_count.txt">
+  <task>Read the file {poem_path}, count its lines, and write ONLY that
+        integer (no other text) to output/line_count.txt.
+        Return only the relative path of the file you wrote.</task>
+</step>
+<if ask="Does the file {count_path} contain an integer of 1 or greater?"> ... </if>
+```
+
+**This is a reduction, not an equivalence.** `schema=` guaranteed the *shape*
+of the output; `expect-file` guarantees only that the file *exists*. Nothing
+checks that it holds an integer. That part moves to `ask=` — a likelihood, not
+a guarantee — or to a verification step that reads the file and returns
+`ERROR:` when it is malformed, which stops the run as a `guardrail`.
+
+If a branch genuinely needs the value in a variable for `test=`, drop `schema=`
+and use `output-type="value"` with "return only the number" in the task. The
+format is then unenforced and `int()` can fail at run time, so set `on-error`
+on that step so the failure stops the run instead of propagating.
+
+## Replacing `on-error="debug"`
+
+A debug cycle did two things: diagnose the failure, then retry with the fix.
+Pick whichever half the step actually needed.
+
+| Instead of `on-error="debug"` | When it fits |
+|---|---|
+| `on-error="fail"` (the default) | The failure needs a human. Stop and let `wfrun resume` pick up after the fix |
+| `retry=N` | The failure is transient. A plain retry covers most of what a debug-retry cycle achieved, without the diagnosis round trip |
+| `on-error="ignore"` + a following verification step | The run should continue and the failure needs *recording* rather than fixing |
+
+## Behaviour that differs from run-cc
+
+These are not refusals — the workflow runs — but the guarantee is not the same,
+so know them before relying on them.
+
+- **`retry=` is doubled.** pi retries internally on its own (3 attempts,
+  exponential backoff) before returning a failure to wfrun, and wfrun then
+  applies `retry=` on top. Total attempts multiply. `wf.max` and `retry=`
+  still bound the run, so it cannot run away — but budget the numbers with
+  the doubling in mind.
+- **A rate limit is not distinguishable from any other error.** pi reports
+  errors as a provider's raw JSON without a field that reliably yields an
+  HTTP status, so there is no `transient` class here: a 429 consumes `retry=`
+  like a genuine failure would.
+- **`budget-usd` mostly does not bite.** The canonical model names resolve to
+  a bridge provider that pi has no price table for, so it reports real token
+  counts with a cost of 0. `budget-usd` only constrains a run whose models are
+  natively priced in pi.
+- **`permission-mode` is ignored.** pi has no permission layer, so there is
+  nothing to widen and nothing to deny. `--permission-mode` on the command
+  line is accepted and has no effect.
+- **`tools=` is enforced, and its names are translated.** `Read`, `Write`,
+  `Edit`, `Grep`, `Bash` map to their lowercase pi equivalents and `Glob` maps
+  to `find`. A name with no mapping — `MultiEdit`, `NotebookEdit`, `Task`,
+  `Agent`, or a typo — **stops the step** rather than being dropped, because
+  pi's own `--tools` ignores unknown names without a word and would otherwise
+  hand the step a child with no tools at all. Unlike the Agent tool in
+  run-llm, this restriction is real: a read-only step is genuinely read-only.
+- **Steps start slower.** A cold `pi -p` call takes on the order of fifteen
+  seconds before the model does any work. Size each step's `timeout=` with
+  that startup included; a step that would finish in a minute under run-cc
+  needs headroom here.
+
+## Model names
+
+`model=` resolves through `model_map.json`'s **`llm`** table (run-cc uses
+`cc`). The bundled map is the identity and the canonical names — `haiku`,
+`sonnet`, `opus` — resolve correctly on pi as they are, so no configuration is
+needed. A map hand-edited to hold claude CLI names for some other purpose will
+not resolve here; keep the identity map, or put names pi accepts in `llm`.

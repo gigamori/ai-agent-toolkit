@@ -43,11 +43,14 @@
 
 - **Python 3.12+**
 - **uv**（Python はすべて `uv run` 経由で起動）
-- **claude CLI v2.1.214+** — `run-cc` が必要とする（各ステップ・debug 診断・
-  replan builder はすべて `claude -p` / `--json-schema` で実行。ロール定義は
-  プロンプトに注入され、`--agent` は使わない）。`ask=` 判定も Claude Code 上で
-  実行される場合はこの CLI を使う。Claude Code 以外では `wfrun ask` は代わりに
-  **pi CLI** へ dispatch する（自動判定。後述 CLI リファレンスの `--backend` 参照）
+- **エージェント CLI が少なくとも1つ**。どちらを使うかでワークフローに書ける内容が変わる:
+  - **claude CLI v2.1.214+** — `cc` backend が必要とする（各ステップ・debug 診断・
+    replan builder はすべて `claude -p` / `--json-schema` で実行。ロール定義は
+    プロンプトに注入され、`--agent` は使わない）
+  - **pi CLI** — `pi` backend はこれだけで動作し、claude のインストールを必要としない。
+    ただし pi では強制できないため `schema=` と `on-error="debug"` を起動時に拒否する
+    （書き換え方は `references/run-pi.md`）
+  - `ask=` 判定も `run --backend` と同じ自動判定に従う
 
 ランナーは標準ライブラリのみで動作します。`build` モードは CLI を起動しません —
 セッションの LLM 自身が XML を書き、`wfrun validate` で完結します（ただしロール
@@ -186,11 +189,19 @@ file path.</task>
 
 ```
 wfrun validate <wf.xml> [--json] [--no-role-check] [--as-child] [--defined-vars VARS_JSON]
-wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits]
+wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi]
 wfrun resume   <run_dir> [--base-dir D] [--permission-mode ...]
 wfrun plan     <wf.xml>                 # ステップツリーを表示（実行なし）
 wfrun viz      <wf.xml> [--out FILE]    # 制御フローの mermaid フローチャート
 ```
+
+`run` の `--backend` はステップを実行する CLI を選ぶ: `cc`（claude CLI）または
+`pi`。既定の `auto` は `CLAUDE_CODE_SESSION_ID` を読み（非空→`cc`、空→`pi`）、
+呼び出し側の記憶に頼らずコード側で判定する。両 backend は等価ではない: pi backend は
+`schema=` と `on-error="debug"` をプロセス起動前に拒否する（pi では強制できないため）。
+書き換え方と挙動差（retry の二重積算・`transient` クラス無し・`budget-usd` がほぼ無効・
+`tools=` 名の変換）は `references/run-pi.md` を参照。`resume` は run ディレクトリに
+記録された backend を使い再判定しないため、1つの run が2つの CLI にまたがることはない。
 
 `run-llm` オーケストレーション用のヘルパーサブコマンド（タスク内容は呼び出し側を
 経由しない）:

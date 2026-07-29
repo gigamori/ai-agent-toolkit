@@ -46,12 +46,14 @@ recorded under `runs/`, and a run can resume from the point of failure).
 
 - **Python 3.12+**
 - **uv** (all Python is launched via `uv run`)
-- **claude CLI v2.1.214+** — required by `run-cc` (every step, debug diagnosis,
-  and replan builder runs as `claude -p` / `--json-schema`; role definitions
-  are injected into prompts, `--agent` is not used), and by `ask=` judgments
-  when running under Claude Code. Outside Claude Code, `wfrun ask` dispatches
-  through the **pi CLI** instead (auto-detected; see `--backend` in the CLI
-  reference below)
+- **At least one agent CLI**, and which one decides what the workflow may use:
+  - **claude CLI v2.1.214+** — required by the `cc` backend (every step, debug
+    diagnosis and replan builder runs as `claude -p` / `--json-schema`; role
+    definitions are injected into prompts, `--agent` is not used)
+  - **pi CLI** — enough on its own for the `pi` backend, which needs no claude
+    install. It refuses `schema=` and `on-error="debug"` at startup because pi
+    cannot enforce them (see `references/run-pi.md` for the rewrites)
+  - `ask=` judgments follow the same auto-detection as `run --backend`
 
 The runner uses the standard library only. `build` mode invokes no CLI — the
 session LLM authors the XML and finishes at `wfrun validate` — though its role
@@ -193,11 +195,21 @@ Prompt precedence within a step: **Mode > Rules > Task > Role**.
 
 ```
 wfrun validate <wf.xml> [--json] [--no-role-check] [--as-child] [--defined-vars VARS_JSON]
-wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits]
+wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi]
 wfrun resume   <run_dir> [--base-dir D] [--permission-mode ...]
 wfrun plan     <wf.xml>                 # print the step tree (no execution)
 wfrun viz      <wf.xml> [--out FILE]    # mermaid flowchart of the control flow
 ```
+
+`--backend` on `run` picks which CLI executes the steps: `cc` (the claude CLI)
+or `pi`. The default `auto` reads `CLAUDE_CODE_SESSION_ID` — set → `cc`, unset
+→ `pi` — so the choice is made in code rather than left to the caller to
+remember. The backends are not interchangeable: the pi backend refuses
+`schema=` and `on-error="debug"` before any process starts, because it cannot
+enforce either, and `references/run-pi.md` gives the rewrites plus the
+behaviour that differs (doubled retries, no `transient` class, `budget-usd`
+mostly inert, translated `tools=` names). `resume` takes the backend recorded
+in the run dir and never re-detects, so one run never spans two CLIs.
 
 Helper subcommands for `run-llm` orchestration (task content never passes
 through the caller):

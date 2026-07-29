@@ -219,6 +219,18 @@ def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.
     stderr); they appear only inside the JSONL, as a turn_end whose
     message.stopReason is "error".
 
+    **There is one turn_end per agent loop iteration, not one per run.** A
+    step that calls tools emits an intermediate turn_end with
+    `stopReason: "toolUse"` and an empty content list for every tool round
+    trip, then a final one carrying the reply. Measured 2026-07-30: a
+    write-then-report prompt produced two turn_end events, the first
+    `toolUse`/empty and the second `stop` with the path. The design's §4.1
+    table was written from a tool-free probe and said "the turn_end line" as
+    if unique; taking the first one classified every tool-using step as
+    `empty result`. The terminal turn_end is therefore selected by taking
+    the LAST one -- the stream ends with it -- and a stream whose last
+    turn_end is still `toolUse` means the loop never finished.
+
     There is no `transient` class here (design §4.1): errorMessage is a
     provider-shaped raw string with no field equivalent to claude's
     api_error_status, so a retryable upstream hiccup cannot be told apart
@@ -236,8 +248,9 @@ def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.
         except json.JSONDecodeError:
             continue  # a stray non-JSON line is not fatal; turn_end absence is
 
-    turn_end = next((e for e in events
-                     if isinstance(e, dict) and e.get("type") == "turn_end"), None)
+    turn_ends = [e for e in events
+                 if isinstance(e, dict) and e.get("type") == "turn_end"]
+    turn_end = turn_ends[-1] if turn_ends else None
     if turn_end is None:
         # Interrupted mid-stream (external kill, or the process died before
         # finishing) -- measured (§9.4.1): turn_end/agent_end/agent_settled
@@ -283,6 +296,19 @@ def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.
         error_message = message.get("errorMessage")
         result.error = (f"pi reported stopReason={stop_reason}"
                         + (f": {error_message}" if error_message else ""))
+        return result
+
+    if stop_reason == "toolUse":
+        # The LAST turn_end is still a tool round trip: the agent loop was cut
+        # off between issuing a tool call and reporting on it. Distinguished
+        # from "empty result" on purpose -- the body is empty either way, but
+        # the causes differ (a model that answered with nothing vs. a run that
+        # never got to answer) and reading the second as the first sends a
+        # misleading failure to the recovery loop.
+        result.ok = False
+        result.error_class = "behavioral"
+        result.error = ("pi stream ended mid-tool-use (last turn_end has "
+                        "stopReason=toolUse); the agent loop did not finish")
         return result
 
     # _common.md (mode injection) mandates a leading [Mode: x] line; shared

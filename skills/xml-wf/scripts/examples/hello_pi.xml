@@ -1,0 +1,41 @@
+<!-- The pi-compatible counterpart of hello.xml, for the pi backend of
+     `wfrun run` (pass the backend flag as pi).
+
+     hello.xml uses schema= to force a structured integer out of s2_count and
+     then branches on it with test=. The pi backend has no forced-structured-
+     output flag and refuses schema= at startup, so this version moves the
+     value into a file: the step writes it, expect-file= polices that it was
+     written, and the branch asks about the file instead of comparing a number.
+
+     That is a reduction, not a translation: schema= guaranteed the shape of
+     the output, expect-file only guarantees the file exists. Keep hello.xml
+     as the run-cc example; the pair is the point. See references/run-pi.md,
+     "Replacing schema=". -->
+<workflow name="hello_pi" version="2" max="10">
+  <param name="topic" default="the sea"/>
+  <rules id="style">Write concisely. The poem must be 3 lines or fewer.</rules>
+
+  <step id="s1_write" role="writer" mode="execute" rules="style"
+        output="poem_path" output-type="value" expect-file="output/poem.txt">
+    <task>Write a short poem about {topic} and save it to the file output/poem.txt. Return only the relative path of the saved file as your final response.</task>
+  </step>
+
+  <step id="s2_count" role="writer" mode="execute" output="count_path"
+        output-type="value" expect-file="output/line_count.txt">
+    <task>Read the file {poem_path}, count its lines, and write ONLY that integer (no other text, no trailing prose) to the relative path output/line_count.txt under the current directory. Return only the relative path of the file you wrote as your final response.</task>
+  </step>
+
+  <if ask="Does the file {count_path} contain an integer of 1 or greater?">
+    <then><set var="status" value="ok"/></then>
+    <else><set var="status" value="empty"/></else>
+  </if>
+
+  <if ask="Does the content of file {poem_path} read as a poem?">
+    <then>
+      <step id="s3_note" mode="execute" tools="Write">
+        <role>You are a careful file clerk. You write exactly what is requested — nothing more, nothing less — and you never editorialize.</role>
+        <task>Write exactly APPROVED to the relative path ./output/note.txt under the current directory (do not convert it to an absolute path). Return only the file path as your final response.</task>
+      </step>
+    </then>
+  </if>
+</workflow>

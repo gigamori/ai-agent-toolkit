@@ -227,6 +227,37 @@ class ClassifyResultPiTests(unittest.TestCase):
         self.assertEqual(res.error_class, "behavioral")
         self.assertEqual(res.raw["last_event_type"], "agent_start")
 
+    def test_terminal_turn_end_wins_over_tool_round_trips(self):
+        # Measured 2026-07-30: a tool-using step emits one turn_end per agent
+        # loop iteration. The intermediate ones carry stopReason=toolUse and
+        # an empty content list; only the last carries the reply. Reading the
+        # first turn_end classified every tool-using step as `empty result` --
+        # the real E2E failure this test locks down.
+        stdout = _jsonl(
+            json.dumps({"type": "session"}),
+            _turn_end(role="assistant", content=[], stopReason="toolUse"),
+            json.dumps({"type": "tool_execution_start"}),
+            _turn_end(role="assistant",
+                      content=[{"type": "text", "text": "output/poem.txt"}],
+                      stopReason="stop"),
+            json.dumps({"type": "agent_settled"}))
+        res = pi_cli.classify_result_pi(0, stdout, "")
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(res.text, "output/poem.txt")
+
+    def test_stream_cut_off_mid_tool_use_is_not_empty_result(self):
+        # Last turn_end still toolUse => the loop never finished. Same empty
+        # body as a genuine empty answer, but a different cause, so it must
+        # not be reported as "empty result".
+        stdout = _jsonl(
+            _turn_end(role="assistant", content=[], stopReason="toolUse"),
+            json.dumps({"type": "tool_execution_update"}))
+        res = pi_cli.classify_result_pi(0, stdout, "")
+        self.assertFalse(res.ok)
+        self.assertEqual(res.error_class, "behavioral")
+        self.assertIn("mid-tool-use", res.error)
+        self.assertNotIn("empty result", res.error)
+
     def test_no_events_at_all_is_behavioral(self):
         res = pi_cli.classify_result_pi(0, "", "")
         self.assertFalse(res.ok)
