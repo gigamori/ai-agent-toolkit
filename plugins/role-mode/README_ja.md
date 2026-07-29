@@ -47,6 +47,11 @@ role:"<value>"
 
 `mode:` と `role:` は両方とも optional。少なくとも片方が存在すれば hook が発火。各 prefix とも入力中の **最初の出現** を採用、それ以降は無視。位置は自由（行頭 / 空白の直後）。taskflow の `pj:` と同方式。prefix のマッチは case-insensitive。
 
+次の2種類の入力は発火しない:
+
+- **backtick で囲まれた slug** — `` `mode:execute` `` は言及であって呼び出しではない。インラインコード span は検出前にマスクされる（単一行 span のみ）
+- **システム生成ターン** — task-notification マーカー（`<task-notification>` / `[SYSTEM NOTIFICATION - NOT USER INPUT]`）を含む入力は、バックグラウンドタスク／subagent の完了通知が user ターンとして中継されたもの。その中の slug はエージェント出力の引用なので、hook 全体をスキップする。subagent の返答が自分のモード規則を引用しただけで呼び出し元セッションがそのモードに切り替わる、という実測済みの注入経路を塞ぐ
+
 #### `mode:<name>`
 
 - `<name>` は `[A-Za-z][A-Za-z0-9_-]*`。captured 値は lowercase 正規化

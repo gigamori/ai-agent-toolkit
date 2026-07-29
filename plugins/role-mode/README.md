@@ -47,6 +47,11 @@ role:"<value>"
 
 Both `mode:` and `role:` are optional. The hook fires when at least one is present. The first occurrence per kind is consumed; subsequent occurrences are ignored. Both slugs can appear at any position (start of input or after whitespace), mirroring `pj:` from the taskflow plugin. Prefix matching is case-insensitive.
 
+Two kinds of input never invoke:
+
+- **Backtick-quoted slugs** — `` `mode:execute` `` is a mention, not an invocation. Inline code spans are masked before detection (single-line spans only).
+- **System-generated turns** — a prompt carrying a task-notification marker (`<task-notification>` or `[SYSTEM NOTIFICATION - NOT USER INPUT]`) is a background-task/subagent completion notice relayed as a user turn; slugs inside it are quoted agent output, so the hook skips it entirely. This closes a measured injection path where a subagent's reply that quoted its own mode rule flipped the calling session into that mode.
+
 #### `mode:<name>`
 
 - `<name>` matches `[A-Za-z][A-Za-z0-9_-]*`. Captured value is normalized to lowercase.

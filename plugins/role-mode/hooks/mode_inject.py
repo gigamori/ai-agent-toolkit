@@ -30,6 +30,17 @@ Slug syntax:
   - Both prefixes are detected at string start or after whitespace, are
     case-insensitive, and only the first occurrence per kind is used.
 
+Non-invocation inputs (both measured; see mode-orchestrator-runs/
+phase4-defects-2-4-design.md, defect 2):
+  - Backtick spans are masked before detection: `` `mode:execute` `` is a
+    mention/quotation, not an invocation. A real run's orchestrator was
+    flipped into execute mode by a subagent gist that merely quoted the
+    rule that had stopped it.
+  - System-generated turns are skipped entirely: a prompt carrying a
+    task-notification marker is a background-task/subagent completion
+    notice relayed as a user turn, not something the user typed. Slugs
+    inside it are always quoted text from some agent's output.
+
 Mode aliases (resolved for file lookup; the user's chosen alias is preserved
 in the displayed `Mode:` line):
   - verify -> debug
@@ -55,6 +66,21 @@ MODE_ALIASES = {
 MODE_RE = re.compile(r'(?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*)', re.IGNORECASE)
 ROLE_RE = re.compile(r'(?:^|\s)role:(?:"([^"]*)"|(.+?)(?=\s+(?:mode|pj):|\n|$))', re.IGNORECASE)
 
+# Inline code spans are mentions, not invocations -- masked before slug
+# detection. Single-line only (backticks pairing across lines would eat
+# unrelated text between two independent code fragments).
+CODE_SPAN_RE = re.compile(r'`[^`\n]*`')
+
+# Markers of system-generated user turns (background-task / subagent
+# completion notices). Measured forms; a prompt containing one is never a
+# hand-typed invocation, so no injection happens at all. Fail-open by
+# design: an unrecognized future marker just means the old behavior, and
+# the reply-contract ban on bare slugs still stands upstream.
+NOTIFICATION_MARKERS = (
+  '<task-notification>',
+  '[SYSTEM NOTIFICATION - NOT USER INPUT]',
+)
+
 
 def read_optional(path):
   if not os.path.isfile(path):
@@ -75,13 +101,19 @@ prompt = data.get('prompt', '')
 if not prompt:
   sys.exit(0)
 
-nomode = 'nomode' in prompt
-norole = 'norole' in prompt
+if any(marker in prompt for marker in NOTIFICATION_MARKERS):
+  sys.exit(0)
 
-mode_match = None if nomode else MODE_RE.search(prompt)
+# Mask inline code spans so `mode:x` quoted in backticks never invokes.
+scan_text = CODE_SPAN_RE.sub(' ', prompt)
+
+nomode = 'nomode' in scan_text
+norole = 'norole' in scan_text
+
+mode_match = None if nomode else MODE_RE.search(scan_text)
 mode_name = mode_match.group(1).lower() if mode_match else None
 
-role_match = None if norole else ROLE_RE.search(prompt)
+role_match = None if norole else ROLE_RE.search(scan_text)
 if role_match:
   role_name = (role_match.group(1) or role_match.group(2) or '').strip()
   if not role_name:
