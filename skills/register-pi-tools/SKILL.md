@@ -12,7 +12,11 @@ Convert existing Python scripts under a chosen directory so each one carries a Y
 Always confirm both with the user before starting work:
 
 - `input_dir`: directory whose `*.py` files are migrated and registered (recurses; `_*.py` and `ignore-old/` are skipped). No default — ask if not given.
-- `output_path`: target file for the registry. Default: `~/.pi/agent/tools.yaml`. Confirm before writing.
+- `output_path`: target file for the registry. Confirm before writing. Omit it and the build writes to `<agent-dir>/tools.yaml` — the one path pi loads the global registry from:
+  - `$PI_CODING_AGENT_DIR` when that variable is set and non-blank (`~` **is** expanded, the opposite of Claude Code's `CLAUDE_CONFIG_DIR`),
+  - `~/.pi/agent` otherwise.
+
+  Resolve it to a single directory, never a union: a registry written anywhere else is silently never read. **Cross-harness caveat**: environment variables are not inherited across harnesses, so if you moved pi's config root, set `PI_CODING_AGENT_DIR` as an **OS user environment variable** (machine-wide) — otherwise this skill, run from Claude Code or any other harness that never saw pi's env, writes to the `~/.pi` fallback that pi no longer reads.
 
 ## Per-script migration loop
 

@@ -11,7 +11,7 @@
 [ build_tools_yaml.py ]   ← 同ディレクトリ scripts/ 配下
        ↓ 全 .py を走査 → frontmatter を集約
        ↓
-[ <output_path> = ~/.pi/agent/tools.yaml ]   ← レジストリ（build artifact、手書き禁止）
+[ <output_path> = <agent-dir>/tools.yaml ]   ← レジストリ（build artifact、手書き禁止）
        ↓
 [ ディスパッチャ（dispatch_tools.py / pi extension など）]
        ↓ load_tools → to_anthropic_tools → request.tools に乗せる
@@ -44,8 +44,7 @@ LLM   → スキル auto-trigger → input_dir / output_path 確認 → 各 .py 
 
 ```bash
 uv run --with pyyaml python <skill_dir>/scripts/build_tools_yaml.py \
-  --input-dir <スクリプトのあるディレクトリ> \
-  --output-path ~/.pi/agent/tools.yaml
+  --input-dir <スクリプトのあるディレクトリ>
 ```
 
 引数:
@@ -53,7 +52,20 @@ uv run --with pyyaml python <skill_dir>/scripts/build_tools_yaml.py \
 | キー | 必須 | 既定値 | 意味 |
 |---|---|---|---|
 | `--input-dir` | ✓ | — | 走査対象ディレクトリ（再帰）。`_*.py` と `ignore-old/` は自動除外 |
-| `--output-path` | — | `~/.pi/agent/tools.yaml` | 出力 yaml ファイルパス（チルダ展開対応） |
+| `--output-path` | — | `<agent-dir>/tools.yaml` | 出力 yaml ファイルパス（チルダ展開対応） |
+
+### `<agent-dir>` の解決先
+
+`--output-path` を省略すると、pi が global レジストリを読み込む唯一のパスに書き込む。
+
+| `$PI_CODING_AGENT_DIR` | `<agent-dir>` |
+|---|---|
+| 設定あり（空白でない） | その値。先頭の `~` は展開される（literal 扱いの Claude Code `CLAUDE_CONFIG_DIR` とは逆） |
+| 未設定または空白 | `~/.pi/agent` |
+
+単一ディレクトリであり union ではない。それ以外の場所に書いたレジストリは黙って読まれない（ビルドは成功と表示され、pi にはツールが見えないまま）。
+
+**ハーネス跨ぎの注意**: 環境変数はハーネス間で継承されない。pi の設定ルートを移動した場合は `PI_CODING_AGENT_DIR` を **OS のユーザ環境変数**（マシン全体）として設定すること。そうしないと、Claude Code など pi の env を見たことがないハーネスから実行したビルドは `~/.pi/agent` にフォールバックし、そこは pi がもう読まない。
 
 出力形式:
 
@@ -80,6 +92,8 @@ import sys
 sys.path.insert(0, "/path/to/lib/src")  # dispatch_tools.py のあるディレクトリ
 from dispatch_tools import load_tools, to_anthropic_tools, dispatch
 
+# ビルドが実際に書いたパスを渡す（`load_tools` 自体は env を解決しない）。
+# 上の「`<agent-dir>` の解決先」を参照。
 entries = load_tools("~/.pi/agent/tools.yaml")
 tools_for_api = to_anthropic_tools(entries)  # request.tools に渡せる形
 
@@ -123,7 +137,7 @@ uv run python /path/to/lib/src/run_tool.py \
 | `docs/skills/register-pi-tools/USER_GUIDE_ja.md` | このファイル（人間向け） |
 | `<skill_dir>/scripts/build_tools_yaml.py` | レジストリビルド本体 |
 | `<skill_dir>/scripts/_tool.py` | runtime ヘルパ（同梱コピー） |
-| `~/.pi/agent/tools.yaml` | 生成されるレジストリ（build artifact） |
+| `<agent-dir>/tools.yaml` | 生成されるレジストリ（build artifact） |
 
 ディスパッチャ系（`dispatch_tools.py` / `run_tool.py`）はスクリプト本体側のリポジトリに置く想定。本スキルは「frontmatter 移行＋レジストリ build」までを担当する。
 

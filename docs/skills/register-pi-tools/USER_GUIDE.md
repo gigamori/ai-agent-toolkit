@@ -11,7 +11,7 @@ User-facing guide for the `register-pi-tools` skill: a workflow that converts Py
 [ build_tools_yaml.py ]   ← in this skill's scripts/ folder
        ↓ walks every .py, aggregates each frontmatter into one entry
        ↓
-[ <output_path> = ~/.pi/agent/tools.yaml ]   ← build artifact, do not hand-edit
+[ <output_path> = <agent-dir>/tools.yaml ]   ← build artifact, do not hand-edit
        ↓
 [ Dispatcher (dispatch_tools.py / pi extension / ...) ]
        ↓ load_tools → to_anthropic_tools → request.tools
@@ -44,8 +44,7 @@ Once every script under the target directory is migrated, generate `tools.yaml`:
 
 ```bash
 uv run --with pyyaml python <skill_dir>/scripts/build_tools_yaml.py \
-  --input-dir <directory containing scripts> \
-  --output-path ~/.pi/agent/tools.yaml
+  --input-dir <directory containing scripts>
 ```
 
 Arguments:
@@ -53,7 +52,20 @@ Arguments:
 | Key | Required | Default | Meaning |
 |---|---|---|---|
 | `--input-dir` | ✓ | — | Directory to walk recursively. `_*.py` and `ignore-old/` are auto-excluded |
-| `--output-path` | — | `~/.pi/agent/tools.yaml` | Output yaml file path (tilde expansion supported) |
+| `--output-path` | — | `<agent-dir>/tools.yaml` | Output yaml file path (tilde expansion supported) |
+
+### Where `<agent-dir>` points
+
+Omitting `--output-path` writes to the one path pi loads the global registry from:
+
+| `$PI_CODING_AGENT_DIR` | `<agent-dir>` |
+|---|---|
+| set (non-blank) | that value, with a leading `~` expanded — the opposite of Claude Code's `CLAUDE_CONFIG_DIR`, which is literal |
+| unset or blank | `~/.pi/agent` |
+
+It is a single directory, never a union: a registry written anywhere else is silently never read — the build reports success and pi still sees no tools.
+
+**Cross-harness caveat**: environment variables are not inherited across harnesses. If you moved pi's config root, set `PI_CODING_AGENT_DIR` as an **OS user environment variable** (machine-wide). Otherwise a build driven from Claude Code — or any other harness that never saw pi's env — falls back to `~/.pi/agent`, which pi no longer reads.
 
 Output entry format:
 
@@ -80,6 +92,8 @@ import sys
 sys.path.insert(0, "/path/to/lib/src")  # directory containing dispatch_tools.py
 from dispatch_tools import load_tools, to_anthropic_tools, dispatch
 
+# Pass the path the build actually wrote to — `load_tools` resolves no env var
+# of its own. See "Where `<agent-dir>` points" above.
 entries = load_tools("~/.pi/agent/tools.yaml")
 tools_for_api = to_anthropic_tools(entries)  # ready for request.tools
 
@@ -124,7 +138,7 @@ The supported route is to wrap `tools.yaml` in an **MCP server** (Model Context 
 | `docs/skills/register-pi-tools/USER_GUIDE_ja.md` | Japanese version of this guide |
 | `<skill_dir>/scripts/build_tools_yaml.py` | Registry builder |
 | `<skill_dir>/scripts/_tool.py` | Bundled runtime helper |
-| `~/.pi/agent/tools.yaml` | Generated registry (build artifact) |
+| `<agent-dir>/tools.yaml` | Generated registry (build artifact) |
 
 The dispatcher (`dispatch_tools.py` / `run_tool.py`) lives in the consuming project (e.g. `lib/src/`). This skill is responsible for migration and the registry build only.
 

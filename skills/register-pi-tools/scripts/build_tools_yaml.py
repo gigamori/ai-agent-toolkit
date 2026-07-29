@@ -12,10 +12,14 @@
 #       description: Directory to scan recursively for *.py files
 #     output_path:
 #       type: string
-#       default: ~/.pi/agent/tools.yaml
-#       description: Output yaml path (tilde expansion supported)
+#       description: Output yaml path (tilde expansion supported). Omit it to write to <agent-dir>/tools.yaml, where <agent-dir> is $PI_CODING_AGENT_DIR when set and ~/.pi/agent otherwise.
 # ---
 """Aggregate Python frontmatter under `input_dir` into a tools.yaml registry at `output_path`.
+
+`output_path` defaults to the registry pi itself reads: `<agent-dir>/tools.yaml`,
+where `<agent-dir>` honours `$PI_CODING_AGENT_DIR` (see `_default_output_path`).
+The frontmatter deliberately declares NO `default:` for it, because a static
+default would be injected by `_tool.args()` and shadow that resolution.
 
 Each entry carries the mapping info for an Anthropic API tool object:
   - name: frontmatter.name
@@ -231,10 +235,55 @@ def _resolve_path(p: str) -> Path:
     return Path(os.path.expanduser(p)).resolve()
 
 
+# --- PI_CODING_AGENT_DIR support ---------------------------------------------
+# tools.yaml is a config file pi reads from ONE global path, so this resolves a
+# single agent dir (no union of candidates — a union would read a file pi
+# ignores). Duplicated on purpose: this skill script is self-contained. The
+# sibling reader implementation is `skills/inspect-pi-log/scripts/query.py`.
+# Design: `pi/_projects/pi-extensions-dev/project-notes/specs/agent-dir-env-support-design.md`.
+_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR"
+
+
+def _expand_tilde(value: str) -> str:
+    """Expand `~` the way pi's `expandTildePath` does, and no further.
+
+    `normalizePath` (`pi/packages/coding-agent/src/utils/paths.ts`) expands a
+    bare `~`, a `~/`-prefixed path and -- on Windows only -- a `~\\`-prefixed
+    one, deliberately leaving the `~user` form alone. `os.path.expanduser` is
+    too eager here: it would expand `~user` to a directory pi never writes to.
+    """
+    home = os.path.expanduser("~")
+    if value == "~":
+        return home
+    if value.startswith("~/") or (os.name == "nt" and value.startswith("~\\")):
+        return os.path.join(home, value[2:])
+    return value
+
+
+def _default_output_path() -> Path:
+    """`<agent-dir>/tools.yaml` — the registry pi loads, per `getAgentDir()`.
+
+    Mirrors `pi/packages/coding-agent/src/config.ts`: `$PI_CODING_AGENT_DIR`
+    when it is set and non-blank (tilde-expanded, unlike Claude Code's
+    `CLAUDE_CONFIG_DIR`), else `~/.pi/agent`. Without this, setting the var
+    moves pi's registry while this script keeps writing to the home default —
+    a build that reports success and is never read.
+    """
+    raw = os.environ.get(_AGENT_DIR_ENV, "").strip()
+    agent_dir = _expand_tilde(raw) if raw else os.path.join(
+        os.path.expanduser("~"), ".pi", "agent"
+    )
+    return Path(agent_dir, "tools.yaml").resolve()
+
+
 def main() -> None:
     a = args()
     src_dir = _resolve_path(a["input_dir"])
-    output_path = _resolve_path(a.get("output_path", "~/.pi/agent/tools.yaml"))
+    # An explicit value keeps its original handling; only the default is env-aware.
+    requested_output = a.get("output_path")
+    output_path = (
+        _resolve_path(requested_output) if requested_output else _default_output_path()
+    )
 
     if not src_dir.is_dir():
         sys.stderr.write(f"Error: input_dir is not a directory: {src_dir.as_posix()}\n")
