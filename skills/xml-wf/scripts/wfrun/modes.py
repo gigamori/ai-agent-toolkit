@@ -6,15 +6,22 @@ plugin's UserPromptSubmit hook: `_meta.md` (framework header) + the mode
 declaration line + the mode body + `_common.md` (all-modes rules). `_meta.md`
 is also injected on its own for every step, since every step carries a Role.
 
-NAME/MEANING NOTE (2026-07-30): the canonical plugin split its single
-`_meta.md` into a role-less `_meta.md` (Mode axis only) and `_meta_role.md`
-(both axes -- byte-identical to the pre-split header). This snapshot's
-`_meta.md` was NOT re-synced and still holds the pre-split, both-axes
-content -- it corresponds to the canonical `_meta_role.md`, not the
-canonical `_meta.md`, despite the matching filename. That's fine today
-because every step here has a Role (see above), so the role-less variant
-has no consumer. If xml-wf ever makes `role=` optional, this snapshot needs
-its own role-less/role-present split to match; see
+NAME/MEANING NOTE (2026-07-30): `modes/_meta.md` here is NOT a copy of the
+plugin's `_meta.md` and never was -- it is xml-wf's own four-axis header
+(`Mode / Rules / Task / Role`, precedence `Mode > Rules > Task > Role`, plus
+the `[BLOCKED: rules <id>]` form and the guardrails sentence), authored with
+this skill and unchanged since. It is workflow-specific because a step also
+carries `<rules>` and a `<task>`, which the plugin's axis model has no notion
+of. (The rest of this directory started as plugin copies but has drifted too
+-- `_common.md` and `plan.md`, for instance, no longer match canonical.)
+
+The plugin meanwhile split its own `_meta.md` into a role-less `_meta.md`
+(Mode axis only) and `_meta_role.md` (both axes). That split does not
+transfer here: our header is functionally role-present (its Role axis is
+load-bearing) but structurally a different document, so it maps to neither
+canonical file. Re-syncing by filename would destroy the Rules/Task axes.
+If xml-wf ever makes `role=` optional, the role-less variant has to be
+derived from THIS four-axis header, not copied from the plugin; see
 `_projects/harness-modes/tasks/0_todo/2026-07-23_xml-wf-mode-snapshot-sync-cycle-design.md`.
 """
 from __future__ import annotations
