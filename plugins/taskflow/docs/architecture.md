@@ -1,4 +1,4 @@
-# taskflow internal architecture (v0.2.4)
+# taskflow internal architecture (v0.2.5)
 
 Internal design document for developers — read this when you need to understand or modify how the plugin works.
 
