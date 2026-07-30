@@ -26,6 +26,15 @@ from pathlib import Path
 
 import duckdb
 
+# CC logs contain non-ASCII (JP titles/prompts, em-dashes, ...). Force UTF-8
+# stdout/stderr so redirected output isn't re-encoded to the legacy console
+# codepage (cp932 corruption measured 2026-07-30 on JA Windows).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except (AttributeError, ValueError):
+        pass
+
 VIEWS_SQL = Path(__file__).resolve().parent / "views.sql"
 
 # --- CLAUDE_CONFIG_DIR support ------------------------------------------------

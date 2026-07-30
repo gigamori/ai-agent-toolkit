@@ -320,6 +320,44 @@ class EndToEndTest(unittest.TestCase):
             out = self._run_query(home, self._SIDS, agent_dir="~/piroot")
             self.assertEqual([r[0] for r in out["rows"]], [_SID_ENV])
 
+    def test_non_ascii_content_survives_as_utf8_bytes(self):
+        """Regression for the 2026-07-30 cp932 corruption: query.py's stdout
+        must be UTF-8 bytes regardless of the parent process' console
+        codepage. Checked at the raw byte level -- `text=True` would decode
+        with this test's own locale, laundering the very corruption being
+        guarded against."""
+        sample = "今日の食事を決める"
+        sid = "44444444-4444-4444-4444-444444444444"
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            home = tmp / "home"
+            d = home / ".pi" / "agent" / "sessions"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"2026-07-30T00-00-00_{sid}.jsonl").write_text(
+                json.dumps({"type": "session", "version": 1, "id": sid, "cwd": "/tmp"})
+                + "\n"
+                + json.dumps({
+                    "type": "message", "id": "e1",
+                    "timestamp": "2026-07-30T00:00:01.000Z",
+                    "message": {"role": "user", "content": sample},
+                }, ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+                                "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR")}
+            env["HOME"] = str(home)
+            env["USERPROFILE"] = str(home)
+            proc = subprocess.run(
+                [sys.executable, str(_SCRIPTS / "query.py"), "--sql",
+                 f"SELECT text FROM pi_block WHERE session_id = '{sid}'"],
+                capture_output=True, env=env,  # bytes mode -- no text=True
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+            self.assertIn(sample.encode("utf-8"), proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

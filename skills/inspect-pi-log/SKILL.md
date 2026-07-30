@@ -113,6 +113,19 @@ or cast the row to a number). Always parenthesize a JSON extraction used in a pr
 `... AND (j->>'customType') = 'session-lineage'`. The views already do this; apply it in
 ad-hoc queries that reach into `pi_record.j` or `tool_arguments`/`details`.
 
+## Gotcha — non-ASCII text (titles, Japanese prompts) still garbling
+
+`query.py` forces UTF-8 stdout/stderr, so its own JSON output is always correct
+UTF-8 bytes. If a title or prompt text still shows as replacement characters
+(`�`) or mismatched glyphs, the corruption is happening **after** the script —
+typically an agent harness or terminal on a non-UTF-8-locale system (e.g. cp932
+on JA Windows) re-decoding the piped output for display. That re-decode is lossy
+in its own right: once a harness has captured and shown you the garbled text, that
+*is* the data it has to work with — piping through the shell is not a safe read
+path here. Work around it by writing the query output to a file and reading that
+file with a UTF-8-aware file-read tool instead of piping/catting/printing it
+through the shell.
+
 ## Verified log facts (measured 2026-07-07, 539 files / ~11,000 entries)
 
 - toolCall ↔ toolResult pairing = **99.17%** (2507/2528); the unpaired calls are
