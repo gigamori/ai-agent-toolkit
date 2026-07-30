@@ -57,7 +57,7 @@ class Step:
     id: str
     task: str
     role: str | None = None       # named role: a .claude/agents/*.md definition
-    role_text: str | None = None  # inline <role> body (exactly one of the two)
+    role_text: str | None = None  # inline <role> body (at most one of the two)
     mode: str | None = None       # execution mode (modes.py fragment)
     model: str | None = None
     effort: str | None = None
@@ -148,6 +148,21 @@ class Workflow:
     def iter_steps(self):
         """Yield every Step and Replan in the tree (static, ignores control flow)."""
         yield from _walk_steps(self.body)
+
+
+def role_label(node) -> str | None:
+    """The `role=` display item for a Step/Replan, or None when it declares no
+    role and the item should be omitted entirely.
+
+    Role has three states, not two — named, inline, absent — so every display
+    site must go through this rather than an `if node.role` ternary, which
+    would label an absent role "inline".
+    """
+    if node.role:
+        return f"role={node.role}"
+    if node.role_text:
+        return "role=inline"
+    return None
 
 
 def _walk_steps(node):

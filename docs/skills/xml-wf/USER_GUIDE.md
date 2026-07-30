@@ -52,8 +52,9 @@ Three words explain almost everything:
 
 - **Step** — one task done by one AI agent, in its own fresh session. Example:
   "write the SQL query and save it to a file."
-- **Role** — *who* the agent is for that step: its expertise and stance.
-  Example: a "faithful operator" who runs commands exactly and never improvises.
+- **Role** (optional) — *who* the agent is for that step: its expertise and
+  stance. Example: a "faithful operator" who runs commands exactly and never
+  improvises. Steps that don't need one simply leave it out.
 - **Mode** — *how* the agent works: `execute` (do exactly this), `survey`
   (collect facts only), `debug` (diagnose a failure), and a few others.
 
@@ -214,7 +215,7 @@ each run.
 
 - **Workflow** — the whole XML file describing the ordered steps.
 - **Step** — one task, one agent, one fresh session.
-- **Role** — the agent's persona for a step (named, or written inline).
+- **Role** — the agent's persona for a step (named, written inline, or absent).
 - **Mode** — the working discipline for a step (`execute`, `survey`, `debug`, …).
 - **Parameter** — a value you set at run time (e.g. a date range or output path).
 - **Run directory** — the timestamped folder under `runs/` holding everything
@@ -309,14 +310,14 @@ need it via their `rules=` attribute (comma-separated for several).
 
 ### `<step>` — one task, one agent
 
-The core element. It needs a `<task>` child (the instruction) and exactly one
-role (either a `role=` attribute **or** an inline `<role>` child, never both,
-never neither).
+The core element. It needs a `<task>` child (the instruction). A role is
+optional — at most one form (either a `role=` attribute **or** an inline
+`<role>` child, never both); declaring neither runs the step role-less.
 
 | Attribute | Required | Default | Meaning |
 |---|---|---|---|
 | `id` | yes | — | Unique name (used in logs and for resume) |
-| `role` | (one of) | — | Named role: a `.claude/agents/*.md` definition whose body is injected |
+| `role` | no | — | Named role: a `.claude/agents/*.md` definition whose body is injected |
 | `mode` | no | — | Processing discipline (see the mode list below) |
 | `model` | no | role's setting | Difficulty class: `haiku`, `sonnet`, or `opus` only |
 | `effort` | no | — | Reasoning effort: `low` … `max` |
@@ -330,8 +331,12 @@ never neither).
 | `timeout` | no | `600` | Seconds before the step is killed as a failure |
 | `on-error` | no | `fail` | `fail` (stop), `ignore` (record and continue), or `debug` (let the debug role diagnose). `debug` is **claude CLI only** — on pi the whole workflow is refused at startup (see §2) |
 
-**Named role vs inline role.** Use `role="name"` when a fitting definition
-exists under `.claude/agents/`. Otherwise write the persona inline:
+**No role, named role, or inline role.** Leaving the role out is a fine
+default: when `mode=` and `rules=` already fix how the step works, a generic
+"You are a careful engineer" preamble spends tokens and steers almost nothing.
+Use `role="name"` when a fitting definition exists under `.claude/agents/`.
+Write the persona inline when none fits but the expertise or stance genuinely
+matters:
 
 ```xml
 <step id="s2" mode="survey" tools="Read,Grep">
@@ -341,8 +346,11 @@ data shows and never speculates.</role>
 </step>
 ```
 
-An inline role should always set `tools=` (least privilege). Named roles bring
-their own `model`/`tools` from their file, which a step attribute can override.
+Inline-role and role-less steps should always set `tools=` (least privilege):
+there is no role file to inherit from, so without it the step runs with the
+CLI's default permissions and the validator warns `tools-not-inherited`. Named
+roles bring their own `model`/`tools` from their file, which a step attribute
+can override.
 
 **`output-type` in practice.** Prefer having the agent write a file itself, name
 that path in the task, use `output-type="value"` with "return only the file
@@ -458,7 +466,7 @@ continuation workflow, which the runner validates and executes inline.
 | Attribute | Required | Default | Meaning |
 |---|---|---|---|
 | `id` | yes | — | Unique name |
-| `role` | (one of) | — | Builder role that writes the continuation (or an inline `<role>`) |
+| `role` | no | — | Builder role that writes the continuation (or an inline `<role>`); omit to run role-less |
 | `model` / `effort` | no | role's setting | As on `<step>` |
 | `max-steps` | no | `20` | Cap on the generated continuation's size |
 | `outputs` | no | — | Comma-separated variables the continuation must define |
@@ -537,8 +545,9 @@ What each piece does:
 
 1. Save the file (e.g. `workflows/my-flow.xml`).
 2. Validate: `wfrun validate workflows/my-flow.xml` — fix every error, and
-   review warnings (undersized `max`, a non-writing mode given write tools, an
-   inline role without `tools=`, a non-canonical `model=`).
+   review warnings (undersized `max`, a non-writing mode given write tools, a
+   step with no named role to inherit tools from and no `tools=` of its own, a
+   non-canonical `model=`).
 3. See the shape: `wfrun plan workflows/my-flow.xml` (step tree) and, for
    branchy flows, `wfrun viz workflows/my-flow.xml --out my-flow.mmd` (diagram).
 4. Run it: `wfrun run workflows/my-flow.xml -p target=… --permission-mode acceptEdits`.

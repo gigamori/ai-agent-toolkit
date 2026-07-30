@@ -9,10 +9,10 @@ compatibility: "Requires Python 3.12+ and at least one agent CLI. Batch executio
 
 Decompose a task into single-responsibility steps in XML; the Python runner
 `wfrun` executes them deterministically. Each step runs as an isolated
-`claude -p` subagent (full context separation, file-based I/O) under an
-explicit role (`role=` naming a .claude/agents definition, or an inline
-`<role>` body) and optionally an execution mode (`mode=`, bundled role-mode
-prompts). The canonical spec is `references/spec.md`.
+`claude -p` subagent (full context separation, file-based I/O), optionally
+under a role (`role=` naming a .claude/agents definition, or an inline
+`<role>` body) and an execution mode (`mode=`, bundled role-mode prompts).
+The canonical spec is `references/spec.md`.
 
 Always invoke the runner as (`${CLAUDE_SKILL_DIR}` resolves to this skill's directory):
 ```bash

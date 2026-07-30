@@ -211,7 +211,7 @@ def _tree_lines(node, depth=0):
         for child in node.children:
             yield from _tree_lines(child, depth)
     elif isinstance(node, model.Step):
-        extras = [f"role={node.role}" if node.role else "role=inline"]
+        extras = [x for x in (model.role_label(node),) if x]
         if node.mode:
             extras.append(f"mode={node.mode}")
         if node.model:
@@ -226,8 +226,8 @@ def _tree_lines(node, depth=0):
                            else f" ({node.output_type})"))
         yield f"{pad}step {node.id} ({', '.join(extras)})"
     elif isinstance(node, model.Replan):
-        extras = [f"role={node.role}" if node.role else "role=inline",
-                  f"max-steps={node.max_steps}"]
+        extras = [x for x in (model.role_label(node),) if x]
+        extras.append(f"max-steps={node.max_steps}")
         if node.retry:
             extras.append(f"retry={node.retry}")
         if node.on_error != model.DEFAULT_ON_ERROR:
@@ -440,7 +440,7 @@ def cmd_prompt(args) -> int:
     except modelmap.ModelMapError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    facts = [kind, f"role={step.role}" if step.role else "role=inline"]
+    facts = [kind] + [x for x in (model.role_label(step),) if x]
     if getattr(step, "mode", None):
         facts.append(f"mode={step.mode}")
     if resolved:

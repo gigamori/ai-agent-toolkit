@@ -2,26 +2,31 @@
 prompts/modes/, copied 2026-07-19; maintained independently from here on).
 
 A step's `mode=` attribute selects one fragment. The injection mirrors the
-plugin's UserPromptSubmit hook: `_meta.md` (framework header) + the mode
-declaration line + the mode body + `_common.md` (all-modes rules). `_meta.md`
-is also injected on its own for every step, since every step carries a Role.
+plugin's UserPromptSubmit hook: a framework header + the mode declaration line
++ the mode body + `_common.md` (all-modes rules). The header is also injected
+on its own for every step, in the variant matching whether the step declares a
+role (`role=` or an inline `<role>` -- both optional since 2026-07-30).
 
-NAME/MEANING NOTE (2026-07-30): `modes/_meta.md` here is NOT a copy of the
-plugin's `_meta.md` and never was -- it is xml-wf's own four-axis header
-(`Mode / Rules / Task / Role`, precedence `Mode > Rules > Task > Role`, plus
-the `[BLOCKED: rules <id>]` form and the guardrails sentence), authored with
-this skill and unchanged since. It is workflow-specific because a step also
-carries `<rules>` and a `<task>`, which the plugin's axis model has no notion
-of. (The rest of this directory started as plugin copies but has drifted too
--- `_common.md` and `plan.md`, for instance, no longer match canonical.)
+NAME/MEANING NOTE (2026-07-30): the headers here are NOT copies of the
+plugin's and never were -- they are xml-wf's own, carrying axes the plugin has
+no notion of, because a step also carries `<rules>` and a `<task>`:
 
-The plugin meanwhile split its own `_meta.md` into a role-less `_meta.md`
-(Mode axis only) and `_meta_role.md` (both axes). That split does not
-transfer here: our header is functionally role-present (its Role axis is
-load-bearing) but structurally a different document, so it maps to neither
-canonical file. Re-syncing by filename would destroy the Rules/Task axes.
-If xml-wf ever makes `role=` optional, the role-less variant has to be
-derived from THIS four-axis header, not copied from the plugin; see
+- `_meta_role.md` -- four axes (`Mode / Rules / Task / Role`, precedence
+  `Mode > Rules > Task > Role`), authored with this skill and byte-unchanged
+  since; used when the step declares a role.
+- `_meta.md` -- the same document with the Role axis dropped (three axes,
+  precedence `Mode > Rules > Task`); used when it does not. Derived from the
+  four-axis header, NOT from the plugin.
+
+Both keep the `[BLOCKED: rules <id>]` form and the guardrails sentence. (The
+rest of this directory started as plugin copies but has drifted too --
+`_common.md` and `plan.md`, for instance, no longer match canonical.)
+
+The plugin split its own `_meta.md` on the same axis (role-less `_meta.md` +
+`_meta_role.md`), so the filenames now agree in meaning -- but the CONTENTS
+still map to neither canonical file. Re-syncing either by filename would
+destroy the Rules/Task axes and the guardrails sentence; both files are
+own-managed. See
 `_projects/harness-modes/tasks/0_todo/2026-07-23_xml-wf-mode-snapshot-sync-cycle-design.md`.
 """
 from __future__ import annotations
@@ -66,8 +71,11 @@ def _read(filename: str) -> str:
     return (MODES_DIR / filename).read_text(encoding="utf-8").strip()
 
 
-def meta_text() -> str:
-    return _read("_meta.md")
+def meta_text(*, with_role: bool) -> str:
+    """The framework header: four-axis when the step declares a role, the
+    three-axis (Role dropped) variant when it does not. Keyword-only and
+    required so a call site cannot silently pick the wrong axis set."""
+    return _read("_meta_role.md" if with_role else "_meta.md")
 
 
 def mode_block(name: str) -> str:

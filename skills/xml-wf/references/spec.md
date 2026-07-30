@@ -19,9 +19,9 @@ An LLM is involved in exactly four places:
 4. **Dynamic replanning** — a builder role generating a continuation workflow
    at a `<replan>` node (optional, one level deep)
 
-Every step runs under an explicit **role** (WHO the agent is) and optionally an
-execution **mode** (HOW it processes; a bundled snapshot of the role-mode
-prompt set). Both are injected into the step prompt by wfrun — `--agent` is
+A step may declare a **role** (WHO the agent is) and an execution **mode** (HOW
+it processes; a bundled snapshot of the role-mode prompt set). Both are
+optional and both are injected into the step prompt by wfrun — `--agent` is
 never passed to the CLI, so what the subagent sees is exactly what the prompt
 file shows.
 
@@ -88,7 +88,7 @@ instruction body; `<role>` (see below) may hold an inline role definition.
 | Attribute | Required | Default | Meaning |
 |---|---|---|---|
 | `id` | ✔ | - | Unique identifier. Key for logs, the steps/ directory, and resume |
-| `role` | (✔) | - | Named role: a `.claude/agents/*.md` definition (project first, then the user agents dir — `$CLAUDE_CONFIG_DIR` or `~/.claude` — `/agents/`) whose **body is injected** as the `<role>` block. Exactly one of `role=` or an inline `<role>` child is required |
+| `role` | - | - | Named role: a `.claude/agents/*.md` definition (project first, then the user agents dir — `$CLAUDE_CONFIG_DIR` or `~/.claude` — `/agents/`) whose **body is injected** as the `<role>` block. At most one of `role=` or an inline `<role>` child; declaring neither runs the step role-less |
 | `mode` | - | - | Execution mode (see "Execution modes" below) |
 | `model` | - | role frontmatter | Canonical difficulty name — `haiku`/`sonnet`/`opus` only (step attribute wins over the named role's frontmatter). Bound to an actual model per runner at dispatch (see "Model resolution"); other strings pass through but warn (`model-not-canonical`) |
 | `effort` | - | - | `low`…`max` (forwarded to `--effort`) |
@@ -114,7 +114,21 @@ the builder authors the role inline:
 
 An inline role has no frontmatter, so `model`/`tools` come only from the step
 attributes (CLI defaults otherwise). Specifying both `role=` and a `<role>`
-child, or neither, is a parse error.
+child is a parse error.
+
+**Role is optional.** A step that declares neither form runs role-less: no
+`<role>` block is injected and the framework header drops its Role axis (see
+"Execution modes"). Prefer that over inventing a generic persona — when
+`mode=` and `rules=` already fix the discipline, a "You are a careful
+engineer" preamble costs tokens and steers almost nothing. Note that a
+role-less step has no frontmatter to inherit `model`/`tools` from, so those
+come only from the step attributes; the `tools-not-inherited` lint warning
+flags the ones that set neither.
+
+An empty `role=""` attribute is accepted as an **explicit** role-less
+declaration, equivalent to omitting `role=` entirely — useful for a
+programmatically generated step that always emits the attribute. It is not a
+parse error.
 
 **Meaning of output-type**:
 - `file`: save the agent's final response body to `runs/<ts>/outputs/<id>.md`
@@ -142,14 +156,17 @@ continuation depends on results known only mid-run (e.g. "one analysis step
 per anomaly found").
 
 The required child `<task>` describes what the continuation must achieve.
-The builder's role follows the same contract as `<step>`: exactly one of
-`role=` or an inline `<role>` child. There is no `mode=` (the builder prompt
-is a fixed XML-only contract that a mode would interfere with).
+The builder's role follows the same contract as `<step>`: at most one of
+`role=` or an inline `<role>` child, and neither is fine. There is no `mode=`
+(the builder prompt is a fixed XML-only contract that a mode would interfere
+with). Because a replan has no mode, it also gets no framework header and no
+`_common.md` — so a role-less replan sends an empty system channel, and the
+backend omits the flag entirely.
 
 | Attribute | Required | Default | Meaning |
 |---|---|---|---|
 | `id` | ✔ | - | Unique identifier (shares the step id namespace) |
-| `role` | (✔) | - | Builder role that generates the continuation (or an inline `<role>` child) |
+| `role` | - | - | Builder role that generates the continuation (or an inline `<role>` child); omit to run role-less |
 | `model` / `effort` | - | role frontmatter | Forwarded like `<step>` |
 | `max-steps` | - | `20` | Cap on the continuation: its `max` must not exceed this, and its executed steps are additionally capped here |
 | `outputs` | - | - | Comma-separated variable names the continuation must define (checked after it runs; missing = failure) |
@@ -231,10 +248,12 @@ validation. Quote string variables in comparisons: `test="'{status}' == 'ok'"`
 Derived from the role-mode plugin's `prompts/modes/` (snapshot 2026-07-19 into
 `scripts/wfrun/modes/`, then **rewritten for batch workflow execution** —
 maintained independently). Setting `mode=` on a step injects the `mode:<name>`
-declaration, the mode body, and the all-modes rules (`_common.md`); the
-framework header (`_meta.md`) is injected for every step, mode or not.
+declaration, the mode body, and the all-modes rules (`_common.md`); a
+framework header is injected for every step, mode or not.
 
-`_meta.md` declares the prompt axes in tag vocabulary and their precedence:
+The header declares the prompt axes in tag vocabulary and their precedence. It
+comes in two variants, picked by whether the step declares a role —
+`_meta_role.md` for a step that does:
 
 > **Mode > Rules > Task > Role** — constraints (mode, rules) over the
 > instruction (task) over the persona (role). If a mode or rules constraint
@@ -242,6 +261,11 @@ framework header (`_meta.md`) is injected for every step, mode or not.
 > `[BLOCKED: mode-rule <name>]` line and stops (a detected error, see below).
 > Files at paths the task names are the step's own mode-output — writing them
 > is always allowed, whatever the mode.
+
+and `_meta.md`, the same document with the Role axis dropped
+(**Mode > Rules > Task**), for a role-less one. Both are xml-wf's own, not
+copies of the plugin's same-named files: a step also carries `<rules>` and a
+`<task>`, which the plugin's axis model has no notion of.
 
 Available modes (**autonomous only** — the plugin's interactive modes
 ask/brainstorm/discuss/organize need a live human exchange and are not
@@ -252,8 +276,8 @@ validate error (`mode-unknown`).
 
 Practical guidance: `execute` suits strict do-exactly-this steps (operations,
 file writes), `survey` suits fact-collection steps, `debug` suits diagnosis
-steps. Steps without `mode=` get no mode rules — only `_meta` and the
-`<role>` block.
+steps. Steps without `mode=` get no mode rules — only the framework header and
+the `<role>` block (if any).
 
 **`[BLOCKED:` responses**: a response whose first non-empty line starts with
 `[BLOCKED:` is a detected error (same wiring as the ERROR: protocol —
@@ -276,8 +300,10 @@ tools).
 
 ```
 system channel (run-cc: --append-system-prompt)
-  _meta.md (framework header)      ← always (every step has a role)
-  <role>...</role>                 ← named definition's body, or the inline <role>
+  framework header                 ← always; _meta_role.md with a role,
+                                     _meta.md (Role axis dropped) without one
+  <role>...</role>                 ← named definition's body, or the inline
+                                     <role>; omitted when neither is declared
   mode:<name> + mode body          ← only when mode= is set
   _common.md (all-modes rules)     ← only when mode= is set
   <rules id="...">...</rules>      ← only those referenced by the rules attribute
@@ -501,8 +527,9 @@ mode existence (`mode-unknown`), rules src existence, schema JSON parsing,
 expr/test allowlist checks, parallel constraints, replan constraints
 (child-mode rejection of `<replan>`/`<param>`, declared-output shadowing =
 warn), expect-file variable references, and warnings (`on-error=ignore`,
-undersized `max`, `inline-role-no-tools` — an inline `<role>` without
-`tools=` runs with the CLI's default tool permissions — and
+undersized `max`, `tools-not-inherited` — a step with no named `role=` to
+inherit tools from and no `tools=` of its own runs with the CLI's default
+tool permissions — and
 `mode-write-tools` — a non-writing mode (survey/plan/review/review-dev)
 combined with write-capable `tools=` — and `model-not-canonical` — a `model=`
 outside the canonical haiku/sonnet/opus vocabulary; a broken

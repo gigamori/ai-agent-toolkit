@@ -31,7 +31,7 @@ def _trunc(text: str) -> str:
 
 
 def _step_label(step: model.Step) -> str:
-    attrs = [f"role={step.role or 'inline'}"]
+    attrs = [x for x in (model.role_label(step),) if x]
     if step.mode:
         attrs.append(f"mode={step.mode}")
     if step.model:
@@ -52,7 +52,8 @@ def _step_label(step: model.Step) -> str:
 
 
 def _replan_label(node: model.Replan) -> str:
-    attrs = [f"role={node.role or 'inline'}", f"max-steps={node.max_steps}"]
+    attrs = [x for x in (model.role_label(node),) if x]
+    attrs.append(f"max-steps={node.max_steps}")
     if node.on_error != model.DEFAULT_ON_ERROR:
         attrs.append(f"on-error={node.on_error}")
     lines = [f"<b>replan {_esc(node.id)}</b>", _esc(" ".join(attrs))]

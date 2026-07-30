@@ -30,20 +30,25 @@ already committed to.
 List `.claude/agents/*.md` and the user agents dir's `agents/*.md`
 (`$CLAUDE_CONFIG_DIR` or `~/.claude`, project overwrites env overwrites default
 on a name collision) (name/description/tools).
-Every step needs a role, filled one of two ways:
+A role is **optional**. Give a step one only when WHO does the work actually
+changes the outcome:
+- **No role** (a fine default): when `mode=` and `rules=` already fix the
+  discipline, leave it out. Do NOT invent a generic persona ("You are a
+  careful engineer") just to fill the slot — it spends tokens and steers
+  almost nothing. **Set `tools=`** on such steps (least privilege — there is
+  no role frontmatter to inherit from; the validator warns
+  `tools-not-inherited`)
 - **Named role** (`role="name"`): a definition that exists in the list above,
   when one genuinely fits the step. Never invent names
-- **Inline role** (`<role>` child): when no listed definition fits, author a
-  focused role yourself — 1-3 sentences of WHO the agent is (expertise,
-  stance, output discipline). Prefer authoring a good inline role over
-  force-fitting an ill-matched named one. **Always set `tools=` on
-  inline-role steps** (least privilege — without it the step runs with the
-  CLI's default tool permissions; the validator warns)
+- **Inline role** (`<role>` child): when no listed definition fits but real
+  expertise, stance, or output discipline is needed, author a focused role
+  yourself — 1-3 sentences of WHO the agent is. Prefer this over force-fitting
+  an ill-matched named one. **Always set `tools=`** here too (same reason)
 
 ### 3. Plan table (the single approval gate)
 Decompose the task into this table:
 
-| step_id | instruction | role (named or inline) | mode | model (why) | rules (why) | input (vars/paths) | output (vars/paths) | on-error |
+| step_id | instruction | role (named / inline / none) | mode | model (why) | rules (why) | input (vars/paths) | output (vars/paths) | on-error |
 |---|---|---|---|---|---|---|---|---|
 
 **When completing a partial XML**: mark each cell as either read from the
@@ -105,9 +110,9 @@ present the revised table plus the `<param>` list to the user and
 ### 4. Generate the XML
 Write the XML in strict conformance to the element reference in
 `references/spec.md`, and save it to the agreed path.
-- Every step has `id` and a role (`role=` attribute or inline `<role>` child,
-  exactly one); the workflow has `name`, `version="2"`, and
-  `max` (1.5–2x the expected execution count)
+- Every step has `id` and at most one role form (`role=` attribute or inline
+  `<role>` child — never both, and neither is valid); the workflow has `name`,
+  `version="2"`, and `max` (1.5–2x the expected execution count)
 - Shared prompt fragments (analysis principles etc.) go into `<rules>` and are
   referenced only by the steps that need them
 - Add `budget-usd` when a cost ceiling can be estimated
@@ -146,7 +151,10 @@ the workflow keeps running and the guarantee it was written against is gone.
 The approval gate exists so the user chooses that trade, not discovers it.
 
 ## Forbidden
-- Using named roles not listed in step 2 (author an inline `<role>` instead)
+- Using named roles not listed in step 2 (author an inline `<role>`, or leave
+  the role out, instead)
+- Inventing a filler persona for a step whose discipline `mode=`/`rules=`
+  already sets — omit the role instead
 - Executing the task itself (running SQL, processing data, generating reports)
 - Reporting completion while validation errors remain
 - Silently rewriting a backend-unsupported attribute without showing the

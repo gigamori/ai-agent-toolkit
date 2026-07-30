@@ -3,7 +3,7 @@
 Turn a task into a sequence of single-responsibility steps written in XML, and
 let a Python runner (`wfrun`) execute them deterministically. Every step runs as
 an **isolated `claude -p` subagent** — full context separation, file-based I/O —
-under an explicit **role** (WHO the agent is) and an optional execution **mode**
+optionally under a **role** (WHO the agent is) and an execution **mode**
 (HOW it processes).
 
 This documentation lives in `docs/`, outside the skill directory on purpose: it
@@ -174,10 +174,12 @@ file path.</task>
 
 ### Roles, modes, models
 
-- **Role** (required per step, exactly one form): a **named role** (`role="name"`
+- **Role** (optional, at most one form): a **named role** (`role="name"`
   resolving to a `.claude/agents/*.md` definition — its body is injected) or an
   **inline `<role>`** child (1–3 sentences authored in place). Named roles bring
-  their frontmatter `model`/`tools`; inline roles should set `tools=` explicitly.
+  their frontmatter `model`/`tools`; inline and role-less steps should set
+  `tools=` explicitly. Omitting the role is a fine default when `mode=`/`rules=`
+  already fix the discipline — better than inventing a filler persona.
 - **Mode** (`mode=`, optional): a processing discipline injected as `mode:<name>`
   plus its rules. Autonomous modes only: `debug`, `execute`, `plan`, `review`,
   `review-dev`, `survey`, plus aliases `verify` → debug and
@@ -187,7 +189,8 @@ file path.</task>
   (design/diagnosis/review). `scripts/wfrun/model_map.json` binds these to the
   actual models at dispatch. The bundled map is the identity (zero-config).
 
-Prompt precedence within a step: **Mode > Rules > Task > Role**.
+Prompt precedence within a step: **Mode > Rules > Task > Role** — or
+**Mode > Rules > Task** when the step declares no role.
 
 ---
 

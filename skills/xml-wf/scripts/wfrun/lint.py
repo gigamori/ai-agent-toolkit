@@ -119,10 +119,11 @@ def lint(wf: model.Workflow, base_dir: str | Path = ".",
             warn("on-error-ignore",
                  f"step '{step.id}': failures will be silently ignored")
         if (isinstance(step, model.Step)
-                and step.role_text and not step.tools):
-            warn("inline-role-no-tools",
-                 f"step '{step.id}': inline <role> without tools= runs with the "
-                 "CLI's default tool permissions; set tools= for least privilege")
+                and not step.role and not step.tools):
+            warn("tools-not-inherited",
+                 f"step '{step.id}': no named role= to inherit tools from and no "
+                 "tools= of its own, so it runs with the CLI's default tool "
+                 "permissions; set tools= for least privilege")
         if (isinstance(step, model.Step)
                 and step.output_type == "value" and not step.output):
             warn("value-without-output",

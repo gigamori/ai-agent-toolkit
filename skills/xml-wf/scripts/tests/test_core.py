@@ -66,16 +66,46 @@ class TestParser(unittest.TestCase):
                        '<step id="a" role="w" session="new"><task>x</task></step>'
                        '</workflow>')
 
-    def test_step_requires_id_role_task(self):
+    def test_step_requires_id_and_task(self):
         for bad in (
             '<step role="w"><task>x</task></step>',            # no id
-            '<step id="a"><task>x</task></step>',              # no role at all
             '<step id="a" role="w"/>',                         # no task
             '<step id="a" role="w"><role>r</role><task>x</task></step>',  # both forms
             '<step id="a"><role>  </role><task>x</task></step>',          # empty inline
         ):
             with self.assertRaises(parser.ParseError, msg=bad):
                 self.parse(f'<workflow name="t" version="2" max="1">{bad}</workflow>')
+
+    def test_step_role_is_optional(self):
+        """Neither role= nor an inline <role> — a role-less step is valid."""
+        wf = self.parse('<workflow name="t" version="2" max="1">'
+                        '<step id="a" mode="execute"><task>x</task></step></workflow>')
+        step = next(iter(wf.iter_steps()))
+        self.assertIsNone(step.role)
+        self.assertIsNone(step.role_text)
+        self.assertIsNone(model.role_label(step))
+
+    def test_step_empty_role_attr_is_role_less(self):
+        """role="" is an explicit role-less declaration, not a parse error —
+        equivalent to omitting role= entirely (spec.md, "Role is optional")."""
+        wf = self.parse('<workflow name="t" version="2" max="1">'
+                        '<step id="a" role="" mode="execute"><task>x</task></step>'
+                        '</workflow>')
+        step = next(iter(wf.iter_steps()))
+        self.assertFalse(step.role)
+        self.assertIsNone(step.role_text)
+        self.assertIsNone(model.role_label(step))
+        findings = lint.lint(wf, check_roles=False)
+        self.assertEqual([f.code for f in findings if f.level == "error"], [])
+
+    def test_replan_empty_role_attr_is_role_less(self):
+        wf = self.parse('<workflow name="t" version="2" max="1">'
+                        '<replan id="r1" role=""><task>t</task></replan>'
+                        '</workflow>')
+        node = next(iter(wf.iter_steps()))
+        self.assertFalse(node.role)
+        self.assertIsNone(node.role_text)
+        self.assertIsNone(model.role_label(node))
 
     def test_step_inline_role_and_mode(self):
         wf = self.parse('<workflow name="t" version="2" max="1">'
@@ -308,12 +338,20 @@ class TestLint(unittest.TestCase):
         findings = lint.lint(wf, check_roles=False)
         self.assertEqual(self.codes(findings, "error"), [])
 
-    def test_replan_requires_role_and_task(self):
-        for bad in ('<replan id="r1"><task>t</task></replan>',
-                    '<replan id="r1" role="b"/>',
+    def test_replan_requires_task(self):
+        for bad in ('<replan id="r1" role="b"/>',
+                    # mode= is deliberately not a <replan> attribute
                     '<replan id="r1" role="b" mode="plan"><task>t</task></replan>'):
             with self.assertRaises(parser.ParseError, msg=bad):
                 parser.parse_string(self.wrap(bad))
+
+    def test_replan_role_is_optional(self):
+        wf = parser.parse_string(self.wrap(
+            '<replan id="r1"><task>t</task></replan>'))
+        node = next(iter(wf.iter_steps()))
+        self.assertIsNone(node.role)
+        self.assertIsNone(node.role_text)
+        self.assertIsNone(model.role_label(node))
 
     def test_mode_unknown(self):
         findings = self.lint(self.wrap(
@@ -375,13 +413,25 @@ class TestLint(unittest.TestCase):
         self.assertEqual(len(warns), 1)
         self.assertIn("s1", warns[0].message)
 
-    def test_inline_role_no_tools_warns(self):
+    def test_tools_not_inherited_warns(self):
+        """Fires whenever no named role can supply tools and tools= is unset —
+        for an inline role (s1) and for a role-less step (s3) alike."""
         findings = self.lint(self.wrap(
             '<step id="s1"><role>persona</role><task>x</task></step>'
-            '<step id="s2" tools="Read"><role>persona</role><task>y</task></step>'))
-        warns = [f for f in findings if f.code == "inline-role-no-tools"]
-        self.assertEqual(len(warns), 1)
-        self.assertIn("s1", warns[0].message)
+            '<step id="s2" tools="Read"><role>persona</role><task>y</task></step>'
+            '<step id="s3"><task>z</task></step>'
+            '<step id="s4" role="w"><task>w</task></step>'))
+        warns = [f.message for f in findings if f.code == "tools-not-inherited"]
+        self.assertEqual(len(warns), 2)
+        self.assertTrue(any("s1" in m for m in warns))
+        self.assertTrue(any("s3" in m for m in warns))
+
+    def test_role_less_step_is_clean(self):
+        """A role-less step raises no error — only the tools= warning."""
+        findings = self.lint(self.wrap(
+            '<step id="s1" mode="survey" tools="Read"><task>x</task></step>'))
+        self.assertEqual(self.codes(findings, "error"), [])
+        self.assertEqual(self.codes(findings, "warn"), [])
 
     def test_agent_attr_rename_hint(self):
         with self.assertRaises(parser.ParseError) as ctx:

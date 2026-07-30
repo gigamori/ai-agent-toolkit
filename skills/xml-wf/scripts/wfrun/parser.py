@@ -155,8 +155,12 @@ def _parse_block(el: ET.Element, base_dir: Path) -> model.Seq:
 def _parse_task_and_role(el: ET.Element, kind: str) -> tuple[str, str | None]:
     """Shared <step>/<replan> children: <task> (required) + <role> (optional).
 
-    Enforces the role contract: exactly one of role= (a named .claude/agents
-    definition) or an inline <role> body.
+    Enforces the role contract: at most one of role= (a named .claude/agents
+    definition) or an inline <role> body. Declaring neither is allowed — the
+    node then runs role-less, under the three-axis framework header. An empty
+    role="" attribute is accepted as an explicit role-less declaration (every
+    downstream consumer treats `role` by truthiness, not `is None`), on equal
+    footing with omitting the attribute entirely.
     """
     task_el = role_el = None
     for child in el:
@@ -180,9 +184,10 @@ def _parse_task_and_role(el: ET.Element, kind: str) -> tuple[str, str | None]:
         if not role_text:
             raise _err(el, f"{kind} '{el.get('id')}': <role> body is empty")
     role_attr = el.get("role")
-    if (role_attr is None or role_attr == "") == (role_text is None):
-        raise _err(el, f"{kind} '{el.get('id')}': requires exactly one of "
-                       "role= (a named definition) or an inline <role> body")
+    if role_attr and role_text is not None:
+        raise _err(el, f"{kind} '{el.get('id')}': role= (a named definition) and "
+                       "an inline <role> body are mutually exclusive; use at "
+                       "most one")
     return task_el.text.strip(), role_text
 
 

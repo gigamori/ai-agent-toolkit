@@ -230,6 +230,7 @@ class TestRunLlmProtocol(unittest.TestCase):
   <step id="s1" output="report_path"><role>W</role><task>write it</task></step>
   <step id="s2" output="count" output-type="value"><role>W</role><task>count</task></step>
   <replan id="r1" max-steps="5"><role>W</role><task>plan it</task></replan>
+  <replan id="r2" max-steps="5"><task>plan it role-less</task></replan>
 </workflow>
 """
 
@@ -297,6 +298,19 @@ class TestRunLlmProtocol(unittest.TestCase):
         self.assertFalse((self.dir / "r1_handle.json").is_file())
         content = Path(prompt_file).read_text(encoding="utf-8")
         self.assertNotIn("WFRUN-END", content)
+
+    def test_prompt_role_less_replan_has_no_leading_blank_lines(self):
+        """An empty system channel must not leave stray blank lines at the
+        top of the combined prompt file (review-dev F2)."""
+        prompt_file = str(self.dir / "r2_prompt.md")
+        result_file = str(self.dir / "r2_result.md")
+        code, _ = self.run_cli(
+            ["prompt", self.xml, "r2", "--vars", self.vars_path,
+             "--out", prompt_file, "--result", result_file])
+        self.assertEqual(code, 0)
+        content = Path(prompt_file).read_text(encoding="utf-8")
+        self.assertFalse(content.startswith("\n"))
+        self.assertTrue(content.startswith("You are a continuation planner"))
 
     # ---- record decision table (reliability-spec.md §4.2) ----
 

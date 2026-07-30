@@ -144,6 +144,25 @@ class TestBasics(ExecutorTestCase):
         self.assertNotIn("[Mode: current_mode]", system)   # legacy mandate gone
         self.assertLess(system.index("</role>"), system.index("mode:execute"))
 
+    def test_role_less_step_drops_role_block_and_role_axis(self):
+        """No role= and no inline <role>: the header loses its Role axis and no
+        <role> block is injected — the other constraint layers are unchanged."""
+        ex = self.execute(self.wrap(
+            '<rules id="r1">RULE-BODY</rules>'
+            '<step id="s1" mode="execute" rules="r1"><task>x</task></step>'))
+        ex.run()
+        system = self.fake.calls[0]["system_prompt"]
+        self.assertIn("Prompt axes in this step:", system)
+        self.assertIn("Precedence: Mode > Rules > Task.", system)
+        self.assertNotIn("Mode > Rules > Task > Role", system)
+        self.assertNotIn("Role: WHO you are", system)
+        self.assertNotIn("<role>", system)
+        # mode and rules still travel exactly as before
+        self.assertIn("mode:execute", system)
+        self.assertIn("mode-output", system)
+        self.assertIn('<rules id="r1">', system)
+        self.assertIn("RULE-BODY", system)
+
     def test_mode_alias_reads_target_file(self):
         ex = self.execute(self.wrap(
             '<step id="s1" role="w" mode="implement"><task>x</task></step>'))
@@ -690,6 +709,34 @@ class TestErrorsAndResume(ExecutorTestCase):
                                 if m not in modes.MODE_ALIASES),
                       self.fake.calls[0]["prompt"])
         self.assertNotIn("implement", self.fake.calls[0]["prompt"])
+
+    def _replan_builder_returns_child(self):
+        child = ('<workflow name="c" version="2" max="5">'
+                 '<step id="c1" role="w"><task>child work</task></step></workflow>')
+        self.fake.handlers.append(
+            (lambda p: "PLAN-ME" in p,
+             CliResult(ok=True, text=f"```xml\n{child}\n```", cost_usd=0.02)))
+
+    def test_replan_with_role_sends_role_only_system(self):
+        """A replan gets no _meta and no _common — only the role."""
+        self._replan_builder_returns_child()
+        ex = self.execute(self.wrap(
+            '<replan id="r1" role="builder"><task>PLAN-ME</task></replan>'))
+        ex.run()
+        self.assertEqual(self.fake.calls[0]["system_prompt"],
+                         "<role>\nROLE-BODY-builder\n</role>")
+
+    def test_role_less_replan_sends_empty_system(self):
+        """Without a role there is nothing to put in the system channel, so it
+        is empty and both backends then omit the append-system-prompt flag."""
+        self._replan_builder_returns_child()
+        ex = self.execute(self.wrap(
+            '<replan id="r1"><task>PLAN-ME</task></replan>'))
+        ex.run()
+        self.assertEqual(self.fake.calls[0]["system_prompt"], "")
+        # no framework header sneaks in: a replan declares no mode, so a Mode
+        # axis would be left dangling
+        self.assertNotIn("Prompt axes", self.fake.calls[0]["prompt"])
 
     def test_replan_retry_with_lint_feedback(self):
         bad = '<workflow name="c" version="2" max="5"><replan id="x" role="builder"><task>t</task></replan></workflow>'

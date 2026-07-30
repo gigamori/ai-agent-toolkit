@@ -121,8 +121,10 @@ not execute any of the work yourself.
 ## Contract (a validator rejects violations; you would then be asked to fix them)
 - Output MUST be a single `<workflow name="..." version="2" max="N">` document
   with N <= {max_steps}.
-- Every step needs a role: either role="<name>" using ONLY these named
-  definitions: {roles} — or an inline <role> child you author yourself.
+- A step MAY take a role: either role="<name>" using ONLY these named
+  definitions: {roles} — or an inline <role> child you author yourself. Give
+  one only when WHO does the work changes the outcome; when mode= already
+  fixes the discipline, omit it rather than inventing a filler persona.
 - A step MAY set mode= (processing discipline). If used, it MUST be one of:
   {modes}. Set it where the discipline matters: `execute` for strict
   do-exactly-this operations, `survey` for fact collection, `debug` for
@@ -173,11 +175,17 @@ def find_step(wf: model.Workflow, step_id: str) -> model.Step:
 
 
 def resolve_role(node, agents_cache: dict[str, AgentDef]
-                 ) -> tuple[str, AgentDef | None]:
+                 ) -> tuple[str | None, AgentDef | None]:
     """The role body injected into the prompt: an inline <role> as-is, or the
-    body of the named .claude/agents definition (returned for dispatch too)."""
+    body of the named .claude/agents definition (returned for dispatch too).
+
+    Role is optional: (None, None) when the node declares neither form. The
+    caller then omits the <role> block — and, for a step, uses the role-less
+    framework header."""
     if node.role_text:
         return node.role_text, None
+    if not node.role:
+        return None, None
     agent = agents_cache.get(node.role)
     if agent is None:
         raise StepIOError(
@@ -197,9 +205,13 @@ def dispatch_for(node, agents_cache: dict[str, AgentDef]
 
 
 def _role_and_mode_parts(node, agents_cache: dict[str, AgentDef]) -> list[str]:
-    """_meta + <role> block (+ mode declaration/body/_common when mode= is set)."""
+    """Framework header + <role> block when a role is declared (the header's
+    role-less variant and no block when it is not), + mode declaration/body/
+    _common when mode= is set."""
     role_body, _ = resolve_role(node, agents_cache)
-    parts = [modes.meta_text(), f"<role>\n{role_body}\n</role>"]
+    parts = [modes.meta_text(with_role=role_body is not None)]
+    if role_body is not None:
+        parts.append(f"<role>\n{role_body}\n</role>")
     mode = getattr(node, "mode", None)
     if mode:
         try:
@@ -216,8 +228,8 @@ def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dic
                             result_path: str | None = None) -> tuple[str, str]:
     """(system_text, user_text) for a step.
 
-    system = framework (_meta) + role + mode/_common + rules — the constraint
-    layers, placed in the high-authority channel by run-cc.
+    system = framework header + role (when declared) + mode/_common + rules —
+    the constraint layers, placed in the high-authority channel by run-cc.
     user = the interpolated task (+ fix), response protocol, and guardrails.
     run-llm joins the two (the Agent tool has no system-prompt input).
     """
@@ -278,7 +290,11 @@ def build_replan_prompt_parts(node, variables: dict,
                               fix: str | None = None,
                               result_path: str | None = None) -> tuple[str, str]:
     """(system_text, user_text) for a replan builder call: role in the system
-    part, the planning contract + variables + task in the user part."""
+    part, the planning contract + variables + task in the user part.
+
+    A replan carries no mode, so it gets no framework header and no _common —
+    only the role. Role is optional: without one the system part is empty, and
+    both backends then omit the append-system-prompt flag entirely."""
     try:
         task = interpolate(node.task, variables)
     except InterpError as e:
@@ -304,7 +320,8 @@ def build_replan_prompt_parts(node, variables: dict,
         output_contract=(REPLAN_OUTPUT_FILE.format(result_path=result_path)
                          if result_path else REPLAN_OUTPUT_INLINE),
     )
-    return f"<role>\n{role_body}\n</role>", user
+    system = "" if role_body is None else f"<role>\n{role_body}\n</role>"
+    return system, user
 
 
 def build_replan_prompt(node, variables: dict,
@@ -313,7 +330,7 @@ def build_replan_prompt(node, variables: dict,
                         result_path: str | None = None) -> str:
     system, user = build_replan_prompt_parts(node, variables, agents_cache,
                                              fix=fix, result_path=result_path)
-    return f"{system}\n\n{user}"
+    return f"{system}\n\n{user}" if system else user
 
 
 def unwrap_value(structured, text: str):
