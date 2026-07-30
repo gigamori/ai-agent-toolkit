@@ -14,6 +14,9 @@ Covers WP-A of
     matches nothing aborts CREATE VIEW in DuckDB;
   - views.sql keeps the anchor literal, exactly once.
 
+Also here (same hermetic subprocess harness, not env-dir related): the UTF-8
+stdout regression test for the 2026-07-30 cp932 corruption.
+
 Hermetic: the end-to-end cases spawn query.py with HOME *and* USERPROFILE
 redirected to a tmp dir, so the real ~/.pi is never read. USERPROFILE is the one
 that matters on Windows (DuckDB expands `~` from it), and DuckDB does not
@@ -347,7 +350,12 @@ class EndToEndTest(unittest.TestCase):
 
             env = {k: v for k, v in os.environ.items()
                    if k not in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
-                                "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR")}
+                                "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR",
+                                # These would force UTF-8 stdout on their own
+                                # (measured), masking removal of the script's
+                                # reconfigure -- scrub them so the fix alone
+                                # carries the test.
+                                "PYTHONIOENCODING", "PYTHONUTF8")}
             env["HOME"] = str(home)
             env["USERPROFILE"] = str(home)
             proc = subprocess.run(
