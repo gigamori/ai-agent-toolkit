@@ -189,7 +189,7 @@ file path.</task>
 
 ```
 wfrun validate <wf.xml> [--json] [--no-role-check] [--as-child] [--defined-vars VARS_JSON]
-wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi]
+wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi] [--inherit-model M]
 wfrun resume   <run_dir> [--base-dir D] [--permission-mode ...]
 wfrun plan     <wf.xml>                 # ステップツリーを表示（実行なし）
 wfrun viz      <wf.xml> [--out FILE]    # 制御フローの mermaid フローチャート
@@ -200,8 +200,21 @@ wfrun viz      <wf.xml> [--out FILE]    # 制御フローの mermaid フロー�
 呼び出し側の記憶に頼らずコード側で判定する。両 backend は等価ではない: pi backend は
 `schema=` と `on-error="debug"` をプロセス起動前に拒否する（pi では強制できないため）。
 書き換え方と挙動差（retry の二重積算・`transient` クラス無し・`budget-usd` がほぼ無効・
-`tools=` 名の変換）は `references/run-pi.md` を参照。`resume` は run ディレクトリに
-記録された backend を使い再判定しないため、1つの run が2つの CLI にまたがることはない。
+`tools=` 名の変換・`Bash(git:*)` のような引数 specifier がツール全体へ広がること
+（pi にコマンド単位のマッチ機構が無いため））は `references/run-pi.md` を参照。`resume` は
+run ディレクトリに記録された backend を使い再判定しないため、1つの run が2つの CLI に
+またがることはない。
+
+`--inherit-model` は、自前の model 指定を持たないステップ（`model=` 属性もロールの
+frontmatter 既定も無い）に使うモデルを与える。wfrun は独立したプロセスで動作し、
+呼び出し元セッションのモデルを検出する経路が無いため、値は呼び出し側のスキルが明示的に
+渡す。渡す値は具体的なモデル識別子であり、`model_map.json` を通す canonical な難易度
+クラスではない（そのまま使われる）。省略はエラーではないが、その場合は backend CLI 自身が
+選ぶモデルに委ねられる。これはマシンごとに異なり、文書化もされておらず、CLI が「既定」と
+呼ぶものとも限らない（pi では、pi 自身の `defaultModel` すら使わず、呼び出し元セッションとは
+無関係の有効化済み provider が選ばれる挙動を実測）。該当するステップは
+run 開始時に `note:` 行で列挙される。`resume` は backend と同じく run ディレクトリに
+記録された値を継承し、`resume` 自身に上書きフラグは無い。
 
 `run-llm` オーケストレーション用のヘルパーサブコマンド（タスク内容は呼び出し側を
 経由しない）:

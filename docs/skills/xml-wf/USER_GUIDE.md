@@ -32,10 +32,17 @@ You need three things installed. You (or a developer) only check this once:
 
 - **Python 3.12 or newer**
 - **uv** (the tool that runs Python)
-- **claude CLI, version 2.1.214 or newer**
+- **one agent CLI** — either the **claude CLI, version 2.1.214 or newer**, or
+  the **pi CLI**. Which one you have changes what a workflow may use: on pi,
+  the `schema` and `on-error="debug"` features below are unavailable and a
+  workflow using them is refused before it starts (the skill's
+  `references/run-pi.md` explains what to write instead). Everything else in
+  this guide applies to both
 
 You do not need to type the runner command yourself. When you ask the skill to
-build or run a workflow, the agent runs the right commands for you.
+build or run a workflow, the agent runs the right commands for you — including
+picking the CLI (it detects which one it is running under) and telling the
+runner which model to use for steps that don't name one.
 
 ---
 
@@ -315,13 +322,13 @@ never neither).
 | `effort` | no | — | Reasoning effort: `low` … `max` |
 | `output` | no | — | Variable name to store the result in |
 | `output-type` | no | `file` | `file` = save the response body to a file and store its path; `value` = store the response as a short value |
-| `schema` | no | — | A JSON Schema (inline, or `@path` to a file) that forces structured output |
+| `schema` | no | — | A JSON Schema (inline, or `@path` to a file) that forces structured output. **claude CLI only** — on pi the whole workflow is refused at startup (see §2) |
 | `rules` | no | — | Comma-separated `<rules>` ids to inject |
 | `tools` | no | role's setting | Which tools the agent may use, e.g. `"Read,Write"` |
 | `expect-file` | no | — | Comma-separated file paths (with `{var}`) that must exist after the step; missing = failure |
 | `retry` | no | `0` | Times to re-run the identical prompt on failure |
 | `timeout` | no | `600` | Seconds before the step is killed as a failure |
-| `on-error` | no | `fail` | `fail` (stop), `ignore` (record and continue), or `debug` (let the debug role diagnose) |
+| `on-error` | no | `fail` | `fail` (stop), `ignore` (record and continue), or `debug` (let the debug role diagnose). `debug` is **claude CLI only** — on pi the whole workflow is refused at startup (see §2) |
 
 **Named role vs inline role.** Use `role="name"` when a fitting definition
 exists under `.claude/agents/`. Otherwise write the persona inline:

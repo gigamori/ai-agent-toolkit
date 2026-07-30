@@ -39,6 +39,18 @@ $WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eva
   backends are not interchangeable: run-pi refuses `schema=` and
   `on-error="debug"` at startup, and `references/run-pi.md` gives the rewrites.
   `resume` inherits the backend recorded in the run dir and never re-detects
+- **Pass `--inherit-model <model>` with the model this session is currently
+  running as** (a concrete identifier, not a canonical difficulty class like
+  `haiku`/`opus` -- it is used as-is, not resolved through `model_map.json`).
+  wfrun runs as an independent process with no way to detect the invoking
+  session's own model, so a step with no `model=` of its own (no step
+  attribute, no role-frontmatter default) needs this to avoid silently
+  running on whatever model the backend CLI picks for itself. Omitting it is
+  not an error -- a `note:` line at run start names the step(s) left that way
+  -- but the choice is per-machine and undocumented, and not necessarily one
+  the CLI calls a default (under pi, measured selecting an enabled provider
+  over its own `defaultModel`), so pass it whenever this session's own model
+  is known. Symmetric across both backends
 - A bare `.xml` path is ambiguous between Run and Build. Resolve by intent, not
   by guessing: a complete workflow the user wants **executed** → Run; an
   incomplete sketch, or an explicit "complete/finish/fill in this XML" → Build.

@@ -10,7 +10,22 @@
      That is a reduction, not a translation: schema= guaranteed the shape of
      the output, expect-file only guarantees the file exists. Keep hello.xml
      as the run-cc example; the pair is the point. See references/run-pi.md,
-     "Replacing schema=". -->
+     "Replacing schema=".
+
+     expect-file= appears twice here, not once: s2_count's is the schema=
+     replacement above, but s1_write's is independent of it — hello.xml's
+     s1_write never had schema= to begin with (it only ever trusted the
+     model's own claim that it wrote the file), so that occurrence is not a
+     rewrite of anything, just an added check available regardless of
+     backend.
+
+     "the current directory" in s2_count's and s3_note's task text is the
+     step subprocess's own working directory: the directory wfrun launches
+     that step's `pi`/`claude` child process in (== base_dir, this workflow
+     file's own directory), set explicitly per step by the executor. Not the
+     wfrun process's own OS-level cwd (pi-studio forbids relying on that),
+     and not a pi "session" cwd field — there is no session here to have
+     one, since every step is dispatched session-less (pi's no session flag). -->
 <workflow name="hello_pi" version="2" max="10">
   <param name="topic" default="the sea"/>
   <rules id="style">Write concisely. The poem must be 3 lines or fewer.</rules>

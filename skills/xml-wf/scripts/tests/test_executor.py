@@ -81,7 +81,7 @@ class ExecutorTestCase(unittest.TestCase):
         self.tmp.cleanup()
 
     def execute(self, xml, params=None, ask=None, diagnose=None, events=None,
-                permission_mode=None, model_runner="cc"):
+                permission_mode=None, model_runner="cc", inherit_model=None):
         wf = parser.parse_string(xml, base_dir=self.tmp.name)
         executor = Executor(
             wf, params or {}, self.run_dir, base_dir=self.tmp.name,
@@ -91,6 +91,7 @@ class ExecutorTestCase(unittest.TestCase):
             ask_llm=ask or fake_ask_factory([]),
             diagnose=diagnose or (lambda *a, **k: Diagnosis("FAIL", "no")),
             model_runner=model_runner,
+            inherit_model=inherit_model,
         )
         return executor
 
@@ -242,6 +243,51 @@ class TestBasics(ExecutorTestCase):
         finally:
             modelmap.MAP_PATH = old
         self.assertEqual(self.fake.calls[0]["model"], "llm-opus")
+
+    def test_inherit_model_used_when_step_has_no_model(self):
+        # design phase6 review point 2, 2026-07-30: a step with no model=
+        # and no role-frontmatter default must run on --inherit-model's
+        # value (the invoking skill session's own model), not the backend
+        # CLI's own configured default.
+        ex = self.execute(self.wrap(
+            '<step id="s1"><role>W</role><task>x</task></step>'),
+            inherit_model="session-model")
+        ex.run()
+        self.assertEqual(self.fake.calls[0]["model"], "session-model")
+        mapped = [e for e in load_events(self.run_dir) if e["kind"] == "model-map"]
+        self.assertEqual((mapped[0]["canonical"], mapped[0]["resolved"],
+                          mapped[0]["source"]),
+                         (None, "session-model", "inherit"))
+
+    def test_inherit_model_ignored_when_step_has_its_own_model(self):
+        # A step's own model= (or role-frontmatter default) always wins;
+        # --inherit-model only fills the gap when neither is present.
+        ex = self.execute(self.wrap(
+            '<step id="s1" model="opus"><role>W</role><task>x</task></step>'),
+            inherit_model="session-model")
+        ex.run()
+        self.assertNotEqual(self.fake.calls[0]["model"], "session-model")
+
+    def test_model_inherit_warnings_empty_when_inherit_model_given(self):
+        ex = self.execute(self.wrap(
+            '<step id="s1"><role>W</role><task>x</task></step>'),
+            inherit_model="session-model")
+        self.assertEqual(ex.model_inherit_warnings(), [])
+
+    def test_model_inherit_warnings_lists_steps_with_no_model(self):
+        ex = self.execute(self.wrap(
+            '<step id="s1"><role>W</role><task>x</task></step>'
+            '<step id="s2" model="opus"><role>W</role><task>y</task></step>'))
+        warnings = ex.model_inherit_warnings()
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("s1", warnings[0])
+        self.assertNotIn("s2", warnings[0])
+        self.assertIn("--inherit-model", warnings[0])
+
+    def test_model_inherit_warnings_empty_when_every_step_has_a_model(self):
+        ex = self.execute(self.wrap(
+            '<step id="s1" model="opus"><role>W</role><task>x</task></step>'))
+        self.assertEqual(ex.model_inherit_warnings(), [])
 
     def test_permission_mode_reaches_only_write_capable_steps(self):
         ex = self.execute(self.wrap(

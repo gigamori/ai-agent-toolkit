@@ -10,7 +10,7 @@ The procedure is run-cc's (validate → confirm parameters → execute → repor
 Only the backend differs, and one flag selects it:
 
 ```bash
-$WFRUN run <xml> -p key=value ... --backend pi
+$WFRUN run <xml> -p key=value ... --backend pi --inherit-model <model>
 ```
 
 `--backend` takes `auto` (the default), `cc`, or `pi`. `auto` reads
@@ -24,6 +24,19 @@ without stopping.
 `<run-dir>/backend.json`, and `resume` reads it, so a run cannot execute its
 first half on one CLI and its second on another. A run directory from before
 this was tracked has no `backend.json` and resumes as `cc`.
+
+`--inherit-model <model>` should also be given, with the model this session
+is currently running as (a concrete identifier, not a canonical difficulty
+class such as `haiku`/`opus` — it bypasses `model_map.json` and is used
+as-is). Without it, a step with no `model=` of its own (no step attribute, no
+role-frontmatter default) does not fall back to any documented default — pi
+picks from whatever providers happen to be enabled in the local config, which
+is per-machine, undocumented, and was observed in practice to land on a
+completely different provider (`openai-codex/gpt-5.4-mini`) than the one this
+very session was running under. A `note:` line at run start names which
+step(s) would be affected. `resume` inherits `--inherit-model` the same way
+it inherits `--backend`, via `<run-dir>/inherit_model.json` — there is no
+override flag on `resume` itself.
 
 ## What is not available here
 
@@ -129,6 +142,13 @@ so know them before relying on them.
   pi's own `--tools` ignores unknown names without a word and would otherwise
   hand the step a child with no tools at all. Unlike the Agent tool in
   run-llm, this restriction is real: a read-only step is genuinely read-only.
+- **A CC-style argument specifier is widened, not matched.** pi's `--tools`
+  has no per-command restriction, so an entry like `Bash(git:*)` cannot be
+  honored as written. Rather than refusing the step (which would take away a
+  tool it genuinely needs — git, in that example), the leading name is
+  granted with no argument restriction at all — `Bash(git:*)` becomes the
+  bare `bash` tool. This is silent nowhere: a `note:` line at run start names
+  every step where this widening happened.
 - **Steps start slower.** A cold `pi -p` call takes on the order of fifteen
   seconds before the model does any work. Size each step's `timeout=` with
   that startup included; a step that would finish in a minute under run-cc

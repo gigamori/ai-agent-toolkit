@@ -48,7 +48,7 @@ import shutil
 import subprocess
 import tempfile
 
-from . import claude_cli, model
+from . import claude_cli, model, stepio
 from .guardrails import ASK_PROMPT
 from .modes import blocked_line, strip_mode_line
 
@@ -183,27 +183,106 @@ TOOL_NAME_MAP = {
 }
 
 
-def _convert_tools(tools: str) -> tuple[str | None, str | None]:
+def _convert_tools(tools: str) -> tuple[str | None, str | None, list[str]]:
     """CC tool names -> pi tool names (TOOL_NAME_MAP, design §4.2).
 
-    Returns (converted, None) on success, or (None, error_message) when any
-    name is outside TOOL_NAME_MAP -- MultiEdit/NotebookEdit/Task/Agent and
-    any unknown name are rejected, not silently dropped (design §4.2) -- or
-    the converted set would be empty.
+    Returns (converted, error, warnings). `error` is set (converted is None)
+    when any entry's leading name is outside TOOL_NAME_MAP --
+    MultiEdit/NotebookEdit/Task/Agent and any unknown name are rejected, not
+    silently dropped (design §4.2) -- or the converted set would be empty.
+
+    An entry may carry a CC-style argument specifier ("Bash(git:*)"; model.py's
+    tools_can_write() already treats the leading name as authoritative for the
+    same reason). pi's --tools has no per-command matching at all, so the
+    specifier cannot be honored -- but refusing the whole entry would be
+    worse: it was decided (design phase6 review point 3, 2026-07-30) that
+    losing access to a tool the workflow genuinely needs (e.g. git, when only
+    `Bash(git:*)` was granted) is a bigger problem than the alternative of
+    widening to the bare tool with no argument restriction, given pi's other
+    layers (expect-file, the ERROR:/[BLOCKED: guardrails, wf.max) do not
+    depend on argument-level tool scoping to begin with. Each such entry
+    produces a `warnings` entry so the widening is never silent; the caller
+    (run_pi discards them per-call since pi_tool_widening_notes() below
+    already surfaces them once at run start) is expected to make them
+    observable.
     """
     names = [t.strip() for t in tools.split(",") if t.strip()]
-    unknown = [t for t in names if t not in TOOL_NAME_MAP]
+    leading = [t.split("(", 1)[0] for t in names]
+    unknown = sorted({lead for entry, lead in zip(names, leading)
+                      if lead not in TOOL_NAME_MAP})
     if unknown:
         return None, (
             "tools= names not supported by the pi backend: "
             + ", ".join(unknown)
             + " (pi's --tools has no alias normalization and silently "
               "grants zero tools on an unrecognized name rather than "
-              "erroring, so an unconvertible name is refused here instead)")
-    converted = [TOOL_NAME_MAP[t] for t in names]
+              "erroring, so an unconvertible name is refused here instead)"
+        ), []
+    warnings = [
+        f"'{entry}' carries an argument specifier pi cannot enforce (no "
+        f"per-command tool matching); widening to the whole "
+        f"'{TOOL_NAME_MAP[lead]}' tool"
+        for entry, lead in zip(names, leading) if "(" in entry
+    ]
+    converted = []
+    for lead in leading:
+        mapped = TOOL_NAME_MAP[lead]
+        if mapped not in converted:  # a specifier and its bare form (or two
+            converted.append(mapped)  # different specifiers) must not repeat
     if not converted:
-        return None, "tools= resolved to an empty tool set"
-    return ",".join(converted), None
+        return None, "tools= resolved to an empty tool set", []
+    return ",".join(converted), None, warnings
+
+
+def pi_tool_widening_notes(wf: model.Workflow, agents_cache) -> list[str]:
+    """Non-fatal advisory for `wfrun run --backend pi` (design phase6 review
+    point 3, 2026-07-30): surfaces _convert_tools()'s specifier-widening
+    warnings once per step at run start, rather than leaving them
+    discoverable only from a step's own result.json after the run. Called
+    by cmd_run (pi backend only) right after Executor construction, reusing
+    its agents_cache so role-frontmatter tools= are resolved the same way
+    dispatch does.
+    """
+    notes = []
+    for node in wf.iter_steps():
+        if not isinstance(node, model.Step):
+            continue
+        _, dispatch_tools = stepio.dispatch_for(node, agents_cache)
+        if not dispatch_tools:
+            continue
+        _, _, warnings = _convert_tools(dispatch_tools)
+        for w in warnings:
+            notes.append(f"step '{node.id}': {w}")
+    return notes
+
+
+_USAGE_FIELDS = ("input", "output", "cacheRead", "cacheWrite", "totalTokens")
+_USAGE_COST_FIELDS = ("input", "output", "cacheRead", "cacheWrite", "total")
+
+
+def _sum_usage(turn_ends: list[dict]) -> dict:
+    """Sum a `usage` dict's numeric fields (incl. the nested `cost` dict)
+    across every turn_end (design phase6 review point 5, 2026-07-30).
+
+    `turn_end.message.usage` is the INCREMENTAL usage for that one
+    agent-loop iteration, not a running total -- measured against a real
+    tool-using step (tooluse.jsonl): iteration 1 had totalTokens=2436,
+    iteration 2 had totalTokens=2598 with input=2438 (~= iteration 1's
+    total), which is growing context being resent, not totals accumulating.
+    A tool-using step has one turn_end per tool round trip plus a final one;
+    reading only the terminal turn_end (as this module did before this fix)
+    silently dropped every round trip's cost/tokens but the last one's.
+    """
+    total = {f: 0 for f in _USAGE_FIELDS}
+    total["cost"] = {f: 0 for f in _USAGE_COST_FIELDS}
+    for te in turn_ends:
+        usage = (te.get("message") or {}).get("usage") or {}
+        for f in _USAGE_FIELDS:
+            total[f] += usage.get(f) or 0
+        cost = usage.get("cost") or {}
+        for f in _USAGE_COST_FIELDS:
+            total["cost"][f] += cost.get(f) or 0
+    return total
 
 
 def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.CliResult:
@@ -271,8 +350,11 @@ def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.
     text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
     text = "".join(b.get("text", "") for b in text_blocks)
     stop_reason = message.get("stopReason")
-    usage = message.get("usage") or {}
-    cost_usd = float(((usage.get("cost") or {}).get("total")) or 0.0)
+    # Summed across every turn_end, not read from this (terminal) one alone
+    # -- see _sum_usage's docstring. The reply itself (text/content/
+    # stop_reason/errorMessage) still comes from the terminal turn_end only.
+    usage = _sum_usage(turn_ends)
+    cost_usd = float(usage["cost"]["total"])
 
     # CliResult.raw reduction rule (design §4.1, review point 3): a
     # sub-dict pulled from turn_end.message, NOT the full JSONL -- thinking
@@ -372,6 +454,24 @@ def run_pi(prompt: str, *, system_prompt: str | None = None,
     - the prompt travels as a positional argv argument, not stdin (as
       ask_llm_pi already does) -- pi's `@<file>` include syntax attaches a
       file as content to reason about, not as the turn's instruction.
+
+    `kill_tree` is accepted for signature parity with run_claude but is not
+    honored as an off switch here: tree-kill on timeout is unconditional.
+    For claude, tree-kill is defense in depth -- reliability-spec.md §5.3
+    measured ZERO surviving descendants from a plain timeout-kill of a
+    Bash-tool-spawned `sleep 120`, so run_claude's own kill_tree=False
+    default is already safe. Measured 2026-07-30 (review point 1, this
+    design), pi does NOT share that property: the same real E2E (a step
+    with `tools="Bash"`, `model="haiku"` to force the pi-claude-agent-sdk
+    bridge, task = `sleep 120`, timeout=8) left a live `sleep.exe` behind
+    after a plain `subprocess.run(timeout=)` had already reaped node.exe
+    (and any bridged claude.exe) -- node.exe/claude.exe apparently clean up
+    after themselves, but the bash tool's own child does not ride along.
+    Re-running the identical case routed through `claude_cli._run_with_tree_kill`
+    (`taskkill /T /F` on Windows) confirmed no survivor. So here, unlike
+    run_claude, there is no working "off" state to preserve, and the
+    parameter is kept only so callers written against run_claude's
+    signature do not need a special case for this backend.
     """
     if schema is not None:
         return claude_cli.CliResult(
@@ -392,7 +492,7 @@ def run_pi(prompt: str, *, system_prompt: str | None = None,
 
     mapped_tools = None
     if tools:
-        mapped_tools, tools_error = _convert_tools(tools)
+        mapped_tools, tools_error, _tool_warnings = _convert_tools(tools)
         if tools_error:
             return claude_cli.CliResult(ok=False, exit_code=-1,
                                         error_class="env", error=tools_error)
@@ -419,15 +519,12 @@ def run_pi(prompt: str, *, system_prompt: str | None = None,
         cmd += [prompt]  # positional message argument -- never @<file>
 
         try:
-            if kill_tree:
-                # The real prompt already rides on argv (above); pi does not
-                # read it from stdin the way claude does, so the "prompt"
-                # this shares with claude_cli's stdin-writing helper is "".
-                proc = claude_cli._run_with_tree_kill(cmd, "", timeout, cwd)
-            else:
-                proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
-                                      capture_output=True, text=True,
-                                      timeout=timeout, cwd=cwd)
+            # Unconditional, regardless of kill_tree (see the docstring):
+            # pi's own children do not self-clean the way claude's do. The
+            # real prompt already rides on argv (above); pi does not read it
+            # from stdin the way claude does, so the "prompt" this shares
+            # with claude_cli's stdin-writing helper is "".
+            proc = claude_cli._run_with_tree_kill(cmd, "", timeout, cwd)
         except subprocess.TimeoutExpired:
             return claude_cli.CliResult(ok=False, exit_code=-1,
                                         error_class="timeout",

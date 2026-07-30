@@ -33,7 +33,8 @@ class Executor:
                  run_claude=claude_cli.run_claude,
                  ask_llm=claude_cli.ask_llm,
                  diagnose=adp.diagnose,
-                 model_runner: str = "cc"):
+                 model_runner: str = "cc",
+                 inherit_model: str | None = None):
         self.wf = wf
         self.base_dir = Path(base_dir)
         self.run_dir = Path(run_dir)
@@ -45,6 +46,7 @@ class Executor:
         self._ask_llm = ask_llm
         self._diagnose = diagnose
         self._model_runner = model_runner
+        self._inherit_model = inherit_model
 
         self.vars: dict = {}
         self.step_count = 0
@@ -291,12 +293,51 @@ class Executor:
         run-cc, "llm" for run-pi, design phase6-run-pi-design.md §1). This
         one path also carries ask='s model resolution (_eval_cond) and
         replan's (_exec_replan), so making it variable here covers all
-        three call sites. Mappings are recorded for audit."""
+        three call sites. Mappings are recorded for audit.
+
+        When `name` is None -- no step-level model= and no role-frontmatter
+        model -- the backend CLI would otherwise pick for itself, silently
+        and per-machine, and not necessarily from anything it calls a
+        configured default (design phase6 review point 2, 2026-07-30 E2E: an
+        inline-role step with no model landed on whichever provider happened
+        to be enabled in the local pi config, bypassing even pi's own
+        `defaultModel`, and not this session's model). `--inherit-model`
+        supplies the session's own model for exactly this case, symmetric
+        across both backends. It is a concrete model identifier already, not
+        a canonical difficulty class, so it bypasses modelmap.resolve
+        entirely and is used as-is."""
+        if name is None:
+            if self._inherit_model:
+                self.state.event("model-map", key=where, canonical=None,
+                                 resolved=self._inherit_model, source="inherit")
+            return self._inherit_model
         resolved = modelmap.resolve(name, self._model_runner)
         if resolved != name:
             self.state.event("model-map", key=where,
                              canonical=name, resolved=resolved)
         return resolved
+
+    def model_inherit_warnings(self) -> list[str]:
+        """One combined advisory line (not one per step) when
+        --inherit-model was not given and at least one step/replan would be
+        left to the backend CLI's own model choice (design phase6 review
+        point 2). Called by the CLI layer once, right after construction and
+        before .run(), so it surfaces at run start rather than being
+        discovered only from a step's own result.json; empty when
+        --inherit-model was given (nothing falls through in that case) or
+        every step already resolves a model of its own."""
+        if self._inherit_model:
+            return []
+        missing = [n.id for n in self.wf.iter_steps()
+                  if not stepio.dispatch_for(n, self._agents_cache)[0]]
+        if not missing:
+            return []
+        return ["no --inherit-model given; step(s) with no model= (no step "
+                "attribute, no role-frontmatter default) will run on "
+                "whatever model the backend CLI picks for itself -- not "
+                "necessarily one it calls a default (measured under pi: an "
+                "enabled provider, chosen over pi's own defaultModel) -- "
+                "rather than this session's: " + ", ".join(missing)]
 
     def _missing_expected(self, step: model.Step) -> list[str]:
         """expect-file paths (comma-separated, {var}-interpolated, relative to

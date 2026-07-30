@@ -124,13 +124,29 @@ def cmd_run(args) -> int:
     (run_dir / "backend.json").write_text(
         json.dumps({"backend": backend}, ensure_ascii=False, indent=2),
         encoding="utf-8")
+    # Same reasoning for --inherit-model (design phase6 review point 2):
+    # always written (never absent going forward, unlike backend.json's
+    # pre-existing-run gap) so a step that executes only after a resume
+    # still gets the model the original run was given, not a re-detected
+    # one. `None` here means "none was given" -- distinct from the model
+    # attribute being merely absent on a particular step.
+    (run_dir / "inherit_model.json").write_text(
+        json.dumps({"inherit_model": args.inherit_model}, ensure_ascii=False, indent=2),
+        encoding="utf-8")
 
     try:
         executor = Executor(wf, params, run_dir, base_dir=base_dir,
                             permission_mode=args.permission_mode,
+                            inherit_model=args.inherit_model,
                             **_backend_executor_kwargs(backend))
     except WorkflowFailure as e:
         sys.exit(f"error: {e}")
+    for msg in executor.model_inherit_warnings():
+        print(f"note: {msg}", file=sys.stderr)
+    if backend == "pi":
+        from . import pi_cli  # deferred: pi-only advisory
+        for msg in pi_cli.pi_tool_widening_notes(wf, executor._agents_cache):
+            print(f"note: {msg}", file=sys.stderr)
     try:
         executor.run()
     except WorkflowFailure as e:
@@ -162,10 +178,20 @@ def cmd_resume(args) -> int:
     backend = (json.loads(backend_path.read_text(encoding="utf-8"))["backend"]
               if backend_path.is_file() else "cc")
 
+    # --inherit-model is inherited the same way, for the same reason (design
+    # phase6 review point 2): no CLI override on resume, always the value
+    # the original run was given. A run predating this file (no
+    # inherit_model.json) falls back to None -- "none was given" -- same as
+    # backend.json's pre-existing-run fallback above.
+    inherit_model_path = run_dir / "inherit_model.json"
+    inherit_model = (json.loads(inherit_model_path.read_text(encoding="utf-8"))["inherit_model"]
+                     if inherit_model_path.is_file() else None)
+
     try:
         executor = Executor(wf, params, run_dir, base_dir=base_dir,
                             permission_mode=args.permission_mode,
                             replay_events=events,
+                            inherit_model=inherit_model,
                             **_backend_executor_kwargs(backend))
     except WorkflowFailure as e:
         sys.exit(f"error: {e}")
@@ -955,6 +981,13 @@ def main(argv=None) -> int:
     p_run.add_argument("--backend", choices=("auto", "cc", "pi"), default="auto",
                        help="dispatch CLI; auto detects from CLAUDE_CODE_SESSION_ID "
                             "(default: auto)")
+    p_run.add_argument("--inherit-model",
+                       help="model identifier for steps with no model= of their "
+                            "own (no step attribute, no role-frontmatter default); "
+                            "pass the invoking session's own model. Without it, "
+                            "such steps are left to whatever model the backend "
+                            "CLI picks for itself, which is not necessarily one "
+                            "it calls a default")
     p_run.set_defaults(func=cmd_run)
 
     p_res = sub.add_parser("resume", help="resume a failed run (skips recorded successes)")

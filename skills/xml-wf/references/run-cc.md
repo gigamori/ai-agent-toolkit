@@ -26,12 +26,18 @@ for `required` parameters with the user (skip if defaults cover everything).
 
 ### 3. Execute
 ```bash
-$WFRUN run <xml> -p key=value ... --permission-mode acceptEdits
+$WFRUN run <xml> -p key=value ... --permission-mode acceptEdits --inherit-model <model>
 ```
 - Add `--permission-mode acceptEdits` for workflows that write files. wfrun
   forwards it only to steps whose `tools=` can write — read-only steps
   (survey/review with e.g. `tools="Read,Grep,Glob"`) never see the widened
   permission, so restricting tools per step is worthwhile
+- Add `--inherit-model <model>` with the model this session is currently
+  running as (a concrete identifier, not a canonical difficulty class — it is
+  used as-is). Without it, a step with no `model=` of its own (no step
+  attribute, no role-frontmatter default) falls back to "claude configured
+  default" rather than this session's model, and a `note:` line at run start
+  names which step(s) did
 - For long runs, start in the background and report progress by watching
   `status` / `step_count` / `cost_usd` in `runs/<name>_<ts>/state.json`
 
@@ -57,3 +63,8 @@ On success, report:
 
 Resume may need `--base-dir` (the directory agents/rules resolve against —
 normally where the source XML lives). See `$WFRUN resume --help`.
+
+`resume` takes no `--inherit-model` of its own: it reads the value the
+original `run` recorded in `<run-dir>/inherit_model.json`, so a step that only
+executes after the resume gets the same model resolution the run started with.
+A run directory predating that file resumes as if none had been given.

@@ -41,17 +41,21 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 
 プラグインなしで単体のエージェントに投入できる Agent Skill。
 
+`SKILL.md` に収まらない文書を持つスキルは、非 runtime のドキュメントを
+[`docs/skills/`](docs/skills/index.md) 配下に置いている（ユーザガイド・authoring contract）。
+一覧はそのインデックスに、スキルごとのリンクは下表の **Docs** 列にある。
+
 | スキル | 互換性 | Docs | 説明 |
 |---|---|---|---|
 | [create-skill](skills/create-skill/) | CC / Cursor | — | エージェントスキルの作成をガイド。ベストプラクティス、構造テンプレート、検証チェックリスト、`validate_frontmatter.py` スクリプトに加え、高度なスキル設計・subagent プロトコル・パターン/実例・デバッグ・セキュリティの深掘りリファレンスを同梱 |
-| [compact-document](skills/compact-document/) | CC / Cursor | — | マルチモードのドキュメント圧縮フレームワーク（7 文書タイプ・モード自動判定）。記事、仕様書、議事録などを最小限の情報損失で凝縮。長文は chunk-brief（並列）→ merge → render の chunked map-reduce パイプラインで処理 |
+| [compact-document](skills/compact-document/) | CC / Cursor | [docs](docs/skills/compact-document/) | マルチモードのドキュメント圧縮フレームワーク（7 文書タイプ・モード自動判定）。記事、仕様書、議事録などを最小限の情報損失で凝縮。長文は chunk-brief（並列）→ merge → render の chunked map-reduce パイプラインで処理 |
 | [compact](skills/compact/) | CC | — | `/compact <本文>` で呼び出す単発のドキュメント圧縮スキル。確認ゲートなしに 1 ターンで短縮・再構成・重複除去を行い、汎用の要約テンプレートに作り替えず元文書の章立てを継承する。`document_type`（8 種）と `compression_level`（light/standard/aggressive）を明示指定でき、数値・日付・modality・否定のスコープを改変しない rewrite fidelity を強制。`<source>` 内は命令ではなくデータとして扱う。組み込みの `/compact` コマンドを上書きする |
 | [register-pi-tools](skills/register-pi-tools/) | CC / Cursor | [docs](docs/skills/register-pi-tools/) | Python スクリプトを YAML フロントマターの `args` (JSON Schema) と `_tool.args()` ランタイムに移行し、pi や Anthropic API ツール呼び出しから利用できる `tools.yaml` レジストリを生成。独立した EN/JA ユーザガイドと `build_tools_yaml.py` ビルダーを同梱 |
 | [revert](skills/revert/) | CC | — | state-revert 原理に基づく安全な undo。判定を bias-isolated subagent に委任し、過剰除去を防止 |
 | [debug-isolate](skills/debug-isolate/) | CC | — | 反復デバッグを forked subagent に隔離。git stash チェックポイントと連続失敗時の自動ロールバックで作業ツリーの状態を保全 |
 | [run-sql](skills/run-sql/) | CC | — | 設定済みデータベース (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) に対し SQL を実行し、生の JSON 結果を返す |
 | [generate-debug-handoff](skills/generate-debug-handoff/) | CC | — | E2E テスト用の debug handoff Markdown を生成。`debugger:` 引数 (human/llm) で、LLM が整形補助に留まる（人間が承認）か debugger 役を担う（承認なし）かを選択 |
-| [mode-orchestrator](skills/mode-orchestrator/) | CC | — | todolist と context を含むドキュメントを読み、各ステップを role-mode の `mode:`/`role:` ヘッダ付きで隔離 `general-purpose` subagent ターンとして実行。1ターン 1 mode（+任意 role）、混在なし。autonomous mode 限定。ターンごとの model override、ターンごとに固定した status 行の返答契約（権限拒否や status 行の欠落はリカバリに入らず run を停止）、各ターンをウォールクロックで有界化し生成停止を検出する背景 watchdog、有界な `failed`→`debug`→再 execute リカバリループ、タスク種別ごとの workflow spec（`dev` 同梱）に対応 |
+| [mode-orchestrator](skills/mode-orchestrator/) | CC | [docs](docs/skills/mode-orchestrator/) | todolist と context を含むドキュメントを読み、各ステップを role-mode の `mode:`/`role:` ヘッダ付きで隔離 `general-purpose` subagent ターンとして実行。1ターン 1 mode（+任意 role）、混在なし。autonomous mode 限定。ターンごとの model override、ターンごとに固定した status 行の返答契約（権限拒否や status 行の欠落はリカバリに入らず run を停止）、各ターンをウォールクロックで有界化し生成停止を検出する背景 watchdog、有界な `failed`→`debug`→再 execute リカバリループ、タスク種別ごとの workflow spec（`dev` 同梱）に対応 |
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | 過去の Claude Code セッションログを、事前構築した DuckDB ビュー（会話・引数付き tool 呼び出し・ファイル変更・fork・compaction・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | 過去の Pi Coding Agent セッションログを、事前構築した DuckDB ビュー（会話・tool 呼び出し・ファイル変更・セッション系譜/bundle・compaction・in-file branch・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、subagent/skill-fork/handoff/fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。バッチ実行は `--backend`（harness から自動判定）で選ぶ2つの backend を持つ: run-cc は各ステップを独立した `claude -p` subagent として実行し、run-pi は claude を一切必要とせず pi CLI で実行する（pi では強制できない `schema=` と `on-error="debug"` は起動前に拒否）。run-llm プロトコルはホスト側エージェント自身の subagent 機能へ委譲する |
@@ -112,9 +116,10 @@ ai-agent-toolkit/
 │   └── xml-wf/                 スキル: 決定論的 XML v2 ワークフローランナー (wfrun)
 ├── docs/
 │   └── skills/                非 runtime のスキル文書 (ユーザガイド・authoring contract)
+│       ├── index.md           以下のスキル文書ディレクトリのインデックス
 │       ├── xml-wf/            xml-wf リファレンス README + ユーザガイド (EN/JA)
-│       ├── mode-orchestrator/ mode-orchestrator ユーザガイド (EN/JA) + workflow spec authoring contract
 │       ├── register-pi-tools/ register-pi-tools ユーザガイド (EN/JA)
+│       ├── mode-orchestrator/ mode-orchestrator ユーザガイド (EN/JA) + workflow spec 執筆ガイド
 │       └── compact-document/  compact-document authoring contract
 ├── LICENSE
 ├── README.md

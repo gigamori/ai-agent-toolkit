@@ -195,7 +195,7 @@ Prompt precedence within a step: **Mode > Rules > Task > Role**.
 
 ```
 wfrun validate <wf.xml> [--json] [--no-role-check] [--as-child] [--defined-vars VARS_JSON]
-wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi]
+wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi] [--inherit-model M]
 wfrun resume   <run_dir> [--base-dir D] [--permission-mode ...]
 wfrun plan     <wf.xml>                 # print the step tree (no execution)
 wfrun viz      <wf.xml> [--out FILE]    # mermaid flowchart of the control flow
@@ -208,8 +208,23 @@ remember. The backends are not interchangeable: the pi backend refuses
 `schema=` and `on-error="debug"` before any process starts, because it cannot
 enforce either, and `references/run-pi.md` gives the rewrites plus the
 behaviour that differs (doubled retries, no `transient` class, `budget-usd`
-mostly inert, translated `tools=` names). `resume` takes the backend recorded
-in the run dir and never re-detects, so one run never spans two CLIs.
+mostly inert, translated `tools=` names, and argument specifiers such as
+`Bash(git:*)` widened to the whole tool because pi has no per-command
+matching). `resume` takes the backend recorded in the run dir and never
+re-detects, so one run never spans two CLIs.
+
+`--inherit-model` supplies the model for steps that declare none of their own
+(no `model=` attribute, no role-frontmatter default). wfrun runs as its own
+process and cannot detect the model of the session that invoked it, so the
+invoking skill passes it explicitly; the value is a concrete model identifier
+used as-is, not a canonical difficulty class resolved through
+`model_map.json`. Omitting it is not an error — such steps are then left to
+whatever model the backend CLI picks for itself, which is per-machine,
+undocumented, and not necessarily one the CLI calls a default (under pi,
+measured selecting an enabled provider over pi's own `defaultModel`, and
+unrelated to the calling session); a `note:` line at run start names every
+step that would be affected. `resume` inherits the value recorded in the run dir the
+same way it inherits the backend, and takes no override flag of its own.
 
 Helper subcommands for `run-llm` orchestration (task content never passes
 through the caller):
