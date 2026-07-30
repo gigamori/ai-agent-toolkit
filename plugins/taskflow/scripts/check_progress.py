@@ -17,6 +17,12 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
   9. orphan lock         — *.md.lock with no sibling *.md (report-only)
   10. duplicate basename — same task-md basename in >=2 locations under tasks/ (whole-tree walk)
 
+Note: progress.md's Completed table may be capped to the most recent rows
+(rebuild_progress.py's TASKFLOW_DONE_ROWS_MAX / --done-rows-max). Checks #1
+and #6 validate only rows present in the table (row -> file, forward
+direction only), so completed tasks omitted by the cap are outside their
+scope by design — see project-notes/specs/done-table-row-cap.md.
+
 Exit codes:
   0 = no findings
   1 = findings present

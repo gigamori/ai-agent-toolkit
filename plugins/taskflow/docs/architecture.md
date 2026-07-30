@@ -1,4 +1,4 @@
-# taskflow internal architecture (v0.2.3)
+# taskflow internal architecture (v0.2.4)
 
 Internal design document for developers — read this when you need to understand or modify how the plugin works.
 
@@ -16,6 +16,7 @@ Internal design document for developers — read this when you need to understan
 ### Role boundaries
 
 - `progress.md` table region (between `<!-- @table:begin -->` and `<!-- @table:end -->`): auto-generated from task files. Never hand-edit.
+- The Completed section is capped to the most recent `TASKFLOW_DONE_ROWS_MAX` rows (`rebuild_progress.py`; default 10, `0`/negative = unlimited, CLI `--done-rows-max` overrides) with a footnote reporting the omitted count when capped. The table has always been a rebuildable cache, never authoritative, so this is a lossy convenience view, not a data loss — see `project-notes/specs/done-table-row-cap.md`.
 - `progress.md` free-text sections: hand-edited; both LLM and human contribute.
 - `tasks/<status>/<file>.md`: each file has frontmatter (priority, created, updated, optional dependencies), an H1 title (=summary shown in progress.md), a mutable body, and an append-only log block.
 - `project-notes/<category>/`: reusable knowledge across tasks. Distill durable findings from `2_done/` tasks here.

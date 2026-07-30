@@ -4,6 +4,7 @@
 - progress.md is split into two regions:
   - **Free-text sections** (Architecture / Key Decisions & Policies / Open Issues / Reference Materials): hand-editable; LLM and human both edit.
   - **Table region** (between `<!-- @table:begin -->` and `<!-- @table:end -->`): auto-generated from `tasks/<status>/*.md` files. Do NOT hand-edit content inside this block.
+  - The Completed section is capped to the most recent rows (`TASKFLOW_DONE_ROWS_MAX`, default 10); a footnote reports the omitted count when capped. Full history always remains in `tasks/2_done/`.
 
 ## Single authority
 
