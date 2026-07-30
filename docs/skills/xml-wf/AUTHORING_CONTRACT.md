@@ -6,14 +6,14 @@
 
 xml-wf executes steps through three interchangeable facets, selected by mode/backend: **Run (batch)** (`--backend cc`, `references/run-cc.md`), **Run (batch, Pi)** (`--backend pi`, `references/run-pi.md`, driven by `scripts/wfrun/pi_cli.py`), and **LLM orchestration** (`--run-llm`, `references/run-llm.md`, which itself branches into layer A / claude CLI and layer B / subagent facility, working on any harness including Pi with no subagent tool).
 
-The `pi` backend is not a thin mirror of `cc` — it refuses `schema=` and `on-error="debug"` at startup because it cannot enforce either, doubles retries, ignores `budget-usd` mostly, translates `tools=` names, and widens command-scoped tool specifiers to the whole tool. `references/run-pi.md` is the source of truth for every such divergence.
+The `pi` backend is not a thin mirror of `cc`: it refuses some attributes outright (`schema=`, for one, because it cannot enforce structured output) and rewrites others. `references/run-pi.md` enumerates every such divergence and is the source of truth for all of them — read it there, and when a divergence changes, change it there.
 
 Because Pi loads this skill via a symlink into `~/.pi/agent/skills/` (not a copy), a change reaches Pi automatically — there is no propagation step to remember. What is NOT automatic is correctness on the Pi side:
 
 - Before landing a change to `scripts/wfrun/executor.py` (or anything the control-flow spec governs — error handling, retry, `<replan>`, variable resolution), judge explicitly whether `scripts/wfrun/pi_cli.py` and `references/run-pi.md` still hold, and update both if the pi backend's behavior or its documented rewrites now differ.
-- Run the full test suite (`uv run python -m unittest discover -s tests`) after touching `executor.py`, `pi_cli.py`, or anything under `scripts/wfrun/modes/` — the suite includes `test_pi_cli.py`, `test_run_backend.py`, and `test_run_inherit_model.py`, which are the only mechanical check that the pi facet did not silently regress.
+- Run the full test suite from the skill's `scripts/` directory (`uv run python -m unittest discover -s tests`) after touching `executor.py`, `pi_cli.py`, or anything under `scripts/wfrun/modes/` — the suite includes `test_pi_cli.py`, `test_run_backend.py`, and `test_run_inherit_model.py`, which are the only mechanical check that the pi facet did not silently regress.
 - A change scoped to one facet only (e.g. a `run-llm` layer-B delivery fix) needs no edit to the others — but state that scoping decision, don't leave it implicit.
-- After editing `scripts/wfrun/modes/*.md` or the prompt assembly, sample `evals/prompt_smoke.py` and compare compliance rates before/after — the prompt layer is probabilistic and outside the unit tests.
+- After editing `scripts/wfrun/modes/*.md` or the prompt assembly, sample the prompt layer (`uv run python evals/prompt_smoke.py`, also from `scripts/`) and compare compliance rates before/after — that layer is probabilistic and outside the unit tests.
 
 ## Relationship to mode-orchestrator
 
