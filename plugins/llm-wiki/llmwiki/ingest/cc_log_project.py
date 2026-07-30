@@ -135,7 +135,10 @@ class ProjectionError(Exception):
 #   - taskflow guidelines_reminder.md: "[taskflow guidelines reminder] ..." block
 #     and the "<!-- taskflow guidelines ... -->" HTML comments.
 #   - CC harness: "<system-reminder> ... </system-reminder>" wrapper blocks.
-#   - role-mode _meta.md: the "Two response axes:" mode header block.
+#   - role-mode _meta.md / _meta_role.md: the mode header block. Two variants
+#     since the 2026-07-30 role-less split: "Two response axes:" (role
+#     present) or "Mode = HOW you process..." (no role — role-less turns
+#     never see Role-axis text at all).
 # The whole injected block is stripped, not just the marker line.
 
 # system-reminder is an XML-ish wrapper; strip the whole element (DOTALL).
@@ -157,19 +160,32 @@ _RE_GUIDELINES_REMINDER_BLOCK = re.compile(
 # / the boundary strip below). Remove from the marker to end of that line.
 _RE_PROGRESS_SESSION = re.compile(r"\[Progress Session\][^\n]*")
 
-# The role-mode "Two response axes:" mode header block. The block is the header
-# line plus its contiguous injected lines: blank lines, the "- Role:" / "- Mode:"
-# axis bullets, and the trailing precedence/rule lines (which vary in length:
-# "Precedence: ...", "Follow Mode ...", "NEVER rule ...", "Include `[Mode: ...".
+# The role-mode mode header block. The block is the header line plus its
+# contiguous injected lines: blank lines, the "- Role:" / "- Mode:" axis
+# bullets (role-present variant only), and the trailing precedence/rule
+# lines (which vary in length: "Precedence: ...", "Follow Mode ...",
+# "NEVER rule ...", "Include `[Mode: ...".
 # We consume the header and every following line that is blank, a bullet, or
 # starts with one of those stable mode-trailer keywords; real user content
 # (separated by a blank line and not a bullet/keyword line) is left intact.
+#
+# Two header-line forms since the 2026-07-30 role-less split (each is a
+# literal, matched via re.escape so a stray trailing "." can't slip through
+# as a wildcard):
+#   - "Two response axes:" -- role present (_meta_role.md).
+#   - "Mode = HOW you process — rules, constraints, procedures." -- no role
+#     (_meta.md, role-less). Matched whole-line so it can't accidentally
+#     swallow real user content that happens to start with "Mode".
 _MODE_TRAILER_KEYWORDS = (
     "Precedence:", "Follow Mode", "NEVER rule", "Include `[Mode",
     "Role:", "Mode:",
 )
+_MODE_HEADER_LINES = (
+    r"Two response axes:[^\n]*",
+    re.escape("Mode = HOW you process — rules, constraints, procedures."),
+)
 _RE_MODE_BLOCK = re.compile(
-    r"^Two response axes:[^\n]*\n"
+    r"^(?:" + "|".join(_MODE_HEADER_LINES) + r")\n"
     r"(?:[ \t]*\n|[ \t]*-[^\n]*\n|[ \t]*(?:"
     + "|".join(re.escape(k) for k in _MODE_TRAILER_KEYWORDS)
     + r")[^\n]*\n)*",

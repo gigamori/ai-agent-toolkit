@@ -72,7 +72,7 @@ Interactive — NOT executed; surfaced as a suggestion to run natively with role
 
 If a step resolves to an interactive mode, do not run it; note it for the user to handle natively (interactive modes need a live human exchange, which an autonomous subagent cannot provide).
 
-The mode rules are bundled in this skill's `modes/` directory: `_meta.md`, `_common.md`, and one `<mode>.md` for each of the 6 autonomous modes above. Read them from there — do not improvise the rules. The interactive modes are not bundled, since they are never executed.
+The mode rules are bundled in this skill's `modes/` directory: `_meta.md` (role-less framework header), `_meta_role.md` (framework header for when a role is present), `_common.md`, and one `<mode>.md` for each of the 6 autonomous modes above. Read them from there — do not improvise the rules. The interactive modes are not bundled, since they are never executed.
 
 ## Mode, role, and model decision (the generation step)
 
@@ -107,13 +107,13 @@ Embed the role-mode rules into each subagent prompt. Read the bundled files from
 
 With a role:
 
-1. `_meta.md` (verbatim)
+1. `_meta_role.md` (verbatim)
 2. `role: <value>` (one line)
 3. `mode: <name>` (one line)
 4. `<mode>.md` (verbatim)
 5. `_common.md` (verbatim)
 
-Without a role: the same, omitting line 2.
+Without a role: `_meta.md` (role-less variant, not `_meta_role.md`) in place of line 1, omitting line 2 — the same otherwise.
 
 The resolved `model` is **not** part of the prompt text — it is passed as the model override on the delegation call itself (see Execution). Do not write the model name into the assembled prompt.
 
@@ -158,7 +158,7 @@ The status line is anchored to the **end** because `_common.md` requires `[Mode:
 Worked example — a `plan` turn with a role, fully assembled:
 
 ```
-<contents of _meta.md>
+<contents of _meta_role.md>
 
 role: senior migration engineer
 mode: plan

@@ -1,6 +1,8 @@
 # role-mode
 
-A Claude Code plugin that lets the user declare a **cognitive mode** and/or a **role** for each turn via `mode:<name>` and `role:<value>` slugs in the prompt. When at least one slug is present, the framework meta (Two response axes / Mode > Role) plus the active Role/Mode declaration plus the matching mode rules and common rules are injected through a `UserPromptSubmit` hook. When no slug is present, **nothing is injected** and the LLM behaves exactly as it would without the plugin.
+A Claude Code plugin that lets the user declare a **cognitive mode** and/or a **role** for each turn via `mode:<name>` and `role:<value>` slugs in the prompt. When at least one slug is present, a framework header (one of two variants, selected by whether a role is present — see [What gets injected](#what-gets-injected)) plus the active Role/Mode declaration plus the matching mode rules and common rules are injected through a `UserPromptSubmit` hook. When no slug is present, **nothing is injected** and the LLM behaves exactly as it would without the plugin.
+
+A role slug is rare in practice, so a `mode:`-only turn is injected the role-less header variant — it never shows Role-axis text for an axis the model has no reason to think about.
 
 Claude Code only. Cursor is **not supported** because Cursor's `beforeSubmitPrompt` hook can only continue/block submissions and cannot inject context (only `sessionStart` can inject context, and it fires once per conversation rather than per turn — incompatible with slug-based per-turn injection).
 
@@ -114,22 +116,34 @@ The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/m
 
 | Slugs present | Injected blocks |
 |---|---|
-| `mode:` only | `_meta.md` + `mode: <name>` + mode rules + `_common.md` |
-| `role:` only | `_meta.md` + `role: <value>` |
-| Both | `_meta.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` |
+| `mode:` only | `_meta.md` (role-less) + `mode: <name>` + mode rules + `_common.md` |
+| `role:` only | `_meta_role.md` + `role: <value>` |
+| Both | `_meta_role.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` |
 | Neither | nothing (hook exits silently) |
 
 `_common.md` (mode-only rules):
 
 ```markdown
-- NEVER: overstep(mode boundary), change-mode-silently, comply-when-violates-mode
-- DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming), refuse-[BLOCKED]-on-violation
-
-Include `[Mode: current_mode]` on its own line before the main body.
-Mode is per-turn: apply the `[Mode:]` line and all mode rules only when a `mode:` is declared this turn; with no declaration, emit no `[Mode:]` line and do not infer or carry a mode (baseline).
+- DEFINE:
+  - mode-output=mode-native output(answer/report/plan/design/summary/minutes/review/debug/reason/execute-work)
+  - mode-doc=non-execute mode-output
+  - target-artifact=project end product(production code/applied patch/prod content/assets)
+  - self-why=ask why/how assistant failed
+  - reason=Cause/Evidence/Unknowns(+Remedy iff asked)
+- MUST: print `[Mode: current_mode]` on its own line before the main body; produce mode-output; UNKNOWN/TBD for missing facts.
+- SCOPE: mode is per-turn, not sticky. The `[Mode:]` line and all mode rules apply ONLY when a `mode:` declaration is injected in the CURRENT turn's framework context. If this turn injects no Mode declaration, emit NO `[Mode:]` line, do NOT infer or carry a mode from prior turns / conversation content, and revert to baseline behavior.
+- NEVER: mode overstep, silent mode change, obey bad part.
+- DO: cite factual/evidence claims except brainstorm; report transition need.
+- BANS(final-deliverable/write/edit): target-artifact only, not mode-doc; target-artifact outside execute => block.
+- IF self-why: after mode line only reason; start Cause; no apology/promise/reassurance/recap-only/generic-cause/unasked-remedy/hidden-state claim.
 ```
 
-`_meta.md` framework header (always paired with any active slug; defines the three-level precedence chain `Mode > User-instruction > Role` and the `[BLOCKED: mode-rule <name>]` self-report rule).
+Two framework-header variants, selected by whether a role is present:
+
+- **`_meta.md` (role-less)** — used whenever no role is present, including `mode:`-only turns. Defines the Mode axis only (`Mode = HOW you process — rules, constraints, procedures.`) and the two-level precedence `Mode > User`. No Role-axis text is ever shown on a turn with no role.
+- **`_meta_role.md`** — used whenever a role is present (`role:` only, or both slugs). Defines both axes (`Two response axes: Role / Mode`) and the three-level precedence `Mode > User-instruction > Role`.
+
+Both variants define the `[BLOCKED: mode-rule <name>]` self-report rule.
 
 ### Behavior without a slug
 
@@ -146,7 +160,7 @@ User prompt
   │     ├─ ROLE_RE: (?:^|\s)role:(?:"([^"]*)"|(.+?)(?=...))       (case-insensitive prefix, verbatim value)
   │     ├─ resolve mode alias (verify→debug, implement→execute)
   │     ├─ if neither slug → exit 0, no output
-  │     └─ else emit JSON additionalContext = _meta.md + active block + (mode rules + _common.md when mode set)
+  │     └─ else emit JSON additionalContext = (_meta_role.md if role else _meta.md) + active block + (mode rules + _common.md when mode set)
   │
   └─ LLM receives the prompt plus the injected framework + active declaration
 ```
@@ -160,7 +174,8 @@ plugins/role-mode/
     hooks.json
     mode_inject.py            # UserPromptSubmit hook
   prompts/modes/
-    _meta.md                  # framework header (axes / conflict rule / BLOCKED)
+    _meta.md                  # framework header, role-less (Mode axis only / BLOCKED)
+    _meta_role.md             # framework header, role present (both axes / BLOCKED)
     _common.md                # ALL MODES rules + answer-prefix instruction (mode-only)
     ask.md
     discuss.md

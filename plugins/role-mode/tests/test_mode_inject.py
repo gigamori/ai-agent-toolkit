@@ -4,6 +4,11 @@ Covers the Phase 4 defect-2 hardening (mode-orchestrator-runs/
 phase4-defects-2-4-design.md): backtick-span masking and the
 system-notification gate, plus regressions for normal invocation.
 
+Also covers the 2026-07-30 role-less `_meta.md` split (_projects/harness-modes/
+project-notes/specs/meta-role-less-variant-plan.md): which of the two
+framework-header variants (`_meta.md` role-less vs `_meta_role.md`) is
+selected, keyed off whether a role ends up present after masking/escaping.
+
 The hook is exercised as a black box: stdin JSON in, stdout JSON out --
 the same way Claude Code runs it.
 """
@@ -104,6 +109,57 @@ class NotificationGateTests(unittest.TestCase):
         stderr = run_hook_stderr("<task-notification> mode:survey")
         self.assertIn("role-mode: skipped", stderr)
         self.assertIn("task-notification", stderr)
+
+
+class MetaVariantTests(unittest.TestCase):
+    """Which of _meta.md (role-less) / _meta_role.md gets injected."""
+
+    def test_mode_only_gets_role_less_meta(self):
+        code, out = run_hook("mode:ask what time is it")
+        ctx = context_of(out)
+        self.assertIn("Mode = HOW you process", ctx)
+        self.assertNotIn("Two response axes", ctx)
+        self.assertNotIn("Role:", ctx)
+
+    def test_role_only_gets_role_meta(self):
+        code, out = run_hook("role:senior engineer hello")
+        ctx = context_of(out)
+        self.assertIn("Two response axes", ctx)
+        self.assertIn("- Role:", ctx)
+        self.assertIn("role: senior engineer", ctx)
+        # role-only carries no mode: no mode line, no _common.md rules.
+        self.assertNotIn("mode:", ctx)
+
+    def test_both_slugs_get_role_meta(self):
+        code, out = run_hook("mode:ask role:senior engineer hello")
+        ctx = context_of(out)
+        self.assertIn("Two response axes", ctx)
+        self.assertIn("role: senior engineer", ctx)
+        self.assertIn("mode: ask", ctx)
+
+    def test_alias_mode_gets_role_less_meta(self):
+        code, out = run_hook("mode:verify check this")
+        ctx = context_of(out)
+        self.assertIn("Mode = HOW you process", ctx)
+        self.assertIn("mode: verify", ctx)  # chosen alias preserved
+
+    def test_empty_quoted_role_gets_role_less_meta(self):
+        # role:"" is treated as no role -- meta selection must follow that,
+        # not the raw presence of a `role:` token.
+        code, out = run_hook('role:"" mode:ask hi')
+        ctx = context_of(out)
+        self.assertIn("Mode = HOW you process", ctx)
+        self.assertNotIn("Two response axes", ctx)
+        self.assertNotIn("role:", ctx)
+
+    def test_backticked_role_gets_role_less_meta(self):
+        # The role is masked out entirely, so only mode: fires -- the meta
+        # selection must follow the post-mask role state, not raw text
+        # containing "role:".
+        code, out = run_hook("`role:x` mode:ask hi")
+        ctx = context_of(out)
+        self.assertIn("Mode = HOW you process", ctx)
+        self.assertNotIn("Two response axes", ctx)
 
 
 if __name__ == "__main__":

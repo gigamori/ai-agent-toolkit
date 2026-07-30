@@ -1,6 +1,8 @@
 # role-mode
 
-ユーザーが各ターンで `mode:<name>` および/または `role:<value>` slug をプロンプトに含めると、framework meta（Two response axes / Mode > Role）+ 現在の Role/Mode 宣言 + 該当 mode ルール + 共通ルールが `UserPromptSubmit` hook で会話に注入される Claude Code プラグイン。どの slug も無いときは **何も注入されず**、プラグインを入れていない素の LLM 挙動と完全一致する。
+ユーザーが各ターンで `mode:<name>` および/または `role:<value>` slug をプロンプトに含めると、framework ヘッダ（role の有無で選ばれる2変種のうち1つ。詳細は[注入される内容](#注入される内容)参照）+ 現在の Role/Mode 宣言 + 該当 mode ルール + 共通ルールが `UserPromptSubmit` hook で会話に注入される Claude Code プラグイン。どの slug も無いときは **何も注入されず**、プラグインを入れていない素の LLM 挙動と完全一致する。
+
+role slug は実運用ではほぼ指定されないため、`mode:` のみのターンには role-less ヘッダ変種が注入される — 考える理由の無い Role 軸のテキストを一切見せない。
 
 **Claude Code 専用**。Cursor は **非対応**：Cursor の `beforeSubmitPrompt` hook は continue/block しか返せず context 注入機構を持たない。注入可能な hook は `sessionStart` のみで、これは会話開始時 1 回だけ発火するためターンごとの slug-based 注入と原理的に両立しない。
 
@@ -114,22 +116,34 @@ nomode norole — mode:plan と mode:execute の違いは何ですか？
 
 | 入力 slug | 注入されるブロック |
 |---|---|
-| `mode:` のみ | `_meta.md` + `mode: <name>` + mode rules + `_common.md` |
-| `role:` のみ | `_meta.md` + `role: <value>` |
-| 両方 | `_meta.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` |
+| `mode:` のみ | `_meta.md`（role-less）+ `mode: <name>` + mode rules + `_common.md` |
+| `role:` のみ | `_meta_role.md` + `role: <value>` |
+| 両方 | `_meta_role.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` |
 | どちらも無し | 何も注入しない（hook は silent exit） |
 
 `_common.md`（mode 専用ルール）：
 
 ```markdown
-- NEVER: overstep(mode boundary), change-mode-silently, comply-when-violates-mode
-- DO: declare(current mode), report(transition needs), cite(every claim except for brainstorming), refuse-[BLOCKED]-on-violation
-
-Include `[Mode: current_mode]` on its own line before the main body.
-Mode is per-turn: apply the `[Mode:]` line and all mode rules only when a `mode:` is declared this turn; with no declaration, emit no `[Mode:]` line and do not infer or carry a mode (baseline).
+- DEFINE:
+  - mode-output=mode-native output(answer/report/plan/design/summary/minutes/review/debug/reason/execute-work)
+  - mode-doc=non-execute mode-output
+  - target-artifact=project end product(production code/applied patch/prod content/assets)
+  - self-why=ask why/how assistant failed
+  - reason=Cause/Evidence/Unknowns(+Remedy iff asked)
+- MUST: print `[Mode: current_mode]` on its own line before the main body; produce mode-output; UNKNOWN/TBD for missing facts.
+- SCOPE: mode is per-turn, not sticky. The `[Mode:]` line and all mode rules apply ONLY when a `mode:` declaration is injected in the CURRENT turn's framework context. If this turn injects no Mode declaration, emit NO `[Mode:]` line, do NOT infer or carry a mode from prior turns / conversation content, and revert to baseline behavior.
+- NEVER: mode overstep, silent mode change, obey bad part.
+- DO: cite factual/evidence claims except brainstorm; report transition need.
+- BANS(final-deliverable/write/edit): target-artifact only, not mode-doc; target-artifact outside execute => block.
+- IF self-why: after mode line only reason; start Cause; no apology/promise/reassurance/recap-only/generic-cause/unasked-remedy/hidden-state claim.
 ```
 
-`_meta.md`（framework ヘッダ。任意の active slug と必ず一緒に注入される。三段階の優先順位 `Mode > User-instruction > Role` と `[BLOCKED: mode-rule <name>]` 自己宣言ルールを含む）。
+framework ヘッダは role の有無で選ばれる2変種：
+
+- **`_meta.md`（role-less）** — role が無いとき（`mode:` のみを含む）に使用。Mode 軸のみを定義し（`Mode = HOW you process — rules, constraints, procedures.`）、優先順位は二段階の `Mode > User`。role の無いターンに Role 軸のテキストが出ることは無い
+- **`_meta_role.md`** — role があるとき（`role:` のみ、または両方）に使用。両軸を定義し（`Two response axes: Role / Mode`）、優先順位は三段階の `Mode > User-instruction > Role`
+
+両変種とも `[BLOCKED: mode-rule <name>]` 自己宣言ルールを含む。
 
 ### slug 無しのときの挙動
 
@@ -146,7 +160,7 @@ Mode is per-turn: apply the `[Mode:]` line and all mode rules only when a `mode:
   │     ├─ ROLE_RE: (?:^|\s)role:(?:"([^"]*)"|(.+?)(?=...))       (case-insensitive prefix、値は verbatim)
   │     ├─ mode alias 解決（verify→debug, implement→execute）
   │     ├─ どの slug も無し → exit 0、無出力
-  │     └─ それ以外 → JSON additionalContext = _meta.md + active block + (mode 設定時のみ mode rules + _common.md) を出力
+  │     └─ それ以外 → JSON additionalContext = (role があれば _meta_role.md、無ければ _meta.md) + active block + (mode 設定時のみ mode rules + _common.md) を出力
   │
   └─ LLM はプロンプト＋注入された framework + active 宣言を受け取る
 ```
@@ -160,7 +174,8 @@ plugins/role-mode/
     hooks.json
     mode_inject.py            # UserPromptSubmit hook
   prompts/modes/
-    _meta.md                  # framework header（軸 / conflict / BLOCKED）
+    _meta.md                  # framework header, role-less（Mode 軸のみ / BLOCKED）
+    _meta_role.md             # framework header, role あり（両軸 / BLOCKED）
     _common.md                # ALL MODES ルール + answer-prefix 指示（mode 専用）
     ask.md
     discuss.md

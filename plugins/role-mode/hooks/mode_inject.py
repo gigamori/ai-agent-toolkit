@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 """
 UserPromptSubmit hook: detect `mode:<name>` and/or `role:<name>` slugs
-in the user prompt, then inject the framework meta + active Role/Mode
-declaration + (when mode is set) matching mode rules + common rules
-as additionalContext.
+in the user prompt, then inject the framework meta (one of two variants,
+selected by whether a role is present) + active Role/Mode declaration +
+(when mode is set) matching mode rules + common rules as additionalContext.
+
+Two meta variants:
+  - `_meta.md` (role-less) — used when no role is present. Defines the Mode
+    axis only; no Role axis text is shown, so a role-less turn never sees
+    a slot it has no reason to fill.
+  - `_meta_role.md` — used whenever a role is present. Defines both the
+    Role and Mode axes (byte-identical to the pre-split single `_meta.md`).
 
 Behavior:
   - Neither `mode:` nor `role:` present -> exit 0 with no output (baseline
     LLM behavior is preserved).
-  - `role:` only -> emit meta + `Role:` line (no Mode line, no common).
-  - `mode:` only -> emit meta + `Mode:` line + mode rules + common.
-  - Both -> emit meta + `Role:` line + `Mode:` line + mode rules + common.
+  - `role:` only -> emit `_meta_role.md` + `Role:` line (no Mode line, no
+    common).
+  - `mode:` only -> emit `_meta.md` (role-less) + `Mode:` line + mode rules
+    + common.
+  - Both -> emit `_meta_role.md` + `Role:` line + `Mode:` line + mode rules
+    + common.
   - `mode:` matched but mode file missing -> mode is silently dropped; if a
-    `role:` is also present it is still emitted, otherwise exit 0.
+    `role:` is also present it is still emitted (with `_meta_role.md`),
+    otherwise exit 0.
 
 Slug syntax:
   - `mode:<name>` — <name> matches [A-Za-z][A-Za-z0-9_-]*. Captured value
@@ -56,6 +67,7 @@ import sys
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODES_DIR = os.path.join(PLUGIN_ROOT, 'prompts', 'modes')
 META_FILE = os.path.join(MODES_DIR, '_meta.md')
+META_ROLE_FILE = os.path.join(MODES_DIR, '_meta_role.md')
 COMMON_FILE = os.path.join(MODES_DIR, '_common.md')
 
 MODE_ALIASES = {
@@ -154,7 +166,7 @@ if mode_body:
   active_block += '\n' + mode_body
 
 parts = []
-meta_content = read_optional(META_FILE)
+meta_content = read_optional(META_ROLE_FILE if role_name else META_FILE)
 if meta_content:
   parts.append(meta_content)
 parts.append(active_block)

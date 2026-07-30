@@ -162,6 +162,33 @@ def test_boilerplate_mode_header_block_removed(tmp_path, monkeypatch):
     assert "actual user instruction here" in res.markdown
 
 
+def test_boilerplate_mode_header_block_removed_role_less(tmp_path, monkeypatch):
+    # The role-less variant (verified against
+    # plugins/role-mode/prompts/modes/_meta.md, split 2026-07-30): no Role
+    # axis text at all, only the Mode line + narrowed precedence.
+    mode_block = (
+        "Mode = HOW you process — rules, constraints, procedures.\n"
+        "\n"
+        "Precedence: Mode > User.\n"
+    )
+    text = mode_block + "\nactual user instruction here"
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "Mode = HOW you process" not in res.markdown
+    assert "Precedence: Mode > User." not in res.markdown
+    assert "actual user instruction here" in res.markdown
+
+
+def test_boilerplate_mode_header_block_does_not_eat_real_content(tmp_path, monkeypatch):
+    # A user turn that merely starts with the word "Mode" must not be
+    # swallowed by the role-less header's literal match.
+    text = "Mode of transport matters here.\nactual user instruction here"
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "Mode of transport matters here." in res.markdown
+    assert "actual user instruction here" in res.markdown
+
+
 # --------------------------------------------------------------------------- #
 # thinking exclusion (S8-c): the projection SQL never selects thinking blocks
 # --------------------------------------------------------------------------- #

@@ -5,6 +5,17 @@ A step's `mode=` attribute selects one fragment. The injection mirrors the
 plugin's UserPromptSubmit hook: `_meta.md` (framework header) + the mode
 declaration line + the mode body + `_common.md` (all-modes rules). `_meta.md`
 is also injected on its own for every step, since every step carries a Role.
+
+NAME/MEANING NOTE (2026-07-30): the canonical plugin split its single
+`_meta.md` into a role-less `_meta.md` (Mode axis only) and `_meta_role.md`
+(both axes -- byte-identical to the pre-split header). This snapshot's
+`_meta.md` was NOT re-synced and still holds the pre-split, both-axes
+content -- it corresponds to the canonical `_meta_role.md`, not the
+canonical `_meta.md`, despite the matching filename. That's fine today
+because every step here has a Role (see above), so the role-less variant
+has no consumer. If xml-wf ever makes `role=` optional, this snapshot needs
+its own role-less/role-present split to match; see
+`_projects/harness-modes/tasks/0_todo/2026-07-23_xml-wf-mode-snapshot-sync-cycle-design.md`.
 """
 from __future__ import annotations
 
