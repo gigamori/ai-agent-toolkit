@@ -14,6 +14,9 @@ when the skill runs.
   (developers, users, humans, LLMs). See also [README_ja.md](README_ja.md).
 - **[USER_GUIDE.md](USER_GUIDE.md)** — a practical, step-by-step guide for
   non-developer human users. See also [USER_GUIDE_ja.md](USER_GUIDE_ja.md).
+- **[AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md)** — maintenance obligations
+  for skill editors: multi-facet (cc/pi/run-llm) integrity, relationship to
+  mode-orchestrator, `modes/` propagation pointer.
 
 The canonical technical spec is the skill's `references/spec.md`. This README
 summarizes it; the spec governs when they disagree.

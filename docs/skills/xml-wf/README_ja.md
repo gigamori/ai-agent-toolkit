@@ -13,6 +13,9 @@
   リファレンス。英語版は [README.md](README.md)。
 - **[USER_GUIDE_ja.md](USER_GUIDE_ja.md)** — 非開発者の人間ユーザ向けの実践的な
   手順ガイド。英語版は [USER_GUIDE.md](USER_GUIDE.md)。
+- **[AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md)** — スキル編集者向けの保守義務
+  （英語のみ）: 3面（cc/pi/run-llm）整合性、mode-orchestrator との関係、
+  `modes/` 伝播の参照先。
 
 正典となる技術仕様はスキルの `references/spec.md` です。本 README はその要約であり、
 食い違う場合は spec が優先します。
