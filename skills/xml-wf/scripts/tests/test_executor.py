@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wfrun import parser  # noqa: E402
+from wfrun import modes, parser  # noqa: E402
 from wfrun.adp import Diagnosis  # noqa: E402
 from wfrun.claude_cli import CliResult  # noqa: E402
 from wfrun.executor import Executor, WorkflowFailure  # noqa: E402
@@ -684,6 +684,12 @@ class TestErrorsAndResume(ExecutorTestCase):
         self.assertTrue(saved.startswith("<workflow"))
         # builder prompt carries the contract, not code
         self.assertIn("MUST NOT contain", self.fake.calls[0]["prompt"])
+        # ... and the execution-mode vocabulary (aliases excluded) for
+        # continuation steps
+        self.assertIn(", ".join(m for m in modes.available_modes()
+                                if m not in modes.MODE_ALIASES),
+                      self.fake.calls[0]["prompt"])
+        self.assertNotIn("implement", self.fake.calls[0]["prompt"])
 
     def test_replan_retry_with_lint_feedback(self):
         bad = '<workflow name="c" version="2" max="5"><replan id="x" role="builder"><task>t</task></replan></workflow>'

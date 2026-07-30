@@ -123,6 +123,10 @@ not execute any of the work yourself.
   with N <= {max_steps}.
 - Every step needs a role: either role="<name>" using ONLY these named
   definitions: {roles} — or an inline <role> child you author yourself.
+- A step MAY set mode= (processing discipline). If used, it MUST be one of:
+  {modes}. Set it where the discipline matters: `execute` for strict
+  do-exactly-this operations, `survey` for fact collection, `debug` for
+  diagnosis; steps without an obvious discipline need no mode.
 - The XML format specification: read {spec_path} before writing.
 - The document MUST NOT contain `<replan>` or `<param>` elements
   (this is a one-level continuation; variables are inherited).
@@ -291,6 +295,8 @@ def build_replan_prompt_parts(node, variables: dict,
     user = REPLAN_PROMPT.format(
         max_steps=node.max_steps,
         roles=roles,
+        modes=", ".join(m for m in modes.available_modes()
+                        if m not in modes.MODE_ALIASES),
         spec_path=str(spec) if spec else "(spec file unavailable — follow the examples in the task)",
         outputs_clause=outputs_clause,
         variables=json.dumps(variables, ensure_ascii=False, indent=2),

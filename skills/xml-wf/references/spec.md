@@ -159,7 +159,9 @@ is a fixed XML-only contract that a mode would interfere with).
 
 Semantics:
 - The builder runs with read-only tools (`Read,Glob,Grep`), receives the spec
-  path, the list of available named roles, and the variable table, and must
+  path, the list of available named roles, the execution-mode vocabulary
+  (aliases excluded; with one-line usage guidance — continuation steps are
+  ordinary `<step>`s and may set `mode=`), and the variable table, and must
   reply with a complete `<workflow>` document
 - The continuation is validated with the child ruleset: **no `<replan>`
   (recursion) and no `<param>` allowed**; named roles must exist (inline
