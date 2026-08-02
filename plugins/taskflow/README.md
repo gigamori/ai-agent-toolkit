@@ -64,19 +64,21 @@ Selects which per-turn guidelines reminder variant `session_init.py` injects: `f
 
 `manifest` trades lower per-turn cost for weaker inline visibility of the conditional rules (PROHIBIT/FORMAT/AUTHORITY/NOTES/AUTOSAVE/TASK WRITE) — it relies on the full guidelines injected at session start (and after compaction) rather than repeating them every turn.
 
-### `TASKFLOW_DONE_ROWS_MAX`
+### `TASKFLOW_CONTEXT_DONE_ROWS_MAX`
 
-Caps the `progress.md` Completed table to the most recent N rows when `/progress rebuild` (or the auto-rebuild hook) regenerates it — the Completed section otherwise grows without bound as `tasks/2_done/` accumulates. Default: `10`. Set to `0` or a negative number for unlimited. When the cap is active, a footnote line reports how many older rows were omitted; the full history always remains in `tasks/2_done/`.
+Caps how many Completed rows enter an agent's **context**. `progress.md` itself always lists every task in `tasks/2_done/`; `scripts/view_progress.py` prints a truncated copy to stdout, and that copy is what the project router returns and what the main agent should read. Default: `10`. Set to `0` for unlimited. When rows are dropped, a `[context view]` footnote reports how many.
 
 ```json
 {
   "env": {
-    "TASKFLOW_DONE_ROWS_MAX": "20"
+    "TASKFLOW_CONTEXT_DONE_ROWS_MAX": "20"
   }
 }
 ```
 
-`scripts/rebuild_progress.py --done-rows-max N` overrides the environment variable for a single invocation.
+`scripts/view_progress.py --limit N` (or `--all`) overrides the environment variable for a single invocation.
+
+> Retired in 0.2.6: `TASKFLOW_DONE_ROWS_MAX` and `rebuild_progress.py --done-rows-max`, which truncated `progress.md` on disk. Setting the old variable now has no effect — the file is no longer capped.
 
 ## Usage
 
@@ -180,7 +182,7 @@ Options for the script:
 
 ### progress.md
 
-`progress.md` is the task index. It has a free-text region (Architecture / Key Decisions / Open Issues / Reference Materials — human-edited) and an auto-generated table region (`<!-- @table:begin -->` ... `<!-- @table:end -->`) listing the TODO / In Progress / Completed tasks. Rebuild the table via `/progress rebuild`; never hand-edit inside the markers. The Completed section is capped to the most recent `TASKFLOW_DONE_ROWS_MAX` rows (default 10) with a footnote showing the omitted count when capped — see [Configuration](#taskflow_done_rows_max); the full history always remains in `tasks/2_done/`.
+`progress.md` is the task index. It has a free-text region (Architecture / Key Decisions / Open Issues / Reference Materials — human-edited) and an auto-generated table region (`<!-- @table:begin -->` ... `<!-- @table:end -->`) listing the TODO / In Progress / Completed tasks. Rebuild the table via `/progress rebuild`; never hand-edit inside the markers. The Completed section lists every task in `tasks/2_done/` — the file is never truncated. Only what reaches an agent's context is bounded, by `scripts/view_progress.py` — see [Configuration](#taskflow_context_done_rows_max).
 
 ### tasks
 

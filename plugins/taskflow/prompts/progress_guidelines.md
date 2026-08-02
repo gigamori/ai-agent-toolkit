@@ -1,10 +1,13 @@
 ## Loading
 
-- Always read `progress.md` at the start of work.
+- The `--- progress ---` block returned by the project router is the canonical progress view for the turn. Use it as-is; do NOT re-read `progress.md` to obtain the same content.
+- Outside a router turn, get the view with:
+  `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/view_progress.py" "<project-root>"` (add `--all` only when the user explicitly asks for the whole completion history).
+- Read `progress.md` directly ONLY when you are about to edit one of its free-text sections.
 - progress.md is split into two regions:
   - **Free-text sections** (Architecture / Key Decisions & Policies / Open Issues / Reference Materials): hand-editable; LLM and human both edit.
   - **Table region** (between `<!-- @table:begin -->` and `<!-- @table:end -->`): auto-generated from `tasks/<status>/*.md` files. Do NOT hand-edit content inside this block.
-  - The Completed section is capped to the most recent rows (`TASKFLOW_DONE_ROWS_MAX`, default 10); a footnote reports the omitted count when capped. Full history always remains in `tasks/2_done/`.
+  - The Completed section lists EVERY file in `tasks/2_done/` — the file is never truncated. Only the context view is bounded (`view_progress.py`, default 10 rows); never write a view back into `progress.md`.
 
 ## Single authority
 

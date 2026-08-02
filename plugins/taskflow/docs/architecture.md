@@ -1,4 +1,4 @@
-# taskflow internal architecture (v0.2.5)
+# taskflow internal architecture (v0.2.6)
 
 Internal design document for developers — read this when you need to understand or modify how the plugin works.
 
@@ -8,7 +8,7 @@ Internal design document for developers — read this when you need to understan
 
 | Type | Role | Lifetime | Audience | Context injection |
 |---|---|---|---|---|
-| `progress.md` | Task index: TODO / In Progress / Completed tables + free-text sections (Architecture / Key Decisions / Open Issues / Reference Materials) | Project lifetime | Human + AI | On apply, subagent reads the full file and returns it to the main agent |
+| `progress.md` | Task index: TODO / In Progress / Completed tables + free-text sections (Architecture / Key Decisions / Open Issues / Reference Materials) | Project lifetime | Human + AI | On apply, subagent returns the verbatim stdout of `view_progress.py` (the file's Completed table truncated to the most recent rows), not the file itself |
 | `tasks/` | One file per task; status by folder (`0_todo`/`1_in_progress`/`2_done`); body + append-only `<!-- @log -->` block | Task lifetime | AI + Human | Subagent lists `1_in_progress/`, selectively reads files relevant to the prompt, and returns them |
 | `project-notes/` | Project-specific persistent knowledge, organized by category (`specs/`, `investigations/`, `checks/`, `procedures/`, `backlog/`, `_archive/`) | Project lifetime | AI | Subagent returns **pointers only** — the file list plus verbatim matching rows of `index.md`; it does NOT read or return note bodies (the main agent reads note files itself when needed) |
 | `plans/`, `memory/` | Auto-archived copies of the Claude config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`) | Archive | Human | Never injected. Not to be referenced. |
@@ -16,7 +16,7 @@ Internal design document for developers — read this when you need to understan
 ### Role boundaries
 
 - `progress.md` table region (between `<!-- @table:begin -->` and `<!-- @table:end -->`): auto-generated from task files. Never hand-edit.
-- The Completed section is capped to the most recent `TASKFLOW_DONE_ROWS_MAX` rows (`rebuild_progress.py`; default 10, `0`/negative = unlimited, CLI `--done-rows-max` overrides) with a footnote reporting the omitted count when capped. The table has always been a rebuildable cache, never authoritative, so this is a lossy convenience view, not a data loss — see `project-notes/specs/done-table-row-cap.md`.
+- The Completed section lists every file in `tasks/2_done/`. `rebuild_progress.py` never truncates it. Bounding context cost is `view_progress.py`'s job: it reads `progress.md`, drops all but the most recent `TASKFLOW_CONTEXT_DONE_ROWS_MAX` Completed rows (default 10, `0` = unlimited, CLI `--limit` / `--all` override), appends a `[context view]` footnote when it dropped any, and writes the result to stdout — it never writes to a file. Because the view is a line-level subset of the file rather than a re-render from `tasks/`, it cannot disagree with the file; the `#` column is deliberately not renumbered, so a view is visibly a tail.
 - `progress.md` free-text sections: hand-edited; both LLM and human contribute.
 - `tasks/<status>/<file>.md`: each file has frontmatter (priority, created, updated, optional dependencies), an H1 title (=summary shown in progress.md), a mutable body, and an append-only log block.
 - `project-notes/<category>/`: reusable knowledge across tasks. Distill durable findings from `2_done/` tasks here.
@@ -149,7 +149,7 @@ user prompt
   │  1. determine the project (read-only; current_project is non-empty by gate)
   │  2. applicability decision (skip / apply)
   │  2b. project_notes_autosave decision (true for investigation / analysis intents)
-  │  3. on apply: read index.md and progress.md
+  │  3. on apply: read index.md; run view_progress.py for the progress block
   │     (the 3 guideline files are injected by the hook, NOT read by the subagent)
   │  4. tasks: list 1_in_progress/, selectively read relevant files;
   │     emit stale_hint if any are >14 days old

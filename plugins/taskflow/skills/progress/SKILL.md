@@ -181,6 +181,7 @@ Plugin script paths:
 - `${CLAUDE_PLUGIN_ROOT}/scripts/check_progress.py`
 - `${CLAUDE_PLUGIN_ROOT}/scripts/audit_progress.py`
 - `${CLAUDE_PLUGIN_ROOT}/scripts/rebuild_progress.py`
+- `${CLAUDE_PLUGIN_ROOT}/scripts/view_progress.py` (read-only context view; not bound to a `/progress` action)
 
 ### action = `check`
 

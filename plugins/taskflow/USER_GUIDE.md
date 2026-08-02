@@ -30,7 +30,7 @@ flowchart LR
 
 | Store | Think of it as | You edit it… |
 |---|---|---|
-| **`progress.md`** | The dashboard — active tasks, plus a capped table of recent completions | Rarely — the table is auto-generated |
+| **`progress.md`** | The dashboard — active tasks, plus the full table of completed ones (Claude is shown only the most recent) | Rarely — the table is auto-generated |
 | **`tasks/`** | Sticky notes, one per task, filed by status folder | Through `/progress` commands and normal work |
 | **`project-notes/`** | The project's filing cabinet of lasting knowledge | By asking Claude to "save this to notes" |
 

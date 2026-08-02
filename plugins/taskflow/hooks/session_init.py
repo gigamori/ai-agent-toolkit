@@ -364,6 +364,17 @@ elif inject_guidelines_reminder:
     except Exception:
       continue
 
+# The guidelines are injected as hook stdout, where the harness does NOT expand
+# ${CLAUDE_PLUGIN_ROOT} (it only does so in hooks.json commands and agent
+# definitions), and the main agent's shell has no such env var either. Expand it
+# here so injected commands (e.g. progress_guidelines.md's view_progress.py
+# invocation) are runnable as printed.
+if guidelines_content:
+  # Forward slashes: the expanded path lands inside a bash command line, where
+  # Windows backslashes would be eaten as escapes.
+  guidelines_content = guidelines_content.replace(
+    '${CLAUDE_PLUGIN_ROOT}', PLUGIN_ROOT.replace('\\', '/'))
+
 # Build project_index block.
 index_content = ''
 if inject_index:

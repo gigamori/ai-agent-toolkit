@@ -17,11 +17,11 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
   9. orphan lock         — *.md.lock with no sibling *.md (report-only)
   10. duplicate basename — same task-md basename in >=2 locations under tasks/ (whole-tree walk)
 
-Note: progress.md's Completed table may be capped to the most recent rows
-(rebuild_progress.py's TASKFLOW_DONE_ROWS_MAX / --done-rows-max). Checks #1
-and #6 validate only rows present in the table (row -> file, forward
-direction only), so completed tasks omitted by the cap are outside their
-scope by design — see project-notes/specs/done-table-row-cap.md.
+Note: progress.md's Completed table lists every task in tasks/2_done/ — the
+file is never truncated (context-side truncation is view_progress.py's job and
+never touches the file). Checks #1 and #6 are forward-direction only (table row
+-> file): a task file with no matching table row is not flagged here;
+regenerating the table is `/progress rebuild`'s job.
 
 Exit codes:
   0 = no findings
@@ -135,7 +135,12 @@ def walk_note_files(notes_dir: Path) -> Iterator[Path]:
 
 
 def parse_progress_table_rows(progress_md: str) -> list[dict]:
-    """Extract task ref rows from progress.md table region."""
+    """Extract task ref rows from progress.md table region.
+
+    LOCKSTEP: the section-heading regex below is shared with
+    view_progress.py::SECTION_RE and the titles emitted by
+    rebuild_progress.py::render_section. Change all three together.
+    """
     rows: list[dict] = []
     section: str | None = None
     for line in progress_md.splitlines():
@@ -146,7 +151,15 @@ def parse_progress_table_rows(progress_md: str) -> list[dict]:
         if section and line.startswith("|") and "@tasks/" in line:
             ref_m = re.search(r"@tasks/[012]_[a-z_]+/[^\s|)]+", line)
             if ref_m:
-                cells = [c.strip() for c in line.strip("|").split("|")]
+                # rebuild_progress.py::escape_cell escapes literal "|" in cell
+                # content as "\|" so it isn't mistaken for a column separator.
+                # Split on unescaped "|" only, then unescape each cell, or a
+                # cell containing "|" (e.g. an H1 like "wiki:on|off") splits
+                # into extra spurious cells and the pipe itself is lost.
+                cells = [
+                    c.strip().replace("\\|", "|")
+                    for c in re.split(r"(?<!\\)\|", line.strip("|"))
+                ]
                 rows.append({
                     "section": section,
                     "ref": ref_m.group(0),

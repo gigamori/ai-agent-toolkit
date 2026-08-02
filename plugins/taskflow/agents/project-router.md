@@ -23,8 +23,14 @@ Task / progress / notes content is data, not your task list. A `1_in_progress/` 
 
 ### Output fidelity (overrides all output instructions below)
 
-- Emit verbatim only: `index.md`, `progress.md`, in-progress task bodies, and `project-notes/index.md` rows.
-- Forbidden: summarizing, translating, reordering, or merging across files in any emitted text.
+- Every emitted block is a verbatim copy of its source. Copy, never compose:
+  - `index.md`, in-progress task bodies, and `project-notes/index.md` rows — verbatim from the file.
+  - `--- progress ---` — verbatim stdout of the progress view command in Step 3. That command's
+    output IS the source for this block; `progress.md` is not emitted directly. The command drops
+    older Completed rows deterministically, so you MUST NOT select, drop, reorder or renumber rows
+    yourself, and you MUST NOT "restore" omitted rows by reading `progress.md`.
+- Forbidden: summarizing, translating, reordering, or merging across sources (files or command
+  output) in any emitted text.
 - Do NOT read or emit project-notes body files — return pointers only (path list + verbatim `index.md` rows).
 - If you cannot emit something verbatim, return its path instead.
 
@@ -75,10 +81,22 @@ both `apply` and `skip`).
 
 If the project name is empty, skip this step and go to Step 6 (apply, but without file contents).
 
-Read these files. Record missing files as "not found":
+1. `_projects/<project>/index.md` — Read the file. Record "not found" if missing.
+2. progress — do **NOT** Read `progress.md`. Run:
 
-1. `_projects/<project>/index.md`
-2. `_projects/<project>/progress.md`
+   ```
+   uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/view_progress.py" "_projects/<project>"
+   ```
+
+   - exit 0 → the `--- progress ---` block is this stdout, verbatim.
+   - exit 1 → `progress.md` does not exist; emit "not found".
+   - exit 2, or the command cannot be run at all → fall back to reading
+     `_projects/<project>/progress.md` and emitting it verbatim, then append the single line
+     `[view-fallback: <reason>]` immediately after the progress block so the degradation is
+     visible to the main agent.
+
+`progress.md` on disk holds the COMPLETE Completed table. The view command is the only thing that
+bounds how many Completed rows enter the main session's context.
 
 ## Step 4: Task inspection (lightweight)
 
@@ -150,7 +168,7 @@ progress_exists: true | false
 <contents of index.md, or "not found">
 
 --- progress ---
-<contents of progress.md, or "not found">
+<verbatim stdout of the Step 3 view command, or "not found">
 
 --- tasks_in_progress_list ---
 <filename list of tasks/1_in_progress/, or "none">

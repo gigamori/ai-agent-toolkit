@@ -63,19 +63,21 @@ Claude Code で恒久設定するには `settings.json` に追加:
 
 `manifest` は毎ターンコストを下げる代わりに、条件付きルール（PROHIBIT/FORMAT/AUTHORITY/NOTES/AUTOSAVE/TASK WRITE）のインライン可視性が下がるトレードオフを伴う — セッション開始時（および compact 後）に注入された全文ガイドラインへの依存度が上がる。
 
-### `TASKFLOW_DONE_ROWS_MAX`
+### `TASKFLOW_CONTEXT_DONE_ROWS_MAX`
 
-`/progress rebuild`（および auto-rebuild フック）が `progress.md` を再生成する際、Completed 表を直近 N 件にキャップする — 指定しない場合 `tasks/2_done/` の増加に伴い際限なく成長する。既定値: `10`。`0` 以下で無制限。キャップ発動時は脚注行で省略件数を示す。全履歴は常に `tasks/2_done/` に残る。
+エージェントの**コンテキスト**に入る Completed 行数の上限。`progress.md` 自体は常に `tasks/2_done/` の全件を保持し、`scripts/view_progress.py` が truncate した写しを stdout に出力する。project router が返すのも、メインエージェントが読むべきなのも、その写しのほう。既定値: `10`。`0` で無制限。行が落ちた場合のみ `[context view]` 脚注が省略件数を示す。
 
 ```json
 {
   "env": {
-    "TASKFLOW_DONE_ROWS_MAX": "20"
+    "TASKFLOW_CONTEXT_DONE_ROWS_MAX": "20"
   }
 }
 ```
 
-`scripts/rebuild_progress.py --done-rows-max N` で単発呼び出し時に環境変数を上書きできる。
+`scripts/view_progress.py --limit N`（または `--all`）で単発呼び出し時に環境変数を上書きできる。
+
+> 0.2.6 で撤去: `progress.md` をディスク上で truncate していた `TASKFLOW_DONE_ROWS_MAX` と `rebuild_progress.py --done-rows-max`。旧変数を設定しても効果はない — ファイルはもうキャップされない。
 
 ## 使い方
 
@@ -179,7 +181,7 @@ script のオプション:
 
 ### progress.md
 
-`progress.md` はタスクの index。手書き自由文セクション（Architecture / Key Decisions / Open Issues / Reference Materials）と、auto-generated テーブル領域（`<!-- @table:begin -->` ... `<!-- @table:end -->`、TODO / In Progress / Completed の各表）で構成される。テーブル再生は `/progress rebuild`、マーカー内側は手編集禁止。Completed セクションは直近の `TASKFLOW_DONE_ROWS_MAX` 件（既定 10）にキャップされ、キャップ時は省略件数を脚注で示す（[設定](#taskflow_done_rows_max) 参照）— 全履歴は常に `tasks/2_done/` に残る。
+`progress.md` はタスクの index。手書き自由文セクション（Architecture / Key Decisions / Open Issues / Reference Materials）と、auto-generated テーブル領域（`<!-- @table:begin -->` ... `<!-- @table:end -->`、TODO / In Progress / Completed の各表）で構成される。テーブル再生は `/progress rebuild`、マーカー内側は手編集禁止。Completed セクションは `tasks/2_done/` の全件を列挙し、ファイルが truncate されることはない。上限が掛かるのはエージェントのコンテキストに入る分だけで、担当は `scripts/view_progress.py`（[設定](#taskflow_context_done_rows_max) 参照）。
 
 ### tasks
 

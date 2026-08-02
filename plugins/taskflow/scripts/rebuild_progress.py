@@ -12,9 +12,9 @@ tables (TODO / In Progress / Completed) into the <!-- @table:begin --> ...
 
 If progress.md does not exist, creates a minimal scaffold first.
 If the @table markers are absent, appends them at the end (Risk R7).
-The Completed table is capped to the most recent N rows (see
-TASKFLOW_DONE_ROWS_MAX / --done-rows-max below); a footnote reports the
-omitted count when the cap is active.
+The Completed table lists EVERY task in tasks/2_done/ — this file is never
+truncated. Bounding how many Completed rows reach an agent's context is
+view_progress.py's job, and it never writes to progress.md.
 
 Free-text sections (Architecture, Key Decisions, etc.) are NOT touched.
 
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import os
 import re
 import sys
 from dataclasses import dataclass
@@ -46,11 +45,6 @@ H1_RE = re.compile(r"^# (.+)$", re.MULTILINE)
 TABLE_BEGIN = "<!-- @table:begin -->"
 TABLE_END = "<!-- @table:end -->"
 TASK_STATUSES = ("0_todo", "1_in_progress", "2_done")
-
-# Completed-table row cap (see project-notes/specs/done-table-row-cap.md).
-# 0 or negative = unlimited.
-DONE_ROWS_MAX_DEFAULT = 10
-ENV_DONE_ROWS_MAX = "TASKFLOW_DONE_ROWS_MAX"
 
 SCAFFOLD = """# Progress: {name}
 
@@ -145,9 +139,10 @@ def gather_tasks(project_dir: Path) -> dict[str, list[TaskRow]]:
     return by_status
 
 
-def render_section(
-    title: str, date_col: str, rows: list[TaskRow], footnote: str | None = None
-) -> list[str]:
+def render_section(title: str, date_col: str, rows: list[TaskRow]) -> list[str]:
+    # LOCKSTEP: the section titles and the header/separator shape emitted here are
+    # parsed by check_progress.py::parse_progress_table_rows and sliced by
+    # view_progress.py::find_completed_rows. Change all three together.
     lines: list[str] = []
     lines.append(f"## {title}")
     lines.append("")
@@ -158,31 +153,15 @@ def render_section(
             f"| {r.n} | {escape_cell(r.priority)} | {escape_cell(r.h1)} "
             f"| {escape_cell(r.date)} | {r.link} |"
         )
-    if footnote:
-        lines.append("")
-        lines.append(footnote)
     lines.append("")
     return lines
 
 
-def render_table_region(
-    by_status: dict[str, list[TaskRow]], done_limit: int = DONE_ROWS_MAX_DEFAULT
-) -> str:
+def render_table_region(by_status: dict[str, list[TaskRow]]) -> str:
     lines: list[str] = []
     lines.extend(render_section("TODO", "Created", by_status["0_todo"]))
     lines.extend(render_section("In Progress", "Updated", by_status["1_in_progress"]))
-
-    done_rows = by_status["2_done"]
-    footnote = None
-    shown = done_rows
-    if done_limit > 0 and len(done_rows) > done_limit:
-        shown = done_rows[-done_limit:]
-        omitted = len(done_rows) - done_limit
-        footnote = (
-            f"_Showing the latest {done_limit} of {len(done_rows)} completed "
-            f"tasks — {omitted} older entries omitted. Full list: tasks/2_done/_"
-        )
-    lines.extend(render_section("Completed", "Completed", shown, footnote))
+    lines.extend(render_section("Completed", "Completed", by_status["2_done"]))
 
     # Trim trailing empty line
     while lines and lines[-1] == "":
@@ -217,15 +196,6 @@ def ensure_progress_md(project_dir: Path) -> Path:
     return progress
 
 
-def resolve_done_limit(cli_value: int | None) -> int:
-    if cli_value is not None:
-        return cli_value
-    try:
-        return int(os.environ.get(ENV_DONE_ROWS_MAX, str(DONE_ROWS_MAX_DEFAULT)))
-    except ValueError:
-        return DONE_ROWS_MAX_DEFAULT
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Rebuild progress.md table region from tasks/<status>/*.md files."
@@ -235,16 +205,6 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Path to _projects/<project>/ directory",
     )
-    parser.add_argument(
-        "--done-rows-max",
-        type=int,
-        default=None,
-        help=(
-            "Cap the Completed table to the N most recent rows "
-            f"(default: {DONE_ROWS_MAX_DEFAULT}; 0 or negative = unlimited). "
-            f"Falls back to env {ENV_DONE_ROWS_MAX} when unset."
-        ),
-    )
     args = parser.parse_args(argv)
 
     project_dir: Path = args.project_dir.resolve()
@@ -252,11 +212,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: not a directory: {project_dir}", file=sys.stderr)
         return 2
 
-    done_limit = resolve_done_limit(args.done_rows_max)
-
     progress = ensure_progress_md(project_dir)
     by_status = gather_tasks(project_dir)
-    region = render_table_region(by_status, done_limit)
+    region = render_table_region(by_status)
     content = read_text(progress) or ""
     new_content = replace_or_append_region(content, region)
 
@@ -268,16 +226,11 @@ def main(argv: list[str] | None = None) -> int:
 
     counts = {s: len(by_status[s]) for s in TASK_STATUSES}
     total = sum(counts.values())
-    done_total = counts["2_done"]
-    if done_limit > 0 and done_total > done_limit:
-        completed_str = f"Completed: {done_total} (showing latest {done_limit})"
-    else:
-        completed_str = f"Completed: {done_total}"
     print(f"{verb}: {progress}")
     print(
         f"  TODO: {counts['0_todo']}, "
         f"In Progress: {counts['1_in_progress']}, "
-        f"{completed_str} "
+        f"Completed: {counts['2_done']} "
         f"(total {total})"
     )
     return 0
