@@ -281,7 +281,16 @@ _projects/
     _archive/                 project-level archive
     plans/                    plan copies (auto-archived history)
     memory/                   memory copies (auto-archived history)
+    .locks/                   @log write locks (auto-managed; normally empty)
 ```
+
+`.locks/` holds one short-lived sidecar per task while its `@log` / `@notes`
+block is being written, named after the task's file name. It is created on
+demand and each entry is deleted as soon as its last writer finishes, so in a
+quiescent project the directory is empty. Never edit or commit it. If entries
+do linger (a task was deleted while a lock existed, or a writer was killed),
+`/progress check` reports them and `scripts/clean_locks.py <project> --apply`
+clears them.
 
 ## How it works
 

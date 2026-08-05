@@ -14,7 +14,9 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
   6. summary / H1 sync   — progress.md row text contains task H1
   7. filename violations — <YYYY-MM-DD>_<topic>(-<N>)?.md
   8. pending approval    — 1_in_progress/ stalled past threshold
-  9. orphan lock         — *.md.lock with no sibling *.md (report-only)
+  9. orphan lock         — dead .locks/*.lock (no such task md) + legacy
+                           tasks/<status>/*.md.lock (report-only; clear with
+                           scripts/clean_locks.py)
   10. duplicate basename — same task-md basename in >=2 locations under tasks/ (whole-tree walk)
 
 Note: progress.md's Completed table lists every task in tasks/2_done/ — the
@@ -401,32 +403,76 @@ def check_pending_approval(project_dir: Path, result: Result, threshold_days: in
 
 
 def check_orphan_lock(project_dir: Path, result: Result) -> None:
-    """#9 — report *.md.lock files that have no sibling *.md in the same directory.
+    """#9 — report dead `@log` advisory-lock sidecars. Report-only.
 
-    Does NOT delete lock files (report-only). Auto-deletion would break the
-    mutual exclusion invariant INV-2 by introducing an unlink race.
+    Two populations (project-notes/specs/log-lock-stable-key.md §3.3):
+
+      dead    `.locks/<name>.lock` whose `<name>` matches no task md anywhere
+              under tasks/. The task was deleted or renamed, so nothing can
+              resolve to that key again. (hooks/log_lock.py deletes a sidecar
+              when its last holder releases, so a LIVE task normally has no
+              entry here at all.)
+      legacy  `tasks/<status>/*.md.lock` — the pre-stable-key location.
+              hooks/log_lock.py no longer creates these, so every one is dead
+              regardless of whether a sibling `.md` exists.
+
+    The previous definition of this check was "*.md.lock with no sibling *.md",
+    which only ever caught the DEPARTURE-side residue of a status move; the
+    arrival-side sidecar kept a live sibling and so looked healthy. That is
+    why the population grew silently.
+
+    Report-only rationale (corrected 2026-08-05): this check was originally
+    report-only on the belief that auto-deletion would break "the mutual
+    exclusion invariant INV-2". That attribution was wrong — INV-2 is
+    no-deadlock only (project-notes/specs/exec-binding.md §2), not mutual
+    exclusion; see log-lock-stable-key.md §2.3/§8 for the correction. It stays
+    report-only for a different and still-valid reason: `/progress check` is a
+    read-only command (docs/architecture.md), so deletion belongs in the
+    explicit, dry-run-by-default `scripts/clean_locks.py`, not here.
+
+    Walk range for the live-basename set MUST mirror
+    hooks/session_progress_capture.py::_task_basename_index and
+    scripts/clean_locks.py::task_md_basenames — a basename missed here would
+    make a live lock look dead. LOCKSTEP: change all three together.
     """
     tasks_dir = project_dir / "tasks"
-    if not tasks_dir.is_dir():
-        return
-    for status in TASK_STATUSES:
-        sub = tasks_dir / status
-        if not sub.is_dir():
-            continue
-        for lock_path in sorted(sub.iterdir()):
-            if lock_path.suffix != ".lock":
+
+    live_basenames: set[str] = set()
+    if tasks_dir.is_dir():
+        for dirpath, _dirs, files in os.walk(tasks_dir):
+            for fn in files:
+                if fn.lower().endswith(".md"):
+                    live_basenames.add(fn)
+
+    locks_dir = project_dir / ".locks"
+    if locks_dir.is_dir():
+        for lock_path in sorted(locks_dir.iterdir()):
+            if not lock_path.is_file() or lock_path.suffix != ".lock":
                 continue
-            # Require the name to end with .md.lock
-            if not lock_path.name.endswith(".md.lock"):
+            if lock_path.name[: -len(".lock")] in live_basenames:
                 continue
-            sibling_name = lock_path.name[: -len(".lock")]  # strip trailing .lock
-            sibling = lock_path.parent / sibling_name
-            if not sibling.exists():
+            result.add(
+                "orphan_lock",
+                "drift",
+                str(lock_path),
+                f"dead lock (no such task md): "
+                f"{lock_path.relative_to(project_dir).as_posix()} "
+                f"— clear with `scripts/clean_locks.py <project> --apply`",
+            )
+
+    if tasks_dir.is_dir():
+        for dirpath, _dirs, files in os.walk(tasks_dir):
+            for fn in sorted(files):
+                if not fn.endswith(".md.lock"):
+                    continue
+                lock_path = Path(dirpath) / fn
                 result.add(
                     "orphan_lock",
                     "drift",
                     str(lock_path),
-                    f"orphan lock: {lock_path.relative_to(project_dir).as_posix()}",
+                    f"legacy lock (pre-stable-key location): "
+                    f"{lock_path.relative_to(project_dir).as_posix()} "
+                    f"— clear with `scripts/clean_locks.py <project> --apply`",
                 )
 
 

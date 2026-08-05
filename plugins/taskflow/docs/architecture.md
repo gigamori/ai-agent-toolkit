@@ -97,7 +97,7 @@ The router does NOT walk `project-notes/**/*.md` as a fallback — neither for `
 
 | Sub-action | Effect |
 |---|---|
-| `check` | Run drift / stale / approval-pending detection across 8 checks (`check_progress.py`). Read-only. |
+| `check` | Run drift / stale / approval-pending detection across 10 checks (`check_progress.py`). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
 | `audit` | Classify each task by `## Next Steps` state: pending / completion_candidate / untracked / clean (`audit_progress.py`). Read-only. |
 | `rebuild` (alias `sync`) | Regenerate the `<!-- @table -->` block from task files (`rebuild_progress.py`). |
 | `start <id>` | Move a task `0_todo/ → 1_in_progress/` (also reopens `2_done/ → 1_in_progress/`). |
@@ -221,7 +221,13 @@ session end
         re-blocks. A task that can never be bound (no `@log:end`) does NOT loop the gate.
         (The former "(a) Round1-remind a missing touched task" condition was REMOVED when the
         inline Round1 reminder was replaced by the async capture path — option-a, §10.2.)
-     bind writes are serialized by the bounded per-task advisory lock `log_lock.py` (INV-2)
+     bind writes are serialized by the per-task advisory lock `log_lock.py`. Its acquire is
+     bounded on both platforms (INV-2, no-deadlock); the serialization itself is best-effort
+     and degrades unlocked on timeout. The sidecar lives at
+     `<project_root>/.locks/<task-basename>.lock` — keyed on the task BASENAME, matching how
+     `_task_basename_index` resolves tasks, so a status-folder move cannot split one task
+     across two lock files. It is deleted when its last holder releases
+     (project-notes/specs/log-lock-stable-key.md).
 ```
 
 ## state_file
