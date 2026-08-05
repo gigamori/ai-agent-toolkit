@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["pyyaml"]
 # ///
 """view_progress.py — print a context-bounded VIEW of progress.md.
 
@@ -11,25 +11,38 @@ Completed rows reach an agent's context. It reads progress.md and writes a
 truncated copy to stdout; it never writes to any file.
 
 The view is a pure line-level subset of the file — it does not re-read tasks/,
-so it can never disagree with progress.md. Only the `## Completed` data rows
-inside the <!-- @table:begin --> ... <!-- @table:end --> region are dropped;
-the `#` column is NOT renumbered, so a view is visibly a tail of the file.
-Everything else (free-text sections, TODO / In Progress tables, markers) is
-passed through byte for byte.
+so it can never disagree with progress.md — EXCEPT under `--notes-summary`
+(see below), which does not touch progress.md at all. Only the `## Completed`
+data rows inside the <!-- @table:begin --> ... <!-- @table:end --> region are
+dropped; the `#` column is NOT renumbered, so a view is visibly a tail of the
+file. Everything else (free-text sections, TODO / In Progress tables, markers)
+is passed through byte for byte.
 
 LOCKSTEP: the section-heading regex below mirrors
 check_progress.py::parse_progress_table_rows and the section titles emitted by
 rebuild_progress.py::render_section. Change all three together.
 
 Configuration (CLI > env > default):
-  --limit N   keep the N most recent Completed rows (0 = unlimited)
-  --all       equivalent to --limit 0 (mutually exclusive with --limit)
+  --limit N        keep the N most recent Completed rows (0 = unlimited)
+  --all            equivalent to --limit 0
+  --notes-summary  emit a context-bounded project-notes/ summary instead of
+                    the progress view (does not read/require progress.md)
+  (--limit / --all / --notes-summary are mutually exclusive)
   env TASKFLOW_CONTEXT_DONE_ROWS_MAX  default limit when neither flag is given
 
+`--notes-summary` bounds how many project-notes/ paths reach an agent's
+context (project-router-context-payload-cap.md design doc). It never lists
+individual note paths — only counts. Note-set definition (rglob("*.md") minus
+index.md) and the index-drift count are IMPORTED from check_progress.py
+(walk_note_files / parse_notes_index_rows), not re-implemented here, so the two
+scripts can never silently drift apart on what counts as a "note".
+
 Exit codes:
-  0 = view written to stdout
-  1 = progress.md does not exist
-  2 = script error (bad arguments, missing project dir)
+  0 = view (or notes summary) written to stdout
+  1 = progress.md does not exist (--notes-summary is exempt: it never checks
+      for progress.md)
+  2 = script error (bad arguments — including combining --notes-summary with
+      --limit/--all — or a missing project dir)
 """
 
 from __future__ import annotations
@@ -39,6 +52,9 @@ import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import check_progress as _cp  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -138,11 +154,75 @@ def build_view(content: str, limit: int, project_name: str) -> str:
     return text + "\n" if trailing_newline else text
 
 
+def _category_of(rel: str) -> str:
+    """First path segment of a project-notes-relative path, or '(root)' for a
+    note with no subdirectory. Deliberately unconstrained to the 6 documented
+    categories — an off-convention directory (e.g. a stray 'debug-handoffs/')
+    surfaces here as its own category instead of being silently absorbed."""
+    parts = rel.split("/", 1)
+    return parts[0] if len(parts) > 1 else "(root)"
+
+
+def build_notes_summary(project_dir: Path) -> str:
+    """Build the `--notes-summary` block: counts only, never individual paths.
+
+    Note-set definition and index-row parsing are imported from
+    check_progress.py (walk_note_files / parse_notes_index_rows) — see the
+    module docstring's LOCKSTEP note. Returns 'none' when project-notes/ does
+    not exist.
+    """
+    notes_dir = project_dir / "project-notes"
+    if not notes_dir.is_dir():
+        return "none"
+
+    archive_count = 0
+    category_counts: dict[str, int] = {}
+    actual: set[str] = set()
+    for p in _cp.walk_note_files(notes_dir):
+        rel = p.relative_to(notes_dir).as_posix()
+        actual.add(rel)
+        if rel.startswith("_archive/"):
+            archive_count += 1
+            continue
+        cat = _category_of(rel)
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    live_total = sum(category_counts.values())
+    cat_str = " / ".join(
+        f"{cat} {n}"
+        for cat, n in sorted(category_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    lines = [f"{live_total} notes" + (f" · {cat_str}" if cat_str else "")]
+
+    if archive_count:
+        lines.append(
+            f"_archive: {archive_count} (non-authoritative — excluded from relevant rows)"
+        )
+
+    index_md = notes_dir / "index.md"
+    index_content = _cp.read_text(index_md)
+    if index_content is None:
+        lines.append("index: missing → create project-notes/index.md")
+    else:
+        indexed = {r["file"] for r in _cp.parse_notes_index_rows(index_content)}
+        unregistered = len(actual - indexed)
+        missing = len(indexed - actual)
+        if unregistered or missing:
+            lines.append(
+                f"index drift: {unregistered} unregistered, {missing} missing "
+                "→ run `/progress check`"
+            )
+
+    lines.append("enumerate: ls _projects/<project>/project-notes/**/*.md")
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Print a context-bounded view of progress.md to stdout. "
-            "Never modifies any file."
+            "Print a context-bounded view of progress.md (or, with "
+            "--notes-summary, of project-notes/) to stdout. Never modifies "
+            "any file."
         )
     )
     parser.add_argument(
@@ -166,12 +246,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit every Completed row (same as --limit 0).",
     )
+    group.add_argument(
+        "--notes-summary",
+        action="store_true",
+        help=(
+            "Emit a context-bounded project-notes/ summary (counts only) "
+            "instead of the progress view. Does not require progress.md."
+        ),
+    )
     args = parser.parse_args(argv)
 
     project_dir: Path = args.project_dir.resolve()
     if not project_dir.is_dir():
         print(f"error: not a directory: {project_dir}", file=sys.stderr)
         return 2
+
+    if args.notes_summary:
+        sys.stdout.write(build_notes_summary(project_dir))
+        return 0
 
     progress = project_dir / "progress.md"
     if not progress.is_file():

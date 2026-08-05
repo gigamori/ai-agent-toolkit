@@ -126,6 +126,14 @@ def walk_task_files(project_dir: Path) -> Iterator[tuple[Path, str]]:
 
 
 def walk_note_files(notes_dir: Path) -> Iterator[Path]:
+    """Canonical note-set definition: rglob("*.md") minus any file named
+    index.md (including nested ones, e.g. investigations/<x>/index.md).
+
+    Consumer (LOCKSTEP): view_progress.py::build_notes_summary imports this
+    function directly rather than re-implementing the walk, so the router's
+    `--notes-summary` counts can never silently drift from this checker's
+    notion of what counts as a note. Signature changes here are a public API
+    change for that caller."""
     if not notes_dir.is_dir():
         return
     for p in sorted(notes_dir.rglob("*.md")):
@@ -170,6 +178,10 @@ def parse_progress_table_rows(progress_md: str) -> list[dict]:
 
 
 def parse_notes_index_rows(index_md: str) -> list[dict]:
+    """Consumer (LOCKSTEP): view_progress.py::build_notes_summary imports this
+    function to compute the index-drift counts in `--notes-summary`, rather
+    than re-implementing the table parse. Signature changes here are a public
+    API change for that caller."""
     rows: list[dict] = []
     for line in index_md.splitlines():
         if not line.startswith("|"):

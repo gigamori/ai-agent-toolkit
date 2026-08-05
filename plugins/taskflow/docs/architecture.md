@@ -1,4 +1,4 @@
-# taskflow internal architecture (v0.2.6)
+# taskflow internal architecture (v0.2.7)
 
 Internal design document for developers — read this when you need to understand or modify how the plugin works.
 
@@ -10,7 +10,7 @@ Internal design document for developers — read this when you need to understan
 |---|---|---|---|---|
 | `progress.md` | Task index: TODO / In Progress / Completed tables + free-text sections (Architecture / Key Decisions / Open Issues / Reference Materials) | Project lifetime | Human + AI | On apply, subagent returns the verbatim stdout of `view_progress.py` (the file's Completed table truncated to the most recent rows), not the file itself |
 | `tasks/` | One file per task; status by folder (`0_todo`/`1_in_progress`/`2_done`); body + append-only `<!-- @log -->` block | Task lifetime | AI + Human | Subagent lists `1_in_progress/`, selectively reads files relevant to the prompt, and returns them |
-| `project-notes/` | Project-specific persistent knowledge, organized by category (`specs/`, `investigations/`, `checks/`, `procedures/`, `backlog/`, `_archive/`) | Project lifetime | AI | Subagent returns **pointers only** — the file list plus verbatim matching rows of `index.md`; it does NOT read or return note bodies (the main agent reads note files itself when needed) |
+| `project-notes/` | Project-specific persistent knowledge, organized by category (`specs/`, `investigations/`, `checks/`, `procedures/`, `backlog/`, `_archive/`) | Project lifetime | AI | Subagent returns **pointers only** — a code-bounded `project_notes_summary` (counts by category, `_archive` count, index-drift count; never a file list) plus verbatim matching rows of `index.md` (`_archive/`-prefixed rows excluded); it does NOT read or return note bodies (the main agent reads note files itself when needed) |
 | `plans/`, `memory/` | Auto-archived copies of the Claude config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`) | Archive | Human | Never injected. Not to be referenced. |
 
 ### Role boundaries
@@ -70,7 +70,9 @@ Transitioning into `2_done/` requires explicit human approval. The subagent emit
 
 Each project has a `project-notes/index.md` — a four-column table: `File | Description | Tags | Updated`. The `File` column includes the category prefix (e.g., `specs/api-design.md`).
 
-The subagent surfaces project-notes as **pointers only**: it reads `index.md` and returns (a) the file list under `project-notes/` and (b) the verbatim rows of `index.md` whose Description / Tags match the prompt summary. It does NOT read note body files, and does NOT summarize, translate, or merge. The main agent reads the note files themselves when it needs their contents.
+The subagent surfaces project-notes as **pointers only**: (a) `project_notes_summary`, the stdout of `view_progress.py --notes-summary` — counts by category, an `_archive` count, and an index-drift count (unregistered / missing), never a per-file list (`router-context-payload-cap.md`); and (b) `project_notes_relevant`, the verbatim rows of `index.md` whose Description / Tags match the prompt summary, with any `_archive/`-prefixed row excluded. It does NOT read note body files, and does NOT summarize, translate, or merge. The main agent reads the note files themselves when it needs their contents.
+
+Population size for (a) is decided exclusively by the script, never by the subagent (verbatim vs. bounded-population split, `agents/project-router.md` §Output fidelity). (b)'s row *selection* is a semantic judgment and is deliberately exempt from any size cap — see the same section.
 
 ### Fixed taxonomy
 
@@ -87,7 +89,7 @@ Category is the **folder name**, not a frontmatter field. Move the file to chang
 
 ### No fallback walk
 
-The router does NOT walk `project-notes/**/*.md` as a fallback. If a note exists on disk, it has a row in `index.md`; an unregistered note is drift, detected by `/progress check`, not the router. (The walk-the-tree fallback documented in `notes_guidelines.md` applies to the main agent's own note loading, not to the router.)
+The router does NOT walk `project-notes/**/*.md` as a fallback — neither for `project_notes_summary` (whose count is `view_progress.py --notes-summary`'s job; on script failure the router emits `unavailable: <reason>`, never an improvised listing) nor for `project_notes_relevant`. If a note exists on disk, it has a row in `index.md`; an unregistered note is drift, detected by `/progress check`, not the router. (The walk-the-tree fallback documented in `notes_guidelines.md` applies to the main agent's own note loading, not to the router.)
 
 ## `/progress` operations
 
@@ -153,7 +155,9 @@ user prompt
   │     (the 3 guideline files are injected by the hook, NOT read by the subagent)
   │  4. tasks: list 1_in_progress/, selectively read relevant files;
   │     emit stale_hint if any are >14 days old
-  │  5. project-notes: pointer-only via index.md (no fallback walk)
+  │  5. project-notes: run view_progress.py --notes-summary for the bounded summary
+  │     (counts only); relevant rows via index.md excluding _archive/ (no fallback walk
+  │     for either)
   │  6. return a structured result (no auto-promotion in v0.2.2)
   │
   ▼ [LLM] receives the subagent result

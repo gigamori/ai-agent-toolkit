@@ -29,6 +29,17 @@ opposite (a file-side cap) and was removed together with that behavior.
   V10 check_progress.py reports no findings on an untruncated progress.md.
   V11 the view never emits the retired env name or the retired file-side
       footnote string.
+  V12 --notes-summary: category counts (descending, alpha tiebreak), the
+      _archive line, the index-drift line, and the enumerate line — all
+      correct on a mixed fixture; progress.md need not exist.
+  V13 --notes-summary degenerate cases: zero archive / zero drift omit their
+      lines; a missing project-notes/ dir emits exactly 'none'.
+  V14 --notes-summary: an index.md-less project-notes/ dir (with notes
+      present) emits the 'index: missing' line, not a silently-empty drift.
+  V15 --notes-summary is mutually exclusive with --limit and --all (exit 2).
+  V16 --notes-summary's index-drift counts agree with check_progress.py's own
+      notes_index findings on the same fixture (import consistency, not a
+      re-implementation).
 
 rebuild_progress.py and check_progress.py both have a PEP723 header declaring
 `pyyaml` as a dependency, so this test also declares it and must be run via:
@@ -387,6 +398,161 @@ def test_no_retired_strings(root: Path) -> None:
     check(RETIRED_FOOTNOTE not in text, "progress.md has no retired footnote string")
 
 
+# --------------------------------------------------------------------- notes fixture helpers
+
+
+def make_note(notes_dir: Path, rel: str, title: str = "Note") -> None:
+    p = notes_dir / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"# {title}\n\nBody.\n", encoding="utf-8")
+
+
+def make_notes_index(notes_dir: Path, files: list[str]) -> None:
+    lines = ["| File | Description | Tags | Updated |", "|------|------|------|------|"]
+    for f in files:
+        lines.append(f"| {f} | desc | tag | 2026-01-01 |")
+    (notes_dir / "index.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def make_mixed_notes_fixture(root: Path) -> Path:
+    """7 live notes (investigations 3 / specs 3 / checks 1, a count-tie between
+    investigations and specs) + 1 _archive note; index.md registers specs/a.md,
+    specs/b.md, and a phantom investigations/ghost.md (-> 6 unregistered,
+    1 missing)."""
+    project_dir = root / "proj"
+    notes_dir = project_dir / "project-notes"
+    for rel in (
+        "specs/a.md", "specs/b.md", "specs/c.md",
+        "investigations/a.md", "investigations/b.md", "investigations/c.md",
+        "checks/a.md",
+        "_archive/x.md",
+    ):
+        make_note(notes_dir, rel)
+    make_notes_index(notes_dir, ["specs/a.md", "specs/b.md", "investigations/ghost.md"])
+    return project_dir
+
+
+def notes_summary(project_dir: Path, *args: str) -> tuple[int, str]:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                rc = vp.main([str(project_dir), "--notes-summary", *args])
+            except SystemExit as exc:
+                rc = int(exc.code or 0)
+    return rc, buf.getvalue()
+
+
+# -------------------------------------------------------------------------- V12
+
+
+def test_notes_summary_mixed_fixture(root: Path) -> None:
+    print("--- V12: --notes-summary categories / _archive / drift / enumerate ---")
+    project_dir = make_mixed_notes_fixture(root)
+    check(not (project_dir / "progress.md").exists(), "fixture has no progress.md")
+    rc, out = notes_summary(project_dir)
+    lines = out.rstrip("\n").split("\n")
+
+    check(rc == 0, f"exits 0 with no progress.md present (got {rc})")
+    check(len(lines) == 4, f"exactly 4 lines (got {len(lines)}: {lines!r})")
+    check(
+        lines[0] == "7 notes · investigations 3 / specs 3 / checks 1",
+        f"category line: count-tie (investigations/specs) breaks alphabetically (got {lines[0]!r})",
+    )
+    check(
+        lines[1] == "_archive: 1 (non-authoritative — excluded from relevant rows)",
+        f"_archive line (got {lines[1]!r})",
+    )
+    check(
+        lines[2] == "index drift: 6 unregistered, 1 missing → run `/progress check`",
+        f"drift line (got {lines[2]!r})",
+    )
+    check(
+        lines[3] == "enumerate: ls _projects/<project>/project-notes/**/*.md",
+        f"enumerate line (got {lines[3]!r})",
+    )
+
+
+# -------------------------------------------------------------------------- V13
+
+
+def test_notes_summary_degenerate(root: Path) -> None:
+    print("--- V13: --notes-summary zero-archive / zero-drift / no project-notes ---")
+    with tempfile.TemporaryDirectory() as d:
+        project_dir = Path(d) / "proj"
+        notes_dir = project_dir / "project-notes"
+        make_note(notes_dir, "specs/a.md")
+        make_notes_index(notes_dir, ["specs/a.md"])
+        rc, out = notes_summary(project_dir)
+        lines = out.rstrip("\n").split("\n")
+        check(rc == 0, "clean fixture: exits 0")
+        check(
+            len(lines) == 2,
+            f"clean fixture: only the count line and enumerate line (got {lines!r})",
+        )
+        check(lines[0] == "1 notes · specs 1", f"clean fixture: count line (got {lines[0]!r})")
+
+    with tempfile.TemporaryDirectory() as d:
+        project_dir = Path(d) / "proj"
+        project_dir.mkdir()
+        rc, out = notes_summary(project_dir)
+        check(rc == 0, "no project-notes/: exits 0")
+        check(out == "none", f"no project-notes/: stdout is exactly 'none' (got {out!r})")
+
+
+# -------------------------------------------------------------------------- V14
+
+
+def test_notes_summary_missing_index(root: Path) -> None:
+    print("--- V14: --notes-summary with notes present but no index.md ---")
+    project_dir = root / "proj"
+    notes_dir = project_dir / "project-notes"
+    make_note(notes_dir, "specs/a.md")
+    rc, out = notes_summary(project_dir)
+    lines = out.rstrip("\n").split("\n")
+    check(rc == 0, "exits 0")
+    check(
+        "index: missing → create project-notes/index.md" in lines,
+        f"'index: missing' line present, not silently omitted (got {lines!r})",
+    )
+
+
+# -------------------------------------------------------------------------- V15
+
+
+def test_notes_summary_mutually_exclusive(root: Path) -> None:
+    print("--- V15: --notes-summary rejects --limit / --all ---")
+    project_dir = make_mixed_notes_fixture(root)
+    rc, _ = notes_summary(project_dir, "--limit", "5")
+    check(rc == 2, f"--notes-summary --limit 5 exits 2 (got {rc})")
+    rc, _ = notes_summary(project_dir, "--all")
+    check(rc == 2, f"--notes-summary --all exits 2 (got {rc})")
+
+
+# -------------------------------------------------------------------------- V16
+
+
+def test_notes_summary_matches_check_progress(root: Path) -> None:
+    print("--- V16: --notes-summary drift counts agree with check_progress.py ---")
+    project_dir = make_mixed_notes_fixture(root)
+    _, out = notes_summary(project_dir)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cp.main([str(project_dir)])
+    cp_out = buf.getvalue()
+    cp_unregistered = cp_out.count("exists but is not registered in index.md")
+    cp_missing = cp_out.count("but the file does not exist")
+
+    check(cp_unregistered == 6, f"check_progress.py finds 6 unregistered (got {cp_unregistered})")
+    check(cp_missing == 1, f"check_progress.py finds 1 missing (got {cp_missing})")
+    check(
+        f"index drift: {cp_unregistered} unregistered, {cp_missing} missing" in out,
+        "view_progress.py's drift counts match check_progress.py's own findings "
+        f"(got {out!r})",
+    )
+
+
 def main() -> int:
     print("=== context-side Completed-row cap unit tests ===")
     tests = (
@@ -401,6 +567,11 @@ def main() -> int:
         test_view_exit_codes,
         test_check_progress_clean,
         test_no_retired_strings,
+        test_notes_summary_mixed_fixture,
+        test_notes_summary_degenerate,
+        test_notes_summary_missing_index,
+        test_notes_summary_mutually_exclusive,
+        test_notes_summary_matches_check_progress,
     )
     for fn in tests:
         with tempfile.TemporaryDirectory() as d:

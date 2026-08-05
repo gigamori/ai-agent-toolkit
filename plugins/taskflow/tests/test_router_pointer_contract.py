@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 """Static contract check: project-router stays pointer-only for project-notes.
 
-Regression guard (spec router-notes-fidelity-fix.md §3.5 / §6). The router must
-emit a pointer field (`project_notes_relevant`) for project-notes and must NEVER
-emit a note BODY field. The canonical body-leak sentinel is a field named
-`project_notes_content`: if it ever appears in the Step 6 apply template, a future
-edit has re-introduced note bodies into the router result and defeated context
+Regression guard (spec router-notes-fidelity-fix.md §3.5 / §6, extended by
+router-context-payload-cap.md §5/§6). The router must emit a pointer field
+(`project_notes_relevant`) for project-notes and must NEVER emit a note BODY
+field. The canonical body-leak sentinel is a field named `project_notes_content`:
+if it ever appears in the Step 6 apply template, a future edit has
+re-introduced note bodies into the router result and defeated context
 isolation.
+
+router-context-payload-cap.md additionally retires the unbounded
+`project_notes_list` / `tasks_todo_list` / `tasks_in_progress_list` fields (they
+listed every path with no population cap — the context-bloat defect that spec
+fixes) in favor of a code-bounded `project_notes_summary` (counts only). This
+file also guards that retirement, plus two prose invariants from the same
+spec's M1/M2 review findings: the router must never improvise a directory walk
+when `--notes-summary` fails (M1), and the "verbatim vs. bounded-population"
+fidelity split must state that population size is code-only (M2/D2').
 
 This is a minimal static assert on the agent definition text — not a fidelity
 evaluation (that is a separate cycle, spec §6). It needs no claude CLI; run it
@@ -22,6 +32,15 @@ ROUTER = Path(__file__).resolve().parent.parent / "agents" / "project-router.md"
 
 POINTER_FIELD = "project_notes_relevant"
 BODY_LEAK_FIELD = "project_notes_content"
+NOTES_SUMMARY_FIELD = "project_notes_summary"
+RETIRED_UNBOUNDED_FIELDS = (
+    "project_notes_list",
+    "tasks_todo_list",
+    "tasks_in_progress_list",
+)
+NO_FALLBACK_WALK_PHRASE = "MUST NOT substitute a directory walk"
+BOUNDED_POPULATION_PHRASE = "decided\n  exclusively by a deterministic script"
+RELEVANT_EXEMPTION_PHRASE = "Explicit exemption from (ii)"
 
 PASS = 0
 FAIL = 0
@@ -81,6 +100,42 @@ def main():
         bad(f"'{BODY_LEAK_FIELD}' appears in the router definition (body leak)")
     else:
         ok(f"'{BODY_LEAK_FIELD}' absent from the entire router definition")
+
+    # router-context-payload-cap.md: the code-bounded summary field must be present...
+    if NOTES_SUMMARY_FIELD in template:
+        ok(f"apply template contains bounded field '{NOTES_SUMMARY_FIELD}'")
+    else:
+        bad(f"apply template missing bounded field '{NOTES_SUMMARY_FIELD}'")
+
+    # ...and the three retired unbounded list fields must be gone, template and whole-file both
+    # (whole-file catches a stray mention left in prose, e.g. an un-updated Step 4a/4b reference).
+    for field in RETIRED_UNBOUNDED_FIELDS:
+        if field in template:
+            bad(f"apply template still emits retired unbounded field '{field}'")
+        else:
+            ok(f"apply template has no retired unbounded field '{field}'")
+        if field in text:
+            bad(f"'{field}' still appears somewhere in the router definition")
+        else:
+            ok(f"'{field}' absent from the entire router definition")
+
+    # M1: no directory-walk fallback when --notes-summary fails.
+    if NO_FALLBACK_WALK_PHRASE in text:
+        ok("router definition prohibits a directory-walk fallback for the notes summary (M1)")
+    else:
+        bad("router definition is missing the directory-walk fallback prohibition (M1)")
+
+    # D2'/M2: the verbatim/bounded-population split states population size is code-only.
+    if BOUNDED_POPULATION_PHRASE in text:
+        ok("Output fidelity section states population size is decided by code, not the LLM (D2')")
+    else:
+        bad("Output fidelity section is missing the code-only bounded-population statement (D2')")
+
+    # 4.1: tasks_in_progress_relevant / project_notes_relevant are explicitly exempt from the cap.
+    if RELEVANT_EXEMPTION_PHRASE in text:
+        ok("Output fidelity section explicitly exempts the *_relevant fields from population cap")
+    else:
+        bad("Output fidelity section is missing the *_relevant exemption statement")
 
     # State-write sentinels: router must not contain a shell redirect to state_file.
     if "> <state_file>" in text:
