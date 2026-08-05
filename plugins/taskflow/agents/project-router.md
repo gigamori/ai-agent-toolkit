@@ -128,7 +128,7 @@ include it in `tasks_in_progress_relevant`. Files that don't match are not read 
 List filenames in `_projects/<project>/tasks/0_todo/` for your own use only — not emitted (same reason
 as 4a: `--- progress ---`'s "TODO" table already carries this population). **Ignore any `*.md.lock`
 files.** Read a file only if `prompt_summary` references its slug; this agent has no todo-backlog
-output field, so a match here only informs your Step 2 applicability judgment.
+output field, so this read is for your own orientation only and does not feed any Step 6 field.
 
 ### 4c. Stale hint
 

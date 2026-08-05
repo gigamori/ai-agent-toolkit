@@ -39,8 +39,15 @@ RETIRED_UNBOUNDED_FIELDS = (
     "tasks_in_progress_list",
 )
 NO_FALLBACK_WALK_PHRASE = "MUST NOT substitute a directory walk"
-BOUNDED_POPULATION_PHRASE = "decided\n  exclusively by a deterministic script"
+# Whitespace-normalized (space-joined) rather than pinned to the source's exact
+# line-wrap: a harmless markdown reflow (same words, different wrap column)
+# must not false-FAIL this contract check.
+BOUNDED_POPULATION_PHRASE = "decided exclusively by a deterministic script"
 RELEVANT_EXEMPTION_PHRASE = "Explicit exemption from (ii)"
+
+
+def _normalize_ws(s: str) -> str:
+    return " ".join(s.split())
 
 PASS = 0
 FAIL = 0
@@ -126,7 +133,9 @@ def main():
         bad("router definition is missing the directory-walk fallback prohibition (M1)")
 
     # D2'/M2: the verbatim/bounded-population split states population size is code-only.
-    if BOUNDED_POPULATION_PHRASE in text:
+    # Whitespace-normalized comparison (see BOUNDED_POPULATION_PHRASE) so a harmless
+    # markdown reflow of this sentence cannot false-FAIL the check.
+    if BOUNDED_POPULATION_PHRASE in _normalize_ws(text):
         ok("Output fidelity section states population size is decided by code, not the LLM (D2')")
     else:
         bad("Output fidelity section is missing the code-only bounded-population statement (D2')")
