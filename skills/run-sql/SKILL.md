@@ -8,6 +8,8 @@ context: fork
 
 !`uv run ${CLAUDE_SKILL_DIR}/scripts/run_sql.py list`
 
+Never Read/cat connection config files (e.g. `connections.toml`) — they hold credentials and reading echoes them into the transcript. Take the connection name from `list` above, or ask the user.
+
 ## Query execution
 
 ```bash
