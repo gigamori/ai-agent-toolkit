@@ -117,8 +117,7 @@ The router does **lightweight** inspection only. Heavy drift / lockstep detectio
 
 List filenames in `_projects/<project>/tasks/1_in_progress/` (if the directory exists) — this list is
 for your own use in this step, it is NOT emitted (the `--- progress ---` block's "In Progress" table
-already carries this population). **Ignore any `*.md.lock` files — they are never task content and
-must never be read as one.**
+already carries this population).
 
 For each filename whose slug overlaps with `prompt_summary` keywords, read its content (selective) and
 include it in `tasks_in_progress_relevant`. Files that don't match are not read and not emitted.
@@ -126,9 +125,9 @@ include it in `tasks_in_progress_relevant`. Files that don't match are not read 
 ### 4b. TODO backlog
 
 List filenames in `_projects/<project>/tasks/0_todo/` for your own use only — not emitted (same reason
-as 4a: `--- progress ---`'s "TODO" table already carries this population). **Ignore any `*.md.lock`
-files.** Read a file only if `prompt_summary` references its slug; this agent has no todo-backlog
-output field, so this read is for your own orientation only and does not feed any Step 6 field.
+as 4a: `--- progress ---`'s "TODO" table already carries this population). Read a file only if
+`prompt_summary` references its slug; this agent has no todo-backlog output field, so this read is
+for your own orientation only and does not feed any Step 6 field.
 
 ### 4c. Stale hint
 
