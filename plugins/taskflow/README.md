@@ -246,7 +246,7 @@ Project-specific persistent knowledge, categorized by folder:
 
 `project-notes/index.md` is a 4-column table (`File | Description | Tags | Updated`) tracking notes; the LLM keeps it in sync (prompted by the PreToolUse hook) when notes are created or edited.
 
-The project-router surfaces project-notes as **pointers only** — the file list plus the verbatim matching rows of `project-notes/index.md`, never note body contents — so it cannot summarize, translate, or confabulate note contents into the routing result. The main agent reads the note files themselves when needed.
+The project-router surfaces project-notes as **pointers only** — a code-bounded summary (note counts by category, an `_archive` count, and an index-drift count, produced by `scripts/view_progress.py --notes-summary`; never a per-file list) plus the verbatim matching rows of `project-notes/index.md`, with `_archive/` rows excluded as non-authoritative — never note body contents, so it cannot summarize, translate, or confabulate note contents into the routing result. The main agent reads the note files themselves when needed.
 
 #### Auto-save for investigation-style tasks
 

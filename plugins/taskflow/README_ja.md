@@ -245,7 +245,7 @@ status 遷移は `/progress start` / `/progress approve` / `/progress unstart` �
 
 `project-notes/index.md` は 4 列テーブル（`File | Description | Tags | Updated`）で notes を管理する。notes 作成・更新時に LLM が（PreToolUse フックの促しを受けて）同期する。
 
-project-router は project-notes を **pointer のみ**（ファイル一覧＋`project-notes/index.md` の該当行の逐語コピー、本文は返さない）で返すため、note 内容を要約・翻訳・confabulate して routing 結果に混入させない。本文が要るときはメインエージェントが直接読む。
+project-router は project-notes を **pointer のみ**（`scripts/view_progress.py --notes-summary` が生成するコード側で上限を持つサマリ＝カテゴリ別 note 件数・`_archive` 件数・index drift 件数。ファイルを逐一列挙することはない＋`project-notes/index.md` の該当行の逐語コピー、ただし非権威の `_archive/` 行は除外。本文は返さない）で返すため、note 内容を要約・翻訳・confabulate して routing 結果に混入させない。本文が要るときはメインエージェントが直接読む。
 
 #### 調査系タスクの自動保存
 
