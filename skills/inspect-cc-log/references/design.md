@@ -60,6 +60,16 @@ literally in the catalog, so no absolute path is baked into a view definition.
   truncated (the old `content[0]`-only loss; ~25k user blocks at index > 0).
 - **Tool pairing**: `tool_use.id == tool_result.tool_use_id` (100%; verified ~149k
   pairs). `sourceToolAssistantUUID` is NOT a reliable pairing key (57%) and is not used.
+- **Fork/resume record duplication**: fork/resume duplicates a parent session's
+  records wholesale into the new session's JSONL file, so the same `tool_use_id`
+  can appear under multiple `session_id` values. Joining calls to results on
+  `tool_use_id` alone (without `session_id`) produces a cross-product fan-out
+  (verified ~3.46x row inflation on Bash/PowerShell calls: 86,124 raw rows vs
+  24,860 distinct `tool_use_id`). Duplicate rows for a given `tool_use_id` were
+  verified byte-identical on `is_error`/`tool_input`/`result_text` (0/24,852
+  conflicts). `cc_tool` dedups both the call and result sides by `tool_use_id`
+  (`GROUP BY` + `any_value()`) before joining; canonical `session_id` is the
+  `min()` of the duplicates.
 - **`toolUseResult` variants** (top-level on the user record): Edit/Write carry
   `filePath`, `structuredPatch` (hunks `{oldStart,oldLines,newStart,newLines,lines}`),
   `userModified`; Bash carries `stdout`/`stderr`/`interrupted` (no numeric exit code).

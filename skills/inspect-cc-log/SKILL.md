@@ -53,7 +53,7 @@ one `select` per call.
 |---|---|---|
 | `session_id` | one session (`<uuid>.jsonl`) | primary key linking all views of a session |
 | `uuid` / `parent_uuid` | one record / its parent | walk the conversation DAG; tool result → emitter |
-| `tool_use_id` (`toolu_…`) | one tool call | `cc_block` ↔ `cc_tool` join key (call ↔ result), 100% pairing |
+| `tool_use_id` (`toolu_…`) | one tool call | `cc_block` ↔ `cc_tool` join key (call ↔ result) |
 | `bundle_id` | the fork-tree root session | `where bundle_id=<root>` gathers a whole fork tree (children share the parent session_id) |
 | `agent_id` | one Agent-tool child (`agent-*.jsonl`) | `cc_fork` → `parent_session_id` |
 | `parent_last_uuid` | parent's last record at fork time | locate the fork point in the parent session |
