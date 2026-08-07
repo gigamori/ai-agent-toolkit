@@ -114,12 +114,30 @@ SELECT
   try_cast(blk->>'is_error' AS boolean)            AS is_error
 FROM exploded;
 
--- L3: tool-call grain (call <-> result joined by tool_use_id; 100% pairing) -------------
+-- L3: tool-call grain (call <-> result joined by tool_use_id) ---------------------------
+-- fork/resume duplicates a parent session's records wholesale into the new
+-- session's JSONL file, so the same tool_use_id can appear under multiple
+-- session_id values. Joining calls to results on tool_use_id alone (without
+-- session_id) then produces a cross-product fan-out (verified ~3.46x row
+-- inflation on Bash/PowerShell calls). Duplicate rows for a given tool_use_id
+-- were verified byte-identical on is_error/tool_input/result_text, so
+-- GROUP BY tool_use_id with any_value() below is a lossless dedup; canonical
+-- session_id is the min() of the duplicates.
 CREATE OR REPLACE VIEW cc_tool AS
-WITH calls AS (
+WITH calls_raw AS (
   SELECT tool_use_id, session_id, tool_name, tool_input, ts AS ts_call
   FROM cc_block
   WHERE block_type = 'tool_use'
+),
+calls AS (
+  SELECT
+    tool_use_id,
+    min(session_id)                                AS session_id,
+    any_value(tool_name)                            AS tool_name,
+    any_value(tool_input)                           AS tool_input,
+    min(ts_call)                                     AS ts_call
+  FROM calls_raw
+  GROUP BY tool_use_id
 ),
 recs_arr AS (
   SELECT
@@ -130,7 +148,7 @@ recs_arr AS (
   WHERE record_type = 'user'
     AND json_type(j->'message'->'content') = 'ARRAY'
 ),
-results AS (
+results_raw AS (
   SELECT
     blk->>'tool_use_id'                            AS tool_use_id,
     r.ts                                           AS ts_result,
@@ -146,6 +164,23 @@ results AS (
   FROM recs_arr r,
        unnest(cast(r.j->'message'->'content' AS JSON[])) AS u(blk)
   WHERE blk->>'type' = 'tool_result'
+),
+results AS (
+  SELECT
+    tool_use_id,
+    min(ts_result)                                  AS ts_result,
+    any_value(is_error)                              AS is_error,
+    any_value(result_text)                           AS result_text,
+    any_value(file_path)                             AS file_path,
+    any_value(structured_patch)                      AS structured_patch,
+    any_value(user_modified)                         AS user_modified,
+    any_value(stdout)                                AS stdout,
+    any_value(stderr)                                AS stderr,
+    any_value(interrupted)                           AS interrupted,
+    any_value(file_kind)                              AS file_kind,
+    any_value(file_name)                              AS file_name
+  FROM results_raw
+  GROUP BY tool_use_id
 )
 SELECT
   c.tool_use_id,
