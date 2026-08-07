@@ -143,7 +143,8 @@ session of a resolved set** at once, use its session-set sibling:
 With no flags, the session set **follows the active wiki's resolved scope** — a
 workspace-scoped wiki unions every session the workspace's projects registered; a
 pj-scoped wiki resolves this session's own active project; a standalone/legacy
-cwd-scoped wiki keeps resolving the current project's session directory directly.
+cwd-scoped wiki keeps resolving the current project's session directory directly
+(a wiki resolved as the single folder below you behaves the same as the cwd case).
 
 It finds the session set, ingests each session **one at a time** (each in its own
 transaction, so one bad session never sinks the others), and prints a
@@ -248,6 +249,12 @@ It picks the active wiki by taking the first of these that exists, in order:
    switch when you switch projects.
 3. **A workspace wiki** — `_llm-wiki/` at the root of your workspace.
 4. **The current folder** — if you're standing inside a wiki.
+5. **A single wiki folder directly below you** — if the current folder itself is not
+   a wiki but exactly one folder inside it is, that one is used. This is the rescue
+   for the common case of opening the *parent* of your wiki. It looks one level down
+   only, never deeper; and if **two or more** folders below you are wikis, llm-wiki
+   deliberately picks none of them (guessing could write to the wrong wiki) — open the
+   wiki folder itself, or pass `--root`.
 
 So to change which wiki you reference per project, just switch your taskflow project
 (`pj:<project>`); the next command uses that project's `wiki/`. For a one-off, pass

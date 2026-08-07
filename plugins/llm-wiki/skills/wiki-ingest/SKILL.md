@@ -167,7 +167,7 @@ in the glob/dir case you run them once per enumerated file. They are identical e
 ### Resolve `WIKI_ROOT` (multi-scope; do not hardcode the CWD)
 
 The wiki root is resolved, not assumed to be the CWD. Resolve it via
-`wiki_root_resolver` (scopes: prompt>pj>workspace>cwd), honoring an explicit
+`wiki_root_resolver` (scopes: prompt>pj>workspace>cwd>child), honoring an explicit
 `--root <path>` from `$ARGUMENTS` as the top override (Q4). Parse `--root <path>`
 out of `$ARGUMENTS` first (it is not a `key=value` axis — strip it before the
 Step 0 source/axis parse); pass it as `prompt_root`, else pass nothing:
@@ -183,14 +183,16 @@ concurrent sessions on different projects:
 SID="${CLAUDE_SESSION_ID}"
 RESOLVED="$(uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki resolve-root ${ROOT_OVERRIDE:+--root "$ROOT_OVERRIDE"} --sid "$SID")" \
   || { echo "resolve-root failed (NO-WIKI or resolver error) — stop"; }
-IFS=$'\t' read -r WIKI_ROOT WIKI_SCOPE <<<"$RESOLVED"
+{ read -r WIKI_ROOT; read -r WIKI_SCOPE; } <<<"$RESOLVED"
 ```
 
-The `resolve-root` verb prints `<root>\t<scope>` on stdout; the block above splits it
-(`WIKI_ROOT`=root, `WIKI_SCOPE`=scope) so a stray tab never contaminates `$WIKI_ROOT`. If it exits non-zero (`NO-WIKI`), no wiki resolved —
+The `resolve-root` verb prints ONE VALUE PER LINE on stdout — `<root>` on line 1,
+`<scope>` on line 2 — and the block above reads them in that order (`WIKI_ROOT`=root,
+`WIKI_SCOPE`=scope). The old tab-separated form was removed 2026-08-07; do NOT
+split on a tab. If it exits non-zero (`NO-WIKI`), no wiki resolved —
 report that this skill requires an active wiki (pass `--root <path>` or run
 from a wiki root) and STOP. Before acting, show the user the resolved root and
-scope (e.g. `active wiki: <root> (scope: pj|workspace|cwd|prompt)`). The driver
+scope (e.g. `active wiki: <root> (scope: pj|workspace|cwd|child|prompt)`). The driver
 still enforces the marker and errors with "not a wiki root" if absent.
 
 ## Step 1 — `begin`: open the transaction, normalize, declare (one driver call)

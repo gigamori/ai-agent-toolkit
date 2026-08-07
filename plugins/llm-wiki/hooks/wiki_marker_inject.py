@@ -6,14 +6,14 @@
 """UserPromptSubmit hook: wiki-active marker injection (D8, design §4 起動 / §6 F2).
 
 Resolves the active wiki via `wiki_root_resolver.resolve(cwd=<hook cwd>)` so
-pj / workspace / cwd scopes are ALL honored (plan §2-C, W-f) — not just the CWD's
+pj / workspace / cwd / child scopes are ALL honored (plan §2-C, W-f) — not just the CWD's
 `.llmwiki` marker. This is VSCode-safe / CWD-independent: a wiki linked through
 the active pj or the workspace convention path resolves even when the CWD has no
 marker. When a wiki resolves, injects a "wiki-active" additionalContext so the
 wiki query skill (description-driven) activates and the LLM knows it is operating
 inside a wiki-root, AND a discovery line (W-f):
 
-    active wiki: <root> (scope: pj|workspace|cwd)
+    active wiki: <root> (scope: pj|workspace|cwd|child)
 
 so the active wiki is visible every turn (in VSCode the CWD is invisible). When
 `resolve()` returns None (no wiki in any scope), exits 0 with no output (dormant)

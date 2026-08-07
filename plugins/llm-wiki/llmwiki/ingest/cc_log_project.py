@@ -666,11 +666,23 @@ def main() -> None:  # pragma: no cover - thin CLI wrapper for manual inspection
 
     # Fix stdio to UTF-8 regardless of the host locale (S1; same idiom as
     # cli.py:main — subsumes the old stdout-only reconfigure below).
+    #
+    # `newline="\n"` (2026-08-07) pins the line terminator to LF on every
+    # platform, matching cli.py:main. Here it affects CONTENT, not just line
+    # framing: without `--output` this entrypoint prints the projected transcript
+    # markdown straight to stdout, so Windows text mode would rewrite every line
+    # ending inside the projection itself.
+    #
+    # Scope note: this fixes the STDOUT arm only. The `--output` arm goes through
+    # `Path.write_text`, which on Windows also translates "\n" to "\r\n"
+    # (measured, not assumed) — that arm still writes CRLF. Left alone here
+    # because it is a separate, pre-existing behaviour with its own consumers;
+    # do not read this change as having normalised both.
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
 
     ap = argparse.ArgumentParser(
         description="Project a single cc-log sid to novel-turn markdown (T2).")

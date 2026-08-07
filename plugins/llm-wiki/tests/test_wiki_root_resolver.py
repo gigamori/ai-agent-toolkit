@@ -298,3 +298,56 @@ def test_resolver_never_generates(tmp_path, monkeypatch):
     assert not (tmp_path / "_llm-wiki").exists()
     assert not (tmp_path / ".llmwiki").exists()
     assert not (tmp_path / "_projects").exists()
+
+
+# --------------------------------------------------------------------------- #
+# scope: child (2026-08-08 — exactly-one immediate child with a marker)
+# --------------------------------------------------------------------------- #
+def test_child_resolves_single_marked_child(tmp_path, monkeypatch):
+    monkeypatch.delenv(wrr.TASKFLOW_PROJECT_ROOTS, raising=False)
+    wiki = _make_wiki(tmp_path / "wiki")
+    (tmp_path / "source").mkdir()          # unmarked siblings must not interfere
+    (tmp_path / "disposable").mkdir()
+    r = wrr.resolve(cwd=tmp_path)
+    assert r is not None
+    assert r.root == wiki
+    assert r.scope == "child"
+
+
+def test_child_ambiguous_two_marked_children_returns_none(tmp_path, monkeypatch):
+    # Fail-closed: picking either silently could write to the wrong wiki.
+    monkeypatch.delenv(wrr.TASKFLOW_PROJECT_ROOTS, raising=False)
+    _make_wiki(tmp_path / "wiki-a")
+    _make_wiki(tmp_path / "wiki-b")
+    assert wrr.resolve(cwd=tmp_path) is None
+
+
+def test_child_is_depth_one_only(tmp_path, monkeypatch):
+    # A marker two levels down must NOT resolve (no recursive scan).
+    monkeypatch.delenv(wrr.TASKFLOW_PROJECT_ROOTS, raising=False)
+    _make_wiki(tmp_path / "nested" / "wiki")
+    assert wrr.resolve(cwd=tmp_path) is None
+
+
+def test_cwd_marker_beats_child(tmp_path, monkeypatch):
+    # Precedence: cwd (scope 4) wins over a marked child (scope 5).
+    monkeypatch.delenv(wrr.TASKFLOW_PROJECT_ROOTS, raising=False)
+    _make_wiki(tmp_path)
+    _make_wiki(tmp_path / "wiki")
+    r = wrr.resolve(cwd=tmp_path)
+    assert r is not None
+    assert r.root == tmp_path
+    assert r.scope == "cwd"
+
+
+def test_workspace_beats_child(tmp_path, monkeypatch):
+    # Precedence: workspace (scope 3) wins over a marked child (scope 5) even
+    # though _llm-wiki is itself an immediate child — it must surface as
+    # "workspace", not "child".
+    monkeypatch.delenv(wrr.TASKFLOW_PROJECT_ROOTS, raising=False)
+    ws_wiki = _make_wiki(tmp_path / wrr.WORKSPACE_WIKI_DIRNAME)
+    _make_wiki(tmp_path / "other-wiki")
+    r = wrr.resolve(cwd=tmp_path)
+    assert r is not None
+    assert r.root == ws_wiki
+    assert r.scope == "workspace"

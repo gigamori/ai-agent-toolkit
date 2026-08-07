@@ -24,7 +24,7 @@ Wikilink parsing is REUSED from ``link_lint`` (no new parser is written here):
 Usage:
     uv run python generate_wiki_view.py --serve [--port 17330] [--root <path>]
 
-The wiki root is resolved via wiki_root_resolver (prompt>pj>workspace>cwd);
+The wiki root is resolved via wiki_root_resolver (prompt>pj>workspace>cwd>child);
 ``--root <path>`` is the top override. If nothing resolves, exit 2.
 
 Exit codes (theme1 i:39 contract, generalized 2026-07-16):
@@ -434,11 +434,17 @@ def open_browser(url: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     # Fix stdio to UTF-8 regardless of the host locale (S1; same idiom as
     # cli.py:main — non-ASCII roots/paths print on stderr).
+    #
+    # `newline="\n"` (2026-08-07) pins the line terminator to LF on every
+    # platform, matching cli.py:main. Everything this entrypoint prints goes to
+    # stderr, including the `[wiki-view] serving ...` summary line — and the
+    # wiki-view skill redirects that into `.llm-wiki-view.log` and greps the line
+    # back out, so a CRLF would ride into what the skill reports to the user.
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     parser = argparse.ArgumentParser(description="Serve a local llm-wiki viewer.")
     parser.add_argument(
         "--serve", action="store_true",
@@ -454,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--root", default=None,
         help="Explicit wiki root (top override). If omitted, the wiki root is "
-             "resolved by wiki_root_resolver (prompt>pj>workspace>cwd).",
+             "resolved by wiki_root_resolver (prompt>pj>workspace>cwd>child).",
     )
     # argparse raises SystemExit(2) on a bad argument, which collides with our
     # rc2 SENTINEL contract (:457's "no wiki resolved" is a genuine sentinel).
@@ -471,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     resolution = wiki_root_resolver.resolve(args.root)
     if resolution is None:
         print(
-            "error: no wiki resolved (prompt>pj>workspace>cwd all empty). "
+            "error: no wiki resolved (prompt>pj>workspace>cwd>child all empty). "
             "Pass --root <path> or run from a wiki root.",
             file=sys.stderr,
         )

@@ -103,8 +103,10 @@ def test_resolve_root_nonascii_root_round_trips_under_cp932(tmp_path):
 
     proc = _run_cli(["resolve-root", "--root", str(root)])
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
-    line = proc.stdout.decode("utf-8").strip()
-    out_root, _, scope = line.partition("\t")
+    # One value per line (root, then scope) since 2026-08-07; was a single
+    # tab-separated line before that.
+    lines = proc.stdout.decode("utf-8").splitlines()
+    out_root, scope = lines[0].strip(), lines[1].strip()
     # The non-BMP char comes back intact as UTF-8 (stdout reconfigure wins
     # over PYTHONIOENCODING=cp932 — cp932 could not encode it at all).
     assert _NONBMP in out_root

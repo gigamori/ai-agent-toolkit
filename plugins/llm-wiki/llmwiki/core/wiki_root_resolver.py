@@ -6,7 +6,7 @@
 
 Resolves the active wiki-root by EXISTENCE, top-down, in a fixed precedence:
 
-    prompt > pj > workspace > cwd
+    prompt > pj > workspace > cwd > child
 
 This module RESOLVES ONLY. It never creates or generates a wiki — generation
 is `/wiki-init` (plan T2, R-6). If nothing resolves, `resolve()` returns None;
@@ -34,7 +34,16 @@ Scopes (plan §2-A 1..5):
                  prefix). If its `.llmwiki` exists -> scope "workspace".
   4. cwd       — if CWD has `.llmwiki` -> scope "cwd" (legacy / standalone repo
                  compatibility, plan §1 last bullet).
-  5. none      — None.
+  5. child     — scan the IMMEDIATE children of CWD (depth 1, no recursion);
+                 if EXACTLY one child directory has `.llmwiki` -> that child,
+                 scope "child". Zero children with a marker, or two or more
+                 (ambiguous — picking one silently could write to the wrong
+                 wiki), fall through to none. Added 2026-08-08: opening the
+                 PARENT of a wiki folder is a common accident (observed in the
+                 pi-side bashReview-exemption E2E), and without this scope the
+                 session goes dormant with no wiki even though the intent is
+                 obvious when there is only one candidate.
+  6. none      — None.
 
 workspace-root rule (plan §2-A asks for a deterministic, documented rule):
     The workspace-root is the PARENT directory of the project-roots container.
@@ -74,7 +83,7 @@ class Resolution:
     """A resolved wiki-root and the scope it was resolved through."""
 
     root: Path
-    scope: str  # one of "prompt" | "pj" | "workspace" | "cwd"
+    scope: str  # one of "prompt" | "pj" | "workspace" | "cwd" | "child"
 
 
 def _has_marker(path: Path) -> bool:
@@ -188,7 +197,8 @@ def resolve(prompt_root: "str | None" = None,
             session_id: "str | None" = None) -> "Resolution | None":
     """Resolve the active wiki-root by existence in precedence order.
 
-    Order (plan §2-A): prompt > pj > workspace > cwd; None if nothing matches.
+    Order (plan §2-A + child 2026-08-08): prompt > pj > workspace > cwd >
+    child; None if nothing matches (incl. the ambiguous multi-child case).
 
     Args:
         prompt_root: an explicit `--root` override (most preferred). Taken
@@ -225,5 +235,26 @@ def resolve(prompt_root: "str | None" = None,
     if _has_marker(base):
         return Resolution(root=base, scope="cwd")
 
-    # 5) none.
+    # 5) child — exactly one immediate child with a marker (depth 1 only).
+    #
+    # Ambiguity is fail-closed ON PURPOSE: with two candidate wikis under the
+    # cwd, silently picking either one hands every later WRITE (`file`,
+    # `promote`, `ingest ...`) a root the user never chose. None keeps the
+    # existing NO-WIKI behavior, and the caller-side guard tells the user to
+    # open the wiki folder itself. Depth is 1 and never recursive — a recursive
+    # scan would both be slow on big trees and widen the ambiguity surface.
+    #
+    # OSError (unreadable cwd, permission) skips the scope cleanly — same
+    # "never error, just don't resolve" contract as the pj scope.
+    try:
+        candidates = [
+            child for child in base.iterdir()
+            if child.is_dir() and _has_marker(child)
+        ]
+    except OSError:
+        candidates = []
+    if len(candidates) == 1:
+        return Resolution(root=candidates[0], scope="child")
+
+    # 6) none.
     return None

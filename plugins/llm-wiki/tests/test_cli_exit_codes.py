@@ -164,8 +164,13 @@ def test_resolve_root_sid_selects_per_session_state(tmp_path, monkeypatch):
 
     rc, out, _ = _run(["resolve-root", "--sid", "sidA"])
     assert rc == 0
-    root_line = out.strip().split("\t")[0]
-    assert root_line == str(wiki_a.resolve()) or root_line == str(wiki_a)
+    # resolve-root prints one value per line (root, then scope) since 2026-08-07.
+    root_line = out.splitlines()[0].strip()
+    assert (
+        root_line == str(wiki_a.resolve())
+        or root_line == str(wiki_a)
+        or root_line == wiki_a.resolve().as_posix()
+    )
 
 
 def test_resolve_root_without_sid_uses_mtime_latest(tmp_path, monkeypatch):
@@ -184,5 +189,103 @@ def test_resolve_root_without_sid_uses_mtime_latest(tmp_path, monkeypatch):
 
     rc, out, _ = _run(["resolve-root"])              # no --sid -> mtime-latest (B)
     assert rc == 0
-    root_line = out.strip().split("\t")[0]
-    assert root_line == str(wiki_b.resolve()) or root_line == str(wiki_b)
+    # resolve-root prints one value per line (root, then scope) since 2026-08-07.
+    root_line = out.splitlines()[0].strip()
+    assert (
+        root_line == str(wiki_b.resolve())
+        or root_line == str(wiki_b)
+        or root_line == wiki_b.resolve().as_posix()
+    )
+
+
+# --------------------------------------------------------------------------- #
+# `file --content-file` (2026-08-07) — the STDIN-free filing path that keeps the
+# FE-A call inside pi-studio's bundled-tooling bashReview exemption. Synced into
+# this repo as shared-core parity (CC itself has no bashReview).
+# --------------------------------------------------------------------------- #
+def test_file_content_file_is_read_instead_of_stdin(tmp_path):
+    root = _make_wiki(tmp_path)
+    body = tmp_path / "llmwiki-body-x.md"
+    body.write_text("from the content file", encoding="utf-8")
+    # STDIN deliberately carries DIFFERENT text: if the flag were ignored, the
+    # page would silently get the stdin body instead.
+    rc, out, _ = _run(["file", root, "wiki/derived/p.md", "T",
+                       "--content-file", str(body)], stdin="from stdin")
+    assert rc == 0, out
+    assert (tmp_path / "wiki" / "derived" / "p.md").read_text(encoding="utf-8") == (
+        "from the content file"
+    )
+
+
+def test_file_content_file_named_llmwiki_body_is_deleted_after_read(tmp_path):
+    root = _make_wiki(tmp_path)
+    body = tmp_path / "llmwiki-body-y.md"
+    body.write_text("one shot", encoding="utf-8")
+    rc, _, _ = _run(["file", root, "wiki/derived/q.md", "T", "--content-file", str(body)])
+    assert rc == 0
+    # Pre-redaction text must not survive the call.
+    assert not body.exists()
+
+
+def test_file_content_file_with_other_name_is_kept(tmp_path):
+    root = _make_wiki(tmp_path)
+    body = tmp_path / "notes.md"
+    body.write_text("keep me", encoding="utf-8")
+    rc, _, _ = _run(["file", root, "wiki/derived/r.md", "T", "--content-file", str(body)])
+    assert rc == 0
+    # The unlink is guarded by the temp-name shape, mirroring
+    # project-batch-cleanup — an arbitrary caller path is never removed.
+    assert body.exists()
+
+
+def test_file_missing_content_file_fails_closed_rc2(tmp_path):
+    root = _make_wiki(tmp_path)
+    # Must NOT fall back to STDIN: that would file an empty/wrong page.
+    rc, _, err = _run(["file", root, "wiki/derived/s.md", "T",
+                       "--content-file", str(tmp_path / "gone.md")], stdin="stdin body")
+    assert rc == 2 and "NO-CONTENT-FILE" in err
+    assert not (tmp_path / "wiki" / "derived" / "s.md").exists()
+
+
+def test_file_still_reads_stdin_when_flag_absent(tmp_path):
+    root = _make_wiki(tmp_path)
+    rc, out, _ = _run(["file", root, "wiki/derived/t.md", "T"], stdin="classic stdin body")
+    assert rc == 0, out
+    assert (tmp_path / "wiki" / "derived" / "t.md").read_text(encoding="utf-8") == (
+        "classic stdin body"
+    )
+
+
+def test_file_content_file_without_value_is_ex_usage(tmp_path):
+    root = _make_wiki(tmp_path)
+    # The dangerous shape: a trailing flag used to leave content_file None and
+    # fall through to STDIN, filing an EMPTY page at exit 0.
+    rc, _, err = _run(["file", root, "wiki/derived/u.md", "T", "--content-file"])
+    assert rc == cli.EX_USAGE and "--content-file requires a path" in err
+    assert not (tmp_path / "wiki" / "derived" / "u.md").exists()
+
+
+def test_file_content_file_with_empty_value_is_ex_usage(tmp_path):
+    root = _make_wiki(tmp_path)
+    rc, _, err = _run(["file", root, "wiki/derived/v.md", "T", "--content-file="])
+    assert rc == cli.EX_USAGE and "--content-file requires a path" in err
+    assert not (tmp_path / "wiki" / "derived" / "v.md").exists()
+
+
+def test_file_misspelt_flag_is_ex_usage_not_silently_ignored(tmp_path):
+    root = _make_wiki(tmp_path)
+    # A misspelt flag lands in `positional`; the exact-arity check rejects it
+    # instead of ignoring it and reading STDIN.
+    rc, _, err = _run(["file", root, "wiki/derived/w.md", "T", "--content_file=x"],
+                      stdin="stdin body")
+    assert rc == cli.EX_USAGE and "usage: file" in err
+    assert not (tmp_path / "wiki" / "derived" / "w.md").exists()
+
+
+def test_file_title_may_start_with_dashes(tmp_path):
+    root = _make_wiki(tmp_path)
+    # Arity, not a leading-`--` scan, is what rejects unknown options — a title
+    # is free text and may legitimately start with dashes.
+    rc, out, _ = _run(["file", root, "wiki/derived/x.md", "--- draft ---"], stdin="body")
+    assert rc == 0, out
+    assert (tmp_path / "wiki" / "derived" / "x.md").read_text(encoding="utf-8") == "body"

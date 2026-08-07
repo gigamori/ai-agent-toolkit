@@ -7,7 +7,7 @@ allowed-tools: Bash(uv run *)
 
 # /wiki-view
 
-Serve a local HTML viewer for the active llm-wiki. Renders wiki/ + wiki/derived/ markdown pages on demand and turns `[[wikilinks]]` into navigable links between pages. The wiki root is resolved multi-scope (prompt>pj>workspace>cwd), so the CWD need not be the wiki root; pass `--root <path>` to target one explicitly.
+Serve a local HTML viewer for the active llm-wiki. Renders wiki/ + wiki/derived/ markdown pages on demand and turns `[[wikilinks]]` into navigable links between pages. The wiki root is resolved multi-scope (prompt>pj>workspace>cwd>child), so the CWD need not be the wiki root; pass `--root <path>` to target one explicitly.
 
 ## Step 1 — Start the wiki viewer server
 
@@ -24,7 +24,7 @@ grep "serving" .llm-wiki-view.log | tail -1
 
 This starts an HTTP server on `http://127.0.0.1:17330/` in the background and returns the server summary line. Pass `--root <path>` after `--serve` to target a specific wiki root.
 
-The wiki root is resolved via `wiki_root_resolver` (prompt>pj>workspace>cwd). If nothing resolves, the script exits 2 with `error: no wiki resolved (prompt>pj>workspace>cwd all empty). Pass --root <path> or run from a wiki root.` — surface that error and stop.
+The wiki root is resolved via `wiki_root_resolver` (prompt>pj>workspace>cwd>child). If nothing resolves, the script exits 2 with `error: no wiki resolved (prompt>pj>workspace>cwd>child all empty). Pass --root <path> or run from a wiki root.` — surface that error and stop.
 
 ## Step 2 — Report
 

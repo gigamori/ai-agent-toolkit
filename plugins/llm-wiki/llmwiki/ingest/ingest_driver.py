@@ -116,7 +116,10 @@ budget, opening no transaction):
           same `--pj`-style enumeration; unresolvable -> DriverError guiding
           the caller to `--pj <name>` (fail-closed, NOT a silent narrow-to-cwd
           fall-back — that silent narrowing was the diagnosed symptom).
-        - --pj/--workspace both omitted, --scope in (None, cwd) (D4,
+        - --pj/--workspace both omitted, --scope in (None, cwd) — and, since
+          the resolver's `child` scope was added 2026-08-08, any other scope
+          string, `child` included: a child wiki is CWD-adjacent, so it takes
+          the same branch (D4,
           UNCHANGED from before kind/sid/scope existed): resolve the CC
           project dir from the RUNNING session's own log location as ground
           truth (U3) — find `<cc-projects-root>/*/<current-
@@ -1403,7 +1406,7 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
 
     `workspace` (D2/D3, explicit `--workspace`, cc-only for now — see the
     module's fe_pi_log Follow-up) and `scope` (D2, the caller's resolved
-    `WIKI_SCOPE` — "prompt"|"pj"|"workspace"|"cwd"|None — threaded for the
+    `WIKI_SCOPE` — "prompt"|"pj"|"workspace"|"cwd"|"child"|None — threaded for the
     no-args case) together implement the no-args scope tree (D2) so a
     workspace-scoped wiki's Path B set follows the resolved wiki scope instead
     of narrowing to one cwd-slug dir. `workspace=True` is an explicit override
@@ -1417,8 +1420,11 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
                      NO project filter (D3); scope "workspace".
       - `pj` given (explicit, unchanged) -> `_projects/_state/*.json` filtered
                      by `project == pj`; scope "pj".
-      - workspace/pj both omitted, `scope in (None, "cwd")` (D4, UNCHANGED from
-                     before kind/sid/scope existed) -> the running session's CC
+      - workspace/pj both omitted, `scope in (None, "cwd")` — and, since the
+                     resolver's `child` scope was added 2026-08-08, any other
+                     scope string, `child` included (a child wiki is
+                     CWD-adjacent, so it takes this same branch) (D4, UNCHANGED
+                     from before kind/sid/scope existed) -> the running session's CC
                      project dir (U3 primary, `sid` override or env), else the
                      cwd-reverse-generated dir (U3 secondary); scope "cwd".
       - workspace/pj both omitted, `scope in ("pj", "prompt")` (D2; `prompt` is
@@ -1720,11 +1726,18 @@ def main(argv: "list[str] | None" = None) -> int:
     # cli.py:main). This subsumes the old stdout-only reconfigure that sat just
     # before the JSON print: stdin is STRICT (fail fast on corrupted input),
     # stdout/stderr replace (reporting never crashes). Wins over PYTHONIOENCODING.
+    #
+    # `newline="\n"` (2026-08-07) pins the line terminator to LF on every
+    # platform, matching cli.py:main. Windows text mode would otherwise write
+    # "\r\n", and this entrypoint's contract JSON carries values the caller
+    # transcribes into later commands (`stage1_blob_path`, `out_dir`, the
+    # per-sid `turns` paths). A CR that rides along on one of those is invisible
+    # in every log and diff that would be consulted to explain the failure.
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(f"usage: ingest_driver.py <{'|'.join(INGEST_VERBS)}> ...",
