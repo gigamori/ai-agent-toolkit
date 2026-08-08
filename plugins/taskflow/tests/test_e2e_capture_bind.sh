@@ -28,7 +28,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # note-task-link.md §10 option-a: Round2 placeholder now backstops on capture
 # expiry. Force immediate expiry so the capture-spawn request (Stage 2) is
-# followed by the deterministic backstop bind (Stage 3) without a 15s wait.
+# followed by the deterministic backstop bind (Stage 3) without a 30s wait.
 export TASKFLOW_CAPTURE_EXPIRY_S=0
 CAP="$REPO_ROOT/plugins/taskflow/hooks/touched_capture.py"
 STOP="$REPO_ROOT/plugins/taskflow/hooks/session_progress_capture.py"
@@ -148,6 +148,19 @@ echo "$O1" | grep -qF "\\\"sidecar_path\\\":\\\"$EXP_SIDECAR\\\"" \
 echo "$O1" | grep -qF "\\\"project_root\\\":\\\"$EXP_PROJECT_ROOT\\\"" \
   && pass "AC-1: context project_root is absolute (matches project dir)" \
   || fail "context project_root missing/wrong: $O1"
+# --- D2 (capture-detection-gaps.md §3.3): the context gained `project_roots`
+# (name -> absolute root, so a task in a NON-primary project is resolvable) and
+# `touched_tasks` entries are now QUALIFIED `<project>/<basename>`. Both are
+# pinned here because they are the contract `agents/progress-capture.md` reads.
+echo "$O1" | grep -qF "\\\"project_roots\\\":{\\\"$PROJ\\\":\\\"$EXP_PROJECT_ROOT\\\"}" \
+  && pass "D2: context carries project_roots {name: absolute root}" \
+  || fail "context project_roots missing/wrong: $O1"
+echo "$O1" | grep -qF "\\\"touched_tasks\\\":[\\\"$PROJ/2026-06-29_e2e.md\\\"]" \
+  && pass "D2: context touched_tasks entries are qualified <project>/<basename>" \
+  || fail "context touched_tasks not qualified: $O1"
+echo "$O1" | grep -qF "\\\"project_root\\\":\\\"$EXP_PROJECT_ROOT\\\",\\\"project_roots\\\"" \
+  && pass "D2: primary project_root is retained next to project_roots (compat)" \
+  || fail "context lost the primary project_root: $O1"
 echo "$O1" | grep -qF "\`$EXP_SIDECAR\` and write nothing else" \
   && pass "AC-2: step-3 prose carries the SAME absolute sidecar_path as the context block" \
   || fail "step-3 prose sidecar path missing/mismatched: $O1"
@@ -191,7 +204,7 @@ EOF
 O5=$(stop)
 [ "$(sidlines "$IN")"  = "1" ] && pass "in-set task applied"         || fail "in-set not applied: $(sidlines "$IN")"
 [ "$(sidlines "$OUT")" = "0" ] && pass "out-of-request task skipped" || fail "out-of-request bound: $(sidlines "$OUT")"
-echo "$O5" | grep -q "membership-skip: 2026-06-29_outset.md" \
+echo "$O5" | grep -q "membership-skip: $PROJ/2026-06-29_outset.md" \
   && pass "F5 membership-skip reported" || fail "no membership-skip line: $O5"
 
 echo ""

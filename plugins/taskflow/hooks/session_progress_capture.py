@@ -29,6 +29,19 @@ requests a capture for the rest. `touch_cursor` / `round` / `log_seen` /
 `round_base` live INSIDE the `capture` dict so the closed
 `_load_bind`/`_save_bind` whitelist carries them (§1.7).
 
+Cross-project resolution (capture-detection-gaps.md §3 / D2): a session's
+`.touched` ledger may name tasks in a project OTHER than `state['project']`
+(2026-08-08 e4a7583c incident — those writes were silently dropped by the F-L3
+boundary guard). Each ledger line therefore carries its OWN project, extracted
+from the line with `^_projects/([^/]+)/` and validated by probing for a `tasks/`
+subdirectory (that probe is what rejects `_projects/_state/...` lines, which
+match the regex but name no project). Every project so resolved gets its own
+basename index, note reverse index and F-L3 boundary guard, and every internal
+task key — `items.tasks`, `tried_tasks`, `log_seen`, `round_base` — is the
+QUALIFIED `"<project>/<basename>"` (§3.3). A `.bind` written before this change
+holds BARE basenames; they are read as the primary project's qualified key and
+written back normalized, so they disappear after one Stop (F-4, §3.4).
+
 Async apply-path (note-task-link.md §10): when a touched task still needs a
 summary or a freshly-written project-notes deliverable has no owning task yet,
 the gate (E) commits `capture.status=requested` and blocks with an instruction
@@ -102,12 +115,12 @@ STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
 CAPTURE_AGENT_TYPE = 'taskflow:progress-capture'
 # Capture expiry (§10.4): a requested capture whose sidecar has not appeared
 # within this many seconds (measured at Stop firing) is declared expired and the
-# deterministic G backstop takes over. 15s fixed by design; env-overridable so
+# deterministic G backstop takes over. 30s fixed by design; env-overridable so
 # tests can force immediate expiry (mirrors log_lock's TASKFLOW_LOCK_TIMEOUT).
 try:
-    _CAPTURE_EXPIRY_S = float(os.environ.get('TASKFLOW_CAPTURE_EXPIRY_S', '15.0'))
+    _CAPTURE_EXPIRY_S = float(os.environ.get('TASKFLOW_CAPTURE_EXPIRY_S', '30.0'))
 except ValueError:
-    _CAPTURE_EXPIRY_S = 15.0
+    _CAPTURE_EXPIRY_S = 30.0
 
 # Sweep blast-cap (project-notes/specs/capture-hook-sweep-sandbox.md): the
 # combined (json + sidecar) per-Stop delete budget for _cleanup_stale_markers.
@@ -161,6 +174,10 @@ _LOG_END_RE = re.compile(r'<!--\s*@log:end\s*-->')
 _LOG_BEGIN_RE = re.compile(r'<!--\s*@log:begin\s*-->')
 # exec-binding carry: `[tasks: a.md b.md]` (space-separated basenames).
 _TASKS_RE = re.compile(r'\[tasks:\s*([^\]]+)\]')
+# D2 (§3.2): the project a `.touched` line belongs to, read from the line ITSELF
+# (`_projects/<project>/...`, repo-relative and forward-slashed by
+# `normalize_path`) rather than from `state['project']`.
+_PROJECT_RE = re.compile(r'^_projects/([^/]+)/')
 
 
 def normalize_path(p: str, cwd: str) -> str:
@@ -326,10 +343,81 @@ def _is_task_md(rel_path: str) -> bool:
     return bool(_TASK_PATH_RE.search(rel_path))
 
 
+# --- §3.2 D2: project extraction and per-project resolution ----------------
+
+def extract_project(rel_path: str) -> str:
+    """Project name of a repo-relative `.touched` line, or '' (§3.2).
+
+    Derived from the PATH, not from `state['project']`: the ledger legitimately
+    carries writes into other projects of this repo, and the 2026-08-08 data
+    survey found a real session state whose `project` was CORRUPTED
+    (`"i-extensions-dev"` — the leading `p` lost), which path derivation is
+    immune to.
+
+    A line that does not start with `_projects/` (an absolute path from another
+    repository, a cwd-external write, a bash-parse fragment) yields '' and stays
+    out of scope: cross-REPO binding belongs to capture-context-abs-path.md, and
+    the survey observed zero cross-repo task writes."""
+    m = _PROJECT_RE.match(str(rel_path).replace('\\', '/'))
+    return m.group(1) if m else ''
+
+
+def resolve_project_roots(touched, progress_root: str, primary: str = '') -> dict:
+    """Ordered `{project_name: absolute_root}` for this session (§3.2).
+
+    `primary` — the session state's project, already validated by the caller —
+    is always first and always present, so it remains the compatibility default
+    for everything that has no project of its own (a bare sidecar reference, the
+    `[tasks:]` exec carry, a legacy `.bind` key).
+
+    Every OTHER name comes from `extract_project` and must carry a `tasks/`
+    subdirectory to be accepted. That probe is mandatory, not cosmetic:
+    `_projects/_state/...` lines DO match the extraction regex (7 such lines in
+    one real repo's ledgers, 6 in the other's) and `_state` is the sidecar
+    directory, not a project. The probe rejects it and any other non-project
+    directory that may sit under `_projects/`."""
+    roots: dict = {}
+    if primary:
+        roots[primary] = os.path.join(progress_root, primary)
+    for rel in touched:
+        name = extract_project(rel)
+        if not name or name in roots:
+            continue
+        root = os.path.join(progress_root, name)
+        if os.path.isdir(os.path.join(root, 'tasks')):
+            roots[name] = root
+    return roots
+
+
+def qualify(project: str, basename: str) -> str:
+    """The qualified task key `"<project>/<basename>"` (§3.3)."""
+    return f'{project}/{basename}'
+
+
+def qualify_legacy(key: str, primary: str) -> str:
+    """Normalize one possibly-BARE task key to its qualified form (F-4, §3.4).
+
+    A `.bind` written by W2/W3 keys `items.tasks` / `tried_tasks` / `log_seen` /
+    `round_base` by bare basename. Reading such a key as the PRIMARY project's
+    qualified key (the same fail-open shape as the legacy `items=None` path) and
+    writing the normalized value back means bare keys disappear after a single
+    Stop, with no round lost and none replayed at the upgrade boundary."""
+    k = str(key).replace('\\', '/').strip('/')
+    if not k or '/' in k:
+        return k
+    return qualify(primary, k)
+
+
 def _task_basename_index(project_root: str) -> dict:
     """Build {basename: absolute_current_path} for every task md under
     `<project_root>/tasks/` (P8: a task may move status folders this session;
-    basenames are expected unique across status folders)."""
+    basenames are expected unique across status folders).
+
+    LOCKSTEP (survey / §3.3): this walk range is mirrored by
+    `scripts/check_progress.py::check_duplicate_basename`. D2 calls this
+    function once per resolved project root instead of once per session; the
+    range INSIDE a root is unchanged, and check_progress already runs
+    per-project, so the mirror still holds without a change there."""
     tasks_root = os.path.join(project_root, 'tasks')
     current: dict = {}
     if os.path.isdir(tasks_root):
@@ -340,24 +428,48 @@ def _task_basename_index(project_root: str) -> dict:
     return current
 
 
-def resolve_touched_tasks(touched, project_root):
+def qualified_task_index(project_roots: dict) -> dict:
+    """`{"<project>/<basename>": absolute_current_path}` over every resolved
+    project root (§3.3) — the union index `_apply_capture` and the G backstop
+    resolve against."""
+    index: dict = {}
+    for name, root in project_roots.items():
+        for base, path in _task_basename_index(root).items():
+            index[qualify(name, base)] = path
+    return index
+
+
+def resolve_touched_tasks(touched, project_roots):
     """Resolve each touched task md to its CURRENT on-disk location by basename
-    (P8). Returns {basename: absolute_current_path}; a deleted task or one whose
-    resolved path falls outside this project's tasks/ directory is dropped."""
-    current = _task_basename_index(project_root)
-    tasks_prefix = os.path.normpath(os.path.join(project_root, 'tasks')) + os.sep
+    (P8), IN ITS OWN PROJECT (§3.2). Returns
+    `{"<project>/<basename>": absolute_current_path}`.
+
+    The project comes from the touched line, so a write into another project of
+    this repo binds under THAT project's root instead of being basename-matched
+    into the session's project or dropped by the boundary guard (the e4a7583c
+    loss path). Dropped: a line naming no resolvable project (`extract_project`
+    returned '' or the name had no `tasks/` dir — this is where
+    `_projects/_state/...` lines die), a deleted task, and a resolution landing
+    outside its own project's `tasks/` (F-L3, now applied PER project root)."""
+    indexes = {name: _task_basename_index(root)
+               for name, root in project_roots.items()}
+    prefixes = {name: os.path.normpath(os.path.join(root, 'tasks')) + os.sep
+                for name, root in project_roots.items()}
     resolved = {}
     for rel in touched:
-        rel_fs = rel.replace('\\', '/')
+        rel_fs = str(rel).replace('\\', '/')
         if not _is_task_md(rel_fs):
             continue
+        name = extract_project(rel_fs)
+        if name not in indexes:
+            continue
         base = os.path.basename(rel_fs)
-        cur = current.get(base)
+        cur = indexes[name].get(base)
         if cur:
-            # Boundary guard (F-L3): reject tasks not under this project's tasks/.
-            if not os.path.normpath(cur).startswith(tasks_prefix):
+            # Boundary guard (F-L3), per project root.
+            if not os.path.normpath(cur).startswith(prefixes[name]):
                 continue
-            resolved[base] = cur
+            resolved[qualify(name, base)] = cur
     return resolved
 
 
@@ -626,16 +738,16 @@ def resolve_touch_cursor(capture, bind_existed, raw_lines, resolved, sid8,
     if not isinstance(touch_cursor, int):
         if bind_existed:
             touch_cursor = len(raw_lines)
-            for base, path in resolved.items():
-                log_seen[base] = count_sid_lines(path, sid8)
+            for key, path in resolved.items():  # `key` is qualified (§3.3)
+                log_seen[key] = count_sid_lines(path, sid8)
         else:
             touch_cursor = 0
     return min(touch_cursor, len(raw_lines))
 
 
-def compute_round_active(new_slice, project, project_root, reverse_index, sid8,
+def compute_round_active(new_slice, project_roots, reverse_indexes, sid8,
                          log_seen, tried_tasks, extra=None, hook_appended=None):
-    """Round-active set A_r (§1.3) as {basename: absolute_path}.
+    """Round-active set A_r (§1.3) as {"<project>/<basename>": absolute_path}.
 
         A_r = tasks written in this round's ledger slice
             ∪ owners of the notes written in it (reverse index — the via-a-note
@@ -657,27 +769,35 @@ def compute_round_active(new_slice, project, project_root, reverse_index, sid8,
 
     `log_seen` is MUTATED in place for every task judged self-logged (that is
     the ledger advance the Stop hook then persists; PreCompact discards it,
-    `.bind` being read-only there — §2.2 step 4)."""
-    active = dict(resolve_touched_tasks(new_slice, project_root))
-    slice_notes, _slice_unlinked = _scan_note_writes(
-        new_slice, project, project_root, reverse_index)
-    for prel in slice_notes:
-        for owner_path in resolve_note_owner(prel, project_root, reverse_index):
-            active[os.path.basename(owner_path)] = owner_path
+    `.bind` being read-only there — §2.2 step 4).
+
+    D2 (§3.2): `project_roots` is `{project: absolute_root}` and
+    `reverse_indexes` is `{project: note reverse index}`. Both the task
+    resolution and the note-owner resolution run PER project, so a round is
+    computed across every project the ledger slice touched, and every key in the
+    returned dict (and in `extra` / `log_seen` / `tried_tasks`) is qualified."""
+    active = dict(resolve_touched_tasks(new_slice, project_roots))
+    for name, root in project_roots.items():
+        ridx = reverse_indexes.get(name) or {}
+        slice_notes, _slice_unlinked = _scan_note_writes(
+            new_slice, name, root, ridx)
+        for prel in slice_notes:
+            for owner_path in resolve_note_owner(prel, root, ridx):
+                active[qualify(name, os.path.basename(owner_path))] = owner_path
     if extra:
-        for base, path in extra.items():
-            active[base] = path
+        for key, path in extra.items():
+            active[key] = path
     hook_appended = hook_appended or {}
     # self-log detection (§1.4): a `[s:sid8]` count that grew beyond the round's
     # opening baseline by something OTHER than this hook's own writes means the
     # agent logged the work itself (guidelines followed) — no capture needed.
-    for base, path in list(active.items()):
+    for key, path in list(active.items()):
         n_now = count_sid_lines(path, sid8) - hook_appended.get(path, 0)
-        if n_now > log_seen.get(base, 0):
-            log_seen[base] = n_now
-            active.pop(base, None)
+        if n_now > log_seen.get(key, 0):
+            log_seen[key] = n_now
+            active.pop(key, None)
     # 打止め (INV-1): a task with no bindable anchor is never re-requested.
-    return {b: p for b, p in active.items() if b not in tried_tasks}
+    return {k: p for k, p in active.items() if k not in tried_tasks}
 
 
 def _load_capture_sidecar(path):
@@ -692,22 +812,78 @@ def _load_capture_sidecar(path):
     return data if isinstance(data, dict) else None
 
 
-def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, items=None):
+def _resolve_task_ref(ref, project_roots, primary, current_index, explicit=''):
+    """Resolve a sidecar task reference to a QUALIFIED key (§3.3).
+
+    Returns `(qualified_key, ambiguous)`. Resolution order:
+      1. an explicit `project` field on the entry, when it names a resolved
+         project (the sidecar contract's optional field, §3.3/§3.4);
+      2. a reference already written `"<project>/<basename>"`;
+      3. otherwise a BARE basename → the PRIMARY project first (which is what
+         "absent = primary project" means), then a UNIQUE match among the other
+         resolved projects;
+      4. more than one project carrying that basename → `('', True)`, so the
+         caller surfaces it via `membership_skipped` instead of guessing. The
+         2026-08-08 survey found zero basename collisions across 387 real tasks,
+         so this branch is insurance, not a routine path.
+
+    A reference with leading directories that are NOT a resolved project name
+    (e.g. `tasks/1_in_progress/x.md`) degrades to its basename, preserving the
+    pre-D2 `os.path.basename` tolerance."""
+    r = str(ref).replace('\\', '/').strip('/')
+    if not r:
+        return '', False
+    base = r.rsplit('/', 1)[-1]
+    head = r[:len(r) - len(base) - 1] if len(r) > len(base) else ''
+    if explicit and explicit in project_roots:
+        return qualify(explicit, base), False
+    if head and head in project_roots:
+        return qualify(head, base), False
+    primary_key = qualify(primary, base)
+    if primary_key in current_index:
+        return primary_key, False
+    hits = [k for k in current_index if k.rsplit('/', 1)[-1] == base]
+    if len(hits) == 1:
+        return hits[0], False
+    if len(hits) > 1:
+        return '', True
+    # Unknown everywhere: keep the primary-qualified form so the caller's index
+    # lookup misses and the entry is dropped as "task gone" (unchanged shape).
+    return primary_key, False
+
+
+def _apply_capture(sidecar, current_index, project, project_roots, sid8, iso_ts, items=None):
     """Apply a validated capture sidecar deterministically (§10.3). All writes
     are idempotent (`log_block_has_sid` / `append_note_link` union). Returns
     (summaries, links, proposals, link_skipped, membership_skipped) for
     observability:
-      - summaries:    list[task-basename] @log-bound with a real one-line summary
-      - links:        list[(note_rel, task-basename)] established in a task @notes
+      - summaries:    list[qualified task key] @log-bound with a real one-line summary
+      - links:        list[(note_rel, qualified task key)] established in a task @notes
       - proposals:    list[str] surfaced (display-only; never auto-created)
-      - link_skipped: list[(note_rel, task-basename)] where append_note_link returned False
-      - membership_skipped: list[str] task-basename / note_rel names skipped because
-        they were outside the request-time closed set (F7a §8 boundary enforcement)
+      - link_skipped: list[(note_rel, qualified task key)] where append_note_link returned False
+      - membership_skipped: list[str] task key / note_rel names skipped because
+        they were outside the request-time closed set (F7a §8 boundary
+        enforcement), or because a bare basename was ambiguous across projects
 
-    `items` is the request-time closed set `{'tasks': [basenames], 'notes':
-    [note_rel]}` that gated this capture request, or `None` for a legacy
-    sidecar/.bind predating `items` — in which case the membership check is
-    bypassed and both loops apply exactly as before (fail-open fallback)."""
+    `current_index` is the QUALIFIED union index `{"<project>/<basename>":
+    path}` (§3.3) and `project` is the session's primary project. `items` is the
+    request-time closed set `{'tasks': [qualified keys], 'notes': [note_rel]}`
+    that gated this capture request, or `None` for a legacy sidecar/.bind
+    predating `items` — in which case the membership check is bypassed and both
+    loops apply exactly as before (fail-open fallback).
+
+    Sidecar contract (§3.3/§3.4): `confirmed[]` / `note_links[]` may carry an
+    OPTIONAL `project` field; absent means the primary project. `note_links[]`
+    `note` stays PROJECT-RELATIVE under `project-notes/` and the D-7 guard is
+    unchanged — it is simply applied against the entry's OWN project root now,
+    which is the explicit `project` when given and otherwise the project of the
+    resolved owning task.
+
+    `items['notes']` / `tried_notes` stay project-relative (unqualified): they
+    are bounding sets only (INV-1 novelty), never a write target, so a
+    hypothetical same-rel note in two projects can at worst suppress one
+    duplicate request — the actual `@notes` write is addressed through the task,
+    which IS qualified."""
     summaries: list[str] = []
     links: list[tuple] = []
     proposals: list[str] = []
@@ -723,15 +899,22 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, 
         for item in confirmed:
             if not isinstance(item, dict):
                 continue
-            base = item.get('task')
+            ref = item.get('task')
             summ = item.get('summary')
-            if not isinstance(base, str) or not isinstance(summ, str):
+            if not isinstance(ref, str) or not isinstance(summ, str):
                 continue
-            base = os.path.basename(base.replace('\\', '/'))
-            if task_set is not None and base not in task_set:
-                membership_skipped.append(base)
+            explicit = item.get('project')
+            explicit = explicit if isinstance(explicit, str) else ''
+            key, ambiguous = _resolve_task_ref(
+                ref, project_roots, project, current_index, explicit)
+            if ambiguous:
+                # Visible rather than silently bound to the wrong project.
+                membership_skipped.append(os.path.basename(ref.replace('\\', '/')))
                 continue
-            path = current_index.get(base)
+            if task_set is not None and key not in task_set:
+                membership_skipped.append(key)
+                continue
+            path = current_index.get(key)
             if not path:
                 continue  # task gone
             note = ' '.join(summ.split())[:200] or '(captured) summary pending'
@@ -744,7 +927,7 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, 
             if log_block_has_note(path, sid8, note):
                 continue
             if append_auto_binding(path, sid8, iso_ts, note):
-                summaries.append(base)
+                summaries.append(key)
 
     note_links = sidecar.get('note_links')
     if isinstance(note_links, list):
@@ -752,16 +935,28 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, 
             if not isinstance(item, dict):
                 continue
             note = item.get('note')
-            base = item.get('task')
-            if not isinstance(note, str) or not isinstance(base, str):
+            ref = item.get('task')
+            if not isinstance(note, str) or not isinstance(ref, str):
                 continue
-            if not base or base.strip().lower() == 'none':
+            if not ref or ref.strip().lower() == 'none':
                 continue  # task==none → no-op (§10.3)
-            base = os.path.basename(base.replace('\\', '/'))
-            path = current_index.get(base)
+            explicit = item.get('project')
+            explicit = explicit if isinstance(explicit, str) else ''
+            key, ambiguous = _resolve_task_ref(
+                ref, project_roots, project, current_index, explicit)
+            if ambiguous:
+                membership_skipped.append(os.path.basename(ref.replace('\\', '/')))
+                continue
+            path = current_index.get(key)
             if not path:
                 continue
-            note_rel = normalize_note_rel(_to_project_rel(note, project))
+            # The entry's OWN project: the explicit field when it names a
+            # resolved project, otherwise the project of the owning task (which
+            # is where a project-relative note under that task must live).
+            # Absent both, this is the primary project — the §3.3 default.
+            entry_project = (explicit if explicit in project_roots
+                             else key.rsplit('/', 1)[0])
+            note_rel = normalize_note_rel(_to_project_rel(note, entry_project))
             # D-7 (capture-context-abs-path.md Q6): reject any note path that
             # is not project-relative under project-notes/ — regardless of
             # `items` membership. Closes the legacy-sidecar (`items=None`)
@@ -782,9 +977,9 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, 
                 membership_skipped.append(note_rel)
                 continue
             if append_note_link(path, note_rel):
-                links.append((note_rel, base))
+                links.append((note_rel, key))
             else:
-                link_skipped.append((note_rel, base))
+                link_skipped.append((note_rel, key))
 
     props = sidecar.get('proposals')
     if isinstance(props, list):
@@ -850,15 +1045,22 @@ def _to_forward_slash(path):
 
 
 def build_capture_context(sid8, iso_ts, capture_path, project_root,
-                           task_basenames, note_writes):
+                           project_roots, task_keys, note_writes):
     """Build the JSON context block handed to the capture subagent (§10.5).
 
     `sidecar_path` / `project_root` are forward-slashed absolute paths (same
     objects the hook itself reads/resolves — `capture_path` / `project_root`
     in `main()`), so the subagent's write/read basis can never drift from the
     hook's regardless of its cwd (project-notes/specs/capture-context-abs-path.md
-    D-1/D-2). `task_basenames` / `note_writes` are emitted via `json.dumps`
+    D-1/D-2). `task_keys` / `note_writes` are emitted via `json.dumps`
     (not space-joined) so the array is valid JSON with 2+ entries (D-6).
+
+    D2 (§3.3): `project_root` STAYS — it is the primary project and the default
+    for anything the subagent leaves unqualified — and `project_roots`
+    `{name: absolute_root}` is ADDED next to it, because `touched_tasks` entries
+    are now qualified `"<project>/<basename>"` and a task in a non-primary
+    project has to be resolvable to a root. Every root is forward-slashed
+    through the same single source of truth as `project_root`.
     """
     return json.dumps(
         {
@@ -866,7 +1068,9 @@ def build_capture_context(sid8, iso_ts, capture_path, project_root,
             'iso_ts': iso_ts,
             'sidecar_path': _to_forward_slash(capture_path),
             'project_root': _to_forward_slash(project_root),
-            'touched_tasks': list(task_basenames),
+            'project_roots': {name: _to_forward_slash(root)
+                              for name, root in dict(project_roots).items()},
+            'touched_tasks': list(task_keys),
             'note_writes': list(note_writes),
         },
         ensure_ascii=False, separators=(',', ':'),
@@ -940,7 +1144,11 @@ def main() -> int:
     touched_path = os.path.join(STATE_DIR, f'{session_id}.touched')
     touched = read_touched(touched_path, cwd)
     raw_lines = read_touched_raw(touched_path, cwd)
-    resolved = resolve_touched_tasks(touched, project_root)
+    # D2 (§3.2): every project the ledger names (plus the primary), each with
+    # its own basename index and F-L3 boundary. `_projects/_state/...` lines are
+    # rejected by the `tasks/` probe inside `resolve_project_roots`.
+    project_roots = resolve_project_roots(touched, PROGRESS_ROOT, project)
+    resolved = resolve_touched_tasks(touched, project_roots)
 
     # --- exec-binding carry: merge [tasks:] → state.exec_bind, resolve (P8) ---
     is_fork = bool(state.get('parent_session_id'))
@@ -959,6 +1167,11 @@ def main() -> int:
     round_n = round_n if isinstance(round_n, int) else 0
     log_seen = capture.get('log_seen')
     log_seen = dict(log_seen) if isinstance(log_seen, dict) else {}
+    # F-4 (§3.4): a `.bind` written before W4 keys the round dicts by BARE
+    # basename. Read every bare key as the PRIMARY project's qualified key here;
+    # the commit below persists the normalized form, so the bare keys vanish
+    # after one Stop without losing or replaying a round.
+    log_seen = {qualify_legacy(k, project): v for k, v in log_seen.items()}
     # `round_base`: the `[s:sid8]` count of each item at the moment the OPEN
     # round was requested. `log_seen` cannot serve here: F-1 resyncs it from the
     # hook's own writes at the END of every Stop, and a round spans Stops, so by
@@ -968,6 +1181,7 @@ def main() -> int:
     # Frozen with `items`, replaced on every request commit.
     round_base = capture.get('round_base')
     round_base = dict(round_base) if isinstance(round_base, dict) else {}
+    round_base = {qualify_legacy(k, project): v for k, v in round_base.items()}
     # M-1 bootstrap (§1.8) + F-7 clamp, shared with `precompact_flush.py`.
     touch_cursor = resolve_touch_cursor(
         capture, bind_existed, raw_lines, resolved, sid8, log_seen)
@@ -997,12 +1211,19 @@ def main() -> int:
     # logged this" and its real work is never summarized — the same silent-loss
     # class D1 exists to fix.
     hook_appended: dict = {}
+    # `hook_appended_keys`: {task-path: qualified key} for the same appends. The
+    # F-1 resync writes into `log_seen`, which is keyed by qualified name (§3.3),
+    # while `compute_round_active` subtracts by PATH — so both directions are
+    # recorded at the single append-recording site instead of being re-derived
+    # (a basename-only reverse lookup could not tell two projects apart).
+    hook_appended_keys: dict = {}
     # Paths the deterministic exec-bind recorded this Stop (§1.3): that line IS
     # this round's entry for those tasks, so they are not also A_r candidates.
     exec_bound_now: set = set()
 
-    def _record_append(path):
+    def _record_append(path, key):
         hook_appended[path] = hook_appended.get(path, 0) + 1
+        hook_appended_keys[path] = key
 
     # --- exec-binding bind (deterministic; §3.4) ----------------------------
     # Each resolved owning task missing its [s:sid8] line is bound directly by
@@ -1021,7 +1242,10 @@ def main() -> int:
                 '(auto) executed via [tasks:] carry; summary pending',
             ):
                 auto_bound.append(rel)
-                _record_append(path)
+                # The `[tasks:]` carry is bare by construction, and the exec-bind
+                # resolves it against the PRIMARY project only (§1.3: the
+                # deterministic exec-bind is unchanged by D2).
+                _record_append(path, qualify(project, base))
                 exec_bound_now.add(path)
             else:
                 exec_tried.append(rel)
@@ -1037,7 +1261,7 @@ def main() -> int:
     # hook deterministically applies the sidecar it writes and keeps a
     # deterministic G backstop (placeholder + referenced over-bind) as fallback.
     capture_path = os.path.join(STATE_DIR, f'{session_id}.capture')
-    current_index = _task_basename_index(project_root)
+    current_index = qualified_task_index(project_roots)
     status = capture.get('status') or ''
     tried_notes = capture.get('tried_notes')
     tried_notes = list(tried_notes) if isinstance(tried_notes, list) else []
@@ -1047,7 +1271,16 @@ def main() -> int:
     # analogue of `exec_tried` / `tried_notes`.
     tried_tasks = capture.get('tried_tasks')
     tried_tasks = list(tried_tasks) if isinstance(tried_tasks, list) else []
+    tried_tasks = [qualify_legacy(t, project) for t in tried_tasks]  # F-4
     requested_ts = capture.get('requested_ts')
+    # The request-time closed set, with its task keys normalized once (F-4) so
+    # every consumer below — apply membership, `_fold_tried`, the G backstop —
+    # sees qualified keys regardless of which version wrote the `.bind`.
+    items_open = capture.get('items')
+    if isinstance(items_open, dict) and isinstance(items_open.get('tasks'), list):
+        items_open = dict(items_open)
+        items_open['tasks'] = [qualify_legacy(t, project)
+                               for t in items_open['tasks']]
 
     applied_summaries: list[str] = []
     applied_links: list[tuple] = []
@@ -1067,17 +1300,17 @@ def main() -> int:
         if sidecar is not None:
             applied_this_stop = True
             applied_summaries, applied_links, proposals, applied_link_skipped, applied_membership_skipped = _apply_capture(
-                sidecar, current_index, project, project_root, sid8, iso_ts, capture.get('items'))
-            for _b in applied_summaries:
-                _p = current_index.get(_b)
+                sidecar, current_index, project, project_roots, sid8, iso_ts, items_open)
+            for _k in applied_summaries:
+                _p = current_index.get(_k)
                 if _p:
-                    _record_append(_p)  # F-1: hook write, not an agent self-log
+                    _record_append(_p, _k)  # F-1: hook write, not a self-log
             # Consume: unlink so a later request cannot re-match a stale sidecar.
             # On unlink failure, do NOT mark done — the next Stop re-applies
             # (idempotent), keeping the apply eventual (§10.2 / AC-11).
             try:
                 os.remove(capture_path)
-                _fold_tried(capture.get('items'))
+                _fold_tried(items_open)
                 status = 'done'
             except OSError:
                 pass  # leave status; re-apply next Stop
@@ -1086,7 +1319,7 @@ def main() -> int:
     if status in ('requested', 'pending') and not applied_this_stop:
         age = datetime.datetime.now().timestamp() - float(requested_ts or 0)
         if age >= _CAPTURE_EXPIRY_S:
-            _fold_tried(capture.get('items'))
+            _fold_tried(items_open)
             status = 'expired'  # §10.4 — G backstop takes over below
         else:
             status = 'pending'  # in-flight: do NOT block (AC-9, no double-spawn)
@@ -1098,9 +1331,26 @@ def main() -> int:
     # (`touched`): `novel_notes` and the `referenced` over-bind below are bounded
     # by `tried_notes`, and the over-bind fires on the expiry Stop, by which
     # time the round that requested it has already consumed its slice.
-    reverse_index = build_reverse_index(project_root)
-    note_writes, unlinked = _scan_note_writes(
-        touched, project, project_root, reverse_index)
+    # D2 (§3.2): one reverse index per resolved project. `_scan_note_writes` is
+    # self-filtering per project — a line from another project keeps its
+    # `_projects/<other>/` prefix after `_to_project_rel` and fails the
+    # `project-notes/` boundary check — so the whole-session `touched` list can
+    # be handed to each project unchanged.
+    reverse_indexes = {name: build_reverse_index(root)
+                       for name, root in project_roots.items()}
+    note_writes_by_project: dict = {}
+    note_writes: list[str] = []
+    unlinked: list[str] = []
+    for _name, _root in project_roots.items():
+        _nw, _un = _scan_note_writes(
+            touched, _name, _root, reverse_indexes[_name])
+        note_writes_by_project[_name] = _nw
+        for _p in _nw:
+            if _p not in note_writes:
+                note_writes.append(_p)
+        for _p in _un:
+            if _p not in unlinked:
+                unlinked.append(_p)
     novel_notes = [n for n in unlinked if n not in tried_notes]
 
     exec_carry: dict = {}
@@ -1110,9 +1360,9 @@ def main() -> int:
                 continue  # the deterministic exec-bind already recorded it
             if _rel(path, cwd) in exec_tried:
                 continue  # unbindable; already 打止め on the exec-bind side
-            exec_carry[base] = path
+            exec_carry[qualify(project, base)] = path
     active = compute_round_active(
-        new_slice, project, project_root, reverse_index, sid8,
+        new_slice, project_roots, reverse_indexes, sid8,
         log_seen, tried_tasks, extra=exec_carry, hook_appended=hook_appended)
 
     # --- (D) deterministic G backstop once capture has resolved ------------
@@ -1123,51 +1373,53 @@ def main() -> int:
     # keeps its more specific provenance. Anything already logged this round
     # (real summary / over-bind / the agent itself) is skipped via
     # `count_sid_lines > log_seen`.
-    def _round_base(base):
-        """This round's opening `[s:sid8]` count for `base` (§1.6). Falls back
-        to `log_seen` for a legacy `.bind` that predates `round_base`."""
-        if base in round_base:
-            return round_base[base]
-        return log_seen.get(base, 0)
+    def _round_base(key):
+        """This round's opening `[s:sid8]` count for the qualified `key` (§1.6).
+        Falls back to `log_seen` for a legacy `.bind` that predates
+        `round_base` (both dicts are F-4-normalized above)."""
+        if key in round_base:
+            return round_base[key]
+        return log_seen.get(key, 0)
 
     if status == 'expired':
-        for prel in note_writes:
-            for owner_path in resolve_note_owner(
-                    prel, project_root, reverse_index):
-                obase = os.path.basename(owner_path)
-                if count_sid_lines(owner_path, sid8) > _round_base(obase):
-                    continue  # this round already recorded a line for it
-                if append_auto_binding(
-                        owner_path, sid8, iso_ts,
-                        f'(referenced) owner of {prel} via reverse-index; '
-                        f'capture expired (r{round_n})'):
-                    auto_bound.append(_rel(owner_path, cwd))
-                    _record_append(owner_path)
+        for _name, _root in project_roots.items():
+            _ridx = reverse_indexes[_name]
+            for prel in note_writes_by_project[_name]:
+                for owner_path in resolve_note_owner(prel, _root, _ridx):
+                    okey = qualify(_name, os.path.basename(owner_path))
+                    if count_sid_lines(owner_path, sid8) > _round_base(okey):
+                        continue  # this round already recorded a line for it
+                    if append_auto_binding(
+                            owner_path, sid8, iso_ts,
+                            f'(referenced) owner of {prel} via reverse-index; '
+                            f'capture expired (r{round_n})'):
+                        auto_bound.append(_rel(owner_path, cwd))
+                        _record_append(owner_path, okey)
     if status in ('done', 'expired'):
-        items = capture.get('items')
+        items = items_open
         if isinstance(items, dict) and isinstance(items.get('tasks'), list):
-            backstop = [(b, current_index.get(b)) for b in items['tasks']]
+            backstop = [(k, current_index.get(k)) for k in items['tasks']]
         else:
             # Legacy `.bind` predating `items` — same fail-open shape as
             # `_apply_capture`: fall back to the pre-round rule (every touched
             # task still carrying no `[s:sid8]` line at all).
-            backstop = [(b, p) for b, p in resolved.items()
+            backstop = [(k, p) for k, p in resolved.items()
                         if not log_block_has_sid(p, sid8)]
         placeholder = f'(auto) touched; summary pending (r{round_n})'
-        for base, path in backstop:
-            if not path or base in tried_tasks:
+        for key, path in backstop:
+            if not path or key in tried_tasks:
                 continue
-            if count_sid_lines(path, sid8) > _round_base(base):
+            if count_sid_lines(path, sid8) > _round_base(key):
                 continue  # this round already has a line — no placeholder
             if append_auto_binding(path, sid8, iso_ts, placeholder):
                 auto_bound.append(_rel(path, cwd))
-                _record_append(path)
+                _record_append(path, key)
             else:
                 # Cannot bind (ambiguous @log damage that D3 generation cannot
                 # resolve) after a full capture cycle — stop requesting it
                 # (打止め / no-loop, INV-1) and surface it once (§4.3): this
                 # branch used to be a SILENT drop, unlike its exec-bind twin.
-                tried_tasks.append(base)
+                tried_tasks.append(key)
                 skip_rel = _rel(path, cwd)
                 bind_skipped.append(skip_rel)
                 print(f'[progress capture] bind-skip(no-anchor): {skip_rel} '
@@ -1182,7 +1434,9 @@ def main() -> int:
     # is what would make the hook's own writes look like an agent self-log on
     # the next Stop and silently swallow that round.
     for _path in hook_appended:
-        log_seen[os.path.basename(_path)] = count_sid_lines(_path, sid8)
+        _key = hook_appended_keys.get(_path)
+        if _key:
+            log_seen[_key] = count_sid_lines(_path, sid8)
 
     # --- (E) request capture when this round still has unlogged activity ----
     # Novelty is bounded by the 打止め sets and by the cursor: a slice is
@@ -1193,12 +1447,12 @@ def main() -> int:
         requested_ts = datetime.datetime.now().timestamp()
         round_n += 1
         round_base = {}
-        for base, path in active.items():
+        for key, path in active.items():
             # Round-open baseline (§1.6): the count as it stands NOW, so any
             # line that lands before this round closes counts as this round's.
             n = count_sid_lines(path, sid8)
-            log_seen[base] = n
-            round_base[base] = n
+            log_seen[key] = n
+            round_base[key] = n
         capture = {
             'status': 'requested',
             'items': {'tasks': sorted(active.keys()), 'notes': novel_notes},
@@ -1212,7 +1466,7 @@ def main() -> int:
         }
         spawn = True
     else:
-        items = capture.get('items')
+        items = items_open  # F-4-normalized (qualified) form
         cursor_out = touch_cursor
         if status in ('', 'done', 'expired'):
             # Re-requestable but nothing novel: the slice WAS consumed, so
@@ -1282,7 +1536,7 @@ def main() -> int:
             f' ...({len(slice_display) - MAX_TOUCHED_IN_INJECTION} more)'
         sidecar_path_display = _to_forward_slash(capture_path)
         context = build_capture_context(
-            sid8, iso_ts, capture_path, project_root,
+            sid8, iso_ts, capture_path, project_root, project_roots,
             sorted(active.keys()), novel_notes,
         )
         reason = (

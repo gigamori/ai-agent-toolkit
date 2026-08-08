@@ -50,18 +50,25 @@ or read, whether new task-worthy work appeared). Context block shape:
   "sid8": "<8-char session id>",
   "iso_ts": "<ISO8601 T-separated timestamp>",
   "sidecar_path": "<absolute path to the .capture sidecar, forward-slashed>",
-  "project_root": "<absolute path to the project's _projects/<project> dir, forward-slashed>",
-  "touched_tasks": ["<task-basename>.md", ...],
+  "project_root": "<absolute path to the PRIMARY project's _projects/<project> dir, forward-slashed>",
+  "project_roots": {"<project>": "<absolute path to that project's dir, forward-slashed>"},
+  "touched_tasks": ["<project>/<task-basename>.md", ...],
   "note_writes": ["project-notes/<category>/<file>.md", ...]
 }
 ```
 
-`sidecar_path` / `project_root` are **absolute** (e.g.
-`/path/to/workspace/_projects/_state/<session_id>.capture`) —
-they are the same values the taskflow Stop hook itself reads/resolves, handed
+`sidecar_path` / `project_root` / every value in `project_roots` are
+**absolute** (e.g. `/path/to/workspace/_projects/_state/<session_id>.capture`)
+— they are the same values the taskflow Stop hook itself reads/resolves, handed
 to you verbatim so your write/read basis can never drift from the hook's
 regardless of your own cwd (project-notes/specs/capture-context-abs-path.md).
 **Never re-derive these from your own cwd** — use them exactly as given.
+
+A session can touch more than one project of the same repository. That is why
+`touched_tasks` entries are **qualified** `"<project>/<basename>.md"` and why
+`project_roots` maps each project name to its absolute root. `project_root`
+stays as the PRIMARY project — the one the session is registered to, and the
+default for anything you leave unqualified.
 
 - `touched_tasks` — the tasks active in THIS round: written directly, reached
   through a `project-notes/` deliverable this round wrote, or claimed by the
@@ -69,16 +76,19 @@ regardless of your own cwd (project-notes/specs/capture-context-abs-path.md).
   this round (this is the work the deterministic gate cannot describe). A task
   you judge truly unrelated may be omitted; the hook will still bind it with a
   placeholder, so omit only when a real summary would be
-  misleading. These are **basenames** — to `Read` one for grounding, resolve
-  it under `<project_root>/tasks/<status>/` (try `0_todo/`, `1_in_progress/`,
-  `2_done/`), never under your own cwd.
+  misleading. Each entry is `"<project>/<basename>.md"` — to `Read` one for
+  grounding, split it on the FIRST `/`, look the project up in `project_roots`,
+  and resolve the basename under `<that root>/tasks/<status>/` (try `0_todo/`,
+  `1_in_progress/`, `2_done/`), never under your own cwd and never under
+  another project's root.
 - `note_writes` — project-notes deliverables written this session whose owning
   task is not yet recorded. Each is **project-relative** (begins with
-  `project-notes/`) — to `Read` one for grounding, join it onto `project_root`
-  (e.g. `<project_root>/project-notes/specs/foo.md`), never resolve it
-  against your own cwd. For each, judge which task (by basename) owns it.
-  If no task clearly owns it, set `task` to `"none"` (do NOT guess — a wrong
-  link is burned in permanently, §3.1).
+  `project-notes/`) — to `Read` one for grounding, join it onto the root of the
+  project it belongs to (`project_root` unless a `touched_tasks` entry makes it
+  clear the note lives in another project — e.g.
+  `<project_root>/project-notes/specs/foo.md`), never against your own cwd. For
+  each, judge which task owns it. If no task clearly owns it, set `task` to
+  `"none"` (do NOT guess — a wrong link is burned in permanently, §3.1).
 - Use the prose the main agent added plus, if needed, `Read` on a task or note
   to ground your judgment. Never fabricate a summary or an owner.
 
@@ -92,8 +102,16 @@ above leak into your output:
 - **Output** (the sidecar JSON you write, below): note paths MUST be
   **project-relative** — i.e. begin with `project-notes/` (e.g.
   `project-notes/specs/foo.md`), NOT `_projects/...`, NOT absolute. Task
-  references are **basenames** only (e.g. `2026-07-01_x.md`), never a path.
-  The hook resolves basenames to their current folder.
+  references are a **basename** (e.g. `2026-07-01_x.md`) or the qualified
+  `"<project>/<basename>.md"` you were given, never a filesystem path. The hook
+  resolves either to the task's current folder.
+- A bare basename means the PRIMARY project (`project_root`). When a task
+  belongs to another project, either keep the qualified form from
+  `touched_tasks` or add a `"project": "<project>"` field to that entry — those
+  two are equivalent. If you strip the project from a task that is not in the
+  primary project, the hook has to fall back to a unique-basename search and
+  will skip the entry outright when the basename exists in more than one
+  project.
 
 An output note path that is not project-relative is deterministically
 rejected by the hook regardless of anything else in your sidecar (D-7) — it
@@ -108,10 +126,10 @@ markdown fences, no second write.
 ```json
 {
   "confirmed": [
-    {"task": "<task-basename>.md", "summary": "<one-line, what changed>"}
+    {"task": "<project>/<task-basename>.md", "summary": "<one-line, what changed>"}
   ],
   "note_links": [
-    {"note": "project-notes/<category>/<file>.md", "task": "<owning-task-basename>.md"}
+    {"note": "project-notes/<category>/<file>.md", "task": "<project>/<owning-task-basename>.md"}
   ],
   "proposals": [
     "<suggested title> — <TODO|In Progress|Done> — <why>"
@@ -119,12 +137,18 @@ markdown fences, no second write.
 }
 ```
 
-- `confirmed` — one entry per active task you can summarize. `summary` is a
-  single line (no newlines), concrete (what changed in this round, not
-  "updated files").
+- `confirmed` — one entry per active task you can summarize. `task` is the
+  qualified reference from `touched_tasks` (a bare basename = the primary
+  project). `summary` is a single line (no newlines), concrete (what changed in
+  this round, not "updated files").
 - `note_links` — one entry per `note_writes` deliverable. `task` is the owning
-  task basename, or the literal `"none"` if you cannot determine an owner with
-  confidence (the hook then leaves it unlinked for a later attempt).
+  task, qualified the same way, or the literal `"none"` if you cannot determine
+  an owner with confidence (the hook then leaves it unlinked for a later
+  attempt). `note` stays project-relative and is read against the owning task's
+  project.
+- `project` — OPTIONAL on any `confirmed` / `note_links` entry: the project the
+  entry belongs to, when you would rather leave `task` a bare basename. Omitted
+  means the primary project.
 - `proposals` — genesis suggestions for task-worthy work that has no task file
   yet. The hook only DISPLAYS these for the user to confirm; it never
   auto-creates a task. Empty list if none.

@@ -257,7 +257,7 @@ session end
         `project_root` (the same values this hook reads), so the subagent's write/read basis
         cannot drift from the hook's regardless of its cwd
         (project-notes/specs/capture-context-abs-path.md).
-     6. expiry (15 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
+     6. expiry (30 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
         backstop takes over for THAT ROUND's closed `items` set — `referenced` over-bind of the
         note-write owners resolvable via the reverse index first (so an owner keeps the more
         specific provenance), then a placeholder for every item the round has not produced a
@@ -443,6 +443,21 @@ While a project is active but its `progress.md` does not yet exist, `session_ini
 | `<config dir>/projects/.../memory/` | same `<config dir>` + encode CWD (`lower().replace(':', '-').replace('/', '-')`) |
 
 `$CLAUDE_CONFIG_DIR` is read **literally**, replicating Claude Code's own behavior (verified 2026-07-28): no `expanduser` and no variable expansion, so `~/x` is a cwd-relative literal path, and relative values are resolved with `os.path.abspath` against the process CWD. `session_sync.py` runs inside the writer session's process tree and therefore resolves a **single** config dir (env if set, else `~/.claude`). The kanban reader (`generate_kanban.py`'s `build_cc_session_index`) is the exception: it scans the **union** of `$CLAUDE_CONFIG_DIR` and `~/.claude` (`_cc_config_dirs()`), env first, so a UUID present in both universes resolves to the env one. Per-workspace divergence of `CLAUDE_CONFIG_DIR` is unsupported — see the note in `README.md`.
+
+### The Stop hook is single-project for *state*, multi-project for *touched resolution*
+
+The session's project (`_state/<session_id>.json` → `project`) selects **one** primary project, and that stays true for the state file, for the `.bind` sidecar, and for the `[tasks:]` exec-binding carry. Touched-task resolution is **not** limited to it: a session legitimately writes into more than one project of the same repository, and until 2026-08-09 every such write was silently dropped (the task was basename-matched into the session's project and then rejected by the boundary guard).
+
+`session_progress_capture.py` / `precompact_flush.py` therefore derive the project from **each `.touched` line** (`^_projects/([^/]+)/`) rather than from `state['project']`:
+
+| Step | Rule |
+|---|---|
+| Extract | `_projects/<name>/...` → `<name>`; a line that does not start with `_projects/` (an absolute path from another repository, a cwd-external write) is out of scope — cross-**repo** binding is not attempted. |
+| Validate | `<name>` counts as a project only if `_projects/<name>/tasks/` is a directory. This is what rejects `_projects/_state/...` lines, which match the pattern but name the sidecar directory. |
+| Resolve | Each accepted project gets its own basename index, its own note reverse index, and its own boundary guard, so a basename that exists in two projects binds the copy the ledger actually named. |
+| Key | Every internal task key — `capture.items.tasks`, `tried_tasks`, `log_seen`, `round_base` — is the qualified `"<project>/<basename>"`, as are the capture-context `touched_tasks`, the `@log`-related stderr/block report lines, and the PreCompact stdout list. A `.bind` predating this change holds bare basenames; they are read as the primary project's keys and rewritten qualified on the next Stop. |
+
+The capture subagent's context block carries `project_roots` (`{name: absolute root}`) alongside the primary `project_root` so it can resolve a qualified task, and its sidecar entries may carry an optional `project` field (absent = primary). Note paths in that sidecar stay project-relative under `project-notes/`, read against the entry's own project root. Design: `project-notes/specs/capture-detection-gaps.md` §3.
 
 ### Hooks (CWD-fixed) vs. the command / viewer layer (`TASKFLOW_PROJECT_ROOTS`)
 

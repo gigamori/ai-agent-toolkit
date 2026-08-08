@@ -27,8 +27,10 @@ What it does (§2.2), deterministically, with no subprocess and no LLM:
      N = `capture.round` + 1 — the round the NEXT Stop will commit (F-10), so
      two compactions inside one round produce the same key and therefore a
      single line.
-  4. Emit ONE plain-text stdout line naming the pending tasks, and nothing at
-     all when the pending set is empty. Channel and format are fixed by the
+  4. Emit ONE plain-text stdout line naming the pending tasks — as QUALIFIED
+     `<project>/<basename>` keys since D2 landed (F-6, §2.2 step 3), the same
+     names the round machinery uses — and nothing at all when the pending set
+     is empty. Channel and format are fixed by the
      T-PC-1 live probe (§2.1): stdout is joined verbatim into the summarizer's
      instructions AND survives as a `PreCompact [...] completed successfully:`
      message in the post-compaction conversation, while a JSON object is NOT
@@ -64,8 +66,10 @@ from session_progress_capture import (  # noqa: E402
     _load_bind,
     append_auto_binding,
     compute_round_active,
+    qualify_legacy,
     read_touched,
     read_touched_raw,
+    resolve_project_roots,
     resolve_touch_cursor,
     resolve_touched_tasks,
 )
@@ -121,9 +125,21 @@ def main() -> int:
     log_seen = dict(log_seen) if isinstance(log_seen, dict) else {}
     tried_tasks = capture.get('tried_tasks')
     tried_tasks = list(tried_tasks) if isinstance(tried_tasks, list) else []
+    # F-4 (§3.4): a `.bind` written before D2 keys these by BARE basename. Read
+    # them as the primary project's qualified keys, exactly as the Stop hook
+    # does. Nothing is written back here — `.bind` is read-only in this hook
+    # (§2.2 step 4) — so the normalization is in-memory only and the Stop that
+    # follows is what persists it.
+    log_seen = {qualify_legacy(k, project): v for k, v in log_seen.items()}
+    tried_tasks = [qualify_legacy(t, project) for t in tried_tasks]
 
-    resolved = resolve_touched_tasks(read_touched(touched_path, cwd),
-                                     project_root)
+    # D2 (§3.2): resolve every project the ledger names, each under its own
+    # root, so a cross-project write is flushed too instead of being dropped.
+    touched = read_touched(touched_path, cwd)
+    project_roots = resolve_project_roots(touched, PROGRESS_ROOT, project)
+    reverse_indexes = {name: build_reverse_index(root)
+                       for name, root in project_roots.items()}
+    resolved = resolve_touched_tasks(touched, project_roots)
     # `log_seen` is mutated by both calls below; the copy above is why that
     # stays in memory. Persisting it is the Stop hook's job, exclusively.
     touch_cursor = resolve_touch_cursor(
@@ -133,7 +149,7 @@ def main() -> int:
         return 0  # nothing consumed since the last committed round
 
     pending = compute_round_active(
-        new_slice, project, project_root, build_reverse_index(project_root),
+        new_slice, project_roots, reverse_indexes,
         sid8, log_seen, tried_tasks)
     if not pending:
         return 0  # common case: stay completely silent (precompute reuse)
@@ -142,9 +158,9 @@ def main() -> int:
     # `count_sid_lines` exclusion there can never disagree (§1.4 (b)).
     note = f'{_PRECOMPACT_NOTE_PREFIX}; summary pending (r{round_n + 1})'
     iso_ts = now_iso()
-    names = sorted(pending)
-    for base in names:
-        append_auto_binding(pending[base], sid8, iso_ts, note)
+    names = sorted(pending)  # qualified `<project>/<basename>` keys (F-6)
+    for key in names:
+        append_auto_binding(pending[key], sid8, iso_ts, note)
 
     # One plain-text line. Emitted for the PENDING set, not for the subset that
     # appended successfully: when a task's `@log` anchor is unbindable the

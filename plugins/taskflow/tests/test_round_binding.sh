@@ -221,9 +221,10 @@ fi
   || fail "placeholder leaked: $(sidlines "$T2")"
 [ "$(bindq 'c.get("touch_cursor")')" = "1" ] \
   && pass "touch_cursor consumed the slice (1)" || fail "cursor: $(bindq 'c.get("touch_cursor")')"
-[ "$(bindq '(c.get("log_seen") or {}).get("2026-08-09_selflog.md")')" = "1" ] \
-  && pass "log_seen recorded the agent's line (1)" \
-  || fail "log_seen: $(bindq '(c.get("log_seen") or {}).get("2026-08-09_selflog.md")')"
+# D2 (§3.3): round keys are QUALIFIED `<project>/<basename>`.
+[ "$(bindq "(c.get('log_seen') or {}).get('$PROJ/2026-08-09_selflog.md')")" = "1" ] \
+  && pass "log_seen recorded the agent's line (1), keyed by project/basename" \
+  || fail "log_seen: $(bindq "(c.get('log_seen') or {}).get('$PROJ/2026-08-09_selflog.md')")"
 [ "$(bindq 'c.get("round")')" = "0" ] \
   && pass "no round was opened (round still 0)" || fail "round: $(bindq 'c.get("round")')"
 O22=$(stop 0)
@@ -284,10 +285,13 @@ EOF
 O41=$(stop 999)
 [ "$(sidlines "$T4")" = "1" ] \
   && pass "the capture summary applied once" || fail "apply count: $(sidlines "$T4")"
-echo "$O41" | grep -q "applied summary: 2026-08-09_reapply.md" \
+echo "$O41" | grep -q "applied summary: $PROJ/2026-08-09_reapply.md" \
   && pass "first apply is reported once" || fail "no applied-summary F5: $O41"
 # Simulate `os.remove(capture_path)` failing: the sidecar survives and the
 # lifecycle stays `requested`, so the NEXT Stop re-enters the apply branch.
+# The `items` / `round_base` keys written below are deliberately left BARE
+# (pre-D2 shape): the F-4 migration path (§3.4) must read them as the primary
+# project's qualified keys, so this fixture doubles as a legacy-key check.
 cat > "$CF" << 'EOF'
 {"confirmed":[{"task":"2026-08-09_reapply.md","summary":"REAPPLYSUMMARY"}],"note_links":[],"proposals":[]}
 EOF
@@ -309,7 +313,7 @@ O42=$(stop 999)
 [ "$(grep -cF 'REAPPLYSUMMARY' "$T4")" = "1" ] \
   && pass "the summary text appears exactly once in the task md" \
   || fail "summary text occurrences: $(grep -cF 'REAPPLYSUMMARY' "$T4")"
-echo "$O42" | grep -q "applied summary: 2026-08-09_reapply.md" \
+echo "$O42" | grep -q "applied summary: $PROJ/2026-08-09_reapply.md" \
   && fail "the no-op re-apply was reported as an applied summary: $O42" \
   || pass "the no-op re-apply is not re-reported (INV-1 boundedness)"
 
@@ -329,8 +333,8 @@ write_touched "$NOTE"        # ONLY the note is written this round
 O51=$(stop 999)
 echo "$O51" | grep -q '"decision": *"block"' \
   && pass "a note-only round still requests a capture" || fail "no request: $O51"
-[ "$(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')" = "2026-08-09_note-owner.md" ] \
-  && pass "the note's owning task is in the round's closed item set" \
+[ "$(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')" = "$PROJ/2026-08-09_note-owner.md" ] \
+  && pass "the note's owning task is in the round's closed item set (qualified)" \
   || fail "items.tasks: $(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')"
 echo "$O51" | grep -qF "2026-08-09_note-owner.md" \
   && pass "the owner is named in the capture context handed to the subagent" \

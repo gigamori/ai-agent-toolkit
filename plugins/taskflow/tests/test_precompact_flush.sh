@@ -181,8 +181,9 @@ grep -qF "[s:$SID8]: $PLACE (r1)" "$T1" \
   || fail "note wrong: $(grep -F "[s:$SID8]" "$T1")"
 [ "$(wc -l < "$OUTF")" = "1" ] \
   && pass "stdout is exactly one line" || fail "stdout lines: $(wc -l < "$OUTF")"
-grep -qF "$STDOUT_PREFIX 2026-08-09_precompact.md" "$OUTF" \
-  && pass "stdout carries the verbatim-preservation instruction + the basename" \
+# D2/F-6 (§2.2 step 3): the task list is QUALIFIED `<project>/<basename>` now.
+grep -qF "$STDOUT_PREFIX $PROJ/2026-08-09_precompact.md" "$OUTF" \
+  && pass "stdout carries the verbatim-preservation instruction + the qualified task" \
   || fail "stdout wrong: $(cat "$OUTF")"
 grep -q '^[[:space:]]*[{[]' "$OUTF" \
   && fail "stdout looks like JSON — §2.1: JSON is pasted verbatim, never parsed" \

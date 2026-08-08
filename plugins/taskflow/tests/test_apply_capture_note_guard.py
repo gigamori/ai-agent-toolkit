@@ -25,6 +25,13 @@ whether `items`/`note_set` is present. This file pins:
   - T-5c: a normal project-relative note (unchanged shape) still applies
     correctly (no regression to the AC-4 output contract's happy path).
 
+D2 (capture-detection-gaps.md §3.3): `_apply_capture` now takes the resolved
+`project_roots` map instead of a single `project_root`, its `current_index` is
+the QUALIFIED `{"<project>/<basename>": path}` union, and the values it returns
+name tasks by that qualified key. The D-7 guard itself is unchanged — it is
+applied against the ENTRY's own project root — so the three rejects below still
+pin exactly the same behavior.
+
 Fixture tasks live in a `tempfile.TemporaryDirectory()`; this file never
 touches real `_projects/_state/` or the real repo tree.
 
@@ -89,7 +96,7 @@ def make_task(root: Path, name: str = "task1.md") -> Path:
 def test_absolute_note_rejected_under_legacy_fail_open(root: Path) -> None:
     print("--- T-5a: absolute note path rejected, items=None (legacy fail-open path) ---")
     task_path = make_task(root)
-    current_index = {"task1.md": str(task_path)}
+    current_index = {"harness-taskflow/task1.md": str(task_path)}
     sidecar = {
         "confirmed": [],
         "note_links": [
@@ -98,7 +105,8 @@ def test_absolute_note_rejected_under_legacy_fail_open(root: Path) -> None:
         "proposals": [],
     }
     summaries, links, proposals, link_skipped, membership_skipped = spc._apply_capture(
-        sidecar, current_index, "harness-taskflow", str(root), "abcd1234", "2026-07-30T01:00:00+09:00",
+        sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+        "abcd1234", "2026-07-30T01:00:00+09:00",
         items=None,
     )
     check(links == [], f"no note_link applied (got {links})")
@@ -110,7 +118,7 @@ def test_absolute_note_rejected_under_legacy_fail_open(root: Path) -> None:
 def test_absolute_note_rejected_even_when_in_membership_set(root: Path) -> None:
     print("--- T-5b: absolute note path rejected even if present in items['notes'] ---")
     task_path = make_task(root, "task2.md")
-    current_index = {"task2.md": str(task_path)}
+    current_index = {"harness-taskflow/task2.md": str(task_path)}
     evil_note = "C:/other-repo/project-notes/specs/evil.md"
     sidecar = {
         "confirmed": [],
@@ -120,9 +128,10 @@ def test_absolute_note_rejected_even_when_in_membership_set(root: Path) -> None:
     # items explicitly ADMITS the offending value into the request-time closed
     # set — if the guard only worked "because membership would reject it
     # anyway", this call would apply the link. It must still be rejected.
-    items = {"tasks": ["task2.md"], "notes": [evil_note]}
+    items = {"tasks": ["harness-taskflow/task2.md"], "notes": [evil_note]}
     summaries, links, proposals, link_skipped, membership_skipped = spc._apply_capture(
-        sidecar, current_index, "harness-taskflow", str(root), "abcd1234", "2026-07-30T01:00:00+09:00",
+        sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+        "abcd1234", "2026-07-30T01:00:00+09:00",
         items=items,
     )
     check(links == [], f"no note_link applied even though evil_note is in items['notes'] (got {links})")
@@ -138,7 +147,7 @@ def test_reject_is_logged_to_stderr(root: Path) -> None:
     # ahead of membership left zero trace anywhere. That silence is exactly
     # the failure class this task exists to eliminate (2026-07-28 incident).
     task_path = make_task(root, "task4.md")
-    current_index = {"task4.md": str(task_path)}
+    current_index = {"harness-taskflow/task4.md": str(task_path)}
     evil_note = "C:/other-repo/project-notes/specs/evil.md"
     sidecar = {
         "confirmed": [],
@@ -148,7 +157,8 @@ def test_reject_is_logged_to_stderr(root: Path) -> None:
     stderr_buf = io.StringIO()
     with contextlib.redirect_stderr(stderr_buf):
         spc._apply_capture(
-            sidecar, current_index, "harness-taskflow", str(root), "abcd1234", "2026-07-30T01:00:00+09:00",
+            sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+        "abcd1234", "2026-07-30T01:00:00+09:00",
             items=None,
         )
     out = stderr_buf.getvalue()
@@ -160,7 +170,7 @@ def test_reject_is_logged_to_stderr(root: Path) -> None:
 def test_normal_project_relative_note_still_applies(root: Path) -> None:
     print("--- T-5c: regression - normal project-relative note still applies ---")
     task_path = make_task(root, "task3.md")
-    current_index = {"task3.md": str(task_path)}
+    current_index = {"harness-taskflow/task3.md": str(task_path)}
     good_note = "project-notes/specs/foo.md"
     sidecar = {
         "confirmed": [],
@@ -168,10 +178,12 @@ def test_normal_project_relative_note_still_applies(root: Path) -> None:
         "proposals": [],
     }
     summaries, links, proposals, link_skipped, membership_skipped = spc._apply_capture(
-        sidecar, current_index, "harness-taskflow", str(root), "abcd1234", "2026-07-30T01:00:00+09:00",
+        sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+        "abcd1234", "2026-07-30T01:00:00+09:00",
         items=None,
     )
-    check(links == [(good_note, "task3.md")], f"note_link applied for a normal project-relative note (got {links})")
+    check(links == [(good_note, "harness-taskflow/task3.md")],
+          f"note_link applied for a normal project-relative note, qualified task key (got {links})")
     content = task_path.read_text(encoding="utf-8")
     check(good_note in content, "note rel is recorded in the task's @notes block")
 

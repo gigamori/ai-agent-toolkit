@@ -11,6 +11,12 @@ as forward-slashed ABSOLUTE paths (same values the hook itself reads/resolves
 via `capture_path` / `project_root` in `main()`), so the subagent's cwd can
 never cause it to write/read the wrong tree.
 
+D2 (capture-detection-gaps.md §3.3): the block gained `project_roots`
+(`{name: forward-slashed absolute root}`) next to the retained primary
+`project_root`, because `touched_tasks` entries are now QUALIFIED
+`"<project>/<basename>"` and the subagent must be able to resolve one that
+belongs to a non-primary project. Both are pinned below.
+
 D-6 (AC-7): the array fields must be built via `json.dumps`, not a
 space-joined string — the prior `' '.join(f'"{b}"' ...)` produced
 `["a.md" "b.md"]` for 2+ entries, which is NOT valid JSON
@@ -61,7 +67,8 @@ def test_single_entry_is_valid_json_and_absolute() -> None:
     project_root = os.path.join(os.getcwd(), "_projects", "harness-taskflow")
     ctx = spc.build_capture_context(
         "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
-        ["2026-07-28_capture-sidecar-abs-path.md"],
+        {"harness-taskflow": project_root},
+        ["harness-taskflow/2026-07-28_capture-sidecar-abs-path.md"],
         ["project-notes/specs/capture-context-abs-path.md"],
     )
     try:
@@ -75,19 +82,28 @@ def test_single_entry_is_valid_json_and_absolute() -> None:
     check("\\" not in obj["sidecar_path"], "sidecar_path has no backslash")
     check("\\" not in obj["project_root"], "project_root has no backslash")
     check(obj["sid8"] == "abc12345", "sid8 round-trips")
-    check(obj["touched_tasks"] == ["2026-07-28_capture-sidecar-abs-path.md"], "touched_tasks round-trips")
+    check(obj["touched_tasks"] == ["harness-taskflow/2026-07-28_capture-sidecar-abs-path.md"],
+          "touched_tasks round-trips as a qualified <project>/<basename> key")
     check(obj["note_writes"] == ["project-notes/specs/capture-context-abs-path.md"], "note_writes round-trips")
+    # D2: project_roots is present, forward-slashed and absolute, and the
+    # primary project_root survives next to it (compatibility, §3.3).
+    check(obj["project_roots"] == {"harness-taskflow": obj["project_root"]},
+          f"project_roots maps the project to its absolute root: {obj.get('project_roots')}")
+    check(all(os.path.isabs(v) and "\\" not in v for v in obj["project_roots"].values()),
+          "every project_roots value is an absolute forward-slashed path")
 
 
 def test_multi_entry_is_valid_json_d6_regression() -> None:
     print("--- 2+ task/note entries: valid JSON (D-6 space-join regression) ---")
     sidecar_path = os.path.join(os.getcwd(), "_projects", "_state", "abc123.capture")
     project_root = os.path.join(os.getcwd(), "_projects", "harness-taskflow")
-    tasks = ["a.md", "b.md", "c.md"]
+    other_root = os.path.join(os.getcwd(), "_projects", "pi-studio-dev")
+    roots = {"harness-taskflow": project_root, "pi-studio-dev": other_root}
+    tasks = ["harness-taskflow/a.md", "harness-taskflow/b.md", "pi-studio-dev/c.md"]
     notes = ["project-notes/specs/x.md", "project-notes/checks/y.md"]
     ctx = spc.build_capture_context(
         "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
-        tasks, notes,
+        roots, tasks, notes,
     )
     try:
         obj = json.loads(ctx)
@@ -96,8 +112,10 @@ def test_multi_entry_is_valid_json_d6_regression() -> None:
             f"raw context: {ctx!r}")
         return
     ok("context with 2+ entries is valid JSON")
-    check(obj["touched_tasks"] == tasks, "touched_tasks (3 entries) round-trips exactly")
+    check(obj["touched_tasks"] == tasks, "touched_tasks (3 entries, 2 projects) round-trips exactly")
     check(obj["note_writes"] == notes, "note_writes (2 entries) round-trips exactly")
+    check(set(obj["project_roots"]) == {"harness-taskflow", "pi-studio-dev"},
+          f"project_roots carries BOTH projects: {obj.get('project_roots')}")
 
 
 def test_empty_arrays_are_valid_json() -> None:
@@ -105,7 +123,8 @@ def test_empty_arrays_are_valid_json() -> None:
     sidecar_path = os.path.join(os.getcwd(), "_projects", "_state", "abc123.capture")
     project_root = os.path.join(os.getcwd(), "_projects", "harness-taskflow")
     ctx = spc.build_capture_context(
-        "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root, [], [],
+        "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
+        {"harness-taskflow": project_root}, [], [],
     )
     try:
         obj = json.loads(ctx)

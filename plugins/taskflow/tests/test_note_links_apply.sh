@@ -13,7 +13,7 @@
 #          the Stop hook applies them
 #   AC-11  apply is idempotent + eventual: the real summary wins over a placeholder
 #          and re-running the hook produces no duplicates
-#   AC-10  expiry (15s, forced to 0): G placeholder binds touched tasks; a note
+#   AC-10  expiry (30s, forced to 0): G placeholder binds touched tasks; a note
 #          write whose owner is known via the reverse index gets a `referenced`
 #          over-bind; an unlinked note is NOT established under judgment-absent expiry
 #
@@ -220,7 +220,9 @@ grep -q "\[s:$SID8\]: REALSUMMARYAC1" "$T1" \
   && pass "AC-11: no placeholder pre-empted the real summary (apply-order)" || fail "placeholder leaked before apply"
 [ "$(notecount "$T1" "$N1REL")" = "1" ] && pass "AC-1: note link established in task @notes" || fail "note link not established"
 [ ! -f "$CF" ] && pass "AC-11: sidecar consumed (unlinked) after apply" || fail "sidecar not consumed"
-echo "$O1B" | grep -q "linked note: $N1REL -> $T1BASE" \
+# D2 (§3.3): the task side of an F5 line is the QUALIFIED `<project>/<basename>`
+# (the note stays project-relative — it is addressed through its owning task).
+echo "$O1B" | grep -q "linked note: $N1REL -> $PROJ/$T1BASE" \
   && pass "AC-8: F5 linked-note observability surfaced" || fail "no linked-note F5: $O1B"
 
 # AC-11 idempotency: a further Stop with no sidecar produces no duplicates.

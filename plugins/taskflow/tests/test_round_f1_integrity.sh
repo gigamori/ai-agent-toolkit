@@ -177,9 +177,10 @@ stop 0 >/dev/null                    # expiry -> backstop placeholder (hook appe
 [ "$(sidlines "$TA")" = "1" ] \
   && pass "precondition: the backstop wrote the round-1 placeholder" \
   || fail "precondition failed: $(sidlines "$TA")"
-[ "$(bindq '(c.get("log_seen") or {}).get("2026-08-09_f1-backstop.md")')" = "1" ] \
+# D2 (§3.3): `log_seen` is keyed by the QUALIFIED `<project>/<basename>`.
+[ "$(bindq "(c.get('log_seen') or {}).get('$PROJ/2026-08-09_f1-backstop.md')")" = "1" ] \
   && pass "F-1 (a): log_seen resynced from the hook's own placeholder" \
-  || fail "log_seen not resynced: $(bindq '(c.get("log_seen") or {}).get("2026-08-09_f1-backstop.md")')"
+  || fail "log_seen not resynced: $(bindq "(c.get('log_seen') or {}).get('$PROJ/2026-08-09_f1-backstop.md')")"
 write_touched "$TA"                  # genuinely new work in round 2
 OA=$(stop 0)
 echo "$OA" | grep -q '"decision": *"block"' \
@@ -206,16 +207,16 @@ EOF
 stop 999 >/dev/null                  # apply (hook append)
 [ "$(sidlines "$TB")" = "1" ] \
   && pass "precondition: the capture summary was applied" || fail "apply failed: $(sidlines "$TB")"
-[ "$(bindq '(c.get("log_seen") or {}).get("2026-08-09_f1-apply.md")')" = "1" ] \
+[ "$(bindq "(c.get('log_seen') or {}).get('$PROJ/2026-08-09_f1-apply.md')")" = "1" ] \
   && pass "F-1 (a): log_seen resynced from the applied summary" \
-  || fail "log_seen not resynced: $(bindq '(c.get("log_seen") or {}).get("2026-08-09_f1-apply.md")')"
+  || fail "log_seen not resynced: $(bindq "(c.get('log_seen') or {}).get('$PROJ/2026-08-09_f1-apply.md')")"
 write_touched "$TB"                  # genuinely new work in round 2
 OB=$(stop 999)
 echo "$OB" | grep -q '"decision": *"block"' \
   && pass "round 2 forms (the applied summary was NOT read as a self-log)" \
   || fail "round 2 swallowed as self-logged: $OB"
-[ "$(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')" = "2026-08-09_f1-apply.md" ] \
-  && pass "round 2's closed item set holds the task again" \
+[ "$(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')" = "$PROJ/2026-08-09_f1-apply.md" ] \
+  && pass "round 2's closed item set holds the task again (qualified)" \
   || fail "items.tasks: $(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')"
 
 # =====================================================================
@@ -228,16 +229,16 @@ TC="$PDIR/tasks/1_in_progress/2026-08-09_f1-exec.md"; mk "$TC"
 stop 0 "[tasks: 2026-08-09_f1-exec.md] executed by reference" >/dev/null
 [ "$(sidlines "$TC")" = "1" ] \
   && pass "precondition: the exec-bind wrote its line" || fail "exec-bind failed: $(sidlines "$TC")"
-[ "$(bindq '(c.get("log_seen") or {}).get("2026-08-09_f1-exec.md")')" = "1" ] \
+[ "$(bindq "(c.get('log_seen') or {}).get('$PROJ/2026-08-09_f1-exec.md')")" = "1" ] \
   && pass "F-1 (a): log_seen resynced from the exec-bind line" \
-  || fail "log_seen not resynced: $(bindq '(c.get("log_seen") or {}).get("2026-08-09_f1-exec.md")')"
+  || fail "log_seen not resynced: $(bindq "(c.get('log_seen') or {}).get('$PROJ/2026-08-09_f1-exec.md')")"
 write_touched "$TC"                  # the task itself is edited afterwards
 OC=$(stop 0)
 echo "$OC" | grep -q '"decision": *"block"' \
   && pass "the follow-up round forms (exec-bind line NOT read as a self-log)" \
   || fail "follow-up round swallowed as self-logged: $OC"
-[ "$(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')" = "2026-08-09_f1-exec.md" ] \
-  && pass "the task is back in the round's closed item set" \
+[ "$(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')" = "$PROJ/2026-08-09_f1-exec.md" ] \
+  && pass "the task is back in the round's closed item set (qualified)" \
   || fail "items.tasks: $(bindq '",".join(((c.get("items") or {}).get("tasks") or []))')"
 
 # =====================================================================

@@ -34,7 +34,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 
 # Force immediate capture expiry so the request → G-backstop path completes in
-# two Stops without a 15 s wall-clock wait (same hook the other suites use).
+# two Stops without a 30 s wall-clock wait (same hook the other suites use).
 export TASKFLOW_CAPTURE_EXPIRY_S=0
 
 HOOK="$REPO_ROOT/plugins/taskflow/hooks/session_progress_capture.py"
@@ -193,7 +193,8 @@ except (OSError, ValueError):
 print(",".join((d.get("capture") or {}).get("tried_tasks") or []))
 PY
 )
-[ "$TRIED" = "2026-08-08_ambiguous.md" ] \
+# D2 (§3.3): `tried_tasks` is keyed by the QUALIFIED `<project>/<basename>`.
+[ "$TRIED" = "$PROJECT_NAME/2026-08-08_ambiguous.md" ] \
   && pass ".bind capture.tried_tasks records the unbindable task: $TRIED" \
   || fail ".bind tried_tasks wrong: '$TRIED'"
 
