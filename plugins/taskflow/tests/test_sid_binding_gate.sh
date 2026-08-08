@@ -121,8 +121,9 @@ Incident-shaped task: created same session, @log line has no [s:] tag.
 TASK
 }
 
-# A task md with NO @log block at all — Round2/exec bind cannot append; the gate
-# must NOT loop on it (INV-1).
+# A task md with NO @log block at all. Since D3 (capture-detection-gaps.md §4.2)
+# this shape IS bindable: append_auto_binding generates the block. It therefore
+# no longer exercises the un-bindable path — see make_task_ambiguous_log below.
 make_task_no_log() {
   cat > "$1" << 'TASK'
 ---
@@ -135,6 +136,31 @@ updated: 2026-06-26
 
 ## Next Steps
 - (none)
+TASK
+}
+
+# A task md whose @log markers are AMBIGUOUSLY damaged (two @log:begin, no
+# @log:end). repair_log_markers refuses this shape (count != 1) and the D3
+# generation branch must not fire (a begin marker IS present), so the bind
+# genuinely cannot succeed — the gate must not loop on it (INV-1).
+make_task_ambiguous_log() {
+  cat > "$1" << 'TASK'
+---
+priority: HIGH
+created: 2026-06-26
+updated: 2026-06-26
+---
+
+# Ambiguous-log task
+
+## Next Steps
+- (none)
+
+<!-- @log:begin -->
+- 2026-06-26: created
+
+<!-- @log:begin -->
+- 2026-06-26: a hand edit duplicated the begin marker and ate the end marker
 TASK
 }
 
@@ -263,12 +289,14 @@ invoke_hook >/dev/null
   || fail "duplicate append: $(count_sid_lines "$R2_TASK")"
 
 # =====================================================================
-# AC-2 (no-loop / INV-1): a touched task with NO @log:end never blocks.
+# AC-2 (no-loop / INV-1): a touched task whose @log damage is AMBIGUOUS (bind
+# can never succeed, even with D3 generation) is reported at most once and then
+# never blocks again.
 # =====================================================================
 echo ""
-echo "[AC-2 no-loop] touched task without @log:end: gate must NOT block"
+echo "[AC-2 no-loop] touched task with un-repairable @log: bounded, no loop"
 NL_TASK="$PROJECT_DIR/tasks/0_todo/2026-06-26_no-log.md"
-make_task_no_log "$NL_TASK"
+make_task_ambiguous_log "$NL_TASK"
 write_state
 rm -f "$BIND_FILE" "$TOUCHED_FILE"
 write_touched "$NL_TASK"
@@ -276,21 +304,23 @@ write_touched "$NL_TASK"
 # Stop #1: missing + not reminded => Round1 block (one reminder is allowed).
 OUT_NL1=$(invoke_hook)
 echo "$OUT_NL1" | grep -q '"decision": *"block"' \
-  && pass "no-log task: Round1 reminder emitted once (allowed)" \
-  || fail "no-log Round1 unexpected: $OUT_NL1"
-# Stop #2: reminded==1, Round2 append fails (no @log:end) => must exit 0, NO block.
+  && pass "ambiguous-log task: Round1 reminder emitted once (allowed)" \
+  || fail "ambiguous-log Round1 unexpected: $OUT_NL1"
+# Stop #2: expiry => G backstop append fails (un-repairable) => reported ONCE as
+# bind-skip(no-anchor) (§4.3), then bounded by tried_tasks.
 OUT_NL2=$(invoke_hook)
-if [ -z "$OUT_NL2" ] || ! echo "$OUT_NL2" | grep -q '"decision": *"block"'; then
-  pass "no-log task: 2nd Stop does NOT block (no infinite loop)"
-else
-  fail "no-log task LOOPED (2nd Stop blocked): $OUT_NL2"
-fi
+echo "$OUT_NL2" | grep -q "bind-skip(no-anchor): .*2026-06-26_no-log.md" \
+  && pass "ambiguous-log task: 2nd Stop reports bind-skip(no-anchor) once" \
+  || fail "ambiguous-log 2nd Stop did not report the residue: $OUT_NL2"
+[ "$(count_sid_lines "$NL_TASK")" = "0" ] \
+  && pass "ambiguous-log task genuinely unbound (no @log block generated)" \
+  || fail "ambiguous-log task was bound: $(count_sid_lines "$NL_TASK")"
 # Stop #3: still no block (stable).
 OUT_NL3=$(invoke_hook)
 if [ -z "$OUT_NL3" ] || ! echo "$OUT_NL3" | grep -q '"decision": *"block"'; then
-  pass "no-log task: 3rd Stop still does NOT block (stable no-loop)"
+  pass "ambiguous-log task: 3rd Stop does NOT block (stable no-loop)"
 else
-  fail "no-log task LOOPED (3rd Stop blocked): $OUT_NL3"
+  fail "ambiguous-log task LOOPED (3rd Stop blocked): $OUT_NL3"
 fi
 
 # =====================================================================
@@ -350,13 +380,13 @@ invoke_hook "[tasks: 2026-06-26_fork-exec.md]" >/dev/null
 write_state                           # restore non-fork for later tests
 
 # =====================================================================
-# AC-6 / F2 (exec-skip): a [tasks:] target with no @log:end is surfaced once
+# AC-6 / F2 (exec-skip): a [tasks:] target with un-repairable @log is surfaced once
 # (auto-skip in the injection; INV-1 c) and does NOT loop (bounded by exec_tried).
 # =====================================================================
 echo ""
-echo "[AC-6/F2 exec-skip] [tasks:] target without @log:end → surfaced once, no loop"
+echo "[AC-6/F2 exec-skip] [tasks:] target with un-repairable @log → surfaced once, no loop"
 SKIP_TASK="$PROJECT_DIR/tasks/1_in_progress/2026-06-26_exec-noskip.md"
-make_task_no_log "$SKIP_TASK"
+make_task_ambiguous_log "$SKIP_TASK"
 write_state
 rm -f "$BIND_FILE" "$TOUCHED_FILE"
 OUT_SK1=$(invoke_hook "[tasks: 2026-06-26_exec-noskip.md]")

@@ -129,6 +129,11 @@ _LOG_BLOCK_RE = re.compile(
     r'<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->', re.DOTALL
 )
 _LOG_END_RE = re.compile(r'<!--\s*@log:end\s*-->')
+# Begin-marker probe for the D3 both-absent case (§4.2). Mirrors `_LOG_END_RE`'s
+# whitespace tolerance so "neither marker present" is decided on the same
+# grammar as `_LOG_BLOCK_RE` — a literal-substring probe would mis-classify a
+# whitespace-variant `<!--@log:begin-->` as absent and generate a SECOND block.
+_LOG_BEGIN_RE = re.compile(r'<!--\s*@log:begin\s*-->')
 # exec-binding carry: `[tasks: a.md b.md]` (space-separated basenames).
 _TASKS_RE = re.compile(r'\[tasks:\s*([^\]]+)\]')
 
@@ -367,9 +372,14 @@ def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pendin
     `<!-- @log:end -->` marker. Append-only; never edits existing lines.
     Returns True on success.
 
-    When `@log:end` is missing (marker destroyed by a hand edit), a
-    conservative `repair_log_markers` pass runs first; the repaired markers are
-    persisted together with the appended line.
+    When `@log:end` is missing the recovery depends on the damage shape:
+      - `@log:begin` still present (half-destroyed by a hand edit) → a
+        conservative `repair_log_markers` pass runs first; the repaired markers
+        are persisted together with the appended line.
+      - NEITHER marker present (a task md that never carried an `@log` region)
+        → the block is GENERATED here (capture-detection-gaps.md §4.2 / D3),
+        immediately before the `@notes` block when one exists, otherwise at EOF.
+      - anything else (ambiguous residue, e.g. two `@log:begin`) → False.
 
     The read-modify-write is serialized through the shared bounded advisory lock
     (`log_lock`, INV-2). Residual gap: an LLM Edit-tool append at the tool layer
@@ -382,10 +392,23 @@ def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pendin
             return False
         m = _LOG_END_RE.search(content)
         if not m:
-            repaired = repair_log_markers(content)
-            if repaired is None:
-                return False
-            content = repaired
+            if _LOG_BEGIN_RE.search(content):
+                repaired = repair_log_markers(content)
+                if repaired is None:
+                    return False
+                content = repaired
+            else:
+                # D3 (§4.2): no `@log` region at all — generate an empty one and
+                # let the normal insert-before-`@log:end` path below fill it, so
+                # there is exactly one write site and one line-format source.
+                at = content.find(NOTES_BEGIN)
+                if at == -1:
+                    at = len(content)
+                head, tail = content[:at], content[at:]
+                if head and not head.endswith('\n'):
+                    head += '\n'
+                content = (head + '\n<!-- @log:begin -->\n<!-- @log:end -->\n'
+                           + tail)
             m = _LOG_END_RE.search(content)
             if not m:
                 return False
@@ -728,6 +751,11 @@ def main() -> int:
     # Surfaced once via the injection (F5 / AC-7) then suppressed by exec_tried,
     # so a given task is reported at most once — bounded (INV-1 c).
     exec_skipped: list[str] = []
+    # `bind_skipped`: NEW touched-task bind failures this Stop (§4.3) — a task
+    # whose `@log` damage is too ambiguous even for D3 block generation. Same
+    # shape as `exec_skipped`: surfaced once via the injection, then suppressed
+    # by `tried_tasks`, so a given task is reported at most once (INV-1).
+    bind_skipped: list[str] = []
 
     # --- exec-binding bind (deterministic; §3.4) ----------------------------
     # Each resolved owning task missing its [s:sid8] line is bound directly by
@@ -833,9 +861,16 @@ def main() -> int:
                 auto_bound.append(_rel(path, cwd))
                 missing.pop(base, None)
             elif base not in tried_tasks:
-                # Cannot bind (no @log:end) after a full capture cycle — stop
-                # requesting it (打止め / no-loop, INV-1).
+                # Cannot bind (ambiguous @log damage that D3 generation cannot
+                # resolve) after a full capture cycle — stop requesting it
+                # (打止め / no-loop, INV-1) and surface it once (§4.3): this
+                # branch used to be a SILENT drop, unlike its exec-bind twin.
                 tried_tasks.append(base)
+                skip_rel = _rel(path, cwd)
+                bind_skipped.append(skip_rel)
+                print(f'[progress capture] bind-skip(no-anchor): {skip_rel} '
+                      f'[s:{sid8}] — no writable <!-- @log:begin/end --> block; '
+                      f'left unbound.', file=sys.stderr)
     if status == 'expired':
         for prel in note_writes:
             for owner_path in resolve_note_owner(
@@ -877,7 +912,7 @@ def main() -> int:
     # the block, so the next Stop re-enters via the requested/pending branch
     # (no re-block loop). An in-flight `pending` with nothing to report → no
     # block (AC-9).
-    report_binds = auto_bound or applied_summaries or applied_links or applied_link_skipped or applied_membership_skipped
+    report_binds = auto_bound or applied_summaries or applied_links or applied_link_skipped or applied_membership_skipped or bind_skipped
     if not spawn and not report_binds and not exec_skipped and not proposals:
         _save_bind(bind_path, reminded, exec_tried, capture)
         return 0
@@ -897,6 +932,9 @@ def main() -> int:
     )
     auto_lines += ''.join(
         f'[progress capture] auto-skip(ambiguous): {rel}\n' for rel in exec_skipped
+    )
+    auto_lines += ''.join(
+        f'[progress capture] bind-skip(no-anchor): {rel}\n' for rel in bind_skipped
     )
     auto_lines += ''.join(
         f'[progress capture] link-skip: {note} -> {b}\n'
@@ -942,6 +980,10 @@ def main() -> int:
             note += ('auto-skip = the [tasks:] target has no writable '
                      '<!-- @log:begin/end --> block; add one to it if that task '
                      'should carry a session log. ')
+        if bind_skipped:
+            note += ('bind-skip(no-anchor) = the touched task has no writable '
+                     '<!-- @log:begin/end --> block (damage too ambiguous to '
+                     'repair or generate); left unbound. ')
         if auto_bound:
             note += ('auto-bound = deterministic backstop (placeholder / '
                      'referenced); a richer summary is no longer needed. ')

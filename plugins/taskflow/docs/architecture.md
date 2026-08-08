@@ -213,12 +213,20 @@ session end
      6. expiry (15 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
         backstop takes over — placeholder-bind every still-missing touched task and
         `referenced` over-bind note-write owners resolvable via the reverse index.
+        A task md carrying NEITHER `<!-- @log:begin -->` NOR `<!-- @log:end -->` no longer
+        blocks the bind: the block is GENERATED (before the `@notes` block when one exists,
+        otherwise at EOF) and the line lands inside it
+        (project-notes/specs/capture-detection-gaps.md §4.2). Only ambiguous damage — e.g.
+        two `@log:begin` — is still unbindable, and it is now REPORTED once on stderr and in
+        the block reason as `bind-skip(no-anchor)` rather than dropped silently (§4.3).
      7. gate (INV-1, no-loop): return {"decision":"block", ...} ONLY to (b) report a code
         auto-bind / applied capture entry, (c) report a NEW exec-bind skip, (d) spawn capture,
         or to surface `proposals` — each bounded by the `{session_id}.bind` sidecar
         (`exec_tried` / `tried_notes` / `tried_tasks` 打止め sets). `requested` is committed
         BEFORE the block, so the next Stop re-enters via the requested/pending branch and never
-        re-blocks. A task that can never be bound (no `@log:end`) does NOT loop the gate.
+        re-blocks. A task that can never be bound (ambiguous `@log` damage) is surfaced
+        ONCE as `bind-skip(no-anchor)` and then suppressed by `tried_tasks` — it does NOT
+        loop the gate.
         (The former "(a) Round1-remind a missing touched task" condition was REMOVED when the
         inline Round1 reminder was replaced by the async capture path — option-a, §10.2.)
      bind writes take the advisory write lock `log_lock.py`. Its acquire is bounded
