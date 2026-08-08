@@ -1,0 +1,3 @@
+# Python bytecode cache from scripts/transcript.py
+__pycache__/
+*.pyc

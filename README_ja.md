@@ -57,6 +57,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [generate-debug-handoff](skills/generate-debug-handoff/) | CC | — | E2E テスト用の debug handoff Markdown を生成。`debugger:` 引数 (human/llm) で、LLM が整形補助に留まる（人間が承認）か debugger 役を担う（承認なし）かを選択 |
 | [mode-orchestrator](skills/mode-orchestrator/) | CC | [docs](docs/skills/mode-orchestrator/) | todolist と context を含むドキュメントを読み、各ステップを role-mode の `mode:`/`role:` ヘッダ付きで隔離 `general-purpose` subagent ターンとして実行。1ターン 1 mode（+任意 role）、混在なし。autonomous mode 限定。ターンごとの model override、ターンごとに固定した status 行の返答契約（権限拒否や status 行の欠落はリカバリに入らず run を停止）、各ターンをウォールクロックで有界化し生成停止を検出する背景 watchdog、有界な `failed`→`debug`→再 execute リカバリループ、タスク種別ごとの workflow spec（`dev` 同梱）に対応 |
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | 過去の Claude Code セッションログを、事前構築した DuckDB ビュー（会話・引数付き tool 呼び出し・ファイル変更・fork・compaction・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
+| [compact-cc-log](skills/compact-cc-log/) | CC | — | 過去または実行中の Claude Code セッションを要約。title・`--session-id`・`--current`（実行中セッション。`scripts/transcript.py` が呼び出しターン自体を除外）でセッションを解決し、`compact-document` に委譲して圧縮 |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | 過去の Pi Coding Agent セッションログを、事前構築した DuckDB ビュー（会話・tool 呼び出し・ファイル変更・セッション系譜/bundle・compaction・in-file branch・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、subagent/skill-fork/handoff/fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。バッチ実行は `--backend`（harness から自動判定）で選ぶ2つの backend を持つ: run-cc は各ステップを独立した `claude -p` subagent として実行し、run-pi は claude を一切必要とせず pi CLI で実行する（pi では強制できない `schema=` と `on-error="debug"` は起動前に拒否）。run-llm プロトコルはホスト側エージェント自身の subagent 機能へ委譲する |
 
@@ -112,6 +113,7 @@ ai-agent-toolkit/
 │   ├── generate-debug-handoff/ スキル: E2E debug handoff Markdown 生成
 │   ├── mode-orchestrator/      スキル: todolist を role-mode subagent ターンで実行
 │   ├── inspect-cc-log/         スキル: CC ログ調査用の SQL ビュー群
+│   ├── compact-cc-log/         スキル: 過去/実行中の CC セッションを要約
 │   ├── inspect-pi-log/         スキル: Pi Coding Agent ログ調査用の SQL ビュー群
 │   └── xml-wf/                 スキル: 決定論的 XML v2 ワークフローランナー (wfrun)
 ├── docs/
