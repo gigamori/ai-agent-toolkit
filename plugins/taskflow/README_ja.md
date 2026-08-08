@@ -361,7 +361,7 @@ hook の書込と競合した場合は依然として無防備である。
 
 ### hook
 
-7 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（2 つ）/ `Stop`（2 つ）/ `SessionStart:compact` に wire されている。加えて `note_links.py`（note↔task link のデータ層）と `log_lock.py`（bounded advisory write lock、protocol v2）の 2 ファイルは共有モジュールであり、単体で wire された hook ではない：`note_links.py` は Stop hook が import し、`log_lock.py` は Stop hook に加えて `scripts/rebuild_progress.py` も import する（後者は `progress.md` の read→write 区間を同じロックで保護する）。
+8 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（2 つ）/ `Stop`（2 つ）/ `SessionStart:compact` / `PreCompact` に wire されている。加えて `note_links.py`（note↔task link のデータ層）と `log_lock.py`（bounded advisory write lock、protocol v2）の 2 ファイルは共有モジュールであり、単体で wire された hook ではない：`note_links.py` は Stop hook が import し、`log_lock.py` は Stop hook に加えて `scripts/rebuild_progress.py` も import する（後者は `progress.md` の read→write 区間を同じロックで保護する）。
 
 #### UserPromptSubmit: session_init.py
 
@@ -404,6 +404,12 @@ hook の書込と競合した場合は依然として無防備である。
 #### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
 
 すべての `Write` / `Edit` / `NotebookEdit` と、ファイルを触る `Bash`（`mv`/`cp`/`rm`、`>`/`>>` リダイレクト、`tee`）の直後に発火。書込先の正規化 repo-relative パスを per-session の `_projects/_state/{session_id}.touched` ledger（append-only、lock-free）に追記する。この ledger が、Stop の capture hook が「このセッションが実際に触った task」を判定する入力になる。jsonl スキャンや git diff ではなく **このセッションの tool 書込** を観測するため、無関係な task の誤 stamp を避けられる。サブエージェント / fork の内部書込は親の `session_id` で発火するため、自動的に親の ledger に入る。
+
+#### PreCompact: precompact_flush.py
+
+Claude Code が会話を要約する直前に発火する（matcher を付けていないため、手動 `/compact` と auto-compaction の両方で発火）。compaction 専用の機構ではなく、**Stop hook と同一のラウンド計算の 2 番目の呼出点**である。進行中ラウンドの `.touched` ledger スライスを読み、エージェント自身が既に `@log` を書いた task を除外し、それでも未記録の作業が残っていれば各 task の `@log` に `(auto) unflushed at compaction; summary pending (r<N>)` を追記したうえで、その per-task の進捗を逐語で要約に残すよう要約器へ指示する plain text 1 行を出力する。`N` は次の `Stop` が commit するラウンド番号なので、同一ラウンド内で 2 回 compaction が起きても 1 行に収束する。
+
+未記録の作業が無ければ **何も出力せず** 終了する。common case を完全に無音に保つことは、Claude Code の precomputed compaction 再利用を壊さないためにも必要である。`{session_id}.bind` sidecar には書き込まない（唯一の writer は `Stop` hook）ため、カーソルは動かず、compaction 直後の `Stop` は通常どおり自分のラウンドを形成する。
 
 #### SessionStart: session_compact_reset.py (matcher: compact)
 

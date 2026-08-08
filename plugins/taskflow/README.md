@@ -363,7 +363,7 @@ session start
 
 ### hooks
 
-Seven hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (two hooks), `Stop` (two hooks), and `SessionStart:compact`. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (the bounded advisory write lock, protocol v2) — are shared modules, not wired hooks themselves: `note_links.py` is imported by the Stop hook, and `log_lock.py` by the Stop hook and by `scripts/rebuild_progress.py`, which takes the same lock around its `progress.md` read→write window.
+Eight hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (two hooks), `Stop` (two hooks), `SessionStart:compact`, and `PreCompact`. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (the bounded advisory write lock, protocol v2) — are shared modules, not wired hooks themselves: `note_links.py` is imported by the Stop hook, and `log_lock.py` by the Stop hook and by `scripts/rebuild_progress.py`, which takes the same lock around its `progress.md` read→write window.
 
 #### UserPromptSubmit: session_init.py
 
@@ -406,6 +406,12 @@ Fires after a `Write`/`Edit` targeting a file under `_projects/<project>/tasks/<
 #### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
 
 Fires after every `Write` / `Edit` / `NotebookEdit` and file-touching `Bash` (`mv`/`cp`/`rm`, `>`/`>>` redirection, `tee`). Appends the normalized repo-relative write target(s) to a per-session `_projects/_state/{session_id}.touched` ledger (append-only, lock-free). This ledger is the input the Stop capture hook uses to decide which tasks this session actually touched — it observes *this session's tool writes* rather than scanning the jsonl or a git diff, which avoids mis-stamping unrelated tasks. Subagent / fork internal writes fire with the parent `session_id`, so they land in the parent's ledger automatically.
+
+#### PreCompact: precompact_flush.py
+
+Fires just before Claude Code summarizes the conversation (manual `/compact` and auto-compaction alike — the entry carries no matcher). Compaction is not a special mechanism here: this hook is a **second call site of the same round computation the Stop hook uses**. It reads the `.touched` ledger slice for the round in flight, drops tasks the agent already logged itself, and — if anything is still unwritten — appends `(auto) unflushed at compaction; summary pending (r<N>)` to each of those tasks' `@log` and prints one plain-text line asking the summarizer to preserve that per-task progress verbatim. `N` is the round the next `Stop` will commit, so two compactions inside one round collapse to a single line.
+
+When nothing is unflushed the hook prints **nothing at all** and exits — the common case stays silent, which also keeps Claude Code's precomputed-compaction reuse intact. It never writes the `{session_id}.bind` sidecar (the `Stop` hook is its sole writer), so the cursor does not move and the Stop that follows a compaction still forms its round normally.
 
 #### SessionStart: session_compact_reset.py (matcher: compact)
 

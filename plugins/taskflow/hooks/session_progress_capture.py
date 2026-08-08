@@ -598,6 +598,88 @@ def _scan_note_writes(touched, project, project_root, reverse_index):
     return note_writes, unlinked
 
 
+# --- §1 round computation (shared with hooks/precompact_flush.py) ----------
+# Extracted verbatim from `main()` so the PreCompact flush computes the pending
+# set with the SAME code the Stop hook uses for its round-active set. A second
+# implementation would drift; these two functions are the single source of
+# truth for "what has this round touched that is not logged yet" (§2.2).
+
+def resolve_touch_cursor(capture, bind_existed, raw_lines, resolved, sid8,
+                         log_seen):
+    """Return this session's `.touched` round cursor, clamped to the ledger.
+
+    `capture` is the `.bind` capture dict (read-only here). `log_seen` is
+    MUTATED in place by the M-1 bootstrap branch (§1.8): a `.bind` that predates
+    the round schema means EARLIER Stops already consumed the ledger under the
+    old one-line-per-session rule, so the cursor starts at the END and
+    `log_seen` is seeded from the current on-disk counts — replaying it would
+    re-capture the whole session history (upgrade storm). No `.bind` at all = no
+    earlier Stop ran, so nothing was consumed and the cursor starts at 0 (this
+    session's first round must still see its own work), with `log_seen` left
+    EMPTY: every `[s:sid8]` line in a task md belongs to this session by
+    construction, so seeding here would read the agent's own round-1 log line as
+    the baseline and request a capture it does not need.
+
+    F-7: `.touched` may be truncated or removed mid-session — the result is
+    clamped to `len(raw_lines)` so the slice can never go negative."""
+    touch_cursor = capture.get('touch_cursor')
+    if not isinstance(touch_cursor, int):
+        if bind_existed:
+            touch_cursor = len(raw_lines)
+            for base, path in resolved.items():
+                log_seen[base] = count_sid_lines(path, sid8)
+        else:
+            touch_cursor = 0
+    return min(touch_cursor, len(raw_lines))
+
+
+def compute_round_active(new_slice, project, project_root, reverse_index, sid8,
+                         log_seen, tried_tasks, extra=None, hook_appended=None):
+    """Round-active set A_r (§1.3) as {basename: absolute_path}.
+
+        A_r = tasks written in this round's ledger slice
+            ∪ owners of the notes written in it (reverse index — the via-a-note
+              loss path)
+            ∪ `extra`
+            − self-logged (`count_sid_lines` > `log_seen`, §1.4)
+            − `tried_tasks` (打止め, INV-1)
+
+    `extra` carries candidates the CALLER resolved and filtered, unioned in
+    BEFORE the self-log pass: the Stop hook passes this Stop's `[tasks:]` exec
+    carry (minus what its deterministic exec-bind already recorded and minus the
+    `exec_tried` 打止め set). `hooks/precompact_flush.py` passes nothing —
+    the PreCompact payload carries no `last_assistant_message` (§2.1 probe), so
+    the exec-carry component of A_r is not computable there (accepted gap F-5).
+
+    `hook_appended` is {absolute_path: n} for `@log` lines the CALLER wrote
+    during this same invocation; they are subtracted from the count so the
+    hook's own writes are never mistaken for an agent self-log (F-1, §1.4).
+
+    `log_seen` is MUTATED in place for every task judged self-logged (that is
+    the ledger advance the Stop hook then persists; PreCompact discards it,
+    `.bind` being read-only there — §2.2 step 4)."""
+    active = dict(resolve_touched_tasks(new_slice, project_root))
+    slice_notes, _slice_unlinked = _scan_note_writes(
+        new_slice, project, project_root, reverse_index)
+    for prel in slice_notes:
+        for owner_path in resolve_note_owner(prel, project_root, reverse_index):
+            active[os.path.basename(owner_path)] = owner_path
+    if extra:
+        for base, path in extra.items():
+            active[base] = path
+    hook_appended = hook_appended or {}
+    # self-log detection (§1.4): a `[s:sid8]` count that grew beyond the round's
+    # opening baseline by something OTHER than this hook's own writes means the
+    # agent logged the work itself (guidelines followed) — no capture needed.
+    for base, path in list(active.items()):
+        n_now = count_sid_lines(path, sid8) - hook_appended.get(path, 0)
+        if n_now > log_seen.get(base, 0):
+            log_seen[base] = n_now
+            active.pop(base, None)
+    # 打止め (INV-1): a task with no bindable anchor is never re-requested.
+    return {b: p for b, p in active.items() if b not in tried_tasks}
+
+
 def _load_capture_sidecar(path):
     """Return the capture sidecar as a dict, or None if absent / torn / not a
     JSON object (§10.1: partial-apply forbidden — a torn write fails json.loads
@@ -886,28 +968,9 @@ def main() -> int:
     # Frozen with `items`, replaced on every request commit.
     round_base = capture.get('round_base')
     round_base = dict(round_base) if isinstance(round_base, dict) else {}
-    touch_cursor = capture.get('touch_cursor')
-    if not isinstance(touch_cursor, int):
-        # M-1 bootstrap (§1.8). A `.bind` that predates this schema means
-        # EARLIER Stops already consumed the ledger under the old one-line-per-
-        # session rule; replaying it would re-capture the whole session history
-        # (upgrade storm). Start at the end and seed `log_seen` from the current
-        # on-disk counts so no round forms out of the past. No `.bind` at all =
-        # no earlier Stop ran, so nothing was consumed and the cursor starts at
-        # 0 (this session's first round must still see its own work).
-        if bind_existed:
-            touch_cursor = len(raw_lines)
-            for base, path in resolved.items():
-                log_seen[base] = count_sid_lines(path, sid8)
-        else:
-            # Fresh session: `log_seen` stays EMPTY. Every `[s:sid8]` line in a
-            # task md belongs to this session by construction, so seeding from
-            # the current counts here would read the agent's own round-1 log
-            # line as the baseline and request a capture it does not need.
-            touch_cursor = 0
-    # F-7: `.touched` may be truncated or removed mid-session — clamp so the
-    # slice can never go negative.
-    touch_cursor = min(touch_cursor, len(raw_lines))
+    # M-1 bootstrap (§1.8) + F-7 clamp, shared with `precompact_flush.py`.
+    touch_cursor = resolve_touch_cursor(
+        capture, bind_existed, raw_lines, resolved, sid8, log_seen)
     new_slice = raw_lines[touch_cursor:]
     slice_display: list[str] = []
     for _r in new_slice:
@@ -1040,29 +1103,17 @@ def main() -> int:
         touched, project, project_root, reverse_index)
     novel_notes = [n for n in unlinked if n not in tried_notes]
 
-    active = dict(resolve_touched_tasks(new_slice, project_root))
-    slice_notes, _slice_unlinked = _scan_note_writes(
-        new_slice, project, project_root, reverse_index)
-    for prel in slice_notes:
-        for owner_path in resolve_note_owner(prel, project_root, reverse_index):
-            active[os.path.basename(owner_path)] = owner_path
+    exec_carry: dict = {}
     if not is_fork:
         for base, path in resolve_exec_tasks(exec_this_turn, project_root).items():
             if path in exec_bound_now:
                 continue  # the deterministic exec-bind already recorded it
             if _rel(path, cwd) in exec_tried:
                 continue  # unbindable; already 打止め on the exec-bind side
-            active[base] = path
-    # self-log detection (§1.4): a `[s:sid8]` count that grew beyond the round's
-    # opening baseline by something OTHER than this hook's own writes means the
-    # agent logged the work itself (guidelines followed) — no capture needed.
-    for base, path in list(active.items()):
-        n_now = count_sid_lines(path, sid8) - hook_appended.get(path, 0)
-        if n_now > log_seen.get(base, 0):
-            log_seen[base] = n_now
-            active.pop(base, None)
-    # 打止め (INV-1): a task with no bindable anchor is never re-requested.
-    active = {b: p for b, p in active.items() if b not in tried_tasks}
+            exec_carry[base] = path
+    active = compute_round_active(
+        new_slice, project, project_root, reverse_index, sid8,
+        log_seen, tried_tasks, extra=exec_carry, hook_appended=hook_appended)
 
     # --- (D) deterministic G backstop once capture has resolved ------------
     # §10.4 / §1.6: the backstop guarantees a line for the round's CLOSED item

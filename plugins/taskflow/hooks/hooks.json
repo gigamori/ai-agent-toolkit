@@ -52,6 +52,16 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project python ${CLAUDE_PLUGIN_ROOT}/hooks/precompact_flush.py"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

@@ -169,9 +169,43 @@ user prompt
   ▼ [PostToolUse hooks] on each Write / Edit / NotebookEdit / Bash:
      • task_rebuild_progress.py — regenerate the progress.md table when a tasks/ file changed
      • touched_capture.py       — append the written path(s) to `{session_id}.touched`
+  │
+  ▼ [PreCompact hook] precompact_flush.py — only when the conversation is compacted
+     (manual /compact or auto; no matcher). NOT a compaction-specific mechanism: it is
+     the SECOND CALL SITE of the same round computation the Stop hook runs
+     (project-notes/specs/capture-detection-gaps.md §2).
+     1. compute the pending set = A_r over the in-flight ledger slice, via the shared
+        `resolve_touch_cursor` / `compute_round_active` in session_progress_capture.py
+        — imported, never re-implemented. Detection limit (F-5): the PreCompact payload
+        carries no `last_assistant_message`, so A_r's `[tasks:]` exec-carry component is
+        not computable here; flushing that class stays Stop-only
+     2. pending non-empty → append `(auto) unflushed at compaction; summary pending (r{N})`
+        to each pending task (through `append_auto_binding`, so `log_lock` + text-key
+        idempotency apply). N = `capture.round` + 1 = the round the NEXT Stop commits, so
+        two compactions inside one round produce one line
+     3. print ONE plain-text line: `Preserve verbatim in the summary: unwritten per-task
+        progress (results, decisions, remaining steps) for: <tasks>`. stdout is joined into
+        the summarizer's instructions AND survives as a `PreCompact [<cmd>] completed
+        successfully: <text>` message in the post-compaction conversation (both channels
+        measured). JSON output is NOT parsed by Claude Code — it would be pasted verbatim —
+        so the channel is deliberately plain text
+     4. pending empty → print NOTHING and exit 0. Any stdout invalidates the precomputed-
+        compaction reuse, so silence on the common path is a requirement, not a nicety
+     5. `{session_id}.bind` is READ-ONLY here — the Stop hook is its sole writer (§10.1),
+        which removes the PreCompact↔Stop write race structurally and leaves the cursor
+        unmoved, so the Stop after a compaction still forms its round over the same slice.
+        Because this hook therefore cannot resync `log_seen`, `count_sid_lines` permanently
+        EXCLUDES its placeholder lines (F-1 (b)) — counting them would make the next Stop
+        read "the agent self-logged" and drop the round in silence
 ```
 
 ### Session end
+
+A round is normally closed by the Stop hook below. When a compaction lands mid-round the
+`PreCompact` hook (`precompact_flush.py`, see "Per-turn flow" above) closes the gap first:
+it flushes a placeholder for whatever the round has not written yet and asks the summarizer
+to preserve that progress verbatim, WITHOUT touching `{session_id}.bind` — so everything
+below still runs exactly as it would have.
 
 ```
 session end
@@ -312,7 +346,7 @@ protection, none.
 
 Path: `_projects/_state/{session_id}.json`
 
-The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` plus `exec_tried` skip records; writer = this hook only), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.capture` (the async judgment sidecar; writer = the `taskflow:progress-capture` subagent only, consumed and unlinked by the hook after a successful apply). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
+The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` plus the round state `{touch_cursor, round, log_seen, round_base}` and `exec_tried` skip records; writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.capture` (the async judgment sidecar; writer = the `taskflow:progress-capture` subagent only, consumed and unlinked by the hook after a successful apply). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
 
 ```json
 {
