@@ -155,6 +155,10 @@ Separately from the handoff, generate one setup script that bundles the determin
 - Output in table form (list / prose / numbered procedure is not allowed)
 - Do not add any independent section beyond the 5 (Header / Pre-test Notes / Run-Fill Guide / Test Results / Comments)
 - Do not write, by guessing or completion, peripheral behavior outside the debug target (general UI / common processing / setup / screen transitions, etc. that are not in the conversation context). If mention is needed, confirm the source first and record only what is confirmed to exist and behave so. The Expected (intended behavior) of the debug target is exempt from this and is decided by spec / debugger judgment
+- Verify each scenario row on its own before output:
+  - `Command` cell: actually run the command once and write only the observed exit code / output
+  - `Expected` cell: open the real source of that branch and confirm the condition truly holds under the fixture / config you prepared. If it does not hold, do not write the row (`debugger:human`: report it to the debugger instead of writing it)
+  - Premise wording (order / mechanism) in Run rules and Pre-test Notes: write it from the actual source lines, not from memory or design docs
 - The `User→LLM Message` column must record complete prompts the tester can paste and send as-is. Do not substitute with abstract / summarized descriptions (e.g. "has an array-typed output")
 - Do not leave bare steps the non-engineer tester cannot run or perceive. Push deterministic setup into the setup script, make invisible observations visible, and isolate steps that unavoidably require technical operation into the `Engineer-Required` column (see "Tester premise and invariants")
 - The setup script is the mechanization of deterministic setup, not a diagnostic flow (it does not conflict with "do not generate a diagnostic flow"). The script declares the paths of its artifacts at the top, self-verifies the premises to establish, outputs PASS / FAIL in plain wording, is idempotent, and limits writes to the target workspace
