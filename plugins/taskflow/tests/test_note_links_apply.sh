@@ -247,11 +247,15 @@ echo "$O10A" | grep -q '"decision": *"block"' \
   && pass "Stop#1 requests capture (A10 missing + NY unlinked)" || fail "Stop#1 no request: $O10A"
 O10B=$(stop 0)
 [ "$(sidlines "$A10")" = "1" ] && pass "AC-10: expired → A10 placeholder-bound (G backstop)" || fail "A10 not placeholdered: $(sidlines "$A10")"
-grep -q "\[s:$SID8\]: (auto) touched; summary pending" "$A10" \
-  && pass "AC-10: A10 carries the placeholder provenance" || fail "A10 placeholder note wrong"
+# D1 §1.5: placeholder / mechanical notes carry an `(r{N})` round tag so each
+# round gets its own idempotency key. This is round 1 of the session.
+grep -qF "[s:$SID8]: (auto) touched; summary pending (r1)" "$A10" \
+  && pass "AC-10: A10 carries the placeholder provenance with its round tag" \
+  || fail "A10 placeholder note wrong: $(grep -F "[s:$SID8]" "$A10")"
 [ "$(sidlines "$B10")" = "1" ] && pass "AC-10: NX owner B10 referenced over-bound (reverse-index hit)" || fail "B10 not referenced: $(sidlines "$B10")"
-grep -q "\[s:$SID8\]: (referenced) owner of $NXREL" "$B10" \
-  && pass "AC-10: B10 carries the referenced provenance (AC-6 識別可能)" || fail "B10 referenced note wrong"
+grep -qF "[s:$SID8]: (referenced) owner of $NXREL via reverse-index; capture expired (r1)" "$B10" \
+  && pass "AC-10: B10 carries the referenced provenance + round tag (AC-6 識別可能)" \
+  || fail "B10 referenced note wrong: $(grep -F "[s:$SID8]" "$B10")"
 [ "$(notecount "$A10" "$NYREL")" = "0" ] && pass "AC-10: unlinked note NY NOT established on expiry (judgment-absent)" || fail "NY wrongly established"
 [ "$(notecount "$B10" "$NXREL")" = "1" ] && pass "AC-10: pre-existing NX link unchanged (no duplicate)" || fail "NX link disturbed"
 echo "$O10B" | grep -q "auto-bound: .*ac10b.md \[s:$SID8\]" \

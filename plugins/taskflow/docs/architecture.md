@@ -193,7 +193,14 @@ session end
      1. read `project` from state_file
         (self-heal: if empty, recover from a `[pj:...]` line in the assistant's last message)
      2. read the per-session `{session_id}.touched` ledger written by the PostToolUse hook
-        `touched_capture.py` (NOT a jsonl scan / git diff); resolve touched task md by basename
+        `touched_capture.py` (NOT a jsonl scan / git diff); resolve touched task md by basename.
+        The ledger is append-only with one line per write event, so its RAW line count doubles
+        as a ROUND cursor: `raw[touch_cursor:]` is exactly the activity since the last committed
+        round, and only that slice defines this round's work
+        (project-notes/specs/capture-detection-gaps.md §1.2, D1). `touch_cursor` / `round` /
+        `log_seen` / `round_base` live inside the `{session_id}.bind` `capture` dict. A `.bind`
+        written before those keys existed bootstraps to the END of the ledger (§1.8 M-1), so
+        upgrading never replays history
      3. exec-binding: union-merge any `[tasks: a.md b.md]` carry from the assistant's last
         message into state `exec_bind`, then code-bind those owning tasks' `@log`
      4. async capture apply-path (§10): if a `{session_id}.capture` sidecar is present, APPLY it
@@ -203,16 +210,28 @@ session end
         Entries outside the request-time closed set `capture.items` are skipped (F7a), and a
         `note_links[].note` that is not project-relative under `project-notes/` is rejected
         outright — independent of that membership set.
-     5. novelty → request capture: when a touched task still needs a summary or a freshly
-        written `project-notes/` deliverable has no owning task, commit `capture.status=requested`
-        and block once with an instruction to spawn the `taskflow:progress-capture` subagent.
+     5. round-active set → request capture: A_r = task md written in this round's ledger slice
+        ∪ owners of the notes written in it (resolved through the reverse index — work that
+        reaches a task only via a project-note) ∪ this Stop's `[tasks:]` exec carry, MINUS tasks
+        the agent already logged itself this round (`count_sid_lines` > `log_seen` — the reason
+        a guidelines-following turn spawns nothing) and MINUS the `tried_tasks` 打止め set.
+        When A_r is non-empty, or a freshly written `project-notes/` deliverable has no owning
+        task, commit `capture.status=requested` (freezing A_r as the round's closed `items` set,
+        advancing `touch_cursor` and `round`) and block once with an instruction to spawn the
+        `taskflow:progress-capture` subagent.
         The context block handed to it carries ABSOLUTE, forward-slashed `sidecar_path` /
         `project_root` (the same values this hook reads), so the subagent's write/read basis
         cannot drift from the hook's regardless of its cwd
         (project-notes/specs/capture-context-abs-path.md).
      6. expiry (15 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
-        backstop takes over — placeholder-bind every still-missing touched task and
-        `referenced` over-bind note-write owners resolvable via the reverse index.
+        backstop takes over for THAT ROUND's closed `items` set — `referenced` over-bind of the
+        note-write owners resolvable via the reverse index first (so an owner keeps the more
+        specific provenance), then a placeholder for every item the round has not produced a
+        line for yet. Placeholder / `referenced` notes carry an `(r{N})` round tag, which is
+        also their idempotency key: binding is now keyed on the text `[s:<sid8>]: <note>`
+        rather than on the bare presence of a `[s:<sid8>]` line, so one session binds one task
+        once per ROUND instead of once per session (§1.5). A round already satisfied by a real
+        summary, a `referenced` over-bind, or the agent's own `@log` line gets no placeholder.
         A task md carrying NEITHER `<!-- @log:begin -->` NOR `<!-- @log:end -->` no longer
         blocks the bind: the block is GENERATED (before the `@notes` block when one exists,
         otherwise at EOF) and the line lands inside it

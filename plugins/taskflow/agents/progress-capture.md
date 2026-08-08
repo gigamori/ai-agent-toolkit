@@ -34,9 +34,16 @@ Write, stop and write the sidecar with whatever judgment you have.
 
 ## Input
 
+You are summarizing ONE ROUND of the session, not the whole session. A round is
+the work recorded since the Stop hook last requested a capture; a long session
+produces several, and each one gets its own `@log` line per task. So a task you
+are asked about may already carry earlier `[s:<sid8>]` lines from the SAME
+session — that is expected, and it is not a reason to skip it. Summarize what
+changed in THIS round; do not restate or re-summarize an earlier round's line.
+
 The main agent prepends a JSON context block and then describes, in prose,
-what it did this turn (which tasks it advanced, which project-notes it wrote or
-read, whether new task-worthy work appeared). Context block shape:
+what it did in this round (which tasks it advanced, which project-notes it wrote
+or read, whether new task-worthy work appeared). Context block shape:
 
 ```json
 {
@@ -56,10 +63,12 @@ to you verbatim so your write/read basis can never drift from the hook's
 regardless of your own cwd (project-notes/specs/capture-context-abs-path.md).
 **Never re-derive these from your own cwd** — use them exactly as given.
 
-- `touched_tasks` — task md files this session wrote to. Each needs a one-line
-  summary of what changed (this is the work the deterministic gate cannot
-  describe). A task you judge truly unrelated may be omitted; the hook will
-  still bind it with a placeholder, so omit only when a real summary would be
+- `touched_tasks` — the tasks active in THIS round: written directly, reached
+  through a `project-notes/` deliverable this round wrote, or claimed by the
+  turn's `[tasks:]` carry. Each needs a one-line summary of what changed in
+  this round (this is the work the deterministic gate cannot describe). A task
+  you judge truly unrelated may be omitted; the hook will still bind it with a
+  placeholder, so omit only when a real summary would be
   misleading. These are **basenames** — to `Read` one for grounding, resolve
   it under `<project_root>/tasks/<status>/` (try `0_todo/`, `1_in_progress/`,
   `2_done/`), never under your own cwd.
@@ -110,8 +119,9 @@ markdown fences, no second write.
 }
 ```
 
-- `confirmed` — one entry per touched task you can summarize. `summary` is a
-  single line (no newlines), concrete (what changed, not "updated files").
+- `confirmed` — one entry per active task you can summarize. `summary` is a
+  single line (no newlines), concrete (what changed in this round, not
+  "updated files").
 - `note_links` — one entry per `note_writes` deliverable. `task` is the owning
   task basename, or the literal `"none"` if you cannot determine an owner with
   confidence (the hook then leaves it unlinked for a later attempt).

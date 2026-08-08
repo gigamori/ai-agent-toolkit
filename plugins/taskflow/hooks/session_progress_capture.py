@@ -17,6 +17,18 @@ Agent-tool subagent / fork internal writes with the PARENT session_id
 (TBD-1 probe 2026-06-28), so subagent writes (P3) are already in `.touched`.
 The `.touched` read is tolerant: a torn trailing line is dropped.
 
+Round binding (capture-detection-gaps.md §1 / D1): the ledger is NOT "does the
+task carry a `[s:sid8]` line" (that capped a session at one line per task and
+silently dropped every later round's work). `.touched` is append-only and one
+line per write event, so its RAW line count is a cursor: `raw[touch_cursor:]`
+is exactly the activity since the last committed round. Each Stop computes the
+round-active set A_r from that slice (task writes + note-write owners via the
+reverse index + this Stop's `[tasks:]` exec carry), drops tasks the agent
+already logged itself this round (`count_sid_lines` vs `log_seen`), and
+requests a capture for the rest. `touch_cursor` / `round` / `log_seen` /
+`round_base` live INSIDE the `capture` dict so the closed
+`_load_bind`/`_save_bind` whitelist carries them (§1.7).
+
 Async apply-path (note-task-link.md §10): when a touched task still needs a
 summary or a freshly-written project-notes deliverable has no owning task yet,
 the gate (E) commits `capture.status=requested` and blocks with an instruction
@@ -36,9 +48,11 @@ Invariants (§2 / §10):
     `pending` with nothing to report does not block (AC-9). It NEVER blocks on
     the raw "task is missing" condition.
   - INV-2 (no-deadlock): `@log` / `@notes` writes use the bounded `log_lock`.
-  - INV-3 (idempotent): the ledger is the actual presence of a `[s:<sid8>]` line
-    inside a task md's `<!-- @log:begin/end -->` block, recomputed every Stop;
-    apply / backstop are idempotent and eventual (AC-11).
+  - INV-3 (idempotent): the ledger is the actual presence of the text key
+    `[s:<sid8>]: <note>` inside a task md's `<!-- @log:begin/end -->` block,
+    recomputed every Stop (§1.5 — generalized from bare sid presence once a
+    session may bind a task once per round); apply / backstop are idempotent
+    and eventual (AC-11).
 
 exec-binding (§3.4): the terminal agent may carry owning tasks whose work landed
 OUTSIDE `tasks/` via a `[tasks: a.md b.md]` leading line. This hook regex-reads
@@ -48,7 +62,8 @@ to stop retrying — INV-1). Under fork it skips (W2 delegation).
 
 Round / lifecycle state lives in a sidecar `{session_id}.bind` (`reminded`,
 `exec_tried`, and the `capture` lifecycle `{status, items, requested_ts,
-tried_notes}` — writer = this hook only, §10.1), kept separate from the state
+tried_notes, tried_tasks, touch_cursor, round, log_seen, round_base}` — writer =
+this hook only, §10.1), kept separate from the state
 JSON so concurrent rewrites by other hooks cannot clobber it. A 7-day cleanup
 prunes stale `.bind` / `.touched` / `.capture` / legacy `.captured` sidecars,
 and (F5b / D-2) session-state `.json` whose `project` is empty once it is also
@@ -106,6 +121,16 @@ try:
     _SWEEP_MAX = int(os.environ.get('TASKFLOW_SWEEP_MAX', '50'))
 except ValueError:
     _SWEEP_MAX = 50
+
+# PreCompact placeholder note prefix (capture-detection-gaps.md §1.4 F-1 (b) /
+# §2.2). SINGLE source of truth: `hooks/precompact_flush.py` (W3) imports this
+# name instead of re-declaring the literal, so the writer and the counter can
+# never drift apart. PreCompact cannot write `.bind` (writer single-ownership,
+# note-task-link.md §10.1), so its placeholder lines must stay invisible to the
+# per-round `log_seen` ledger — `count_sid_lines` excludes them, otherwise a
+# compaction would make the next Stop read "the agent self-logged" and the
+# round would never form.
+_PRECOMPACT_NOTE_PREFIX = '(auto) unflushed at compaction'
 
 MAX_TOUCHED_IN_INJECTION = 30
 # `[tasks:]` exec-binding carry must appear in the leading lines; accept the
@@ -170,6 +195,35 @@ def read_touched(touched_path: str, cwd: str) -> list[str]:
                 n = normalize_path(p, cwd)
                 if n and n not in seen:
                     seen.add(n)
+                    out.append(n)
+    except OSError:
+        pass
+    return out
+
+
+def read_touched_raw(touched_path: str, cwd: str) -> list[str]:
+    """Read the `.touched` ledger → order-preserving, NON-deduped list (§1.2).
+
+    Same tolerant parse as `read_touched` (torn trailing line dropped, blank
+    lines skipped) but every append EVENT is kept, because the raw line count
+    is the round cursor: `.touched` is append-only with one line per write
+    event and no timestamps, so "how many lines have I already consumed" is the
+    only novelty signal available. `read_touched` stays as the deduped reader
+    used for display and the whole-session note scan.
+    """
+    if not os.path.isfile(touched_path):
+        return []
+    out: list[str] = []
+    try:
+        with open(touched_path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if not line.endswith('\n'):
+                    continue  # torn/partial trailing line — drop
+                p = line.strip()
+                if not p:
+                    continue
+                n = normalize_path(p, cwd)
+                if n:
                     out.append(n)
     except OSError:
         pass
@@ -321,17 +375,60 @@ def resolve_exec_tasks(basenames, project_root):
     return resolved
 
 
-def log_block_has_sid(path, sid8):
-    """True if the task md at `path` already holds a `[s:<sid8>]` line inside its
-    `<!-- @log:begin/end -->` block. This is the ledger (INV-3)."""
+def _log_block_of(path):
+    """Return the `<!-- @log:begin/end -->` block body of the task md at `path`
+    ('' when the file is unreadable or carries no complete block)."""
     try:
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
     except OSError:
-        return False
+        return ''
     m = _LOG_BLOCK_RE.search(content)
-    block = m.group(1) if m else ''
-    return f'[s:{sid8}]' in block
+    return m.group(1) if m else ''
+
+
+def log_block_has_sid(path, sid8):
+    """True if the task md at `path` already holds a `[s:<sid8>]` line inside its
+    `<!-- @log:begin/end -->` block. Session-scoped presence: still the ledger
+    for the once-per-session deterministic exec-bind (§3.4); the per-ROUND
+    ledger is `count_sid_lines` (§1.4)."""
+    return f'[s:{sid8}]' in _log_block_of(path)
+
+
+def count_sid_lines(path, sid8):
+    """Number of `[s:<sid8>]` lines inside the `@log` block — the per-round
+    ledger (§1.4). Compared against `log_seen[task]` (the count at round open)
+    it answers "did anything get logged for this task this round".
+
+    PreCompact placeholders are EXCLUDED (F-1 (b)): a line whose note starts
+    with `_PRECOMPACT_NOTE_PREFIX` is written by `precompact_flush.py`, which
+    cannot update `.bind`, so counting it would raise `n_now` above `log_seen`
+    with no way to resync — the very next Stop would read that as "the agent
+    self-logged" and silently drop the round. Transition lines carry no
+    `[s:...]` tag and so never enter this count."""
+    n = 0
+    tag = f'[s:{sid8}]'
+    for line in _log_block_of(path).splitlines():
+        at = line.find(tag)
+        if at == -1:
+            continue
+        note = line[at + len(tag):].lstrip()
+        if note.startswith(':'):
+            note = note[1:].lstrip()
+        if note.startswith(_PRECOMPACT_NOTE_PREFIX):
+            continue
+        n += 1
+    return n
+
+
+def log_block_has_note(path, sid8, note):
+    """True if the `@log` block already holds the exact text key
+    `[s:<sid8>]: <note>` (§1.5). INV-3 generalized: once a session may bind a
+    task more than once, "a sid line exists" no longer identifies an entry, so
+    idempotency keys on the sid + note TEXT. The timestamp is deliberately not
+    part of the key — a sidecar whose unlink failed is re-applied on a later
+    Stop with a fresh `iso_ts`, and that re-apply must be a no-op."""
+    return f'[s:{sid8}]: {note}' in _log_block_of(path)
 
 
 def repair_log_markers(content):
@@ -372,6 +469,12 @@ def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pendin
     `<!-- @log:end -->` marker. Append-only; never edits existing lines.
     Returns True on success.
 
+    Idempotency (§1.5): if the block already holds the text key
+    `[s:<sid8>]: <note>` this is a no-op that returns True. A session may now
+    bind the same task once per round, so "a `[s:sid8]` line exists" cannot be
+    the guard; the note text separates rounds (placeholders carry an `(r{N})`
+    tag) while a re-applied identical summary collapses to one line.
+
     When `@log:end` is missing the recovery depends on the damage shape:
       - `@log:begin` still present (half-destroyed by a hand edit) → a
         conservative `repair_log_markers` pass runs first; the repaired markers
@@ -390,6 +493,9 @@ def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pendin
                 content = f.read()
         except OSError:
             return False
+        m_blk = _LOG_BLOCK_RE.search(content)
+        if m_blk and f'[s:{sid8}]: {note}' in m_blk.group(1):
+            return True  # text-key idempotency (§1.5) — already recorded
         m = _LOG_END_RE.search(content)
         if not m:
             if _LOG_BEGIN_RE.search(content):
@@ -544,9 +650,17 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, 
                 membership_skipped.append(base)
                 continue
             path = current_index.get(base)
-            if not path or log_block_has_sid(path, sid8):
-                continue  # missing/already bound — idempotent
+            if not path:
+                continue  # task gone
             note = ' '.join(summ.split())[:200] or '(captured) summary pending'
+            # Text-key idempotency (§1.5), replacing the old `log_block_has_sid`
+            # skip: a task may legitimately carry one line per round, so only
+            # THIS summary's re-application (sidecar unlink failed → re-apply on
+            # a later Stop) must be suppressed. Checked here as well as inside
+            # `append_auto_binding` so the caller does not report a no-op append
+            # as an applied summary and block on it every Stop (INV-1).
+            if log_block_has_note(path, sid8, note):
+                continue
             if append_auto_binding(path, sid8, iso_ts, note):
                 summaries.append(base)
 
@@ -602,20 +716,30 @@ def _apply_capture(sidecar, current_index, project, project_root, sid8, iso_ts, 
 def merge_exec_bind(state, state_path, data):
     """Parse a `[tasks: a.md b.md]` carry from the leading lines of
     `last_assistant_message` and union-merge the basenames into
-    `state['exec_bind']` (append-only; durable within this session). Returns the
-    current exec_bind list. Persists state.json on change."""
+    `state['exec_bind']` (append-only; durable within this session). Persists
+    state.json on change.
+
+    Returns `(exec_bind, this_turn)`: the session-cumulative list AND the
+    basenames parsed from THIS Stop's message (§1.3). The cumulative list drives
+    the once-per-session deterministic exec-bind; the this-turn set is the
+    round-active (A_r) exec carry — work claimed on this turn, which is what a
+    round is about. `this_turn` is a subset of `exec_bind` and is empty when the
+    message carries no (in-window) `[tasks:]` marker."""
     existing = state.get('exec_bind')
     existing = list(existing) if isinstance(existing, list) else []
     msg = data.get('last_assistant_message', '')
     if not isinstance(msg, str):
-        return existing
+        return existing, []
     m = _TASKS_RE.search(msg)
     if not m or m.start() >= EXEC_PARSE_WINDOW:
-        return existing
+        return existing, []
     new = [t for t in m.group(1).split() if t.endswith('.md')]
+    this_turn: list[str] = []
     merged = list(existing)
     for t in new:
         b = os.path.basename(t.replace('\\', '/'))
+        if b not in this_turn:
+            this_turn.append(b)
         if b not in merged:
             merged.append(b)
     if merged != existing:
@@ -625,8 +749,8 @@ def merge_exec_bind(state, state_path, data):
                 json.dump(state, f, ensure_ascii=False)
         except OSError:
             pass
-        return merged
-    return existing
+        return merged, this_turn
+    return existing, this_turn
 
 
 def _rel(path, cwd):
@@ -731,18 +855,64 @@ def main() -> int:
     date = datetime.date.today().isoformat()
 
     # --- touched (from the .touched ledger; tolerant + dedup) ---
-    touched = read_touched(os.path.join(STATE_DIR, f'{session_id}.touched'), cwd)
+    touched_path = os.path.join(STATE_DIR, f'{session_id}.touched')
+    touched = read_touched(touched_path, cwd)
+    raw_lines = read_touched_raw(touched_path, cwd)
     resolved = resolve_touched_tasks(touched, project_root)
 
     # --- exec-binding carry: merge [tasks:] → state.exec_bind, resolve (P8) ---
     is_fork = bool(state.get('parent_session_id'))
-    exec_bind = merge_exec_bind(state, state_path, data)
+    exec_bind, exec_this_turn = merge_exec_bind(state, state_path, data)
     exec_resolved = resolve_exec_tasks(exec_bind, project_root)
 
+    bind_existed = os.path.exists(bind_path)
     bind = _load_bind(bind_path)
     reminded = bind['reminded']
     exec_tried = bind['exec_tried']
     capture = bind['capture']
+
+    # --- round state (§1.2 / §1.6-1.8), carried INSIDE `capture` so the CLOSED
+    # `_load_bind`/`_save_bind` whitelist round-trips it without change (§1.7).
+    round_n = capture.get('round')
+    round_n = round_n if isinstance(round_n, int) else 0
+    log_seen = capture.get('log_seen')
+    log_seen = dict(log_seen) if isinstance(log_seen, dict) else {}
+    # `round_base`: the `[s:sid8]` count of each item at the moment the OPEN
+    # round was requested. `log_seen` cannot serve here: F-1 resyncs it from the
+    # hook's own writes at the END of every Stop, and a round spans Stops, so by
+    # the time the backstop runs `log_seen` may already include a line written
+    # for THIS round (an apply whose sidecar unlink failed, a mid-round
+    # exec-bind) and the backstop would add a redundant placeholder next to it.
+    # Frozen with `items`, replaced on every request commit.
+    round_base = capture.get('round_base')
+    round_base = dict(round_base) if isinstance(round_base, dict) else {}
+    touch_cursor = capture.get('touch_cursor')
+    if not isinstance(touch_cursor, int):
+        # M-1 bootstrap (§1.8). A `.bind` that predates this schema means
+        # EARLIER Stops already consumed the ledger under the old one-line-per-
+        # session rule; replaying it would re-capture the whole session history
+        # (upgrade storm). Start at the end and seed `log_seen` from the current
+        # on-disk counts so no round forms out of the past. No `.bind` at all =
+        # no earlier Stop ran, so nothing was consumed and the cursor starts at
+        # 0 (this session's first round must still see its own work).
+        if bind_existed:
+            touch_cursor = len(raw_lines)
+            for base, path in resolved.items():
+                log_seen[base] = count_sid_lines(path, sid8)
+        else:
+            # Fresh session: `log_seen` stays EMPTY. Every `[s:sid8]` line in a
+            # task md belongs to this session by construction, so seeding from
+            # the current counts here would read the agent's own round-1 log
+            # line as the baseline and request a capture it does not need.
+            touch_cursor = 0
+    # F-7: `.touched` may be truncated or removed mid-session — clamp so the
+    # slice can never go negative.
+    touch_cursor = min(touch_cursor, len(raw_lines))
+    new_slice = raw_lines[touch_cursor:]
+    slice_display: list[str] = []
+    for _r in new_slice:
+        if _r not in slice_display:
+            slice_display.append(_r)
 
     # `auto_bound`: list[str rel] code-appended this Stop (exec + placeholder +
     # referenced). Drives the (b) report; INV-1.
@@ -756,6 +926,20 @@ def main() -> int:
     # shape as `exec_skipped`: surfaced once via the injection, then suppressed
     # by `tried_tasks`, so a given task is reported at most once (INV-1).
     bind_skipped: list[str] = []
+    # `hook_appended`: {task-path: n} — `@log` lines THIS hook appended during
+    # THIS Stop. F-1 integrity rule (§1.4): the hook's own appends raise the
+    # `[s:sid8]` count exactly like an agent-written log line would, so without
+    # subtracting them from the self-log comparison AND resyncing `log_seen`
+    # from them at the end of the Stop, the next round reads "the agent already
+    # logged this" and its real work is never summarized — the same silent-loss
+    # class D1 exists to fix.
+    hook_appended: dict = {}
+    # Paths the deterministic exec-bind recorded this Stop (§1.3): that line IS
+    # this round's entry for those tasks, so they are not also A_r candidates.
+    exec_bound_now: set = set()
+
+    def _record_append(path):
+        hook_appended[path] = hook_appended.get(path, 0) + 1
 
     # --- exec-binding bind (deterministic; §3.4) ----------------------------
     # Each resolved owning task missing its [s:sid8] line is bound directly by
@@ -774,6 +958,8 @@ def main() -> int:
                 '(auto) executed via [tasks:] carry; summary pending',
             ):
                 auto_bound.append(rel)
+                _record_append(path)
+                exec_bound_now.add(path)
             else:
                 exec_tried.append(rel)
                 exec_skipped.append(rel)
@@ -819,6 +1005,10 @@ def main() -> int:
             applied_this_stop = True
             applied_summaries, applied_links, proposals, applied_link_skipped, applied_membership_skipped = _apply_capture(
                 sidecar, current_index, project, project_root, sid8, iso_ts, capture.get('items'))
+            for _b in applied_summaries:
+                _p = current_index.get(_b)
+                if _p:
+                    _record_append(_p)  # F-1: hook write, not an agent self-log
             # Consume: unlink so a later request cannot re-match a stale sidecar.
             # On unlink failure, do NOT mark done — the next Stop re-applies
             # (idempotent), keeping the apply eventual (§10.2 / AC-11).
@@ -838,29 +1028,90 @@ def main() -> int:
         else:
             status = 'pending'  # in-flight: do NOT block (AC-9, no double-spawn)
 
-    # --- (C) recompute missing AFTER apply, and the novelty set ------------
-    missing = {
-        base: path
-        for base, path in resolved.items()
-        if not log_block_has_sid(path, sid8)
-    }
+    # --- (C) round-active set A_r AFTER apply, and the novelty set ----------
+    # §1.3: A_r = task writes in this round's ledger slice ∪ owners of the
+    # notes written in it (the via-a-note loss path) ∪ this Stop's `[tasks:]`
+    # exec carry − self-logged − tried_tasks. The note SCAN stays whole-session
+    # (`touched`): `novel_notes` and the `referenced` over-bind below are bounded
+    # by `tried_notes`, and the over-bind fires on the expiry Stop, by which
+    # time the round that requested it has already consumed its slice.
     reverse_index = build_reverse_index(project_root)
     note_writes, unlinked = _scan_note_writes(
         touched, project, project_root, reverse_index)
     novel_notes = [n for n in unlinked if n not in tried_notes]
 
+    active = dict(resolve_touched_tasks(new_slice, project_root))
+    slice_notes, _slice_unlinked = _scan_note_writes(
+        new_slice, project, project_root, reverse_index)
+    for prel in slice_notes:
+        for owner_path in resolve_note_owner(prel, project_root, reverse_index):
+            active[os.path.basename(owner_path)] = owner_path
+    if not is_fork:
+        for base, path in resolve_exec_tasks(exec_this_turn, project_root).items():
+            if path in exec_bound_now:
+                continue  # the deterministic exec-bind already recorded it
+            if _rel(path, cwd) in exec_tried:
+                continue  # unbindable; already 打止め on the exec-bind side
+            active[base] = path
+    # self-log detection (§1.4): a `[s:sid8]` count that grew beyond the round's
+    # opening baseline by something OTHER than this hook's own writes means the
+    # agent logged the work itself (guidelines followed) — no capture needed.
+    for base, path in list(active.items()):
+        n_now = count_sid_lines(path, sid8) - hook_appended.get(path, 0)
+        if n_now > log_seen.get(base, 0):
+            log_seen[base] = n_now
+            active.pop(base, None)
+    # 打止め (INV-1): a task with no bindable anchor is never re-requested.
+    active = {b: p for b, p in active.items() if b not in tried_tasks}
+
     # --- (D) deterministic G backstop once capture has resolved ------------
-    # §10.4: G (touched → placeholder) is guaranteed every Stop once capture is
-    # done/expired. Apply runs BEFORE this (§10.2 ordering) so a real summary is
-    # never pre-empted by a placeholder. On expiry, note writes whose owner is
-    # known via the reverse index get a `referenced` over-bind (AC-6/AC-10);
-    # unlinked notes are NOT established under judgment-absent expiry (§10.4).
+    # §10.4 / §1.6: the backstop guarantees a line for the round's CLOSED item
+    # set once capture is done/expired. Apply runs BEFORE this (§10.2 ordering)
+    # so a real summary is never pre-empted by a placeholder; likewise the
+    # `referenced` over-bind runs before the generic placeholder so a note owner
+    # keeps its more specific provenance. Anything already logged this round
+    # (real summary / over-bind / the agent itself) is skipped via
+    # `count_sid_lines > log_seen`.
+    def _round_base(base):
+        """This round's opening `[s:sid8]` count for `base` (§1.6). Falls back
+        to `log_seen` for a legacy `.bind` that predates `round_base`."""
+        if base in round_base:
+            return round_base[base]
+        return log_seen.get(base, 0)
+
+    if status == 'expired':
+        for prel in note_writes:
+            for owner_path in resolve_note_owner(
+                    prel, project_root, reverse_index):
+                obase = os.path.basename(owner_path)
+                if count_sid_lines(owner_path, sid8) > _round_base(obase):
+                    continue  # this round already recorded a line for it
+                if append_auto_binding(
+                        owner_path, sid8, iso_ts,
+                        f'(referenced) owner of {prel} via reverse-index; '
+                        f'capture expired (r{round_n})'):
+                    auto_bound.append(_rel(owner_path, cwd))
+                    _record_append(owner_path)
     if status in ('done', 'expired'):
-        for base, path in list(missing.items()):
-            if append_auto_binding(path, sid8, iso_ts):
+        items = capture.get('items')
+        if isinstance(items, dict) and isinstance(items.get('tasks'), list):
+            backstop = [(b, current_index.get(b)) for b in items['tasks']]
+        else:
+            # Legacy `.bind` predating `items` — same fail-open shape as
+            # `_apply_capture`: fall back to the pre-round rule (every touched
+            # task still carrying no `[s:sid8]` line at all).
+            backstop = [(b, p) for b, p in resolved.items()
+                        if not log_block_has_sid(p, sid8)]
+        placeholder = f'(auto) touched; summary pending (r{round_n})'
+        for base, path in backstop:
+            if not path or base in tried_tasks:
+                continue
+            if count_sid_lines(path, sid8) > _round_base(base):
+                continue  # this round already has a line — no placeholder
+            if append_auto_binding(path, sid8, iso_ts, placeholder):
                 auto_bound.append(_rel(path, cwd))
-                missing.pop(base, None)
-            elif base not in tried_tasks:
+                _record_append(path)
+            else:
                 # Cannot bind (ambiguous @log damage that D3 generation cannot
                 # resolve) after a full capture cycle — stop requesting it
                 # (打止め / no-loop, INV-1) and surface it once (§4.3): this
@@ -871,40 +1122,68 @@ def main() -> int:
                 print(f'[progress capture] bind-skip(no-anchor): {skip_rel} '
                       f'[s:{sid8}] — no writable <!-- @log:begin/end --> block; '
                       f'left unbound.', file=sys.stderr)
-    if status == 'expired':
-        for prel in note_writes:
-            for owner_path in resolve_note_owner(
-                    prel, project_root, reverse_index):
-                if log_block_has_sid(owner_path, sid8):
-                    continue
-                if append_auto_binding(
-                        owner_path, sid8, iso_ts,
-                        f'(referenced) owner of {prel} via reverse-index; '
-                        f'capture expired'):
-                    auto_bound.append(_rel(owner_path, cwd))
 
-    # --- (E) request capture when novelty remains in a re-requestable state -
-    # Novelty is bounded by the 打止め sets: a touched task already tried (no
-    # bindable anchor) and a note already attempted no longer re-trigger a spawn.
-    missing_novel = {b: p for b, p in missing.items() if b not in tried_tasks}
+    # --- F-1 integrity rule (§1.4 (a)) --------------------------------------
+    # Resync `log_seen` from every task THIS Stop appended to (apply summaries,
+    # placeholders, `referenced` over-binds, exec-binds). Runs AFTER (D) so the
+    # backstop above still sees the round's opening baseline, and BEFORE the
+    # commit below so the value persisted is the post-write truth. Skipping this
+    # is what would make the hook's own writes look like an agent self-log on
+    # the next Stop and silently swallow that round.
+    for _path in hook_appended:
+        log_seen[os.path.basename(_path)] = count_sid_lines(_path, sid8)
+
+    # --- (E) request capture when this round still has unlogged activity ----
+    # Novelty is bounded by the 打止め sets and by the cursor: a slice is
+    # examined once, a touched task already tried (no bindable anchor) and a
+    # note already attempted no longer re-trigger a spawn (INV-1).
     spawn = False
-    if status in ('', 'done', 'expired') and (missing_novel or novel_notes):
+    if status in ('', 'done', 'expired') and (active or novel_notes):
         requested_ts = datetime.datetime.now().timestamp()
+        round_n += 1
+        round_base = {}
+        for base, path in active.items():
+            # Round-open baseline (§1.6): the count as it stands NOW, so any
+            # line that lands before this round closes counts as this round's.
+            n = count_sid_lines(path, sid8)
+            log_seen[base] = n
+            round_base[base] = n
         capture = {
             'status': 'requested',
-            'items': {'tasks': sorted(missing_novel.keys()), 'notes': novel_notes},
+            'items': {'tasks': sorted(active.keys()), 'notes': novel_notes},
             'requested_ts': requested_ts,
             'tried_notes': tried_notes,
             'tried_tasks': tried_tasks,
+            'touch_cursor': len(raw_lines),
+            'round': round_n,
+            'log_seen': log_seen,
+            'round_base': round_base,
         }
         spawn = True
     else:
+        items = capture.get('items')
+        cursor_out = touch_cursor
+        if status in ('', 'done', 'expired'):
+            # Re-requestable but nothing novel: the slice WAS consumed, so
+            # advance the cursor without opening a round (§1.6). A resolved
+            # request's closed set has just been backstopped, so retire it —
+            # leaving it would re-placeholder the same round every Stop.
+            cursor_out = len(raw_lines)
+            if status in ('done', 'expired'):
+                items = {'tasks': [], 'notes': []}
+                round_base = {}
+        # In-flight (`requested`/`pending`): the cursor deliberately does NOT
+        # move, so activity during the round is carried into the next one.
         capture = {
             'status': status,
-            'items': capture.get('items'),
+            'items': items,
             'requested_ts': requested_ts,
             'tried_notes': tried_notes,
             'tried_tasks': tried_tasks,
+            'touch_cursor': cursor_out,
+            'round': round_n,
+            'log_seen': log_seen,
+            'round_base': round_base,
         }
 
     # --- Gate (INV-1): block only to (b) report binds, (c) report exec-skip,
@@ -945,25 +1224,27 @@ def main() -> int:
     )
 
     if spawn:
-        shown = touched[:MAX_TOUCHED_IN_INJECTION]
-        tail = '' if len(touched) <= MAX_TOUCHED_IN_INJECTION else \
-            f' ...({len(touched) - MAX_TOUCHED_IN_INJECTION} more)'
+        # Round-scoped display (§1.3): the subagent summarizes THIS round's
+        # work, so it is shown this round's ledger slice, not the whole session.
+        shown = slice_display[:MAX_TOUCHED_IN_INJECTION]
+        tail = '' if len(slice_display) <= MAX_TOUCHED_IN_INJECTION else \
+            f' ...({len(slice_display) - MAX_TOUCHED_IN_INJECTION} more)'
         sidecar_path_display = _to_forward_slash(capture_path)
         context = build_capture_context(
             sid8, iso_ts, capture_path, project_root,
-            sorted(missing_novel.keys()), novel_notes,
+            sorted(active.keys()), novel_notes,
         )
         reason = (
             f'{auto_lines}'
             f'[progress capture] session={sid8} date={date}\n'
             f'touched: {" ".join(shown)}{tail}\n\n'
-            f'Spawn the async capture subagent to summarize this turn\'s task '
+            f'Spawn the async capture subagent to summarize this round\'s task '
             f'work and map note deliverables to owning tasks. Do NOT update '
             f'`@log` / `@notes` yourself — the taskflow Stop hook applies the '
             f'subagent\'s result deterministically on a later Stop.\n\n'
             f'1. Use the Agent tool with subagent_type `{CAPTURE_AGENT_TYPE}`.\n'
             f'2. In its prompt, give this context block verbatim AND add, in '
-            f'prose, what you did this turn (which tasks you advanced, which '
+            f'prose, what you did in this round (which tasks you advanced, which '
             f'project-notes you wrote/read, any task-worthy work with no task '
             f'file yet):\n'
             f'   {context}\n'
