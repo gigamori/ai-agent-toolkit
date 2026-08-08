@@ -1353,6 +1353,17 @@ def main() -> int:
                 unlinked.append(_p)
     novel_notes = [n for n in unlinked if n not in tried_notes]
 
+    # W5 (§1.9): the round baseline as it stood when this Stop STARTED, taken
+    # before `compute_round_active` raises `log_seen` for anything it judges
+    # self-logged. `_round_base` falls back to THIS instead of the live
+    # `log_seen`: the self-log pass sets `log_seen[key] = n_now`, so a live
+    # fallback compares `n_now > n_now`, never fires, and the backstop appends a
+    # `(referenced)` line next to the log line the agent had just written itself.
+    # The M-1 bootstrap seeding inside `resolve_touch_cursor` IS included (it is
+    # a legacy `.bind`'s legitimate baseline); only this Stop's own mutations are
+    # excluded.
+    log_seen_at_entry = dict(log_seen)
+
     exec_carry: dict = {}
     if not is_fork:
         for base, path in resolve_exec_tasks(exec_this_turn, project_root).items():
@@ -1375,11 +1386,16 @@ def main() -> int:
     # `count_sid_lines > log_seen`.
     def _round_base(key):
         """This round's opening `[s:sid8]` count for the qualified `key` (§1.6).
-        Falls back to `log_seen` for a legacy `.bind` that predates
-        `round_base` (both dicts are F-4-normalized above)."""
+
+        Falls back to `log_seen_at_entry` — the Stop-entry snapshot, NOT the
+        live `log_seen` (W5, §1.9) — for a key the open round never froze: a
+        legacy `.bind` that predates `round_base`, or a note owner the
+        `referenced` over-bind reaches through the whole-session note scan
+        without that owner having been in the round's item set. Both dicts are
+        F-4-normalized above."""
         if key in round_base:
             return round_base[key]
-        return log_seen.get(key, 0)
+        return log_seen_at_entry.get(key, 0)
 
     if status == 'expired':
         for _name, _root in project_roots.items():
@@ -1387,12 +1403,22 @@ def main() -> int:
             for prel in note_writes_by_project[_name]:
                 for owner_path in resolve_note_owner(prel, _root, _ridx):
                     okey = qualify(_name, os.path.basename(owner_path))
+                    ref_note = (f'(referenced) owner of {prel} via '
+                                f'reverse-index; capture expired (r{round_n})')
+                    # Text-key bound (W5, INV-1/§1.5). `append_auto_binding` is
+                    # text-key idempotent and returns True for the no-op, so
+                    # without this pre-check a repeat is recorded in
+                    # `auto_bound` and the gate BLOCKS AND RE-REPORTS the same
+                    # line on every Stop for as long as `status` stays
+                    # `expired`. The note scan is whole-session by design
+                    # (§1.9), so this loop is re-entered every Stop; presence of
+                    # the exact key is the monotone stop condition (a text key,
+                    # once written, is never removed).
+                    if log_block_has_note(owner_path, sid8, ref_note):
+                        continue
                     if count_sid_lines(owner_path, sid8) > _round_base(okey):
                         continue  # this round already recorded a line for it
-                    if append_auto_binding(
-                            owner_path, sid8, iso_ts,
-                            f'(referenced) owner of {prel} via reverse-index; '
-                            f'capture expired (r{round_n})'):
+                    if append_auto_binding(owner_path, sid8, iso_ts, ref_note):
                         auto_bound.append(_rel(owner_path, cwd))
                         _record_append(owner_path, okey)
     if status in ('done', 'expired'):
@@ -1408,6 +1434,12 @@ def main() -> int:
         placeholder = f'(auto) touched; summary pending (r{round_n})'
         for key, path in backstop:
             if not path or key in tried_tasks:
+                continue
+            # Text-key bound (W5), the same monotone stop condition as the
+            # `referenced` loop above: `items` is no longer retired, so this
+            # backstop is re-entered for the same closed set on every later
+            # Stop, and a no-op re-append must never be reported as an action.
+            if log_block_has_note(path, sid8, placeholder):
                 continue
             if count_sid_lines(path, sid8) > _round_base(key):
                 continue  # this round already has a line — no placeholder
@@ -1470,13 +1502,29 @@ def main() -> int:
         cursor_out = touch_cursor
         if status in ('', 'done', 'expired'):
             # Re-requestable but nothing novel: the slice WAS consumed, so
-            # advance the cursor without opening a round (§1.6). A resolved
-            # request's closed set has just been backstopped, so retire it —
-            # leaving it would re-placeholder the same round every Stop.
+            # advance the cursor without opening a round (§1.6).
+            #
+            # W5 (§1.9): the resolved round's `items` / `round_base` are NOT
+            # retired here. W2 retired them on the rationale that an un-retired
+            # `items` re-placeholders the same round every Stop; that rationale
+            # was over-broad. The placeholder is bounded by
+            # `count_sid_lines > _round_base` (plus the text key), and
+            # `round_base` is frozen at request time — so keeping BOTH is what
+            # makes that guard work, while retiring `round_base` is what broke
+            # it (the `_round_base` fallback then compares against the live
+            # `log_seen` the F-1 resync just advanced). Retiring `items` also
+            # never bounded the `referenced` over-bind, which iterates the
+            # whole-session note scan and not `items` at all.
+            #
+            # Retiring `items` DID have a cost: it is the request-time closed
+            # set `_apply_capture` gates membership on, so a sidecar that
+            # arrives after the expiry Stop had its whole judgment
+            # membership-skipped — every `confirmed` summary and every
+            # `note_links` entry discarded (the W5 defect, observed live on
+            # session e810b706). Keeping the set means a late sidecar still
+            # applies, which is the entire point of the async apply-path being
+            # eventual (AC-11).
             cursor_out = len(raw_lines)
-            if status in ('done', 'expired'):
-                items = {'tasks': [], 'notes': []}
-                round_base = {}
         # In-flight (`requested`/`pending`): the cursor deliberately does NOT
         # move, so activity during the round is carried into the next one.
         capture = {

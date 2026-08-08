@@ -243,7 +243,11 @@ session end
         win over a placeholder (`@log` is append-only, so a placeholder cannot be overwritten).
         Entries outside the request-time closed set `capture.items` are skipped (F7a), and a
         `note_links[].note` that is not project-relative under `project-notes/` is rejected
-        outright — independent of that membership set.
+        outright — independent of that membership set. A sidecar that arrives AFTER its round
+        expired still applies: the resolved round's `items` / `round_base` are retained (they
+        are replaced only when the next round is requested), so a subagent slower than the
+        expiry keeps its summary and its note links instead of having every entry
+        membership-skipped (§1.9, W5).
      5. round-active set → request capture: A_r = task md written in this round's ledger slice
         ∪ owners of the notes written in it (resolved through the reverse index — work that
         reaches a task only via a project-note) ∪ this Stop's `[tasks:]` exec carry, MINUS tasks
@@ -265,7 +269,14 @@ session end
         also their idempotency key: binding is now keyed on the text `[s:<sid8>]: <note>`
         rather than on the bare presence of a `[s:<sid8>]` line, so one session binds one task
         once per ROUND instead of once per session (§1.5). A round already satisfied by a real
-        summary, a `referenced` over-bind, or the agent's own `@log` line gets no placeholder.
+        summary, a `referenced` over-bind, or the agent's own `@log` line gets no placeholder —
+        judged against `round_base`, the count FROZEN when the round was requested, falling
+        back for an unfrozen key to the `log_seen` snapshot taken at the START of this Stop
+        (the live dict is useless there: the self-log pass has already raised it to the current
+        count). Both backstops are re-entered on every later Stop while the round stays
+        resolved, so each also refuses to re-append its own text key — that presence, being
+        monotone, is what keeps the gate silent instead of re-reporting a no-op write (§1.9,
+        W5).
         A task md carrying NEITHER `<!-- @log:begin -->` NOR `<!-- @log:end -->` no longer
         blocks the bind: the block is GENERATED (before the `@notes` block when one exists,
         otherwise at EOF) and the line lands inside it
