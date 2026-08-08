@@ -80,6 +80,32 @@ Caps how many Completed rows enter an agent's **context**. `progress.md` itself 
 
 > Retired in 0.2.6: `TASKFLOW_DONE_ROWS_MAX` and `rebuild_progress.py --done-rows-max`, which truncated `progress.md` on disk. Setting the old variable now has no effect — the file is no longer capped.
 
+### `TASKFLOW_LOCK_TIMEOUT`
+
+How long (in seconds) a writer waits to acquire the advisory write lock (`hooks/log_lock.py`) before giving up. Default: `3.0`. The acquire is **bounded**: on expiry the write proceeds *unlocked*, with a warning on stderr, rather than blocking — a stuck lock can never hang a session. Lowering it makes a contended write degrade to unlocked sooner.
+
+```json
+{
+  "env": {
+    "TASKFLOW_LOCK_TIMEOUT": "3.0"
+  }
+}
+```
+
+### `TASKFLOW_LOCK_STALE`
+
+How old (in seconds) a lock sidecar must be before another writer may break it and take ownership. Default: `10.0`. The lock is "existence == lock" with no kernel-backed owner, so a sidecar left behind by a killed process is reclaimed only once it ages past this threshold — that bounded post-crash wait is the trade for having no orphaned-lock state to clean up. Normal holds are sub-millisecond; setting this below the longest expected hold risks a *live* holder's sidecar being broken.
+
+```json
+{
+  "env": {
+    "TASKFLOW_LOCK_STALE": "10"
+  }
+}
+```
+
+Both variables are read per call, and the Pi taskflow extension reads the same two names — set them identically on both sides, or the two harnesses will wait and expire on different schedules.
+
 ## Usage
 
 ### Specifying a project
@@ -281,16 +307,29 @@ _projects/
     _archive/                 project-level archive
     plans/                    plan copies (auto-archived history)
     memory/                   memory copies (auto-archived history)
-    .locks/                   @log write locks (auto-managed; normally empty)
+    .locks/                   @log / progress.md write locks (auto-managed; normally empty)
 ```
 
-`.locks/` holds one short-lived sidecar per task while its `@log` / `@notes`
-block is being written, named after the task's file name. It is created on
-demand and each entry is deleted as soon as its last writer finishes, so in a
-quiescent project the directory is empty. Never edit or commit it. If entries
-do linger (a task was deleted while a lock existed, or a writer was killed),
-`/progress check` reports them and `scripts/clean_locks.py <project> --apply`
-clears them.
+`.locks/` holds one short-lived sidecar per write target: one per task while
+its `@log` / `@notes` block is being written (named after the task's file
+name), plus `progress.md.lock` while `progress.md` itself is being rebuilt. It
+is created on demand and each entry is deleted as soon as its last writer
+finishes, so in a quiescent project the directory is empty. Never edit or
+commit it.
+
+The lock is advisory and **cross-harness**: the Pi taskflow extension derives
+the same sidecar paths, so the two harnesses serialize against each other —
+but only when both sides run protocol v2. It also does **not** cover a hand
+edit or an LLM `Edit` tool call, which write at a layer that cannot take the
+lock, so such an edit racing a hook write remains unprotected.
+
+If entries do linger (a task was deleted while a lock existed, or a writer was
+killed), `/progress check` reports them and
+`scripts/clean_locks.py <project> --apply` clears them. A crash-orphaned
+sidecar whose target still exists — including `progress.md.lock`, which both
+of those deliberately never flag — is instead reclaimed by the next writer
+once it ages past `TASKFLOW_LOCK_STALE`; unlike a `flock`-style lock, nothing
+is released automatically when a process is killed.
 
 ## How it works
 
@@ -324,7 +363,7 @@ session start
 
 ### hooks
 
-Seven hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (two hooks), `Stop` (two hooks), and `SessionStart:compact`. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (a bounded per-task advisory lock) — are shared modules imported by the Stop hook, not wired hooks themselves.
+Seven hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (two hooks), `Stop` (two hooks), and `SessionStart:compact`. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (the bounded advisory write lock, protocol v2) — are shared modules, not wired hooks themselves: `note_links.py` is imported by the Stop hook, and `log_lock.py` by the Stop hook and by `scripts/rebuild_progress.py`, which takes the same lock around its `progress.md` read→write window.
 
 #### UserPromptSubmit: session_init.py
 

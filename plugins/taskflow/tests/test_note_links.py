@@ -203,6 +203,56 @@ def test_no_anchor_fails(root: Path) -> None:
           "no @notes block written without an anchor")
 
 
+def test_spec41_entry_literal_pin(root: Path) -> None:
+    """PIN TEST — SPEC note-task-link.md §4.1 boundary contract.
+
+    The `@notes` entry line and the auto-managed comment are a CROSS-HARNESS
+    literal: the Pi taskflow extension parses what this writes and vice versa.
+    Pi once deviated by writing `- <rel> [s:<sid8>] <ts>`, which made the two
+    implementations unable to read each other. §4.1 now pins the bare form, and
+    the Pi side carries the mirror of this test ("writes the SPEC §4.1 bare
+    form" in binding.test.ts).
+
+    Asserting the exact bytes is the point. If a future change wants to add a
+    session id or a timestamp to an entry, it must change the SPEC and BOTH
+    implementations together — this test failing is that conversation starting,
+    not a test to relax.
+    """
+    print("--- §4.1 entry-literal pin (cross-harness boundary contract) ---")
+    task_path, _ = make_project(root)
+
+    # 1. Block creation from scratch.
+    nl.append_note_link(str(task_path), "project-notes/specs/foo.md")
+    content = task_path.read_text(encoding="utf-8")
+
+    check(nl._AUTO_COMMENT
+          == "<!-- auto-managed by taskflow note-link; do not hand-edit -->",
+          f"auto-comment literal is byte-exact (got {nl._AUTO_COMMENT!r})")
+
+    _, _, after_begin = content.partition(nl.NOTES_BEGIN + "\n")
+    block_inner, _, _ = after_begin.partition(nl.NOTES_END)
+    lines = block_inner.splitlines()
+    check(lines == [nl._AUTO_COMMENT, "- project-notes/specs/foo.md"],
+          f"fresh block is exactly [auto-comment, bare entry] (got {lines!r})")
+
+    # 2. Append into an existing block.
+    nl.append_note_link(str(task_path), "project-notes/checks/bar.md")
+    content = task_path.read_text(encoding="utf-8")
+    _, _, after_begin = content.partition(nl.NOTES_BEGIN + "\n")
+    block_inner, _, _ = after_begin.partition(nl.NOTES_END)
+    lines = block_inner.splitlines()
+    check(lines == [nl._AUTO_COMMENT,
+                    "- project-notes/specs/foo.md",
+                    "- project-notes/checks/bar.md"],
+          f"appended entry is the bare form, order preserved (got {lines!r})")
+
+    # 3. Nothing resembling the retired Pi form leaked in.
+    entry_lines = [ln for ln in lines if ln.startswith("- ")]
+    check(all(re.fullmatch(r"- \S+", ln) for ln in entry_lines),
+          f"every entry is exactly `- <note_rel>`: no [s:<sid8>], no timestamp "
+          f"(got {entry_lines!r})")
+
+
 def main() -> int:
     print("=== note_links.py unit tests (Phase A) ===")
     with tempfile.TemporaryDirectory() as d:
@@ -214,6 +264,7 @@ def main() -> int:
             test_pure_reference_ac4,
             test_stale_skip_ac7,
             test_no_anchor_fails,
+            test_spec41_entry_literal_pin,
         ):
             sub = Path(d) / fn.__name__
             sub.mkdir()

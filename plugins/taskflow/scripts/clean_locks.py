@@ -20,8 +20,11 @@ NOT cover:
 
 NOT covered by either population, by design: a sidecar left behind because a
 holder was killed mid-write. Its task still exists, so `dead` does not match it,
-and it is harmless — the file carries no content and the next writer simply
-reuses it. See project-notes/specs/log-lock-stable-key.md §3.3.
+and it is harmless — under protocol v2 the next writer breaks it once it ages
+past `TASKFLOW_LOCK_STALE` (default 10 s) and takes ownership. The same applies
+to a crash-orphaned `.locks/progress.md.lock`, which `dead` deliberately never
+matches (see `PROGRESS_LOCK_NAME`): stale-break, not this sweep, is what
+reclaims it. See project-notes/specs/log-lock-stable-key.md §3.3.
 
 Safety
 ------
@@ -60,6 +63,12 @@ except (AttributeError, OSError):
     pass
 
 LOCKS_DIRNAME = ".locks"
+# Protocol v2 gave `progress.md` its own sidecar in the SAME `.locks/` dir
+# (hooks/log_lock.py `lock_path_for` rule 2). It is not keyed on a task md, so
+# the `dead` rule below would flag it in every project, forever. Exempt it.
+# LOCKSTEP: scripts/check_progress.py::check_orphan_lock carries the same
+# exemption as a separate implementation -- change both together.
+PROGRESS_LOCK_NAME = "progress.md.lock"
 
 
 def task_md_basenames(project_dir: Path) -> set[str]:
@@ -90,6 +99,8 @@ def find_dead_locks(project_dir: Path) -> list[Path]:
     for p in sorted(locks_dir.iterdir()):
         if not p.is_file() or p.suffix != ".lock":
             continue
+        if p.name == PROGRESS_LOCK_NAME:
+            continue  # not task-keyed -- see PROGRESS_LOCK_NAME.
         # `<task-basename>.lock` -> `<task-basename>` (which still ends in .md)
         if p.name[: -len(".lock")] not in live:
             dead.append(p)

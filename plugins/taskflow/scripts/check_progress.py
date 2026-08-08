@@ -416,6 +416,12 @@ def check_orphan_lock(project_dir: Path, result: Result) -> None:
               hooks/log_lock.py no longer creates these, so every one is dead
               regardless of whether a sibling `.md` exists.
 
+    EXEMPT: `.locks/progress.md.lock`. Protocol v2 gave `progress.md` a sidecar
+    in the same `.locks/` dir (hooks/log_lock.py `lock_path_for` rule 2), keyed
+    on the file itself rather than on a task md — so the `dead` rule would flag
+    it in every project, forever. A crash-orphaned one is reclaimed by the next
+    writer's stale-break, not by a sweep.
+
     The previous definition of this check was "*.md.lock with no sibling *.md",
     which only ever caught the DEPARTURE-side residue of a status move; the
     arrival-side sidecar kept a live sibling and so looked healthy. That is
@@ -433,7 +439,9 @@ def check_orphan_lock(project_dir: Path, result: Result) -> None:
     Walk range for the live-basename set MUST mirror
     hooks/session_progress_capture.py::_task_basename_index and
     scripts/clean_locks.py::task_md_basenames — a basename missed here would
-    make a live lock look dead. LOCKSTEP: change all three together.
+    make a live lock look dead. LOCKSTEP: change all three together, plus the
+    `progress.md.lock` exemption above, which scripts/clean_locks.py carries as
+    a separate implementation (`PROGRESS_LOCK_NAME`) — four points, not three.
     """
     tasks_dir = project_dir / "tasks"
 
@@ -449,6 +457,8 @@ def check_orphan_lock(project_dir: Path, result: Result) -> None:
         for lock_path in sorted(locks_dir.iterdir()):
             if not lock_path.is_file() or lock_path.suffix != ".lock":
                 continue
+            if lock_path.name == "progress.md.lock":
+                continue  # not task-keyed (protocol v2 rule 2) — see docstring
             if lock_path.name[: -len(".lock")] in live_basenames:
                 continue
             result.add(

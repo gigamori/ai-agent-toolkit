@@ -79,6 +79,32 @@ Claude Code で恒久設定するには `settings.json` に追加:
 
 > 0.2.6 で撤去: `progress.md` をディスク上で truncate していた `TASKFLOW_DONE_ROWS_MAX` と `rebuild_progress.py --done-rows-max`。旧変数を設定しても効果はない — ファイルはもうキャップされない。
 
+### `TASKFLOW_LOCK_TIMEOUT`
+
+writer が advisory write lock（`hooks/log_lock.py`）の取得を諦めるまでの待ち時間（秒）。既定値: `3.0`。取得は **bounded** — 期限切れ時はブロックせず、stderr に警告を出したうえで *ロックなしのまま* 書込を続行する（スタックしたロックがセッションを停止させることはない）。値を下げるほど、競合時に早くロックなしへ degrade する。
+
+```json
+{
+  "env": {
+    "TASKFLOW_LOCK_TIMEOUT": "3.0"
+  }
+}
+```
+
+### `TASKFLOW_LOCK_STALE`
+
+他の writer がロックのサイドカーを破棄して所有権を奪えるようになるまでの、サイドカーの経過時間（秒）。既定値: `10.0`。このロックは「存在＝ロック」方式でカーネルが保証する所有者を持たないため、強制終了された writer が残したサイドカーはこの閾値を過ぎて初めて回収される — この bounded なクラッシュ後の待ちは、掃除すべき孤児ロック状態を構造的に持たないことの対価である。通常の保持時間はサブミリ秒。想定される最長保持時間より短く設定すると、*生きている* holder のサイドカーが破棄されうる。
+
+```json
+{
+  "env": {
+    "TASKFLOW_LOCK_STALE": "10"
+  }
+}
+```
+
+いずれも呼び出しごとに読み直される。Pi の taskflow 拡張も同じ 2 つの変数名を読むため、両者で同一の値を設定すること（異なる値では、2 つのハーネスが別々のスケジュールで待機・期限切れする）。
+
 ## 使い方
 
 ### プロジェクト指定
@@ -280,15 +306,28 @@ _projects/
     _archive/                 プロジェクトレベル archive
     plans/                    plan コピー（自動・履歴保管）
     memory/                   memory コピー（自動・履歴保管）
-    .locks/                   @log 書込ロック（自動管理・通常は空）
+    .locks/                   @log / progress.md 書込ロック（自動管理・通常は空）
 ```
 
-`.locks/` は、タスクの `@log` / `@notes` ブロックを書き込んでいる間だけ存在する
-サイドカーを保持する（ファイル名はタスクのファイル名に対応）。必要時に生成され、
-最後の writer が終了した時点で各エントリは削除されるため、静止状態のプロジェクトでは
-このディレクトリは空になる。編集・コミットしてはならない。エントリが残留する場合
-（ロック存在中にタスクが削除された、writer が強制終了された等）は `/progress check`
-が報告し、`scripts/clean_locks.py <project> --apply` で除去できる。
+`.locks/` は、書込対象ごとに 1 つの短命なサイドカーを保持する：タスクの
+`@log` / `@notes` ブロックを書き込んでいる間だけ存在するもの（ファイル名は
+タスクのファイル名に対応）と、`progress.md` 自体を rebuild している間だけ
+存在する `progress.md.lock`。必要時に生成され、最後の writer が終了した時点で
+各エントリは削除されるため、静止状態のプロジェクトではこのディレクトリは空になる。
+編集・コミットしてはならない。
+
+このロックは advisory かつ **cross-harness** である：Pi の taskflow 拡張が同じ
+サイドカーパスを導出するため、2 つのハーネスは互いに直列化される — ただし
+双方が protocol v2 で動作している場合に限る。また、手編集や LLM の `Edit` ツール
+呼び出しは、このロックを取得できない層で書き込むためカバーされない。そうした編集が
+hook の書込と競合した場合は依然として無防備である。
+
+エントリが残留する場合（ロック存在中にタスクが削除された、writer が強制終了された等）は
+`/progress check` が報告し、`scripts/clean_locks.py <project> --apply` で除去できる。
+対象がまだ存在するのにクラッシュで孤児化したサイドカー — その両者が意図的に一度も
+フラグしない `progress.md.lock` を含む — は代わりに、`TASKFLOW_LOCK_STALE` を過ぎた
+時点で次の writer が回収する。`flock` 方式と異なり、プロセスが強制終了されても自動で
+解放されるものは何もない。
 
 ## 仕組み
 
@@ -322,7 +361,7 @@ _projects/
 
 ### hook
 
-7 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（2 つ）/ `Stop`（2 つ）/ `SessionStart:compact` に wire されている。加えて `note_links.py`（note↔task link のデータ層）と `log_lock.py`（task ごとの bounded advisory lock）の 2 ファイルは、Stop hook が import する共有モジュールであり、単体で wire された hook ではない。
+7 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（2 つ）/ `Stop`（2 つ）/ `SessionStart:compact` に wire されている。加えて `note_links.py`（note↔task link のデータ層）と `log_lock.py`（bounded advisory write lock、protocol v2）の 2 ファイルは共有モジュールであり、単体で wire された hook ではない：`note_links.py` は Stop hook が import し、`log_lock.py` は Stop hook に加えて `scripts/rebuild_progress.py` も import する（後者は `progress.md` の read→write 区間を同じロックで保護する）。
 
 #### UserPromptSubmit: session_init.py
 

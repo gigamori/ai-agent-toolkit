@@ -1,4 +1,4 @@
-# taskflow internal architecture (v0.2.7)
+# taskflow internal architecture (v0.2.8)
 
 Internal design document for developers — read this when you need to understand or modify how the plugin works.
 
@@ -221,14 +221,65 @@ session end
         re-blocks. A task that can never be bound (no `@log:end`) does NOT loop the gate.
         (The former "(a) Round1-remind a missing touched task" condition was REMOVED when the
         inline Round1 reminder was replaced by the async capture path — option-a, §10.2.)
-     bind writes are serialized by the per-task advisory lock `log_lock.py`. Its acquire is
-     bounded on both platforms (INV-2, no-deadlock); the serialization itself is best-effort
-     and degrades unlocked on timeout. The sidecar lives at
-     `<project_root>/.locks/<task-basename>.lock` — keyed on the task BASENAME, matching how
-     `_task_basename_index` resolves tasks, so a status-folder move cannot split one task
-     across two lock files. It is deleted when its last holder releases
-     (project-notes/specs/log-lock-stable-key.md).
+     bind writes take the advisory write lock `log_lock.py`. Its acquire is bounded
+     (INV-2, no-deadlock); the serialization is best-effort and degrades unlocked on
+     timeout. The sidecar lives at `<project_root>/.locks/<task-basename>.lock` — keyed
+     on the task BASENAME, matching how `_task_basename_index` resolves tasks, so a
+     status-folder move cannot split one task across two lock files. See
+     "Write serialization" below for what that lock does and does not cover.
 ```
+
+### Write serialization (`log_lock.py`, protocol v2)
+
+`hooks/log_lock.py` implements one half of a lock protocol **shared with the Pi taskflow
+extension** (`packages/taskflow/src/write-lock.ts`). Both halves must derive the same lock
+path and follow the same acquire/release discipline; a one-sided implementation protects
+nothing, because the other harness walks straight past it. Neither side may be changed
+unilaterally.
+
+Callers: `hooks/note_links.py` (`@notes`), `hooks/session_progress_capture.py` (`@log`),
+and `scripts/rebuild_progress.py` (`progress.md`). `write_lock` is an alias of `log_lock`,
+preferred by callers that are not writing an `@log` block.
+
+| | |
+|---|---|
+| Mechanism | `O_CREAT\|O_EXCL` sidecar — "existence == lock". The fd is held open for the locked region; release is close → unlink on **both** platforms. |
+| Key (task md) | `<project_root>/.locks/<task-basename>.lock`, `<project_root>` = parent of the nearest `tasks/` ancestor. |
+| Key (`progress.md`) | `<project_root>/.locks/progress.md.lock`, where `<project_root>` is `progress.md`'s **own** parent — it is a sibling of `tasks/`, not a child. The two rules define `<project_root>` differently on purpose. |
+| Acquire | Bounded by `TASKFLOW_LOCK_TIMEOUT` (default 3.0 s). On expiry: **degrade unlocked with one warning line** — never throw, never block unbounded (INV-2). A degraded call never unlinks the sidecar; it does not own it. |
+| Stale break | A sidecar older than `TASKFLOW_LOCK_STALE` (default 10 s) may be unlinked and re-created by a waiter. Only one racer wins the subsequent exclusive create. |
+
+**Scope of protection — and four things it does NOT cover.** Each is a known, accepted
+property of the protocol, not a defect awaiting a fix here:
+
+1. **The Edit-tool path is still unprotected (R-lock gap).** This is an *advisory* lock
+   between processes that cooperate by calling the helper. An LLM/hand edit happens at the
+   tool layer and cannot acquire it. A hook write racing an Edit-tool write on the same file
+   can still lose an update. Out of scope by design; logged, never treated as solved.
+2. **No automatic release on crash.** "Existence == lock" has no kernel-backed owner, so a
+   sidecar left by a killed holder is only reclaimed once it ages past
+   `TASKFLOW_LOCK_STALE`. This is the deliberate trade against `flock`: it structurally
+   removes the orphaned-inode hazard (a locked fd surviving while a fresh inode appears at
+   the same path) at the cost of a bounded post-crash wait. Holds are sub-millisecond, so
+   the trade is heavily favourable. `scripts/clean_locks.py` does **not** sweep this
+   population — stale-break does.
+3. **"Holders release within the stale threshold" is an implicit precondition.** A
+   sidecar's mtime is set once at create time and never refreshed, so a holder running
+   longer than `TASKFLOW_LOCK_STALE` *looks* stale while still live. On POSIX a waiter can
+   then unlink a live holder's sidecar, and that holder's own release unlinks
+   unconditionally — which can cascade into removing a successor's fresh sidecar. On win32
+   the OS prevents it: an open handle makes another process's unlink fail. Measured holds
+   are sub-millisecond against a 10 s threshold — four orders of margin — which is why this
+   is acceptable rather than alarming.
+4. **The stale-break TOCTOU window is narrowed, not eliminated.** The check re-reads mtime
+   immediately before unlinking, but between that read and the unlink the old holder could
+   release and a third party create a fresh sidecar, which the break would then remove. The
+   Pi side carries the identical residual window. Do not describe it as solved.
+
+**Rollout constraint.** The pre-v2 implementation opened with `O_CREAT` (no `EXCL`) and then
+`flock`ed, so it ignores a v2 sidecar's existence entirely. During any mixed-version window
+between the two harnesses there is no cross-harness protection at all — not degraded
+protection, none.
 
 ## state_file
 

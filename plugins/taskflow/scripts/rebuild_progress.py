@@ -34,6 +34,11 @@ from pathlib import Path
 
 import yaml
 
+# Sibling import from hooks/ (same pattern as view_progress.py's import of
+# check_progress). log_lock is stdlib-only, so this adds no PEP723 dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from log_lock import write_lock  # noqa: E402
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except (AttributeError, OSError):
@@ -182,18 +187,64 @@ def replace_or_append_region(content: str, new_region: str) -> str:
 
 
 def ensure_progress_md(project_dir: Path) -> Path:
+    """Create progress.md if absent, and repair a missing H1 if needed.
+
+    Locked: this is a read-modify-write of the same file `write_region` guards,
+    so it takes the same lock. Mirrors the Pi side, which wraps its
+    `ensureProgressMd` too.
+    """
     progress = project_dir / "progress.md"
-    if not progress.exists():
-        progress.write_text(SCAFFOLD.format(name=project_dir.name), encoding="utf-8")
-        return progress
-    # File exists; ensure it has an H1 at the top (migration may have stripped it)
-    content = read_text(progress) or ""
-    if not content.lstrip().startswith("# "):
-        progress.write_text(
-            f"# Progress: {project_dir.name}\n\n{content}",
-            encoding="utf-8",
-        )
+    with write_lock(str(progress)):
+        if not progress.exists():
+            progress.write_text(SCAFFOLD.format(name=project_dir.name), encoding="utf-8")
+            return progress
+        # File exists; ensure it has an H1 at the top (migration may have stripped it)
+        content = read_text(progress) or ""
+        if not content.lstrip().startswith("# "):
+            progress.write_text(
+                f"# Progress: {project_dir.name}\n\n{content}",
+                encoding="utf-8",
+            )
     return progress
+
+
+def write_region(progress: Path, region: str) -> bool:
+    """Splice `region` into progress.md's table block. Returns True if written.
+
+    THE LOCKED WINDOW. This is the read-modify-write that a concurrent writer
+    can tear, and the only part of a rebuild that holds the advisory lock
+    (`hooks/log_lock.py`, protocol v2 — shared with the Pi taskflow extension).
+
+    Scope is deliberately just read -> splice -> write, NOT the whole rebuild:
+
+      - The heavy `gather_tasks` walk stays OUTSIDE. Measured, the read->write
+        window is 0.3-0.6 ms while a full run is 261-295 ms, so locking the
+        whole run would inflate the hold by three orders of magnitude against a
+        10 s stale threshold (`TASKFLOW_LOCK_STALE`), for nothing.
+      - The cost of that choice is that a concurrent rebuild can splice a table
+        region computed from a slightly older task scan. That is acceptable
+        because the `@table` region is a CACHE, never authoritative (the task
+        files' folder location is), and the next rebuild self-heals it. The
+        free-text sections are the asset that must not be lost, and those are
+        read inside the lock.
+
+    What tearing looks like without the lock, and what the `lockedrebuild` race
+    harness (tests/race/lockedrebuild/) detects: `write_text` truncates before
+    it writes, so a racing reader can observe a progress.md with no
+    `@table:begin` marker, fall into `replace_or_append_region`'s append branch,
+    and leave the file with TWO table regions plus whatever free text the
+    truncation ate.
+
+    Not covered, by design: an LLM/hand Edit-tool write, which cannot take this
+    lock (the R-lock gap). See docs/architecture.md.
+    """
+    with write_lock(str(progress)):
+        content = read_text(progress) or ""
+        new_content = replace_or_append_region(content, region)
+        if new_content == content:
+            return False
+        progress.write_text(new_content, encoding="utf-8")
+        return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -213,16 +264,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     progress = ensure_progress_md(project_dir)
+    # gather_tasks / render_table_region stay OUTSIDE the lock on purpose —
+    # see write_region's docstring for why the hold is scoped to the splice.
     by_status = gather_tasks(project_dir)
     region = render_table_region(by_status)
-    content = read_text(progress) or ""
-    new_content = replace_or_append_region(content, region)
-
-    if new_content != content:
-        progress.write_text(new_content, encoding="utf-8")
-        verb = "rebuilt"
-    else:
-        verb = "unchanged"
+    verb = "rebuilt" if write_region(progress, region) else "unchanged"
 
     counts = {s: len(by_status[s]) for s in TASK_STATUSES}
     total = sum(counts.values())
