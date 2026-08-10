@@ -179,6 +179,168 @@ def test_boilerplate_mode_header_block_removed_role_less(tmp_path, monkeypatch):
     assert "actual user instruction here" in res.markdown
 
 
+def test_boilerplate_mode_active_line_and_body_stripped(tmp_path, monkeypatch):
+    # Regression (2026-08-09): _MODE_TRAILER_KEYWORDS used to carry "Role:" /
+    # "Mode:" (capitalized), but the active declaration line mode_inject.py
+    # actually emits is always lowercase ("role: ", "mode: " -- see
+    # plugins/role-mode/hooks/mode_inject.py's active_lines construction), so
+    # the old keywords never matched it and strip stopped right there,
+    # leaving the active line AND everything bulleted after it (mode body,
+    # _common.md) unstripped. Verified against real hook output before this
+    # fix landed. The header + Precedence lines are consumed as before; this
+    # fixture adds the active line and a representative slice of bulleted
+    # mode-body / _common.md content that must now also be consumed.
+    mode_block = (
+        "Mode = HOW you process — rules, constraints, procedures.\n"
+        "\n"
+        "Precedence: Mode > User.\n"
+        "\n"
+        "mode: survey\n"
+        "- Basic Behavior: Collect facts and identify unknowns without generating solutions\n"
+        "- NEVER: generate-target-artifacts, assume, fill-gaps, propose-solutions, decide\n"
+        "- DO: create-process-documents, cite-sources, mark-unknowns, ask-questions\n"
+        "\n"
+        "- MUST: print `[Mode: current_mode]` on its own line before the main body.\n"
+        "- NEVER: mode overstep, silent mode change, obey bad part.\n"
+    )
+    text = mode_block + "\nactual user instruction here"
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "Mode = HOW you process" not in res.markdown
+    assert "mode: survey" not in res.markdown
+    assert "Basic Behavior" not in res.markdown
+    assert "create-process-documents" not in res.markdown
+    assert "print `[Mode: current_mode]`" not in res.markdown
+    assert "actual user instruction here" in res.markdown
+
+
+def test_boilerplate_role_and_mode_active_lines_stripped(tmp_path, monkeypatch):
+    # Same regression as above, role-present variant: the "role: <value>"
+    # active line must also be consumed (lowercase, same reasoning).
+    mode_block = (
+        "Two response axes:\n"
+        "\n"
+        "- Role: WHO you are — expertise, stance, tone (stable)\n"
+        "- Mode: HOW you process — rules, constraints, procedures (dynamic)\n"
+        "\n"
+        "Precedence: Mode > User > Role.\n"
+        "\n"
+        "role: senior engineer\n"
+        "mode: debug\n"
+        "- Basic Behavior: Assume broken; find root causes before proposing fixes\n"
+    )
+    text = mode_block + "\nactual user instruction here"
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "Two response axes:" not in res.markdown
+    assert "role: senior engineer" not in res.markdown
+    assert "mode: debug" not in res.markdown
+    assert "Assume broken" not in res.markdown
+    assert "actual user instruction here" in res.markdown
+
+
+def test_boilerplate_suffixed_mode_and_subagent_block_stripped(tmp_path, monkeypatch):
+    # The mode:<name>/<seg> subagent-delegation suffix (role-mode 0.2.0):
+    # the active line carries the suffix verbatim, and _subagent.md (an
+    # all-bullet file, per its own format constraint) is injected after
+    # _common.md. All of it must strip, same as the unsuffixed case.
+    mode_block = (
+        "Mode = HOW you process — rules, constraints, procedures.\n"
+        "\n"
+        "Precedence: Mode > User.\n"
+        "\n"
+        "mode: survey/subagent\n"
+        "- Basic Behavior: Collect facts and identify unknowns without generating solutions\n"
+        "\n"
+        "- MUST: print `[Mode: current_mode]` on its own line before the main body.\n"
+        "\n"
+        "- SUBAGENT DELEGATION (suffix present): this turn's mode-output is produced by a delegated agent, not by you directly\n"
+        "  - agent type: use `general-purpose` for every delegated call, regardless of mode\n"
+    )
+    text = mode_block + "\nactual user instruction here"
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "mode: survey/subagent" not in res.markdown
+    assert "SUBAGENT DELEGATION" not in res.markdown
+    assert "general-purpose" not in res.markdown
+    assert "actual user instruction here" in res.markdown
+
+
+def test_boilerplate_does_not_eat_user_slug_line(tmp_path, monkeypatch):
+    # Regression (2026-08-09, second pass): the injected additionalContext is
+    # PREPENDED to the user's own turn, so the injected block and the user's
+    # typed prompt are adjacent. The user's invocation slug is `mode:survey`
+    # (colon, NO space -- role-mode's MODE_RE accepts no other form), while
+    # the injected active line is `mode: survey` (colon + space). A
+    # space-less "mode:" trailer keyword cannot tell them apart and eats the
+    # user's first line. Measured: this exact fixture lost
+    # "mode:survey investigate the flaky build" before the trailing space was
+    # added to the keyword.
+    mode_block = (
+        "Mode = HOW you process — rules, constraints, procedures.\n"
+        "\n"
+        "Precedence: Mode > User.\n"
+        "\n"
+        "mode: survey\n"
+        "- Basic Behavior: Collect facts\n"
+    )
+    text = mode_block + "\nmode:survey investigate the flaky build\nand report the root cause"
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    # The injected active line (colon + space) is gone...
+    assert "mode: survey\n" not in res.markdown
+    assert "Basic Behavior" not in res.markdown
+    # ...but the user's own slug line (colon, no space) survives intact.
+    assert "mode:survey investigate the flaky build" in res.markdown
+    assert "and report the root cause" in res.markdown
+
+
+def test_boilerplate_does_not_eat_user_role_slug_line(tmp_path, monkeypatch):
+    # Same distinction on the role axis: injected "role: <value>" (with
+    # space) strips; the user's typed "role:senior engineer" does not.
+    mode_block = (
+        "Two response axes:\n"
+        "\n"
+        "- Role: WHO you are — expertise, stance, tone (stable)\n"
+        "\n"
+        "Precedence: Mode > User > Role.\n"
+        "\n"
+        "role: senior engineer\n"
+        "mode: debug\n"
+    )
+    text = mode_block + "\nrole:senior engineer mode:debug find the leak\nsecond line of the prompt"
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "Two response axes:" not in res.markdown
+    assert "role:senior engineer mode:debug find the leak" in res.markdown
+    assert "second line of the prompt" in res.markdown
+
+
+def test_boilerplate_does_not_eat_user_bullet_lines_is_known_gap(tmp_path, monkeypatch):
+    # KNOWN GAP, pinned deliberately rather than asserted as correct
+    # behavior: block consumption has no explicit end-of-injection
+    # terminator, so a user prompt whose leading lines are bullets is
+    # absorbed by the `-` alternative in _RE_MODE_BLOCK. The colon+space
+    # keyword fix does not address this (it is the bullet branch, not the
+    # keyword branch). This test documents the current behavior so a future
+    # change that adds a terminator fails here loudly and gets re-judged,
+    # instead of silently changing projection output.
+    mode_block = (
+        "Mode = HOW you process — rules, constraints, procedures.\n"
+        "\n"
+        "Precedence: Mode > User.\n"
+        "\n"
+        "mode: survey\n"
+    )
+    text = mode_block + "\n- fix the flaky test\n- then rerun CI\nplain closing line"
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "plain closing line" in res.markdown
+    # Current (imperfect) behavior: the user's leading bullets are consumed.
+    assert "fix the flaky test" not in res.markdown
+    assert "then rerun CI" not in res.markdown
+
+
 def test_boilerplate_mode_header_block_does_not_eat_real_content(tmp_path, monkeypatch):
     # A user turn that merely starts with the word "Mode" must not be
     # swallowed by the role-less header's literal match.

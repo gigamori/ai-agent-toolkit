@@ -162,9 +162,11 @@ _RE_PROGRESS_SESSION = re.compile(r"\[Progress Session\][^\n]*")
 
 # The role-mode mode header block. The block is the header line plus its
 # contiguous injected lines: blank lines, the "- Role:" / "- Mode:" axis
-# bullets (role-present variant only), and the trailing precedence/rule
-# lines (which vary in length: "Precedence: ...", "Follow Mode ...",
-# "NEVER rule ...", "Include `[Mode: ...".
+# bullets (role-present variant only), the trailing precedence/rule lines
+# ("Precedence: ...", "Follow Mode ...", "NEVER rule ...",
+# "Include `[Mode: ..."), and the active `role: <value>` / `mode: <name>`
+# declaration line the hook generates (mode_inject.py's active_lines --
+# always lowercase, never user-controlled case).
 # We consume the header and every following line that is blank, a bullet, or
 # starts with one of those stable mode-trailer keywords; real user content
 # (separated by a blank line and not a bullet/keyword line) is left intact.
@@ -176,9 +178,28 @@ _RE_PROGRESS_SESSION = re.compile(r"\[Progress Session\][^\n]*")
 #   - "Mode = HOW you process — rules, constraints, procedures." -- no role
 #     (_meta.md, role-less). Matched whole-line so it can't accidentally
 #     swallow real user content that happens to start with "Mode".
+#
+# "role: " / "mode: " carry a TRAILING SPACE, and are lowercase (not
+# "Role:" / "Mode:"). Both details are load-bearing:
+#   - lowercase: the active declaration line mode_inject.py emits is always
+#     the lowercase literal prefix (its active_lines build `f'role: {...}'` /
+#     `f'mode: {...}'`). No uppercase form is ever produced.
+#   - trailing space: this is what keeps the strip off the USER's own text.
+#     The injected active line always has the space; the user's invocation
+#     slug never can -- `mode:survey` is the only form role-mode's MODE_RE
+#     accepts (`mode: survey` with a space simply does not register as a
+#     slug). Since additionalContext is PREPENDED to the user turn, the two
+#     are adjacent, so a space-less "mode:" keyword would let this block
+#     consume a user prompt line that merely starts with their own slug.
+#     Verified 2026-08-09: with "mode:" (no space), a multi-line prompt
+#     beginning `mode:survey investigate...` lost that first line.
+# Residual (accepted, not fixed here): consumption still has no explicit
+# end-of-injection terminator, so a user prompt whose first lines are BULLETS
+# is absorbed by the `-` alternative below. Pinned by
+# test_boilerplate_does_not_eat_user_bullet_lines_is_known_gap.
 _MODE_TRAILER_KEYWORDS = (
     "Precedence:", "Follow Mode", "NEVER rule", "Include `[Mode",
-    "Role:", "Mode:",
+    "role: ", "mode: ",
 )
 _MODE_HEADER_LINES = (
     r"Two response axes:[^\n]*",
