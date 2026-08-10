@@ -43,6 +43,7 @@ There is no separate `init` step — once the plugin is enabled, the `UserPrompt
 
 ```
 mode:<name>
+mode:<name>/<seg>...
 role:<value>
 role:"<value>"
 ```
@@ -59,6 +60,22 @@ Two kinds of input never invoke:
 - `<name>` matches `[A-Za-z][A-Za-z0-9_-]*`. Captured value is normalized to lowercase.
 - Unknown mode names are silently ignored — no failure, no warning.
 - Mode aliases: `verify` resolves to `debug`, `implement` resolves to `execute`. Your chosen alias is preserved in the displayed `mode:` line; only the underlying rules file is shared.
+
+#### `mode:<name>/<seg>...`
+
+Appending one or more `/`-separated segments after the mode name declares delegation to a `general-purpose` subagent for that turn — for a complex task, or one you don't want leaving intermediate context in the main session.
+
+- Each segment matches `[A-Za-z0-9_.-]+` and is captured and echoed **verbatim, unvalidated** — the hook does not interpret segments at all. Meaning is assigned entirely by the LLM, per the rules in [`prompts/modes/_subagent.md`](prompts/modes/_subagent.md), which is injected in addition to the mode file whenever any suffix segment is present.
+- `subagent` — delegate with no model override.
+- Any other segment — read as a model name/alias override for the delegated call.
+- Suffix segments never appear without a mode name (`mode:<name>/<seg>` is the only valid shape); a bare `mode:/subagent` is not a match.
+- Without a suffix, nothing changes — the turn runs exactly as before.
+
+```
+mode:survey/subagent investigate why the nightly build is flaky
+mode:execute/opus apply the fix from the design note
+mode:execute/subagent/opus run the migration in isolation
+```
 
 #### `role:<value>`
 
@@ -117,8 +134,9 @@ The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/m
 | Slugs present | Injected blocks |
 |---|---|
 | `mode:` only | `_meta.md` (role-less) + `mode: <name>` + mode rules + `_common.md` |
+| `mode:<name>/<seg>...` | same as `mode:` only, plus `_subagent.md` after `_common.md` |
 | `role:` only | `_meta_role.md` + `role: <value>` |
-| Both | `_meta_role.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` |
+| Both | `_meta_role.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` (+ `_subagent.md` if a suffix is present) |
 | Neither | nothing (hook exits silently) |
 
 `_common.md` (mode-only rules):
@@ -156,11 +174,11 @@ User prompt
   │
   ├─ [UserPromptSubmit hook: mode_inject.py]
   │     ├─ reads stdin (UTF-8 BOM tolerant)
-  │     ├─ MODE_RE: (?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*)         (case-insensitive, lowercased)
+  │     ├─ MODE_RE: (?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*(?:/[A-Za-z0-9_.-]+)*)   (case-insensitive; mode name lowercased, suffix segments untouched)
   │     ├─ ROLE_RE: (?:^|\s)role:(?:"([^"]*)"|(.+?)(?=...))       (case-insensitive prefix, verbatim value)
-  │     ├─ resolve mode alias (verify→debug, implement→execute)
+  │     ├─ split mode match on "/"; resolve mode alias (verify→debug, implement→execute) on the mode name only
   │     ├─ if neither slug → exit 0, no output
-  │     └─ else emit JSON additionalContext = (_meta_role.md if role else _meta.md) + active block + (mode rules + _common.md when mode set)
+  │     └─ else emit JSON additionalContext = (_meta_role.md if role else _meta.md) + active block (mode name echoed with any suffix) + (mode rules + _common.md when mode set) + (_subagent.md when a suffix segment is present)
   │
   └─ LLM receives the prompt plus the injected framework + active declaration
 ```
@@ -177,6 +195,7 @@ plugins/role-mode/
     _meta.md                  # framework header, role-less (Mode axis only / BLOCKED)
     _meta_role.md             # framework header, role present (both axes / BLOCKED)
     _common.md                # ALL MODES rules + answer-prefix instruction (mode-only)
+    _subagent.md               # subagent-delegation rules, injected when a mode:<name>/<seg> suffix is present
     ask.md
     discuss.md
     brainstorm.md

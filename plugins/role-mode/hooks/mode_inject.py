@@ -28,6 +28,18 @@ Behavior:
 Slug syntax:
   - `mode:<name>` — <name> matches [A-Za-z][A-Za-z0-9_-]*. Captured value
     is normalized to lowercase.
+  - `mode:<name>/<seg>...` — an optional `/`-separated suffix after the mode
+    name declares delegation to a subagent. Each suffix segment matches
+    [A-Za-z0-9_.-]+ (the `.` allows tokens like `haiku-4.5`) and is captured
+    and echoed verbatim, in its original case, with no validation: the hook
+    does not interpret suffix segments at all (see prompts/modes/_subagent.md,
+    which the LLM reads to decide what each segment means). Only the mode
+    name (the part before the first `/`) is lowercased and resolved against
+    MODE_ALIASES / the modes directory; suffix segments are untouched by
+    that resolution. If the mode name fails to resolve (see below), the
+    whole suffix is dropped along with it.
+    When any suffix segment is present, prompts/modes/_subagent.md is
+    injected in addition to the mode file and _common.md.
   - `role:<value>` — <value> is free-form (multibyte and spaces allowed).
     Two forms:
       * Quoted: `role:"<value>"` — captures everything between the
@@ -57,6 +69,10 @@ in the displayed `Mode:` line):
   - verify -> debug
   - implement -> execute
 
+Alias resolution runs on the mode name only, after the suffix has already
+been split off (e.g. `verify/subagent` resolves `verify` -> `debug.md` and
+echoes `mode: verify/subagent`, not `debug/subagent`).
+
 UTF-8 BOM tolerant for stdin.
 """
 import json
@@ -69,13 +85,16 @@ MODES_DIR = os.path.join(PLUGIN_ROOT, 'prompts', 'modes')
 META_FILE = os.path.join(MODES_DIR, '_meta.md')
 META_ROLE_FILE = os.path.join(MODES_DIR, '_meta_role.md')
 COMMON_FILE = os.path.join(MODES_DIR, '_common.md')
+SUBAGENT_FILE = os.path.join(MODES_DIR, '_subagent.md')
 
 MODE_ALIASES = {
   'verify': 'debug',
   'implement': 'execute',
 }
 
-MODE_RE = re.compile(r'(?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*)', re.IGNORECASE)
+MODE_RE = re.compile(
+  r'(?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*(?:/[A-Za-z0-9_.-]+)*)',
+  re.IGNORECASE)
 ROLE_RE = re.compile(r'(?:^|\s)role:(?:"([^"]*)"|(.+?)(?=\s+(?:mode|pj):|\n|$))', re.IGNORECASE)
 
 # Inline code spans are mentions, not invocations -- masked before slug
@@ -129,7 +148,15 @@ nomode = 'nomode' in scan_text
 norole = 'norole' in scan_text
 
 mode_match = None if nomode else MODE_RE.search(scan_text)
-mode_name = mode_match.group(1).lower() if mode_match else None
+if mode_match:
+  mode_segs = mode_match.group(1).split('/')
+  mode_name = mode_segs[0].lower()
+  # Suffix segments are echoed verbatim, exactly as typed; the hook never
+  # normalizes or validates them (see docstring "Slug syntax:").
+  suffix_segs = mode_segs[1:]
+else:
+  mode_name = None
+  suffix_segs = []
 
 role_match = None if norole else ROLE_RE.search(scan_text)
 if role_match:
@@ -150,8 +177,10 @@ if mode_name is not None:
     except Exception:
       mode_name = None
       mode_body = ''
+      suffix_segs = []
   else:
     mode_name = None
+    suffix_segs = []
 
 if mode_name is None and role_name is None:
   sys.exit(0)
@@ -160,7 +189,8 @@ active_lines = []
 if role_name:
   active_lines.append(f'role: {role_name}')
 if mode_name:
-  active_lines.append(f'mode: {mode_name}')
+  displayed_mode = '/'.join([mode_name] + suffix_segs)
+  active_lines.append(f'mode: {displayed_mode}')
 active_block = '\n'.join(active_lines)
 if mode_body:
   active_block += '\n' + mode_body
@@ -174,6 +204,10 @@ if mode_name:
   common_content = read_optional(COMMON_FILE)
   if common_content:
     parts.append(common_content)
+  if suffix_segs:
+    subagent_content = read_optional(SUBAGENT_FILE)
+    if subagent_content:
+      parts.append(subagent_content)
 additional_context = '\n\n'.join(parts)
 
 result = {

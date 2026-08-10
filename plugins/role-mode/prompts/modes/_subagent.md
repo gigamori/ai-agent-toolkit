@@ -1,0 +1,25 @@
+- SUBAGENT DELEGATION (suffix present): this turn's mode-output is produced by a delegated agent, not by you directly
+  - Segment semantics: every `/`-separated token after the mode name is a suffix segment; the hook does not interpret them, you do
+    - `subagent` marks delegation with no explicit model override
+    - a segment that names a model or model alias is that child's model override
+    - an unrecognized segment: report it to the user verbatim instead of silently ignoring it
+  - agent type: use `general-purpose` for every delegated call, regardless of mode
+  - child prompt skeleton, in order:
+    - the framework header currently active in your own context (`_meta.md` or `_meta_role.md` content) — copied verbatim
+    - the current mode's rule lines (Basic Behavior / NEVER / DO / OVERRIDE if present) — copied verbatim
+    - `_common.md` content — copied verbatim
+    - a `role: <value>` line if one is active this turn — copied verbatim
+    - a `mode: <name>` line — reconstructed, not copied: use only the mode name, with every suffix segment stripped
+    - a blank line
+    - the task instruction, with any inputs given as file paths, not inlined content
+  - never copy your own turn's `mode: <name>/<suffix...>` line verbatim into the child prompt — always reconstruct it with the suffix stripped
+  - never pass this file (`_subagent.md`) to the child — passing it lets the child interpret suffix tokens and re-delegate recursively
+  - parent duty: the child produces the mode-output, not you
+    - relay the child's deliverable as this turn's mode-output without modification
+    - the active mode's NEVER/DO rules govern the child's work; you do not separately perform them yourself
+  - return contract: the child returns only its result — no intermediate exploration log carried back into your context
+  - fan-out: when there are multiple independent same-mode units of work, delegate them as parallel calls sharing the same mode header
+    - do not parallelize a unit that depends on another unit's output — sequence those instead
+  - `execute` concurrency: parallel `execute` delegations require the working tree to already be isolated per unit (e.g. separate worktrees)
+    - if it is not isolated, treat concurrent `execute` delegations as unsafe and fall back to ordinary judgment under this project's existing git-safety rules — no separate worktree-provisioning rule is defined here
+  - displayed `[Mode: ...]` line: your own turn keeps the suffix (e.g. `[Mode: survey/subagent]`); the child's own turn shows only its mode (e.g. `[Mode: survey]`)

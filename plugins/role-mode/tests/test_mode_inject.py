@@ -162,5 +162,71 @@ class MetaVariantTests(unittest.TestCase):
         self.assertNotIn("Two response axes", ctx)
 
 
+class SuffixTests(unittest.TestCase):
+    """`mode:<name>/<seg>...` subagent-delegation suffix (2026-08-09)."""
+
+    def test_suffix_echoes_and_injects_subagent_file(self):
+        code, out = run_hook("mode:survey/subagent look into the failure")
+        self.assertIsNotNone(out)
+        ctx = context_of(out)
+        self.assertIn("mode: survey/subagent", ctx)
+        self.assertIn("SUBAGENT DELEGATION", ctx)
+
+    def test_no_suffix_does_not_inject_subagent_file(self):
+        # Non-regression: a bare mode slug must not pull in _subagent.md.
+        code, out = run_hook("mode:survey investigate the build failure")
+        ctx = context_of(out)
+        self.assertIn("mode: survey", ctx)
+        self.assertNotIn("SUBAGENT DELEGATION", ctx)
+
+    def test_multi_segment_suffix_echoed_verbatim(self):
+        code, out = run_hook("mode:execute/subagent/opus apply the fix")
+        ctx = context_of(out)
+        self.assertIn("mode: execute/subagent/opus", ctx)
+        self.assertIn("SUBAGENT DELEGATION", ctx)
+
+    def test_model_only_suffix_still_delegates(self):
+        # A model name with no literal "subagent" segment still implies
+        # delegation.
+        code, out = run_hook("mode:execute/opus apply the fix")
+        ctx = context_of(out)
+        self.assertIn("mode: execute/opus", ctx)
+        self.assertIn("SUBAGENT DELEGATION", ctx)
+
+    def test_alias_mode_with_suffix_resolves_and_echoes_alias(self):
+        code, out = run_hook("mode:verify/subagent check this")
+        ctx = context_of(out)
+        # File lookup resolves the alias (debug.md); the displayed line
+        # keeps the user's chosen alias plus the suffix.
+        self.assertIn("mode: verify/subagent", ctx)
+        self.assertIn("SUBAGENT DELEGATION", ctx)
+
+    def test_unresolvable_mode_with_suffix_drops_both(self):
+        code, out = run_hook("mode:nonexistent/subagent do something")
+        self.assertIsNone(out)
+
+    def test_backticked_suffixed_slug_never_invokes(self):
+        code, out = run_hook("it stopped because of `mode:survey/subagent` rules")
+        self.assertIsNone(out)
+
+    def test_role_and_suffixed_mode_together(self):
+        code, out = run_hook('role:"senior engineer" mode:survey/subagent hello')
+        ctx = context_of(out)
+        self.assertIn("Two response axes", ctx)
+        self.assertIn("role: senior engineer", ctx)
+        self.assertIn("mode: survey/subagent", ctx)
+        self.assertIn("SUBAGENT DELEGATION", ctx)
+
+    def test_nomode_suppresses_suffixed_slug(self):
+        code, out = run_hook("nomode mode:survey/subagent do the thing")
+        self.assertIsNone(out)
+
+    def test_suffixed_slug_at_end_of_prompt_injects(self):
+        code, out = run_hook("investigate the build failure mode:survey/subagent")
+        ctx = context_of(out)
+        self.assertIn("mode: survey/subagent", ctx)
+        self.assertIn("SUBAGENT DELEGATION", ctx)
+
+
 if __name__ == "__main__":
     unittest.main()

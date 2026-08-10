@@ -43,6 +43,7 @@ claude --plugin-dir ./plugins/role-mode
 
 ```
 mode:<name>
+mode:<name>/<seg>...
 role:<value>
 role:"<value>"
 ```
@@ -59,6 +60,22 @@ role:"<value>"
 - `<name>` は `[A-Za-z][A-Za-z0-9_-]*`。captured 値は lowercase 正規化
 - 未知の mode 名は黙って無視（失敗・警告なし）
 - mode alias：`verify` は `debug` に解決、`implement` は `execute` に解決。**ユーザーが選んだ alias は表示 `mode:` 行にそのまま保持**され、ルールファイル lookup のみ正規名を使う
+
+#### `mode:<name>/<seg>...`
+
+mode 名の後に `/` 区切りの segment を1つ以上足すと、そのターンを `general-purpose` subagent に委譲する宣言になる — 複雑なタスク、またはメインセッションに中間コンテキストを残したくないタスク向け。
+
+- 各 segment は `[A-Za-z0-9_.-]+` にマッチし、**検証なしでそのまま echo**される — hook は segment の意味を一切解釈しない。意味づけは全て LLM が [`prompts/modes/_subagent.md`](prompts/modes/_subagent.md) を読んで行う。このファイルは suffix segment が1つでもあるとき、mode ファイルに加えて注入される
+- `subagent` — モデル指定なしで委譲
+- それ以外の segment — 委譲先のモデル名／alias 指定として解釈される
+- suffix segment は mode 名なしでは書けない（`mode:<name>/<seg>` の形のみが有効。`mode:/subagent` 単独は一致しない）
+- suffix が無ければ何も変わらない — 従来どおりのターンが走る
+
+```
+mode:survey/subagent 夜間ビルドが不安定な原因を調査して
+mode:execute/opus 設計ノート通りに修正を適用して
+mode:execute/subagent/opus マイグレーションを隔離環境で実行して
+```
 
 #### `role:<value>`
 
@@ -117,8 +134,9 @@ nomode norole — mode:plan と mode:execute の違いは何ですか？
 | 入力 slug | 注入されるブロック |
 |---|---|
 | `mode:` のみ | `_meta.md`（role-less）+ `mode: <name>` + mode rules + `_common.md` |
+| `mode:<name>/<seg>...` | `mode:` のみと同じ + `_common.md` の後に `_subagent.md` |
 | `role:` のみ | `_meta_role.md` + `role: <value>` |
-| 両方 | `_meta_role.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md` |
+| 両方 | `_meta_role.md` + `role: <value>` + `mode: <name>` + mode rules + `_common.md`（suffix があれば `_subagent.md` も） |
 | どちらも無し | 何も注入しない（hook は silent exit） |
 
 `_common.md`（mode 専用ルール）：
@@ -156,11 +174,11 @@ framework ヘッダは role の有無で選ばれる2変種：
   │
   ├─ [UserPromptSubmit hook: mode_inject.py]
   │     ├─ stdin を読む（UTF-8 BOM 対応）
-  │     ├─ MODE_RE: (?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*)         (case-insensitive, lowercase 正規化)
+  │     ├─ MODE_RE: (?:^|\s)mode:([A-Za-z][A-Za-z0-9_-]*(?:/[A-Za-z0-9_.-]+)*)   (case-insensitive；mode 名のみ lowercase 正規化、suffix segment は無加工)
   │     ├─ ROLE_RE: (?:^|\s)role:(?:"([^"]*)"|(.+?)(?=...))       (case-insensitive prefix、値は verbatim)
-  │     ├─ mode alias 解決（verify→debug, implement→execute）
+  │     ├─ mode の match を "/" で split。alias 解決（verify→debug, implement→execute）は mode 名のみに適用
   │     ├─ どの slug も無し → exit 0、無出力
-  │     └─ それ以外 → JSON additionalContext = (role があれば _meta_role.md、無ければ _meta.md) + active block + (mode 設定時のみ mode rules + _common.md) を出力
+  │     └─ それ以外 → JSON additionalContext = (role があれば _meta_role.md、無ければ _meta.md) + active block（mode 名は suffix 込みで echo）+ (mode 設定時のみ mode rules + _common.md) + (suffix segment があれば _subagent.md) を出力
   │
   └─ LLM はプロンプト＋注入された framework + active 宣言を受け取る
 ```
@@ -177,6 +195,7 @@ plugins/role-mode/
     _meta.md                  # framework header, role-less（Mode 軸のみ / BLOCKED）
     _meta_role.md             # framework header, role あり（両軸 / BLOCKED）
     _common.md                # ALL MODES ルール + answer-prefix 指示（mode 専用）
+    _subagent.md               # subagent 委譲ルール、mode:<name>/<seg> suffix があるとき注入
     ask.md
     discuss.md
     brainstorm.md
