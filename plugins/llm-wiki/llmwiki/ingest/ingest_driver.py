@@ -486,6 +486,19 @@ def _apply_cutoff(turn_list: list, cutoff: str) -> list:
 
     With no user turn at all (an assistant-only fragment), nothing is dropped —
     there is no invocation turn to exclude.
+
+    ZERO SURVIVORS IS ACCEPTED, NOT A BUG (decided 2026-08-12; do not "fix" this
+    by adding a guard here or in `begin`). When the anchor lands at index 0 —
+    the shape a bare `/wiki-file` sent as a session's FIRST turn produces — this
+    returns `[]` and `begin` goes on to open a transaction and write a raw that
+    is the transcript heading and nothing else. Measured on BOTH harnesses; the
+    pi side raised it as a shared-core defect and the disposition was to accept:
+    the artifact is inert (constant content -> constant hash, so every later
+    occurrence in a wiki collapses into the existing `dedup_noop` path), and
+    `abort` rolls the first one back cleanly. The SIBLING shape — a sid with no
+    session file at all — is NOT accepted and fails closed upstream of here
+    (`cc_log_project._require_session_file`). Full record + the measurements:
+    `_projects/llm-wiki/project-notes/investigations/empty-projection-begin-no-op.md`.
     """
     if cutoff == _CUTOFF_NONE:
         return turn_list
