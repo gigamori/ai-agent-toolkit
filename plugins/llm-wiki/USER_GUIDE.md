@@ -390,6 +390,16 @@ session log accidentally imported as generic text would corrupt the transcript t
 boundary). If the file really is a plain-text `.jsonl` data file (not a session log),
 say so — the ingest retries treating it as plain text instead of guessing.
 
+**`/wiki-file` stopped with "cc session file not found."**
+`/wiki-file` files the conversation you are in right now, and it does that by reading that
+session's own log file. If no log for this session exists in any Claude Code log location,
+the import stops immediately — before anything is locked or written — so there is nothing
+to roll back. The usual cause is that Claude Code keeps its logs somewhere other than
+`~/.claude`: point `CLAUDE_CONFIG_DIR` at the config directory it is actually using and run
+`/wiki-file` again. Don't retry with a hand-typed session id. (Before 2026-08-12 this case
+did not stop — it filed an empty import instead — so a wiki used before then may hold a
+source file containing nothing but a transcript heading.)
+
 **An import was rejected as "too large."**
 A single import that would write more pages than the configured limit (`max_count`, 100
 by default), or more total bytes than `max_bytes` (10 MiB by default), is stopped and

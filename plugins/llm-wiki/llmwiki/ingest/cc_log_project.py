@@ -89,7 +89,8 @@ I/O contract:
                                             #  begin surfaces it on stdout so a
                                             #  Path B re-run is not a silent no-op
            }
-      Raises ProjectionError on DuckDB / read failure.
+      Raises ProjectionError on DuckDB / read failure, or when the sid has no
+      session file at all (Path A fails closed; see `_require_session_file`).
 
 The markdown shape mirrors the OLD extract_cc_log output's text turns
 (``## Turn N [ts]``, ``**Human**:``, ``**Assistant**:``) so fe_b_prime's
@@ -129,7 +130,11 @@ _VIEWS_SQL = Path(__file__).resolve().parent / "cc_views.sql"
 
 
 class ProjectionError(Exception):
-    """DuckDB / view read failure while projecting a sid."""
+    """DuckDB / view read failure — or an ABSENT sid — while projecting.
+
+    The absent-sid case is Path A only (`_require_session_file`); Path B's
+    batch extractor keeps its missing-sid-is-empty-list semantics.
+    """
 
 
 # --- boilerplate strip (F4 / U2) ------------------------------------------------
@@ -645,6 +650,47 @@ def project_from_turns(wiki_root: "str | Path", sid: str, turns: "list[dict]",
                             ledger_skipped=ledger_skipped)
 
 
+def _require_session_file(sid: str) -> Path:
+    """Fail closed when NO session log exists for `sid` (Path A only).
+
+    The projection reads the corpus through the views' GLOB, never through one
+    file path, so at SQL level an absent sid is indistinguishable from a sid
+    whose records project to nothing — both are zero rows. Path A's source is a
+    session the CALLER names, so "that session is not in the corpus" is an
+    operational error, not an empty result. Without this check `begin` opened a
+    transaction and wrote a header-only raw for a sid that does not exist at all
+    (measured 2026-08-12 against an isolated corpus: exit 0, lock + sidecar +
+    journal created, 25-byte raw). Restores on the cc side the fail-closed
+    surface ``pi_log_project._find_session_file`` already had.
+
+    SCOPE: existence of the session file ONLY. A sid whose file EXISTS but whose
+    turn list projects (or cuts) to zero is deliberately NOT covered here.
+
+    A session log's filename IS ``<sid>.jsonl`` — the same convention
+    ``ingest_driver._sids_in_project_dir`` plans from. Agent children are
+    ``agent-*.jsonl`` and carry the parent sid INSIDE the JSON, so they are
+    found by the sid predicate, not by this lookup; the returned path is
+    therefore NOT a read narrowing — ``_fetch_turns`` must keep scanning every
+    universe so those children still fold in.
+
+    Roots are scanned in ``cc_paths.cc_projects_roots()`` order (env universe
+    first), the same order the driver's own running-session lookup uses.
+
+    Raises:
+        ProjectionError when no root holds ``<sid>.jsonl``.
+    """
+    roots = cc_paths.cc_projects_roots()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        matches = sorted(root.rglob(f"{sid}.jsonl"))
+        if matches:
+            return matches[0]
+    raise ProjectionError(
+        f"cc session file not found for sid {sid!r} under "
+        + ", ".join(str(root) for root in roots))
+
+
 def extract_owned(sid: str, *, ledger) -> "list[dict]":
     """Extract ONE sid's turns (the EXPENSIVE half of Path A; read-only).
 
@@ -654,7 +700,16 @@ def extract_owned(sid: str, *, ledger) -> "list[dict]":
     solely for ``compute_hash`` (F5), never for the seen-set. The ledger DIFF
     (the read side of the ledger read-modify-write) lives in
     ``project_from_turns``, which begin runs INSIDE the lock.
+
+    Fails closed on an ABSENT sid (``_require_session_file``), unlike
+    ``extract_turns_batch``, whose missing-sid-is-empty-list semantics serve the
+    Path B planner (its sids come FROM the corpus, so they exist by
+    construction). Checked before the DuckDB open, so the refusal costs no scan.
+
+    Raises:
+        ProjectionError when the sid has no session file, or on read failure.
     """
+    _require_session_file(sid)
     return [_turn_to_dict(t, ledger=ledger) for t in _fetch_turns(sid)]
 
 

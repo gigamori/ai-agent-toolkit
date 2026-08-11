@@ -213,6 +213,11 @@ Then:
 
 If `begin` exits non-zero, report its stderr and stop:
 - "not a wiki root" → this skill requires an active wiki.
+- `extract: cc session file not found for sid …` → no CC log universe holds `<SID>.jsonl`,
+  so there is nothing to project (FLOW A only — FLOW B passes `--turns` and does not
+  re-scan). Nothing was locked or written. Re-check the `${CLAUDE_SESSION_ID}` substitution
+  (and `$CLAUDE_CONFIG_DIR` if the corpus lives outside `~/.claude`); do NOT retry with a
+  guessed sid.
 - `config-inconsistency:` → the consistency invariant (`apply_fanout_k ≤ max_count`) was
   violated; nothing was locked or written.
 - a `--turns` hash-check failure (FLOW B) → an entry was EDITED, not merely dropped.

@@ -1011,6 +1011,45 @@ def test_cutoff_with_no_user_turn_drops_nothing():
     assert drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER) == turns
 
 
+# --------------------------------------------------------------------------- #
+# Path A fail-closed: a sid with NO session log is an operational error, not an
+# empty-but-successful ingest. Before the guard, begin opened a transaction and
+# wrote a header-only raw for a sid that does not exist (measured 2026-08-12);
+# pi_log_project has always refused the equivalent input.
+# --------------------------------------------------------------------------- #
+def test_begin_fails_closed_when_the_cc_sid_has_no_session_log(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    empty_corpus = tmp_path.parent / "cc-corpus-without-the-sid"
+    empty_corpus.mkdir()
+    monkeypatch.setattr(cc_log_project.cc_paths, "cc_projects_roots",
+                        lambda: [empty_corpus])
+    with pytest.raises(cc_log_project.ProjectionError,
+                       match="cc session file not found"):
+        drv.begin(str(tmp_path), "no-such-sid", kind="fe_b_prime")
+    # Raised in step 3b, BEFORE acquire_lock — nothing locked, journaled, or written.
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+    assert list((tmp_path / "raw" / "derived").glob("*.md")) == []
+
+
+def test_begin_turns_channel_does_not_require_a_session_log(tmp_path, monkeypatch):
+    """Path B (`--turns`) is UNCHANGED: begin does not re-scan, so the sid's
+    presence in the corpus was already established by `project-batch`."""
+    _init_wiki(tmp_path)
+    empty_corpus = tmp_path.parent / "cc-corpus-for-the-turns-channel"
+    empty_corpus.mkdir()
+    monkeypatch.setattr(cc_log_project.cc_paths, "cc_projects_roots",
+                        lambda: [empty_corpus])
+    tf = _write_turns(tmp_path, [_t("user", "keep me", "u1")])
+    monkeypatch.setattr(
+        cc_log_project, "project_from_turns",
+        lambda root, sid, turn_list, *, ledger:
+            cc_log_project.ProjectionResult(markdown="# CC Session transcript\n"))
+    out = drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
+    assert out["origin"] == drv.ORIGIN_FE_B_PRIME
+    drv.abort(str(tmp_path))
+
+
 def test_begin_rejects_unknown_cutoff_value(tmp_path):
     _init_wiki(tmp_path)
     with pytest.raises(drv.DriverUsageError):

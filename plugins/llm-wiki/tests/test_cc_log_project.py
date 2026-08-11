@@ -30,6 +30,7 @@ projection SQL relies on, and asserts byte-parity with `ledger.compute_hash`.
 """
 import hashlib
 import unicodedata
+from pathlib import Path
 
 import pytest
 
@@ -49,9 +50,25 @@ def _turn(role, uuid, ts, texts, order=0):
     )
 
 
+def _stub_session_file(monkeypatch):
+    """Satisfy Path A's absent-sid gate for the PURE-logic fixtures.
+
+    `project_owned` / `extract_owned` refuse a sid that has no `<sid>.jsonl`
+    anywhere in the corpus (`_require_session_file`). The fixtures below
+    deliberately never touch the filesystem — they synthesize `_Turn`s and
+    monkeypatch `_fetch_turns` (the sanctioned T2 approach; see the module
+    docstring) — so the gate would have nothing to find. Stub it here; the gate's
+    own behavior is covered by the `_require_session_file` tests at the end of
+    this file.
+    """
+    monkeypatch.setattr(proj, "_require_session_file",
+                        lambda sid: Path(f"{sid}.jsonl"))
+
+
 def _project(monkeypatch, turns, wiki_root):
     """Project a fixed list of synthetic turns (monkeypatch the DuckDB fetch)."""
     monkeypatch.setattr(proj, "_fetch_turns", lambda sid: list(turns))
+    _stub_session_file(monkeypatch)
     return proj.project_owned(wiki_root, "sid-under-test", ledger=ledger)
 
 
@@ -581,3 +598,76 @@ def test_compute_hash_uses_0x1f_delimiter_utf8():
         + unicodedata.normalize("NFC", text).encode("utf-8")
     ).hexdigest()
     assert ledger.compute_hash(role, text) == expected
+
+
+# --------------------------------------------------------------------------- #
+# Path A fails closed on an ABSENT sid (`_require_session_file`).
+#
+# The views read the corpus through a GLOB, so at SQL level "this sid does not
+# exist" and "this sid projects to nothing" are both zero rows. Before this
+# guard, `begin` treated the former as an empty-but-successful ingest: it opened
+# a transaction and wrote a header-only raw for a session that does not exist
+# (measured 2026-08-12). pi_log_project has had the equivalent surface
+# (`_find_session_file`) all along; this restores the symmetry.
+# --------------------------------------------------------------------------- #
+def test_require_session_file_raises_when_no_root_holds_the_sid(tmp_path, monkeypatch):
+    monkeypatch.setattr(proj.cc_paths, "cc_projects_roots", lambda: [tmp_path])
+    with pytest.raises(proj.ProjectionError, match="cc session file not found"):
+        proj._require_session_file("no-such-sid")
+
+
+def test_require_session_file_returns_the_match_and_scans_roots_in_order(tmp_path,
+                                                                        monkeypatch):
+    """Env universe first, and the lookup is recursive (the sid's project dir is
+    a child of the projects root)."""
+    first, second = tmp_path / "env", tmp_path / "default"
+    (first / "c--a").mkdir(parents=True)
+    (second / "c--a").mkdir(parents=True)
+    for root in (first, second):
+        (root / "c--a" / "sid-under-test.jsonl").write_text("", encoding="utf-8")
+    monkeypatch.setattr(proj.cc_paths, "cc_projects_roots", lambda: [first, second])
+    assert proj._require_session_file("sid-under-test") == (
+        first / "c--a" / "sid-under-test.jsonl")
+
+
+def test_require_session_file_skips_a_root_that_is_not_a_directory(tmp_path,
+                                                                  monkeypatch):
+    """A configured-but-absent universe must not mask a hit in the next one."""
+    missing = tmp_path / "not-created"
+    present = tmp_path / "present"
+    present.mkdir()
+    (present / "sid-under-test.jsonl").write_text("", encoding="utf-8")
+    monkeypatch.setattr(proj.cc_paths, "cc_projects_roots",
+                        lambda: [missing, present])
+    assert proj._require_session_file("sid-under-test") == (
+        present / "sid-under-test.jsonl")
+
+
+def test_extract_owned_refuses_an_absent_sid_before_opening_duckdb(tmp_path,
+                                                                  monkeypatch):
+    monkeypatch.setattr(proj.cc_paths, "cc_projects_roots", lambda: [tmp_path])
+
+    def _must_not_run(sid):
+        raise AssertionError("the corpus must not be scanned for an absent sid")
+    monkeypatch.setattr(proj, "_fetch_turns", _must_not_run)
+    with pytest.raises(proj.ProjectionError, match="cc session file not found"):
+        proj.extract_owned("no-such-sid", ledger=ledger)
+
+
+def test_extract_owned_proceeds_when_the_session_file_exists(tmp_path, monkeypatch):
+    (tmp_path / "c--a").mkdir()
+    (tmp_path / "c--a" / "sid-under-test.jsonl").write_text("", encoding="utf-8")
+    monkeypatch.setattr(proj.cc_paths, "cc_projects_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        proj, "_fetch_turns",
+        lambda sid: [_turn("user", "u1", "t", ["kept"])])
+    got = proj.extract_owned("sid-under-test", ledger=ledger)
+    assert [t["projected_text"] for t in got] == ["kept"]
+
+
+def test_extract_turns_batch_keeps_missing_sid_is_empty_list(tmp_path, monkeypatch):
+    """The Path B planner's semantics are UNCHANGED — its sids come from the
+    corpus, so the fail-closed guard is Path A only."""
+    pytest.importorskip("duckdb")
+    monkeypatch.setattr(proj.cc_paths, "cc_projects_roots", lambda: [tmp_path])
+    assert proj.extract_turns_batch([], ledger=ledger) == {}

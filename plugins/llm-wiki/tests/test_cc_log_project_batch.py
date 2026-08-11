@@ -56,6 +56,10 @@ def test_project_from_turns_parity_with_project_owned(tmp_path, monkeypatch):
     ]
     # project_owned composes _fetch_turns -> _turn_to_dict -> project_from_turns.
     monkeypatch.setattr(proj, "_fetch_turns", lambda sid: list(turns))
+    # Path A's absent-sid gate has no filesystem to find "sid-x" in — this test
+    # is about the split/compose parity, not the gate (covered in
+    # test_cc_log_project.py).
+    monkeypatch.setattr(proj, "_require_session_file", lambda sid: None)
     owned = proj.project_owned(tmp_path, "sid-x", ledger=ledger)
 
     # Now do it via the split path explicitly: build dicts, call project_from_turns.
