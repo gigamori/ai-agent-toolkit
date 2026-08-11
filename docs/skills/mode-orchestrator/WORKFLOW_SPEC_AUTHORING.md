@@ -34,15 +34,22 @@ A spec file has these sections:
    These are tier-2 defaults in the model precedence. Include `debug` here even
    though it never appears in the recommended step sequence: the engine's recovery
    loop spawns `debug` turns dynamically and resolves their model from this table
-   (omit it and debug falls back to the inherited session model).
-4. **Failure policy** — the recovery cycle cap (engine default 2 if omitted).
-   This is the only failure parameter a spec controls. Which outcomes reach the
-   loop at all is fixed by the engine and not spec-tunable: only `failed` enters
-   recovery, while `blocked` (including a permission denial), `needs-human`, and
-   `aborted` (a turn that reported nothing — either a reply missing its `status:`
-   final line, or one the watchdog ended with `TIMEOUT` / `STALL` — re-run once,
-   then `needs-human`) bypass it. Do not restate or attempt to override those in a
-   spec. The watchdog's own thresholds are likewise not spec parameters: they are
+   (omit it and debug falls back to the inherited session model). The same applies
+   to `review-dev`, which the decision loop spawns dynamically for the same
+   reason — include it even if the recommended sequence never uses it.
+4. **Failure policy** — the recovery cycle cap (engine default 2 if omitted) and,
+   optionally, the decision insertion cap (engine default 2 if omitted). These
+   two caps are the only failure/decision parameters a spec controls, and the
+   engine counts them separately. Which outcomes reach which loop is fixed by the
+   engine and not spec-tunable: only `failed` enters recovery and only
+   `needs-decision` enters the decision loop, while `blocked` (including a
+   permission denial), `needs-human`, and `aborted` (a turn that reported nothing
+   — either a reply missing its `status:` final line, or one the watchdog ended
+   with `TIMEOUT` / `STALL` — re-run once, then `needs-human`) bypass both. The
+   `--decider` setting is likewise not a spec parameter: who adjudicates a fork
+   is the operator's call for that run, not a property of the task type. Do not
+   restate or attempt to override any of those in a spec. The watchdog's own
+   thresholds are also not spec parameters: they are
    per-mode wall-clock values at the top of `scripts/watchdog.sh`. A spec that
    pinned them would let one task type silently widen the bound that keeps every
    run terminating, so tune them in the script, where the change is visible to
@@ -70,4 +77,4 @@ table honest instead of raising the default for every step of that mode.
 2. Fill the five sections for the new task type.
 3. No engine edit is needed. Verify by generating a turn plan with
    `--workflow=<name>` against a representative todolist and confirming the model
-   tiers, warnings, and Failure policy block appear as intended.
+   tiers, warnings, and Failure & decision policy block appear as intended.

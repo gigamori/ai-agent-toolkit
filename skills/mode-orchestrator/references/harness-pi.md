@@ -56,7 +56,23 @@ MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
   hypothetical one: a prior incident had a Pi-originated subagent swarm from
   unbounded recursive invocation (see `handoff-phase3-onward.md` /
   `handoff-phase5-onward.md` §7, "Pi の nested 呼び出しに再帰ガードがあるか").
-- `--model <pattern>`: the turn's resolved model override (`pi --help`).
+- `--model <pattern>`: the turn's resolved model override (`pi --help`), for
+  tiers 1 and 2. **Tier 3 (`inherit`) has no resolved model, and Pi has no way
+  to inherit yours** — measured 2026-08-12: a `pi -p --mode json` call with no
+  `--model` reported `"model":"gpt-5.4-mini"`, this machine's configured pi
+  default, while the identical call with `--model haiku` reported
+  `"model":"haiku"`. The control arm is what makes the first reading mean
+  something: the field does track the override, so its value with the flag
+  omitted really is pi's own default and not an echo of the caller.
+  So on this harness: omit `--model` for a tier-3 turn and record the override
+  as `none` — but understand that the turn then runs on **pi's configured
+  default, which need not be a Claude model at all**. The mode fragments and
+  the reply contract were written and measured against Claude models; a run
+  that leaves its models to tier 3 here is running them somewhere else. If a
+  run needs a particular model, do not lean on tier 3 — pin it on the step or
+  supply a spec `mode→model` table. (Passing the orchestrator's own model
+  instead would restore true inheritance, but nothing measured says a pi
+  session can read its own model, so that is not specified here.)
   Canonical names resolve correctly on Pi as-is — `haiku` →
   `pi-claude-agent-sdk/haiku`, `sonnet` → `pi-claude-agent-sdk/sonnet`,
   `opus` → `pi-claude-agent-sdk/claude-opus-4-8[1m]` — provided the
@@ -107,6 +123,12 @@ pass one explicitly, taken from this table. The upper bound is
 | `review` | 900 |
 | `review-dev` | 900 |
 | anything else | 900 |
+
+An inserted **decision turn** (`SKILL.md` Execution step 7) runs as
+`mode: review-dev` and therefore takes the `review-dev` row (900 s) — the same
+budget the CC watchdog gives it. Nothing in this mechanism is decision-specific.
+A `--decider=human` wait makes no `pi -p` call at all, so no `timeout` applies
+to it; see below.
 
 These are the CC watchdog's `DEADLINE_*` values verbatim
 (`scripts/watchdog.sh`, read 2026-07-29), so the same turn gets the same
@@ -168,13 +190,36 @@ distinct description is needed, since nothing keys off one. The child's own
 session file is named by a pi-generated UUID, so a re-run does not overwrite
 its aborted predecessor's transcript.
 
+## `--decider=human` waiting
+
+The wait works here, and needs nothing built. Pi's orchestrator blocks on the
+`bash` tool only for the duration of a delegation call (P1 above); between
+steps it is an ordinary agent turn. So ending the turn at a step boundary to
+present a `## Decision request` behaves exactly as it does on Claude Code — in
+an interactive `pi` session the user answers and the run continues; under
+`pi -p` nothing can answer and the run ends, which is the intended degradation.
+
+Note that this concerns the orchestrator's **own** session, whichever way it was
+started. It is unrelated to the `-p` on the delegation command line above: every
+delegated turn is headless on this harness by construction, and none of them
+ever waits for a human.
+
 ## Denial check
 
-None exists, and none is needed: pi has no permission layer at all (its
-CLI and core were grepped for a permission concept — zero hits), so a
-tool call cannot be "denied by the permission system" and the reply
-contract's denial clause can never trigger on this harness. There is no
-Pi counterpart to `scripts/deny_scan.sh`.
+None exists: pi has no permission layer at all (its CLI and core were grepped
+for a permission concept — zero hits), so a tool call cannot be "denied by the
+permission system" and the reply contract's denial clause can never trigger on
+this harness. There is no Pi counterpart to `scripts/deny_scan.sh`.
+
+**What this means for `blocked`.** `SKILL.md` Execution step 3 gives `blocked`
+two sources — machine-detected denial, and the turn judging for itself that it
+reached an irreversible or outward-facing effect no rule permits. Source (1)
+does not exist here, so on Pi the entire weight sits on source (2): a sentence
+in the injected prompt, obeyed or not by the subagent. The "unless a rule
+permits it" half is in the same position — on Claude Code the settings
+allowlist decides mechanically, here the subagent decides by reading. Do not
+carry over an intuition formed on Claude Code, where the permission layer stops
+most such calls before any prompt rule matters.
 
 ## Residual risks specific to this harness
 

@@ -56,6 +56,19 @@ mk_agent() {
 
 DENIAL_CLASSIFIER='{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"Permission for this action was denied by the Claude Code auto mode classifier. Reason: Blocked."}]}}'
 DENIAL_MANUAL="{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"is_error\":true,\"content\":\"The user doesn't want to proceed with this tool use.\"}]}}"
+# Current template family, transcribed from two real transcripts measured
+# 2026-08-12 (decision-point E2E, sessions 72f92585 turn b3-turn2-execute and
+# 88ae5b3d turn "b8 turn1 execute probe hostname"). Both were real Bash
+# denials that the two older patterns missed completely. Keep the shape —
+# including the trailing `toolUseResult` field, which is where the phrase
+# actually lands — so this asserts against the real serialization rather than
+# a tidied-up version of it.
+DENIAL_TOOL_PLAIN='{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"tool_use_id":"toolu_x"}]},"toolUseResult":"Error: Permission to use Bash has been denied. IMPORTANT: You *may* attempt to accomplish this action using other tools."}'
+DENIAL_TOOL_WITHCMD='{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"tool_use_id":"toolu_y"}]},"toolUseResult":"Error: Permission to use Bash with command hostname has been denied."}'
+# A non-denial tool error on the same is_error line must stay CLEAN — this is
+# what keeps the new, shorter pattern from turning every failed command into a
+# permission denial.
+TOOL_ERROR='{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"tool_use_id":"toolu_z"}]},"toolUseResult":"Error: Exit code 2\nls: cannot access: No such file or directory"}'
 OK_RESULT='{"type":"user","message":{"content":[{"type":"tool_result","is_error":false,"content":"file written"}]}}'
 ASSISTANT='{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
 # The phrase appearing WITHOUT is_error:true (e.g. the agent read a doc that
@@ -89,6 +102,27 @@ T="$(mk_agent "$R" sess1 ddd 'turn four desc')"
 printf '%s\n%s\n' "$DENIAL_CLASSIFIER" "$DENIAL_CLASSIFIER" > "$T"
 run_ds --desc 'turn four desc' --project-root "$R"
 expect "two denials counted" "DENIED 2" 1
+
+# --- 4b. current template family (measured 2026-08-12) -> DENIED
+R="$WORK/t4b"
+T="$(mk_agent "$R" sess1 ddb 'turn four-b desc')"
+printf '%s\n%s\n' "$ASSISTANT" "$DENIAL_TOOL_PLAIN" > "$T"
+run_ds --desc 'turn four-b desc' --project-root "$R"
+expect "current tool-denial wording detected" "DENIED 1" 1
+
+# --- 4c. same family with the " with command <cmd>" clause -> DENIED
+R="$WORK/t4c"
+T="$(mk_agent "$R" sess1 ddc 'turn four-c desc')"
+printf '%s\n' "$DENIAL_TOOL_WITHCMD" > "$T"
+run_ds --desc 'turn four-c desc' --project-root "$R"
+expect "tool-denial with command clause detected" "DENIED 1" 1
+
+# --- 4d. an ordinary tool error is not a denial -> CLEAN
+R="$WORK/t4d"
+T="$(mk_agent "$R" sess1 ddd2 'turn four-d desc')"
+printf '%s\n%s\n' "$ASSISTANT" "$TOOL_ERROR" > "$T"
+run_ds --desc 'turn four-d desc' --project-root "$R"
+expect "non-denial tool error stays clean" "CLEAN" 0
 
 # --- 5. phrase without is_error:true does not trip
 R="$WORK/t5"

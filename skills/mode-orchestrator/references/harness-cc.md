@@ -11,6 +11,14 @@ resolved `model` as the delegation-call model override when the platform
 supports it; otherwise proceed with the inherited model and record that in the
 run index. One turn = one subagent; never combine turns.
 
+**Tier 3 (`inherit`) means passing no model override at all** — a subagent
+started without one already runs on the session's model, so that is how
+`SKILL.md`'s "the session model is used" is realised here. Naming the session's
+model explicitly is *not* equivalent: it produces a run index that records tier
+`inherit` beside a call that specified a model, and once tier and call can
+disagree, neither can be used later to check whether a spec's table took
+effect. Record `none` as the override for these turns.
+
 The subagent writes its deliverable to the run directory as `NN-<mode>.md` and
 returns only a ≤3-line gist followed by the reply-contract status line (see
 `SKILL.md`'s Injection assembly and Execution step 3).
@@ -25,9 +33,19 @@ bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable path
 ```
 
 Use `--deliv -` for a turn that writes no file. **Every delegation in the run
-needs its own description**, re-runs and recovery turns included — that string
-is the watchdog's only key, so two turns sharing one can be confused for each
-other.
+needs its own description**, re-runs and inserted turns of either loop included
+— that string is the watchdog's only key, so two turns sharing one can be
+confused for each other.
+
+An inserted **decision turn** (`SKILL.md` Execution step 7) is an ordinary
+delegated turn here and needs nothing new: it runs as `mode: review-dev`, so
+`--mode review-dev` gives it `DEADLINE_REVIEW_DEV` (900 s, `scripts/watchdog.sh`
+— unchanged; whether a decision turn deserves its own budget is still open),
+and `--deliv` takes its decision record (`NNa-decision.md` in the simple
+case; the actual name is the next free suffix letter). A `--decider=human`
+wait involves no
+delegation at all, so there is no watchdog to start and no description to key:
+the orchestrator simply ends its turn at the step boundary.
 
 The watchdog is what bounds the turn in wall-clock time. The orchestrator is
 event-driven: it cannot poll, and the only asynchronous wake available to it is
@@ -87,10 +105,11 @@ description is the key) and greps it for permission-denial tool results
 
 - `CLEAN` (exit 0) — keep the turn's self-reported status.
 - `DENIED <n>` (exit 1) — the turn's status is `blocked` regardless of what
-  its reply said; record in the run index that the denial was
-  machine-detected. This is the backstop for a turn that judged its own
-  denial inessential and reported `ok` — a measured incident, not a
-  hypothetical.
+  its reply said (`ok`, `failed`, and `needs-decision` alike); record in the
+  run index that the denial was machine-detected. This is the backstop for a
+  turn that judged its own denial inessential and reported `ok` — a measured
+  incident, not a hypothetical. It is also what stops a permission wall from
+  entering the decision loop dressed as a choice.
 - `NO-TRANSCRIPT` (exit 2) — the check could not run; say so in the run
   index. Do not treat it as `CLEAN`.
 
@@ -107,6 +126,14 @@ whenever a run's turn is *known* to have been denied — run the scan against
 a transcript that contains a real denial and confirm it still reports
 `DENIED`; a `CLEAN` there means the serialization moved and the patterns at
 the top of `deny_scan.sh` need re-measuring.
+
+**This canary has fired once, on 2026-08-12.** Two real Bash denials scanned
+`CLEAN` while `"is_error":true` still matched — only the phrasing had moved,
+to a `Permission to use <Tool> ... has been denied` template that neither
+pattern covered. The scan had been inert for an unknown stretch before
+anyone checked, and its test suite stayed green the whole time. Treat the
+canary as a real obligation, not a formality: it is the only thing that can
+catch this class of failure, and running it costs one command.
 
 ## Out-of-scope note
 

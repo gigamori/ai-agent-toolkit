@@ -55,10 +55,11 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [debug-isolate](skills/debug-isolate/) | CC | — | 反復デバッグを forked subagent に隔離。git stash チェックポイントと連続失敗時の自動ロールバックで作業ツリーの状態を保全 |
 | [run-sql](skills/run-sql/) | CC | — | 設定済みデータベース (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) に対し SQL を実行し、生の JSON 結果を返す |
 | [generate-debug-handoff](skills/generate-debug-handoff/) | CC | — | E2E テスト用の debug handoff Markdown を生成。`debugger:` 引数 (human/llm) で、LLM が整形補助に留まる（人間が承認）か debugger 役を担う（承認なし）かを選択 |
-| [mode-orchestrator](skills/mode-orchestrator/) | CC | [docs](docs/skills/mode-orchestrator/) | todolist と context を含むドキュメントを読み、各ステップを role-mode の `mode:`/`role:` ヘッダ付きで隔離 `general-purpose` subagent ターンとして実行。1ターン 1 mode（+任意 role）、混在なし。autonomous mode 限定。ターンごとの model override、ターンごとに固定した status 行の返答契約（権限拒否や status 行の欠落はリカバリに入らず run を停止）、各ターンをウォールクロックで有界化し生成停止を検出する背景 watchdog、有界な `failed`→`debug`→再 execute リカバリループ、タスク種別ごとの workflow spec（`dev` 同梱）に対応 |
+| [mode-orchestrator](skills/mode-orchestrator/) | CC | [docs](docs/skills/mode-orchestrator/) | todolist と context を含むドキュメントを読み、各ステップを role-mode の `mode:`/`role:` ヘッダ付きで隔離 `general-purpose` subagent ターンとして実行。1ターン 1 mode（+任意 role）、混在なし。autonomous mode 限定。ターンごとの model override、ターンごとに固定した status 行の返答契約（権限拒否はリカバリに入らず run を停止。status 行の欠落、および最終行以外への配置は `aborted` として1回再実行）、各ターンをウォールクロックで有界化し生成停止を検出する背景 watchdog、有界な `failed`→`debug`→再 execute リカバリループ、自力で解決してはいけない分岐をターンが申告したときの有界な decision ループ（挿入ターンが裁定、または `--decider=human` で利用者が裁定）、タスク種別ごとの workflow spec（`dev` 同梱）に対応 |
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | 過去の Claude Code セッションログを、事前構築した DuckDB ビュー（会話・引数付き tool 呼び出し・ファイル変更・fork・compaction・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [compact-cc-log](skills/compact-cc-log/) | CC | — | 過去または実行中の Claude Code セッションを要約。title・`--session-id`・`--current`（実行中セッション。`scripts/transcript.py` が呼び出しターン自体を除外）でセッションを解決し、`compact-document` に委譲して圧縮 |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | 過去の Pi Coding Agent セッションログを、事前構築した DuckDB ビュー（会話・tool 呼び出し・ファイル変更・セッション系譜/bundle・compaction・in-file branch・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、subagent/skill-fork/handoff/fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
+| [render-report](skills/render-report/) | CC | — | 完成した分析レポート Markdown を `officecli` CLI 経由で pptx / docx / xlsx に変換する、内容の著者ではなく配置の実行者。同梱の `validate_contract.py` が入力をレポート構造契約（frontmatter の `purpose`、固定セクション、n数と確信度を持つクレームブロック、実在する表の列に紐づくチャートアノテーション）で検証してから変換し、文言は要約も短縮もせず原文転記、収まらないテキストは truncate せず overflow として呼び出し元に差し戻す。分析コンテキストを一切受け取らないため、契約準拠 Markdown を出力するパイプラインであれば再利用できる |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。バッチ実行は `--backend`（harness から自動判定）で選ぶ2つの backend を持つ: run-cc は各ステップを独立した `claude -p` subagent として実行し、run-pi は claude を一切必要とせず pi CLI で実行する（pi では強制できない `schema=` と `on-error="debug"` は起動前に拒否）。run-llm プロトコルはホスト側エージェント自身の subagent 機能へ委譲する |
 
 ### revert
@@ -73,6 +74,21 @@ AI アシスタントが不要な編集・commit・git 操作を行ったとき�
 **ターンスコープ**: 「戻して」のような曖昧な要求は **直前 1 ターンのみ** を対象にする。セッション全体に暗黙で拡大することはなく、曖昧な場合は必ず確認する。
 
 **必要環境**: Python 3.11+, [uv](https://docs.astral.sh/uv/), DuckDB（uv が自動インストール）。
+
+### render-report
+
+完成した分析を資料化する工程は、内容を壊しやすい。レイアウトを組む者が文言にも手を入れ始め、テキストボックスに収める過程で数値から分母が静かに落ちる。**render-report** はこの2つの仕事を分離し、内容の著者ではなく配置の実行者に徹する。
+
+1. **契約ゲート** — 変換前に `scripts/validate_contract.py` が入力 Markdown を構造契約で検証する。frontmatter の `purpose`、固定のセクション順序、n数と確信度記号を必ず持つクレームブロック、`x=` / `y=` が直後のテーブルに実在する列を指すチャートアノテーション。違反は中途半端な資料ではなく違反行の一覧として返す。
+2. **原文転記** — 文言はそのまま複写する。要約・短縮・数値の再フォーマットを行わない。収まらないテキストは truncate せず overflow（どのスライドのどの要素が、どれだけ超過したか）として呼び出し元に差し戻す。
+
+**分析コンテキストを一切受け取らない**（入力は Markdown と出力パスのみ）ため、契約準拠 Markdown を出力するパイプラインであれば再利用でき、レイアウト作業が分析側のコンテキストを消費しない。
+
+**形式**: `pptx` はスライド単位で構築（1スライド1クレーム、チャートはアノテーション付きテーブルから生成、検証詳細は Appendix へ）。`docx` は officecli の `markdown` 要素で一括投入するため、転記をモデルではなく CLI が行う。`xlsx` はデータ付録（1テーブル1シート）で、明示要求時のみ生成する。
+
+**トリガー**: 分析レポートのスライド化・文書化を依頼、または `/render-report <md-path> <format>` で明示呼び出し。
+
+**必要環境**: [officecli](https://d.officecli.ai/), Python 3.11+, [uv](https://docs.astral.sh/uv/)。
 
 スキルディレクトリをエージェントのスキルフォルダにコピー:
 
@@ -115,6 +131,7 @@ ai-agent-toolkit/
 │   ├── inspect-cc-log/         スキル: CC ログ調査用の SQL ビュー群
 │   ├── compact-cc-log/         スキル: 過去/実行中の CC セッションを要約
 │   ├── inspect-pi-log/         スキル: Pi Coding Agent ログ調査用の SQL ビュー群
+│   ├── render-report/          スキル: 契約準拠レポート Markdown を pptx/docx/xlsx に変換
 │   └── xml-wf/                 スキル: 決定論的 XML v2 ワークフローランナー (wfrun)
 ├── docs/
 │   └── skills/                非 runtime のスキル文書 (ユーザガイド・authoring contract)

@@ -50,6 +50,7 @@ todolist. It does not guess to fill gaps.
 | `--auto` | Skip the approval gate; run all turns without per-plan confirmation. |
 | `--roles` / `--roles=always` | Infer and attach a fitting role to every turn. Default: no inferred roles, but a role explicitly stated in the todolist is honored. |
 | `--workflow=<name>` | Load a workflow spec (`workflows/<name>.md`) as defaults. A spec name declared inside the todolist is honored the same way. Default: no spec — run exactly as the todolist dictates. |
+| `--decider=human` | Decide `needs-decision` forks yourself: the run pauses at the step boundary and shows you the question. Default `llm` — an inserted turn decides. See the decision loop below. |
 
 Flags use the `--` form on purpose — never `mode:` / `role:` colon-prefixes,
 which the role-mode hook would capture.
@@ -75,7 +76,16 @@ no guessing from the mode alone:
 1. **Per-step explicit** — a model named on the todolist step (or pinned by an
    active workflow spec for that step); the todolist wins on conflict.
 2. **Spec table** — an active workflow spec's mode→model default.
-3. **Inherit** — no override; the session model is used.
+3. **Inherit** — the turn adds no model of its own, so it runs on whatever the
+   harness uses for an un-overridden delegation. On Claude Code that is your
+   session's model. On Pi it is **pi's own configured default, which need not
+   be a Claude model** (measured), so pin a model per step or via a spec table
+   there rather than relying on inherit.
+
+The run index records both the tier that decided and the model override
+actually passed (or `none`) — without the second, an index can claim `inherit`
+beside a call that named a model, and nothing later can tell whether a spec
+table took effect.
 
 The turn plan shows each turn's model and which tier decided it.
 
@@ -99,7 +109,7 @@ task's authorized scope) also stops the run.
 ### What does *not* enter the recovery loop
 
 Only `failed` — "the work ran, a check didn't pass, and it looks fixable here" —
-is worth diagnosing. Three other outcomes deliberately bypass the loop:
+is worth diagnosing. Four other outcomes deliberately bypass the loop:
 
 - **`blocked`** — including any turn whose tool call the **permission system
   denied**. A denial is not an in-repo bug: re-running the turn hits the same
@@ -110,8 +120,12 @@ is worth diagnosing. Three other outcomes deliberately bypass the loop:
   the orchestrator runs `scripts/deny_scan.sh` against the turn's transcript,
   and a detected denial overrides a self-reported `ok`.
 - **`needs-human`** — the turn needs a decision only you can make.
+- **`needs-decision`** — the turn hit a fork, not a failure. It goes to the
+  decision loop below instead.
 - **`aborted`** — the turn said *nothing* about the task. Either its reply
-  arrived without the required status line (interrupted, killed, or
+  arrived without the required status line — or with a perfectly good one
+  in the wrong place, since the last line is the anchor and reading a status
+  off-anchor would let a truncated reply pass as a finished one (interrupted, killed, or
   off-contract), or it never replied at all and the **turn watchdog** ended it
   (see below). There is no failure to diagnose, so the orchestrator re-runs that
   turn **once** and, if it is still unreadable, stops with `needs-human`. This
@@ -124,10 +138,82 @@ broken turn fails loudly instead of passing as success.
 
 **Only `execute` turns are even offered `failed`.** The status is defined as "a
 planned check did not pass", and running such a check is what an `execute` turn
-does; every other mode gets a three-value contract (`ok` / `blocked` /
-`needs-human`). If some other turn returns `failed` anyway, it is out of
-contract — the run stops as `needs-human` rather than starting a recovery loop
-that would have no Failure report to diagnose.
+does; every other mode gets `ok` / `blocked` / `needs-human` / `needs-decision`.
+If some other turn returns `failed` anyway, it is out of contract — the run
+stops as `needs-human` rather than starting a recovery loop that would have no
+Failure report to diagnose.
+
+## Decision loop
+
+A turn can also stop on a **fork** rather than a failure: an ambiguity it is
+forbidden to resolve on its own, two architectures with no clear winner, a
+review finding with no single defensible recommendation. Without somewhere to
+put that, such a turn's only exit is `needs-human`, which ends the whole run.
+
+It returns status `needs-decision` and writes a **Decision request** into its
+deliverable, with four fields:
+
+| Field | Content |
+|---|---|
+| Question | What must be decided, in one sentence. |
+| Options | Two or more, each with its trade-off. |
+| Impact on remaining steps | `none`, or the revised remaining sequence. |
+| Work state | `complete` — the deliverable stands and the turn is only flagging the fork — or `stopped` — it could not finish without the answer. |
+
+An incomplete request is not treated as a decision: it is read as `needs-human`
+and the run stops. That is deliberate — the four fields are what separates a
+real fork from a turn handing its job back.
+
+What happens next depends on `--decider`:
+
+- **`llm` (default)** — an extra `review-dev` turn is inserted to adjudicate. It
+  gets the deliverable of the turn that raised the fork (which may itself be an
+  inserted debug turn), the plan if there is one, and **the input document**
+  (what a fork should be decided *toward* is the run's purpose, which lives only
+  there), and must record exactly one option with the reason. It may pick an
+  option the request did not list, saying so. It must *refuse* to decide
+  anything irreversible or outward-facing, or anything that changes what the run
+  is for — those come back to you as `needs-human`.
+- **`human`** — no turn is inserted. The run stops at the step boundary and
+  shows you the question and the deliverable path; your answer is written into
+  the decision record and the run continues. In a non-interactive run
+  (`claude -p` and the like) nothing can answer, so the run simply ends, with
+  the request preserved on disk for you to restart from.
+
+Then the run continues one of two ways, read off the `Work state` field rather
+than guessed: **`complete`** with a listed option → the deliverable stands and
+the decision record is added to the following turns' inputs; **`stopped`**, or
+an unlisted option was adopted → the originating turn is re-run with the
+decision record as an extra input.
+
+If the decision carries an **amendment**, only the not-yet-run part of the turn
+plan is regenerated — finished turns are untouched — and the revised remainder
+must still pass the Step 0 gate. The original plan stays in the run index, so
+the drift from what you approved stays visible.
+
+The per-turn **decision cap** is 2 insertions (a workflow spec can override it).
+At the cap the run stops with `needs-human`, not `blocked`: two rounds that fail
+to converge means the judgement is overloaded, and what is missing is your
+judgement, not a capability. The decision cap and the recovery cycle cap are
+counted separately, and both are charged to the turn that originated them — a
+turn that owns a lettered sequence carries both counts, and **every turn added
+to that sequence — a re-run, an inserted debug turn, an inserted decision turn
+— spends from it rather than opening its own**. Without that a loop could mint
+fresh budget every round simply by inserting a turn.
+
+A fork can also be raised by an *inserted* turn — a debug turn that finds
+several candidate fixes, say. When that happens and the continuation is form
+(b), what gets re-run is the turn that raised the fork (the debug turn), not
+the original one; and that re-run spends from the decision budget, not the
+recovery one.
+
+`--auto` does **not** override `--decider=human`: it skips only the initial
+turn-plan approval, so a human-decided run still waits at its forks.
+
+A permission denial is never a decision. A turn that reports `needs-decision`
+after being denied is corrected to `blocked` by the same machine check that
+catches a denied turn reporting `ok` — otherwise a wall would consume a decision
+round, or worse, get adjudicated around.
 
 ## Turn watchdog
 
@@ -195,14 +281,19 @@ a spec for another task type, see `WORKFLOW_SPEC_AUTHORING.md`.
 Each invocation creates one run directory in the workspace, e.g.
 `mode-orchestrator-runs/<run-slug>/`:
 
-- `NN-<mode>.md` — one deliverable per turn, in order. Recovery turns use the
-  suffix form `NNa-debug.md` / `NNb-execute.md` / `NNc` / `NNd`.
-- `index.md` — the turn plan (with each turn's model and tier), the spec warnings,
-  the Failure policy, and each turn's status. Any turn that had to be re-run after
-  an `aborted` reply is noted here too, along with which check caught it — a
-  missing status line, or the watchdog's `TIMEOUT` or `STALL`. An aborted turn
-  writes no deliverable, so this is the only place that records it happened. It is
-  an inspection index, not a resumable scheduler.
+- `NN-<mode>.md` — one deliverable per turn, in order. Any turn inserted for
+  turn `NN` — by either loop — takes the next free suffix letter, so a turn that
+  goes through both reads as `05a-decision.md` → `05b-execute.md` →
+  `05c-debug.md` → `05d-execute.md`. The mode is in the filename, so which loop
+  produced which artifact is never ambiguous.
+- `index.md` — the turn plan (with each turn's model: the deciding tier and the override actually passed, or `none`), the spec warnings,
+  the Failure & decision policy, and each turn's status. Also recorded: each
+  turn's decision insertions and which continuation form was taken, any
+  amendment (alongside the original plan it replaced), any `--decider=human`
+  wait, and any turn re-run after an `aborted` reply along with which check
+  caught it — a missing status line, or the watchdog's `TIMEOUT` or `STALL`. An
+  aborted turn writes no deliverable, so this is the only place that records it
+  happened. It is an inspection index, not a resumable scheduler.
 
 These are runtime artifacts — they are not committed.
 
@@ -210,7 +301,9 @@ These are runtime artifacts — they are not committed.
 
 - No rollback / checkpoint / worktree around `execute` turns — working-tree safety
   is your git hygiene concern. Commit or stash WIP before an autonomous run.
-- No mid-run interactive handoff and no resume scheduler.
+- No mid-**step** interruption and no resume scheduler. A `--decider=human` wait
+  is not an exception: it happens at a step boundary, where every artifact is
+  already written.
 - No parallel turns — turns run in order.
 - No zero-decomposition — the todolist must be in the input.
 

@@ -37,6 +37,7 @@ path/to/plan.md に mode-orchestrator を使って
 | `--auto` | 承認ゲートを飛ばし、全ターンを承認なしで実行する。 |
 | `--roles` / `--roles=always` | 各ターンに適合する role を推論して付与する。デフォルト: role は推論しないが、todolist に明示された role は honor する。 |
 | `--workflow=<name>` | workflow spec（`workflows/<name>.md`）を defaults として読み込む。todolist 内で spec 名を宣言しても同様に honor される。デフォルト: spec なし — todolist の指定どおりに実行。 |
+| `--decider=human` | `needs-decision` の分岐を自分で裁定する。run はステップ境界で止まり、質問を提示する。デフォルトは `llm` — 挿入されたターンが裁定する。後述の decision ループを参照。 |
 
 フラグは意図的に `--` 形式を使う。`mode:` / `role:` のコロン接頭辞は使わない（role-mode フックに捕捉されるため）。
 
@@ -54,7 +55,14 @@ mode は hybrid で決定: ステップが mode を名指ししていれば hono
 
 1. **ステップ明示** — todolist のステップで名指しされた model（または有効な workflow spec がそのステップに pin した model）。衝突時は todolist が勝つ。
 2. **spec 表** — 有効な workflow spec の mode→model デフォルト。
-3. **継承** — override なし。セッションの model を使う。
+3. **継承** — そのターンは自前の model を持たないので、override 無しの委譲を
+   harness が何で走らせるかに従う。Claude Code ではセッションの model。Pi では
+   **pi 自身の設定 default で、Claude 系とは限らない**（実測）。Pi で特定の
+   model が要るなら継承に頼らず、ステップか spec 表で pin すること。
+
+run index には「どの段が決めたか」と「実際に渡した override（無ければ `none`）」
+の両方を記録する。後者が無いと、index が `inherit` と主張しながら呼び出しでは
+model を指定していた、という乖離が起きても後から検出できない。
 
 turn plan は各ターンの model と、どの段が決定したかを表示する。
 
@@ -70,15 +78,48 @@ turn plan は各ターンの model と、どの段が決定したかを表示す
 
 ### リカバリループに入らないもの
 
-診断する価値があるのは `failed`（作業は走った・check が通らなかった・ここで直せそう）だけ。次の3つは意図的にループを迂回する:
+診断する価値があるのは `failed`（作業は走った・check が通らなかった・ここで直せそう）だけ。次の4つは意図的にループを迂回する:
 
 - **`blocked`** — ツール呼び出しが**権限システムに拒否**されたターンを含む。拒否はリポジトリ内のバグではないので、再実行しても毎サイクル同じ壁に当たる。run を止めて利用者に尋ねる。ターン自身がこれを免除することはできない — 拒否された呼び出しを「不可欠でない」と判断して回避しタスクを完了できた場合でも、status は `ok` ではなく必ず `blocked` になる。Claude Code ではこれを機械検査も行う: 各ターンの status 行を読んだ後に `scripts/deny_scan.sh` が transcript を走査し、検出された拒否は自己申告の `ok` を上書きする。
 - **`needs-human`** — 利用者にしか下せない判断が必要なターン。
-- **`aborted`** — タスクについて**何も報告していない**ターン。返答に所定の status 行が無い（中断・kill・契約逸脱）場合と、そもそも返答が来ず**ターン watchdog**（後述）が打ち切った場合の両方を含む。診断すべき失敗が存在しないので、orchestrator はそのターンを**1回だけ**再実行し、それでも読めなければ `needs-human` で停止する。この再実行はサイクル上限を消費しない。
+- **`needs-decision`** — 失敗ではなく分岐に当たったターン。後述の decision ループへ回る。
+- **`aborted`** — タスクについて**何も報告していない**ターン。返答に所定の status 行が無い（中断・kill・契約逸脱）場合、**形式は正しい status 行が最終行以外に置かれている**場合（アンカーは位置であり、位置を外して読むと途中で切れた返答が完了扱いで通ってしまう）、そしてそもそも返答が来ず**ターン watchdog**（後述）が打ち切った場合の両方を含む。診断すべき失敗が存在しないので、orchestrator はそのターンを**1回だけ**再実行し、それでも読めなければ `needs-human` で停止する。この再実行はサイクル上限を消費しない。
 
 各ターンは返答の**最終行**を `status: <...>; file: <path>` に固定し、orchestrator はその行だけから結果を読む。だから status 行を欠いたターンは推測せず `aborted` として扱う — 沈黙した／壊れたターンが成功として通り抜けるのではなく、はっきり失敗する。
 
-**`failed` を提示されるのは `execute` ターンだけ。** この status は「planned check が通らなかった」と定義されており、その check を走らせるのは `execute` ターンだから。他のモードには3値契約（`ok` / `blocked` / `needs-human`）を渡す。それでも他のターンが `failed` を返した場合は契約違反として扱い、リカバリループ（診断すべき Failure report が存在しない）には入れず `needs-human` で run を停止する。
+**`failed` を提示されるのは `execute` ターンだけ。** この status は「planned check が通らなかった」と定義されており、その check を走らせるのは `execute` ターンだから。他のモードには `ok` / `blocked` / `needs-human` / `needs-decision` を渡す。それでも他のターンが `failed` を返した場合は契約違反として扱い、リカバリループ（診断すべき Failure report が存在しない）には入れず `needs-human` で run を停止する。
+
+## Decision ループ
+
+ターンは失敗ではなく**分岐**で止まることもある — 自分では解決してはいけない曖昧さ、優劣の付かない2つのアーキテクチャ、推奨を1つに絞れないレビュー所見。その受け皿が無ければ、そうしたターンの出口は `needs-human` しかなく、run 全体が終わる。
+
+このときターンは status `needs-decision` を返し、deliverable に **Decision request** を4フィールドで書く:
+
+| フィールド | 内容 |
+|---|---|
+| Question | 何を決めるのか、1文で。 |
+| Options | 2つ以上、それぞれの trade-off 付き。 |
+| Impact on remaining steps | `none`、または改訂後の残ステップ列。 |
+| Work state | `complete`（deliverable は有効で、分岐の申告のみ）または `stopped`（決定なしでは完了できなかった）。 |
+
+不備のある request は decision として扱わない — `needs-human` として読み、run を停止する。これは意図的で、この4フィールドこそが「本物の分岐」と「仕事の丸投げ」を分けている。
+
+その先は `--decider` によって変わる:
+
+- **`llm`（デフォルト）** — 裁定用に `review-dev` ターンを1つ挿入する。フォークを申告したターンの deliverable（それが挿入された debug ターンならその deliverable）、plan があればそれ、そして**入力ドキュメント**（分岐を「何に向けて」決めるかは run の目的であり、それは入力ドキュメントにしか無い）を受け取り、ちょうど1つの選択肢を理由付きで記録する。request に列挙されていない選択肢を採ってもよい（その旨を明記する）。ただし不可逆・外向きの作用を伴う決定、run の目的自体を変える決定は**裁定してはならない** — それらは `needs-human` として利用者に戻る。
+- **`human`** — ターンは挿入しない。run はステップ境界で止まり、質問と deliverable のパスを提示する。あなたの回答が decision record に書かれ、run が続く。非対話実行（`claude -p` など）では回答する主体が居ないので run はそのまま終わる — request はディスク上に残るので、それを読んで再開できる。
+
+続行は2形態のいずれかで、`Work state` フィールドから読み取る（推測しない）: **`complete`** かつ列挙内の選択肢 → deliverable は有効なまま、decision record を後続ターンの inputs に追加する。**`stopped`** または列挙外の選択肢の採用 → 起点ターンを decision record 付きで再実行する。
+
+決定が **amendment** を伴う場合、再生成されるのは**未実行部分の turn plan だけ**（完了済みターンは不変）で、改訂後の残りは改めて Step 0 ゲートを通す。元の plan は run index に残るので、承認した内容からの drift は常に見える。
+
+ターンごとの **decision 上限**は 2 回の挿入（workflow spec で上書き可）。上限に達したら `blocked` ではなく `needs-human` で停止する — 2回裁定しても収束しないのは判断過負荷であり、欠けているのは能力ではなくあなたの判断だから。decision 上限とリカバリのサイクル上限は**別々に**数え、どちらも接尾辞列を所有する起点ターンが持つ。**その列に加わるターンは、再実行であれ挿入された debug ターンであれ挿入された decision ターンであれ、すべて起点の残量から使う**（自分用の上限を新たに持たない）。そうでないと、ターンを1つ挿入するだけで毎回新しい上限が湧いてしまう。
+
+フォークは**挿入されたターン**が申告することもある（例: debug ターンが修正案を複数見つけた場合）。そのとき続行形態が (b) なら、再実行されるのはフォークを申告したターン（= debug ターン）であって元のターンではない。そしてその再実行が使うのは decision の残量で、リカバリの残量ではない。
+
+`--auto` は `--decider=human` を上書き**しない**。`--auto` が飛ばすのは初回の turn plan 承認だけで、human 裁定の run は分岐で待つ。
+
+権限拒否は decision ではない。拒否されたターンが `needs-decision` を報告した場合、`ok` の誤報告を捕まえるのと同じ機械検査で `blocked` に是正される — さもないと壁が decision 1回分を消費するか、最悪の場合は裁定で壁を迂回されてしまう。
 
 ## ターン watchdog
 
@@ -119,15 +160,15 @@ workflow spec は1つのタスク種別に対する **defaults とガイダン�
 
 起動ごとに workspace に run ディレクトリを1つ作る（例: `mode-orchestrator-runs/<run-slug>/`）:
 
-- `NN-<mode>.md` — ターンごとの deliverable を順に。リカバリターンは接尾辞形式 `NNa-debug.md` / `NNb-execute.md` / `NNc` / `NNd` を使う。
-- `index.md` — turn plan（各ターンの model と段を含む）、spec 警告、Failure policy、各ターンの status。`aborted` を受けて再実行したターンもここに記録する — aborted ターンは deliverable を書かないため、それが起きた事実を残す唯一の場所になる。検査用インデックスであり、再開可能なスケジューラではない。
+- `NN-<mode>.md` — ターンごとの deliverable を順に。起点ターン `NN` に対して挿入されたターンは、どちらのループのものでも次の空き接尾辞を取る。両方を通ったターンは `05a-decision.md` → `05b-execute.md` → `05c-debug.md` → `05d-execute.md` と読める。ファイル名に mode が入るので、どのループの成果物かは常に一意。
+- `index.md` — turn plan（各ターンの model: 決定した段と、実際に渡した override（無ければ `none`）の両方）、spec 警告、Failure & decision policy、各ターンの status。加えて、各ターンの decision 挿入回数と採った続行形態、amendment（差し替えた元の plan も併記）、`--decider=human` の待機、`aborted` を受けて再実行したターンとどの検査が捕まえたかも記録する — aborted ターンは deliverable を書かないため、それが起きた事実を残す唯一の場所になる。検査用インデックスであり、再開可能なスケジューラではない。
 
 これらはランタイム成果物 — コミットしない。
 
 ## しないこと
 
 - `execute` ターン周りの rollback / checkpoint / worktree は無い — 作業ツリーの安全はあなたの git 衛生の責務。autonomous な run の前に WIP を commit / stash すること。
-- run 途中の対話的 handoff や再開スケジューラは無い。
+- **ステップ途中**の中断や再開スケジューラは無い。`--decider=human` の待機はこれの例外ではない — ステップ境界で起きるので、その時点で全成果物はすでに書かれている。
 - 並列ターンは無い — ターンは順番に実行される。
 - ゼロ分解は無い — todolist は入力に存在している必要がある。
 

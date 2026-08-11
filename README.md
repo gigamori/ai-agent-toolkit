@@ -55,10 +55,11 @@ contracts, indexed there and linked per skill in the **Docs** column below.
 | [debug-isolate](skills/debug-isolate/) | CC | — | Isolate iterative debugging in a forked subagent — preserves working tree state with git stash checkpoints and automatic rollback on consecutive failures |
 | [run-sql](skills/run-sql/) | CC | — | Execute SQL against configured databases (PostgreSQL, MySQL, MariaDB, Redshift, Snowflake, BigQuery, DuckDB, Databricks) and relay raw JSON results |
 | [generate-debug-handoff](skills/generate-debug-handoff/) | CC | — | Generate an E2E-test debug handoff Markdown; requires a `debugger:` arg (human/llm) selecting whether the LLM only formats the table (human approves) or acts as the debugger (no approval) |
-| [mode-orchestrator](skills/mode-orchestrator/) | CC | [docs](docs/skills/mode-orchestrator/) | Read a document holding a todolist + context, then run each step as an isolated `general-purpose` subagent turn with a role-mode `mode:`/`role:` header — one mode (and optional role) per turn, never mixed; autonomous modes only. Supports a per-turn model override, a fixed per-turn status-line reply contract (a permission denial or a missing status line stops the run instead of entering recovery), a background watchdog that bounds each turn in wall-clock time and detects a subagent that stops generating, a bounded `failed`→`debug`→re-execute recovery loop, and per-task-type workflow specs (ships with `dev`) |
+| [mode-orchestrator](skills/mode-orchestrator/) | CC | [docs](docs/skills/mode-orchestrator/) | Read a document holding a todolist + context, then run each step as an isolated `general-purpose` subagent turn with a role-mode `mode:`/`role:` header — one mode (and optional role) per turn, never mixed; autonomous modes only. Supports a per-turn model override, a fixed per-turn status-line reply contract (a permission denial stops the run instead of entering recovery; a status line that is missing — or present but not on the reply's last line — makes the turn `aborted` and re-run), a background watchdog that bounds each turn in wall-clock time and detects a subagent that stops generating, a bounded `failed`→`debug`→re-execute recovery loop, a bounded decision loop for a turn that reports a fork it may not resolve alone (adjudicated by an inserted turn, or by you with `--decider=human`), and per-task-type workflow specs (ships with `dev`) |
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | Investigate past Claude Code session logs with SQL over pre-built DuckDB views (conversation, tool calls with arguments, file changes, forks, compaction, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a fork tree via a self-contained query script |
 | [compact-cc-log](skills/compact-cc-log/) | CC | — | Summarize a past or the current Claude Code session — resolves the session by title, `--session-id`, or `--current` (the running session, cutting the invoking turn out via `scripts/transcript.py`), then delegates to `compact-document` for compression |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | Investigate past Pi Coding Agent session logs with SQL over pre-built DuckDB views (conversation, tool calls, file changes, session lineage/bundles, compaction, in-file branches, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a subagent/skill-fork/handoff/fork tree via a self-contained query script |
+| [render-report](skills/render-report/) | CC | — | Convert a finished analysis report Markdown into pptx / docx / xlsx through the `officecli` CLI, acting as the layout executor rather than the author: a bundled `validate_contract.py` gates the input against the report structure contract (frontmatter `purpose`, fixed sections, claim blocks carrying sample size and confidence, chart annotations bound to real table columns), wording is transcribed verbatim with no summarizing or truncation, and text that does not fit is returned as an overflow report for the caller to shorten. Takes no analysis context, so any pipeline emitting contract-conforming Markdown can reuse it |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | Build, run, and resume XML v2 workflows: a task is decomposed into single-responsibility steps orchestrated deterministically by a bundled Python runner (`wfrun`) — not by an LLM. Batch execution has two backends selected by `--backend` (auto-detected from the harness): run-cc runs each step as an isolated `claude -p` subagent, run-pi runs it on the pi CLI with no claude install at all, refusing `schema=` and `on-error="debug"` up front because pi cannot enforce them. The run-llm protocol instead delegates steps through the hosting agent's own subagent facility |
 
 ### revert
@@ -73,6 +74,21 @@ When an AI assistant makes an unwanted edit, commit, or git operation, the typic
 **Turn-scope default**: vague requests like "undo that" target only the **latest turn**. The skill never silently expands to session-wide changes — if ambiguity exists, it asks first.
 
 **Requirements**: Python 3.11+, [uv](https://docs.astral.sh/uv/), DuckDB (installed automatically by uv).
+
+### render-report
+
+Turning a finished analysis into slides tends to corrupt it: whoever lays out the deck also starts editing the wording, and a number quietly loses its denominator on the way into a text box. **render-report** splits the two jobs apart. It is the layout executor, never the author:
+
+1. **Contract gate** — `scripts/validate_contract.py` checks the input Markdown against a structure contract before anything is converted: frontmatter `purpose`, a fixed section order, claim blocks that must carry a sample size and a confidence mark, and chart annotations whose `x=` / `y=` name real columns of the table that follows. A violation is returned as a list of offending lines instead of a half-correct deck.
+2. **Verbatim transcription** — wording is copied as-is. No summarizing, no shortening, no reformatting of numbers. Text that does not fit is reported as an overflow (which slide, which element, how much over) for the caller to shorten; the renderer never truncates to make something fit.
+
+Because it takes **no analysis context** — only the Markdown and an output path — any pipeline that emits contract-conforming Markdown can reuse it, and the layout work stays out of the analysis context window.
+
+**Formats**: `pptx` builds slide by slide (one claim per slide, charts from annotated tables, verification detail moved to an appendix). `docx` bulk-imports the Markdown through officecli's `markdown` element, so the CLI — not a model — performs the transcription. `xlsx` is a data appendix (one table per sheet) and is produced only on explicit request.
+
+**Trigger**: ask to convert an analysis report to slides or a document, or invoke `/render-report <md-path> <format>`.
+
+**Requirements**: [officecli](https://d.officecli.ai/), Python 3.11+, [uv](https://docs.astral.sh/uv/).
 
 Copy a skill into your agent's skill folder:
 
@@ -115,6 +131,7 @@ ai-agent-toolkit/
 │   ├── inspect-cc-log/         Skill: SQL views over CC logs for session investigation
 │   ├── compact-cc-log/         Skill: summarize a past or the current CC session
 │   ├── inspect-pi-log/         Skill: SQL views over Pi Coding Agent logs for session investigation
+│   ├── render-report/          Skill: render a contract-conforming report Markdown to pptx/docx/xlsx
 │   └── xml-wf/                 Skill: deterministic XML v2 workflow runner (wfrun)
 ├── docs/
 │   └── skills/                Non-runtime skill docs (user guides, authoring contracts)

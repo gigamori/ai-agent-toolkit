@@ -32,15 +32,43 @@
 
 set -u
 
-# Denial patterns, matched only on lines that also carry "is_error":true —
-# an agent that merely *prints* or *reads* this text does not trip the scan,
-# since that content lands in other entry kinds. First phrase measured on the
-# defect-4 incident transcript (auto-mode classifier). The second is Claude
-# Code's manual-deny wording; kept as a second net, UNVERIFIED against a real
-# manual deny in this repo's logs so far.
+# Denial patterns, matched as FIXED STRINGS (grep -F) and only on lines that
+# also carry "is_error":true — an agent that merely *prints* or *reads* this
+# text does not trip the scan, since that content lands in other entry kinds.
+#
+# Every entry here must be MEASURED on a real transcript, never guessed: a
+# pattern that matches nothing is indistinguishable from a run with no denial,
+# and this script fails open. Keep superseded phrases rather than replacing
+# them — old logs stay scannable and a reverted wording still trips the scan.
+#
+#   1. Auto-mode classifier wording, measured on the defect-4 incident
+#      transcript.
+#   2. Manual-deny wording; UNVERIFIED against a real manual deny in this
+#      repo's logs so far.
+#   3. Current template family, measured 2026-08-12 on two independent
+#      transcripts from the decision-point E2E (both real Bash denials that
+#      patterns 1-2 missed entirely — see the drift note below). The two
+#      observed texts were
+#        "Error: Permission to use Bash has been denied. IMPORTANT: ..."
+#        "Error: Permission to use Bash with command hostname has been denied."
+#      so the tool name and an optional " with command <cmd>" clause both vary.
+#      The pattern is therefore the invariant prefix, deliberately stopping
+#      before the tool name so an Edit/Write/WebFetch denial trips it too. It
+#      is NOT narrowed to Bash: this repo has only ever measured Bash denials,
+#      and over-fitting to that sample is how patterns 1-2 went stale.
+#
+# DRIFT INCIDENT 2026-08-12: patterns 1-2 detected nothing on either of the
+# two denials above while `"is_error":true` still matched, i.e. only the
+# phrasing moved. Both turns happened to self-report `blocked` honestly, so
+# nothing was misclassified — but the machine backstop that exists precisely
+# for a turn that does NOT self-report was inert. `deny_scan_test.sh` stayed
+# green throughout, because fixed fixtures cannot notice the real format
+# changing underneath them. That is why the canary in harness-cc.md is a
+# manual step, and why it is worth running.
 PATTERNS=(
   'Permission for this action was denied'
   "The user doesn't want to proceed"
+  'Permission to use '
 )
 
 PROJECT_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
