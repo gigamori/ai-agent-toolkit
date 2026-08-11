@@ -302,3 +302,129 @@ def test_project_owned_mixed_varchar_and_array_content(tmp_path, monkeypatch):
     assert "answer A" in res.markdown
     # chronological order preserved: g1's turn precedes g2's turn.
     assert res.markdown.index("question A") < res.markdown.index("answer A")
+
+
+# --------------------------------------------------------------------------- #
+# D7-pi — blank the llm-wiki command-invocation turn at extraction.
+#
+# pi persists the EXPANDED prompt template as the user's turn (agent-session.ts
+# expands before persisting; prompt-templates.ts hands back the .md body with
+# frontmatter stripped and trimmed), so an invocation turn's text IS this
+# package's prompt body, first line `# /wiki-file`. Un-blanked, the NEXT run of
+# the same command files those hundreds of lines as conversation content.
+# --------------------------------------------------------------------------- #
+_WIKI_FILE_BODY = (
+    "# /wiki-file\n"
+    "\n"
+    "Arguments: `retry-policy の議論だけ`\n"
+    "\n"
+    "You are the filing orchestrator for the RUNNING session.\n"
+)
+
+
+def test_is_command_invocation_matches_every_shipped_h1():
+    for h1 in pilp._INVOCATION_H1S:
+        turn = {"role": "user", "text": f"{h1}\n\nArguments: ``\n\nbody text\n"}
+        assert pilp._is_command_invocation(turn), h1
+
+
+def test_is_command_invocation_requires_the_user_role():
+    """Two signals, never one (same shape as cc's isMeta AND denylist, D12).
+    An assistant turn quoting the heading is not an invocation."""
+    turn = {"role": "assistant", "text": _WIKI_FILE_BODY}
+    assert not pilp._is_command_invocation(turn)
+
+
+def test_is_command_invocation_ignores_a_mere_mention():
+    """The denylist is FIRST-LINE only. A user talking ABOUT the command — or
+    pasting the heading further down — keeps their turn."""
+    assert not pilp._is_command_invocation(
+        {"role": "user", "text": "how does # /wiki-file decide the cutoff?"})
+    assert not pilp._is_command_invocation(
+        {"role": "user", "text": "context first\n\n# /wiki-file\n"})
+    assert not pilp._is_command_invocation(
+        {"role": "user", "text": "# /wiki-file-ish"})
+    assert not pilp._is_command_invocation({"role": "user", "text": ""})
+
+
+def test_blank_command_invocations_keeps_position_and_role():
+    """BLANK, never drop: the D13 cutoff anchors on the last USER-role turn, so
+    removing the invocation would move the anchor onto the user's last real
+    question and delete the exchange the run exists to file."""
+    turns = [
+        {"role": "user", "text": "real question", "id": "u1"},
+        {"role": "assistant", "text": "real answer", "id": "a1"},
+        {"role": "user", "text": _WIKI_FILE_BODY, "id": "u2"},
+    ]
+    out = pilp._blank_command_invocations(turns)
+
+    assert [t["role"] for t in out] == ["user", "assistant", "user"]
+    assert [t["id"] for t in out] == ["u1", "a1", "u2"]
+    assert out[2]["text"] == ""
+    assert [t["text"] for t in out[:2]] == ["real question", "real answer"]
+    # inputs are not mutated in place
+    assert turns[2]["text"] == _WIKI_FILE_BODY
+
+
+def test_extract_owned_blanks_the_invocation_turn(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
+    sid = "dddddddd-0000-0000-0000-000000000010"
+    _write_session(
+        sessions_dir / "--projD7A--", sid, "2026-08-12T09-00-00-000Z",
+        [
+            _msg("d1", None, "user", "2026-08-12T09:00:00.000Z", "real question"),
+            _msg("d2", "d1", "assistant", "2026-08-12T09:00:01.000Z", "real answer"),
+            _msg("d3", "d2", "user", "2026-08-12T09:00:02.000Z", _WIKI_FILE_BODY),
+        ])
+
+    turns = pilp.extract_owned(sid, ledger=ledger)
+
+    assert [t["text"] for t in turns] == ["real question", "real answer", ""]
+    # the blanked turn keeps its user role -> it is still the cutoff's anchor
+    assert turns[-1]["role"] == "user"
+
+
+def test_extract_turns_batch_blanks_the_invocation_turn(tmp_path, monkeypatch):
+    """The batch (Path B) channel applies the same filter as Path A —
+    /wiki-ingest-sessions ingests logs that contain invocation turns too."""
+    pytest.importorskip("duckdb")
+    sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
+    sid = "dddddddd-0000-0000-0000-000000000011"
+    _write_session(
+        sessions_dir / "--projD7B--", sid, "2026-08-12T09-00-00-000Z",
+        [
+            _msg("e1", None, "user", "2026-08-12T09:00:00.000Z", "kept"),
+            _msg("e2", "e1", "user", "2026-08-12T09:00:01.000Z",
+                 "# /wiki-ingest-sessions\n\nArguments: ``\n\nbody\n"),
+        ])
+
+    out = pilp.extract_turns_batch([sid], ledger=ledger)
+    assert [t["text"] for t in out[sid]] == ["kept", ""]
+
+
+def test_blanked_invocation_never_reaches_the_wiki_or_the_ledger(tmp_path,
+                                                                monkeypatch):
+    """The end-to-end point of D7-pi: a blanked turn is not rendered, not
+    hashed into the ledger, and not counted as ledger_skipped — so the NEXT
+    run cannot file it as conversation content."""
+    pytest.importorskip("duckdb")
+    sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
+    sid = "dddddddd-0000-0000-0000-000000000012"
+    _write_session(
+        sessions_dir / "--projD7C--", sid, "2026-08-12T09-00-00-000Z",
+        [
+            _msg("f1", None, "user", "2026-08-12T09:00:00.000Z", "real question"),
+            _msg("f2", "f1", "assistant", "2026-08-12T09:00:01.000Z", "real answer"),
+            _msg("f3", "f2", "user", "2026-08-12T09:00:02.000Z", _WIKI_FILE_BODY),
+        ])
+
+    wiki_root = tmp_path / "wiki"
+    wiki_root.mkdir()
+    res = pilp.project_owned(wiki_root, sid, ledger=ledger)
+
+    assert "You are the filing orchestrator" not in res.markdown
+    assert "/wiki-file" not in res.markdown
+    assert res.ledger_skipped == 0
+    # only the two real turns are novel; the invocation contributes nothing
+    assert len(res.novel_entries) == 2

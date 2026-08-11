@@ -53,6 +53,13 @@ I/O contract:
       exact dedup -> ledger diff -> markdown. Raises ProjectionError if a
       non-empty-text turn is missing its ``hash`` key (fail-closed).
 
+    Both extraction entry points blank llm-wiki command-invocation turns
+    (D7-pi, ``_blank_command_invocations``) before assigning hashes: pi
+    persists the EXPANDED prompt template as the user's turn, so an
+    un-blanked invocation would be filed as conversation content by the NEXT
+    run of the same command. See that helper for the full rationale, and for
+    the accepted residue (third-party template expansions are not detectable).
+
     project_owned(wiki_root, sid, *, ledger) -> ProjectionResult   # Path A
       Locate the .jsonl file for ``sid``, load it, extract turns on the active
       path, assign hash, then project_from_turns.
@@ -314,6 +321,80 @@ def _active_path(turns: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Dedup + markdown rendering
 # ---------------------------------------------------------------------------
+# D7-pi — blank the llm-wiki command-invocation turn at extraction.
+#
+# WHY THIS EXISTS AT ALL (pi-specific; cc has no equivalent shape):
+# pi persists the EXPANDED prompt template as the user's turn. `prompt()` runs
+# `expandPromptTemplate` on the input BEFORE the message is sent or persisted
+# (agent-session.ts), and `expandPromptTemplate` returns `template.content`
+# with the argument placeholders substituted; `content` is the .md file's body
+# with its frontmatter stripped and `.trim()`ed (prompt-templates.ts ->
+# utils/frontmatter.ts). So typing `/wiki-file` writes this package's whole
+# prompt body into the session log as one user message whose FIRST LINE is
+# that body's H1 — `# /wiki-file`. cc records the typed line instead, which is
+# why cc_log_project strips a LINE (D7) and this module blanks a TURN.
+#
+# WHAT BREAKS WITHOUT IT: the D13 cutoff drops that turn for the run that made
+# it, but a cutoff is a projection-time cut, not a ledger entry — nothing marks
+# the turn as owned. The NEXT invocation therefore sees it as ordinary
+# conversation and files several hundred lines of prompt text as wiki content.
+# Re-running is the normal mode of use for these commands, so it compounds.
+#
+# WHY BLANK RATHER THAN DROP: the D13 cutoff anchors on the last USER-role turn
+# (role only). Removing the turn moves the anchor onto the user's last real
+# question, so the cutoff would then delete the very exchange the run exists to
+# file — the same trap cc's `test_cutoff_anchors_on_an_empty_user_turn_too`
+# pins. Blanking keeps the anchor and costs nothing downstream:
+# `project_from_turns` skips empty-text turns before the hash lookup, so a
+# blanked turn is never rendered, never hashed into the ledger, and never
+# counted as ledger_skipped.
+#
+# DETECTION is a literal first-line denylist ANDed with `role == "user"` — the
+# same "two signals, never one" shape cc uses for isMeta (D12). An H1 is a
+# heading a user could plausibly type, so the rule stays as narrow as it can be
+# while remaining deterministic. NOT covered: a THIRD-PARTY template's
+# expansion. No detector for those exists (pi hands the projector no marker
+# distinguishing expanded template text from typed text), and inventing a
+# heuristic would start dropping real user turns. That residue is accepted.
+#
+# Keep `_INVOCATION_H1S` in sync with the H1 of every prompt this package ships
+# (pi-extensions `src/prompts/*.md`); the pi-side contract test pins the two
+# together so a renamed command cannot silently disarm this filter.
+_INVOCATION_H1S = frozenset({
+    "# /wiki-file",
+    "# /wiki-ingest-docs",
+    "# /wiki-ingest-sessions",
+    "# /wiki-lint",
+    "# /wiki-promote",
+    "# /wiki-reindex",
+})
+
+
+def _is_command_invocation(turn: dict) -> bool:
+    """True when this turn is an expanded llm-wiki command body (D7-pi)."""
+    if (turn.get("role") or "") != "user":
+        return False
+    text = turn.get("text") or ""
+    if not text:
+        return False
+    first_line = text.lstrip().split("\n", 1)[0].strip()
+    return first_line in _INVOCATION_H1S
+
+
+def _blank_command_invocations(turns: "list[dict]") -> "list[dict]":
+    """Return ``turns`` with every command-invocation turn's text emptied.
+
+    Position and role are preserved (the D13 cutoff anchor); only ``text`` is
+    replaced. Returns new dicts for the turns it changes — callers' inputs are
+    never mutated in place.
+    """
+    return [
+        {**turn, "text": ""} if _is_command_invocation(turn) else turn
+        for turn in turns
+    ]
+
+
+# ---------------------------------------------------------------------------
 
 def _compute_hash(role: str, text: str, *, ledger) -> str:
     return ledger.compute_hash(role, text)
@@ -370,7 +451,7 @@ def extract_turns_batch(sids: "list[str]", *, ledger) -> "dict[str, list[dict]]"
             continue  # missing sid -> stays [] (no raise)
         session_file = max(matches, key=lambda p: p.stat().st_mtime)
         raw_turns = _load_and_project(session_file, sid)
-        active = _active_path(raw_turns)
+        active = _blank_command_invocations(_active_path(raw_turns))
         result[sid] = [_assign_hash(turn, ledger=ledger) for turn in active]
     return result
 
@@ -482,7 +563,7 @@ def extract_owned(sid: str, *, ledger) -> "list[dict]":
     """
     session_file = _find_session_file(sid)
     raw_turns = _load_and_project(session_file, sid)
-    active = _active_path(raw_turns)
+    active = _blank_command_invocations(_active_path(raw_turns))
     return [_assign_hash(turn, ledger=ledger) for turn in active]
 
 
