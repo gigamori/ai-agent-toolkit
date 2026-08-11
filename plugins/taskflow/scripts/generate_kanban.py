@@ -109,6 +109,21 @@ def read_text(p: Path) -> str | None:
         return None
 
 
+def iter_dir(p: Path) -> list[Path]:
+    """List ``p``'s entries, tolerating a directory we are not allowed to read.
+
+    Under a sandbox a directory can be traversable but not listable: ``stat``
+    succeeds (so ``is_dir()`` returns True) while the listing raises
+    ``PermissionError``. Every scan site goes through here so one unreadable
+    directory degrades to "empty + warn" instead of aborting the whole board.
+    """
+    try:
+        return list(p.iterdir())
+    except OSError as e:
+        print(f"[kanban] warn: cannot read directory {p}: {e}", file=sys.stderr)
+        return []
+
+
 def parse_frontmatter(content: str) -> dict:
     m = FRONTMATTER_RE.match(content)
     if not m:
@@ -196,7 +211,7 @@ def build_uuid_index(state_dir: Path) -> dict[str, StateEntry]:
     index: dict[str, StateEntry] = {}
     if not state_dir.is_dir():
         return index
-    for f in state_dir.iterdir():
+    for f in iter_dir(state_dir):
         if f.suffix == ".json" and len(f.stem) == 36:
             origin = ""
             project = ""
@@ -234,7 +249,7 @@ def load_tasks(
         sub = tasks_dir / status
         if not sub.is_dir():
             continue
-        for p in sorted(sub.iterdir()):
+        for p in sorted(iter_dir(sub)):
             if not p.is_file() or p.suffix != ".md":
                 continue
             content = read_text(p)
@@ -313,7 +328,7 @@ def build_cc_session_index() -> dict[str, Path]:
         base = base_root / "projects"
         if not base.is_dir():
             continue
-        for proj_dir in base.iterdir():
+        for proj_dir in iter_dir(base):
             if not proj_dir.is_dir():
                 continue
             try:
