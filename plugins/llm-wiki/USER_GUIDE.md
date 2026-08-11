@@ -110,23 +110,30 @@ Optionally attach a link so answers can cite the original:
 /wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc
 ```
 
-What happens: the source is copied into `raw/` (secrets are scrubbed first), then
-Claude reads it and writes or updates the relevant pages. **Before any page is
-written you see a confirmation** and a one-line note of the settings in effect — nothing
-is saved until you approve. If anything goes wrong mid-way, that source's changes are
-rolled back cleanly, as if you'd never run it. When you ingest many files at once, each
-file is handled independently and you get a `succeeded / failed / skipped` summary at
-the end.
+What happens: **you are asked to confirm up front**, before anything is read or copied,
+along with a one-line note of the settings in effect. Point it at a folder or a glob and
+you are asked **once** for the whole sweep — never once per file — because the question
+covers *what goes in*, not what comes out. Decline and nothing has been touched yet:
+there is no transaction to roll back. Approve, and each source is copied into `raw/`
+(secrets are scrubbed first), then Claude reads it and writes or updates the relevant
+pages. If anything goes wrong mid-way, that source's changes are rolled back cleanly, as
+if you'd never run it. When you ingest many files at once, each file is handled in its
+own independent transaction and you get a `succeeded / failed / skipped` summary at the
+end.
+
+A non-interactive caller (`claude -p`, a script) has no way to answer, so it stops with
+nothing written rather than guessing. Use `write_mode=implicit` deliberately if you want
+such a run to proceed.
 
 ```mermaid
 flowchart TD
-    S["Source: file / folder / glob"] --> R["Copied into raw/<br/>(secrets scrubbed)"]
+    S["Source: file / folder / glob"] --> CONF{"Confirm the input set?<br/>(write_mode: explicit)<br/>asked ONCE"}
+    CONF -- decline --> STOP["Nothing touched —<br/>no rollback needed"]
+    CONF -- approve --> R["Copied into raw/<br/>(secrets scrubbed)"]
     R --> READ["Claude reads it and<br/>drafts page updates"]
-    READ --> CONF{"Confirm?<br/>(write_mode: explicit)"}
-    CONF -- approve --> W["Pages written to<br/>wiki/ or wiki/derived/"]
+    READ --> W["Pages written to<br/>wiki/ or wiki/derived/"]
     W --> OK["Catalog and log updated"]
-    CONF -- decline --> RB["Rolled back —<br/>as if never run"]
-    READ -. "error at any step" .-> RB
+    READ -. "error at any step" .-> RB["Rolled back —<br/>as if never run"]
 ```
 
 ### Ingest a session set — `/wiki-ingest-sessions`
@@ -191,6 +198,9 @@ You don't need to know your session id or type a path — `/wiki-file` already k
 conversation you're in. It stops just before your `/wiki-file` line, because that line is
 an instruction to the wiki rather than part of the conversation; everything up to and
 including the previous answer is filed.
+
+With the default `write_mode=explicit`, `/wiki-file` shows you the exact page list first —
+which pages are new and which get updated — and writes nothing until you approve.
 
 **Run it as often as you like.** Each turn is remembered the first time it's filed, so a
 second run only picks up what's new. That also means you can file early, keep working,
