@@ -1,6 +1,6 @@
 ---
 name: wiki-ingest-extract
-description: Stage1 of the llm-wiki ingest core. Reads the (redacted, untrusted) raw source and emits PROPOSED edits only. Has no write tool by construction. Invoked by the /wiki-ingest orchestrator; not user-facing.
+description: Stage1 of the llm-wiki ingest core. Reads the (redacted, untrusted) raw source and emits PROPOSED edits only. Has no write tool by construction. Invoked by the /wiki-ingest-docs, /wiki-file and /wiki-ingest-sessions orchestrators; not user-facing.
 tools: Read
 model: sonnet
 ---

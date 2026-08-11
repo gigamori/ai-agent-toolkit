@@ -6,7 +6,11 @@ Covers the T9 locked spec for the projector:
     >=200-char min-length guard is WITHDRAWN, F4);
   - a cross-record shared prefix collapses (same (role,text) -> one turn);
   - thinking blocks are excluded (S8-c);
-  - a per-turn provenance pointer (uuid/ts) is emitted;
+  - tool_use/tool_result blocks are excluded from the projection SQL (D5);
+  - isMeta is surfaced as a column, and the meta-noise drop is the AND of that
+    flag with the denylist (D12 — the behavior tests live in
+    test_cc_log_project_batch.py, next to `_group_rows_to_turns`);
+  - a per-turn provenance pointer (sid/uuid/ts) is emitted (F5);
   - injected boilerplate is stripped BEFORE the hash so turns differing only by
     boilerplate collapse (F4/U2);
   - the ledger diff drops already-owned turns (F1-b/T4) and the drop is counted
@@ -36,12 +40,11 @@ from llmwiki.ingest import ledger
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
-def _turn(role, uuid, ts, texts, tool_uses=None, order=0):
+def _turn(role, uuid, ts, texts, order=0):
     """Build a synthetic projector `_Turn` (post-fetch, pre-dedup)."""
     return proj._Turn(
         role=role, uuid=uuid, ts=ts,
         text_parts=list(texts),
-        tool_uses=list(tool_uses or []),
         order=order,
     )
 
@@ -341,6 +344,52 @@ def test_boilerplate_does_not_eat_user_bullet_lines_is_known_gap(tmp_path, monke
     assert "then rerun CI" not in res.markdown
 
 
+def test_boilerplate_local_command_wrappers_removed(tmp_path, monkeypatch):
+    # D7: a locally-handled slash command emits three records; only the caveat
+    # one carries isMeta, so the wrapper ELEMENTS strip here unconditionally
+    # (same class as <system-reminder>).
+    text = ("<command-name>/model</command-name>\n"
+            "            <command-message>model</command-message>\n"
+            "            <command-args>sonnet</command-args>")
+    turns = [_turn("user", "u1", "t1", [text], order=0),
+             _turn("user", "u2", "t2",
+                   ["<local-command-stdout>Set model to claude-sonnet-5"
+                    "</local-command-stdout>"], order=1)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "<command-name>" not in res.markdown
+    assert "<local-command-stdout>" not in res.markdown
+    # Both records were nothing but wrappers -> stripped to empty -> no turns.
+    assert "## Turn" not in res.markdown
+
+
+def test_boilerplate_wiki_file_invocation_line_removed(tmp_path, monkeypatch):
+    # D7: D6's cutoff is positional and only protects the CURRENT run; the
+    # invocation line must be excluded by CONTENT so it stays out on every
+    # later run too.
+    turns = [
+        _turn("user", "u1", "t1", ["/wiki-file"], order=0),
+        _turn("user", "u2", "t2", ["/wiki-file 最後の回答だけ"], order=1),
+        _turn("user", "u3", "t3", ["/llm-wiki:wiki-file retry-policy の議論だけ"],
+              order=2),
+    ]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "/wiki-file" not in res.markdown
+    assert "## Turn" not in res.markdown
+
+
+def test_boilerplate_wiki_file_pattern_does_not_eat_surrounding_content(
+        tmp_path, monkeypatch):
+    # The strip is line-anchored: a mention of the command inside real prose
+    # must survive, and only the standalone invocation line goes.
+    text = ("この設計では /wiki-file を新設する。\n"
+            "/wiki-file\n"
+            "上の行は起動行なので除去される。")
+    turns = [_turn("user", "u1", "t1", [text], order=0)]
+    res = _project(monkeypatch, turns, tmp_path)
+    assert "この設計では /wiki-file を新設する。" in res.markdown
+    assert "上の行は起動行なので除去される。" in res.markdown
+
+
 def test_boilerplate_mode_header_block_does_not_eat_real_content(tmp_path, monkeypatch):
     # A user turn that merely starts with the word "Mode" must not be
     # swallowed by the role-less header's literal match.
@@ -352,14 +401,30 @@ def test_boilerplate_mode_header_block_does_not_eat_real_content(tmp_path, monke
 
 
 # --------------------------------------------------------------------------- #
-# thinking exclusion (S8-c): the projection SQL never selects thinking blocks
+# thinking exclusion (S8-c) + tool exclusion (D5): the projection SQL selects
+# text blocks only
 # --------------------------------------------------------------------------- #
-def test_thinking_excluded_from_projection_sql():
-    """S8-c is enforced at the SQL level: block_type IN
-    ('text','tool_use','tool_result') — 'thinking' is never fetched."""
+def test_thinking_and_tool_blocks_excluded_from_projection_sql():
+    """S8-c + D5 are enforced at the SQL level: block_type = 'text' only —
+    neither 'thinking' nor 'tool_use'/'tool_result' is ever fetched."""
     sql = proj._PROJECT_SQL
-    assert "block_type IN ('text', 'tool_use', 'tool_result')" in sql
+    assert "block_type = 'text'" in sql
     assert "thinking" not in sql
+    assert "tool_use" not in sql
+    assert "tool_result" not in sql
+
+
+def test_ismeta_surfaced_as_column_not_filtered_in_sql():
+    """D12: the SQL SURFACES isMeta as a column (read off the L0 cc_record raw
+    JSON); it must NOT filter on it — the drop verdict is the AND of that flag
+    with the Python-side denylist, because the flag alone also marks genuine
+    human steering."""
+    sql = proj._PROJECT_SQL
+    assert "isMeta" in sql
+    assert "cc_record" in sql
+    assert "AS is_meta" in sql
+    # no blanket exclusion of meta records at the SQL layer
+    assert "NOT IN" not in sql
 
 
 def test_thinking_leak_absent_in_markdown(tmp_path, monkeypatch):
@@ -372,13 +437,15 @@ def test_thinking_leak_absent_in_markdown(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# provenance pointer (uuid/ts) is emitted per surviving turn
+# provenance pointer (sid/uuid/ts) is emitted per surviving turn
 # --------------------------------------------------------------------------- #
 def test_provenance_pointer_present(tmp_path, monkeypatch):
     turns = [_turn("assistant", "uuid-XYZ", "2026-07-02 12:34:56",
                    ["answer body"], order=0)]
     res = _project(monkeypatch, turns, tmp_path)
-    assert "<!-- provenance: uuid=uuid-XYZ ts=2026-07-02 12:34:56 -->" in res.markdown
+    # F5: sid is now part of the pointer (was uuid/ts only).
+    assert ("<!-- provenance: sid=sid-under-test uuid=uuid-XYZ "
+            "ts=2026-07-02 12:34:56 -->") in res.markdown
     # novel_entries record the sid + per-turn uuid/ts (first-ingested ownership).
     assert res.novel_entries[0]["first_sid"] == "sid-under-test"
     assert res.novel_entries[0]["first_uuid"] == "uuid-XYZ"

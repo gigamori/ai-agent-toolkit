@@ -79,31 +79,31 @@ Claude が `active wiki: <path>` のような行をそっと表示するので�
 
 ```mermaid
 flowchart LR
-    ING["ソースを取り込む<br/>/wiki-ingest"] --> WIKI[("あなたの wiki<br/>Markdown ページ")]
+    ING["ドキュメントを取り込む<br/>/wiki-ingest-docs"] --> WIKI[("あなたの wiki<br/>Markdown ページ")]
+    FILE["この会話を filing<br/>/wiki-file"] --> WIKI
     WIKI --> ASK["質問する<br/>(自然言語)"]
-    ASK --> SAVE["答えを保存<br/>(任意)"]
-    SAVE --> WIKI
+    ASK --> FILE
     WIKI --> LINT["健全に保つ<br/>/wiki-lint"]
     WIKI --> VIEW["閲覧する<br/>/wiki-view"]
     WIKI --> PROM["昇格する<br/>/wiki-promote"]
     PROM --> WIKI
 ```
 
-### ソースを取り込む — `/wiki-ingest`
+### ドキュメントを取り込む — `/wiki-ingest-docs`
 
-ファイル・フォルダ・クォートした glob を指定します：
+コマンドは**何を入れるか**で命名されています：ドキュメントか、今している会話か、他セッションの
+ログか。ドキュメントならファイル・フォルダ・クォートした glob を指定します：
 
 ```
-/wiki-ingest ./docs/rfc-routing.md          # 1 つのドキュメント
-/wiki-ingest ./logs/session.jsonl           # Claude Code のセッションログ
-/wiki-ingest "./docs/**/*.md"               # 複数ファイルを一括（glob はクォート！）
-/wiki-ingest ./docs/                         # フォルダまるごと（テキストファイルのみ）
+/wiki-ingest-docs ./docs/rfc-routing.md     # 1 つのドキュメント
+/wiki-ingest-docs "./docs/**/*.md"          # 複数ファイルを一括（glob はクォート！）
+/wiki-ingest-docs ./docs/                   # フォルダまるごと（テキストファイルのみ）
 ```
 
 答えが原典を引用できるよう、リンクを添えることもできます：
 
 ```
-/wiki-ingest ./docs/rfc.md external=https://example.com/rfc
+/wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc
 ```
 
 何が起きるか：ソースはまず `raw/` にコピーされ（先に秘密情報が除去されます）、次に Claude が
@@ -125,8 +125,8 @@ flowchart TD
 
 ### セッション集合を取り込む — `/wiki-ingest-sessions`
 
-`/wiki-ingest` は一度に 1 ソースを扱います。**解決されたセッション集合の全 Claude Code セッション**を
-まとめて取り込みたいときは、そのセッション集合版の姉妹コマンドを使います：
+`/wiki-file` は今いる会話を扱います。**解決されたセッション集合の全 Claude Code セッション**を
+（別の日のものも含めて）まとめて取り込みたいときは、セッション集合版のコマンドを使います：
 
 ```
 /wiki-ingest-sessions                 # 解決済み wiki scope（workspace/pj/cwd）に追従
@@ -148,7 +148,7 @@ cwd-scoped wiki は従来どおり現在プロジェクトのセッションデ�
 
 - **incremental で、再実行しても安全です。** 各 turn は初回に file した時点で（小さな台帳＝ledger に）
   記憶されるので、プロジェクトの成長に伴って再実行しても *新しい* turn だけが file されます — 同じ
-  turn が 2 度 file されることはなく、`/wiki-ingest` と `/wiki-ingest-sessions` を跨いでも同じです。
+  turn が 2 度 file されることはなく、`/wiki-file` と `/wiki-ingest-sessions` を跨いでも同じです。
   サマリの **ledger-skipped turns** 数が既に取り込み済みだった分を教えてくれるので、再実行が無音の
   no-op になることはありません。
 - **`--pj`（および `--workspace`）は taskflow がタグ付けした分だけが対象です。** `--pj <name>` を
@@ -167,21 +167,30 @@ Claude はページ全体を読んで答え、**各要点をページパスで�
 （`wiki/…`）由来か統合ページ（`wiki/derived/…`）由来かが分かります。質問は何も変更しません —
 読取専用です。
 
-### 答えを保存する — 残したいとき
+### この会話を filing する — `/wiki-file`
 
-答えは、頼まないかぎり保存されません。方法は 2 つ：
+頼まないかぎり何も保存されません。一番よく残したくなるのは今しがたの会話なので、それには専用の
+コマンドがあります：
 
-- そう言うだけ：*「それをページとして保存して」*。`wiki/derived/` に統合として保存されます。
-- または質問のどこかにマーカーを入れて確定的に強制：
+```
+/wiki-file                          # この会話を filing
+/wiki-file 最後の回答だけ             # 絞り込む
+/wiki-file retry-policy の話だけ      # トピックで絞る
+```
 
-  ```
-  retry backoff について何を決めた？ llm-wiki:file
-  retry backoff について何を決めた？ llm-wiki:file=retry-policy
-  ```
+セッション ID もパスも入力不要です — `/wiki-file` は自分がどの会話にいるかを既に知っています。
+`/wiki-file` の行の直前で打ち切られます。その行は会話の一部ではなく wiki への指示だからです。
+直前の回答までは filing されます。
 
-  `=retry-policy` を付けるとページ名は `wiki/derived/retry-policy.md` に固定され、付けなければ
-  Claude が名前を選びます。マーカーは確認プロンプトなしで保存します（明示的に頼んだので）が、
-  同じ安全チェックはそのまま適用されます。
+**何度でも実行できます。** 各 turn は最初に filing された時点で記憶されるので、2 回目の実行は
+新しい分だけを拾います。早めに filing して作業を続け、後でもう一度 filing しても重複しません。
+
+コマンド後の文字列は *どの turn を* filing するかを絞ります。内容を変えることはできません：
+Claude にできるのは turn ごと落とすことだけで、エンジンが残った各 turn の指紋を再照合するため、
+filing された turn は必ず本物です。
+
+あるいは会話の流れで頼んでも構いません：*「それをページとして保存して」*。他の filing と同じく
+`wiki/derived/` に統合として保存されます。
 
 ### 健全に保つ — `/wiki-lint`
 
@@ -303,9 +312,9 @@ pj 連携により Claude は wiki を自動で *読み* ますが、セッシ�
 
 ## 6. 便利なレシピ
 
-- **docs ツリーを一括取り込み：** `/wiki-ingest "./docs/**/*.md"` — シェルが展開しないよう glob は
+- **docs ツリーを一括取り込み：** `/wiki-ingest-docs "./docs/**/*.md"` — シェルが展開しないよう glob は
   必ずクォート。wiki 内部ファイルは自動で除外されます。
-- **メモやログを含むフォルダを取り込み：** `/wiki-ingest ./notes/` — フォルダはテキストファイル
+- **メモやログを含むフォルダを取り込み：** `/wiki-ingest-docs ./notes/` — フォルダはテキストファイル
   （`.md .markdown .txt .text .json .jsonl`）を拾い、画像やバイナリはスキップします。
 - **大きな wiki の全文検索を有効化（任意）：** 次節を参照。
 

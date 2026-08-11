@@ -83,31 +83,31 @@ you're in. Outside a wiki, the plugin stays completely out of your way.
 
 ```mermaid
 flowchart LR
-    ING["Add a source<br/>/wiki-ingest"] --> WIKI[("Your wiki<br/>Markdown pages")]
+    ING["Add a document<br/>/wiki-ingest-docs"] --> WIKI[("Your wiki<br/>Markdown pages")]
+    FILE["File this conversation<br/>/wiki-file"] --> WIKI
     WIKI --> ASK["Ask questions<br/>(plain language)"]
-    ASK --> SAVE["Save an answer<br/>(optional)"]
-    SAVE --> WIKI
+    ASK --> FILE
     WIKI --> LINT["Keep healthy<br/>/wiki-lint"]
     WIKI --> VIEW["Browse<br/>/wiki-view"]
     WIKI --> PROM["Promote<br/>/wiki-promote"]
     PROM --> WIKI
 ```
 
-### Add a source — `/wiki-ingest`
+### Add a document — `/wiki-ingest-docs`
 
-Point it at a file, a folder, or a quoted glob:
+Each command is named after **what you are putting in**: a document, this conversation,
+or other sessions' logs. For a document, point it at a file, a folder, or a quoted glob:
 
 ```
-/wiki-ingest ./docs/rfc-routing.md          # one document
-/wiki-ingest ./logs/session.jsonl           # a Claude Code session log
-/wiki-ingest "./docs/**/*.md"               # many files at once (quote the glob!)
-/wiki-ingest ./docs/                         # a whole folder (text files only)
+/wiki-ingest-docs ./docs/rfc-routing.md     # one document
+/wiki-ingest-docs "./docs/**/*.md"          # many files at once (quote the glob!)
+/wiki-ingest-docs ./docs/                   # a whole folder (text files only)
 ```
 
 Optionally attach a link so answers can cite the original:
 
 ```
-/wiki-ingest ./docs/rfc.md external=https://example.com/rfc
+/wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc
 ```
 
 What happens: the source is copied into `raw/` (secrets are scrubbed first), then
@@ -131,8 +131,9 @@ flowchart TD
 
 ### Ingest a session set — `/wiki-ingest-sessions`
 
-`/wiki-ingest` takes one source at a time. When you want to pull in **every Claude Code
-session of a resolved set** at once, use its session-set sibling:
+`/wiki-file` takes the conversation you are in. When you want to pull in **every Claude
+Code session of a resolved set** at once — including ones from other days — use the
+session-set command:
 
 ```
 /wiki-ingest-sessions                 # follows the resolved wiki scope (workspace/pj/cwd)
@@ -155,7 +156,7 @@ Two things worth knowing:
 
 - **It's incremental and safe to re-run.** Each turn is remembered the first time it's
   filed (in a small ledger), so running it again as the project grows only files the
-  *new* turns — the same turn is never filed twice, even across `/wiki-ingest` and
+  *new* turns — the same turn is never filed twice, even across `/wiki-file` and
   `/wiki-ingest-sessions`. The summary's **ledger-skipped turns** count tells you how much
   was already there, so a re-run is never a silent no-op.
 - **`--pj` (and `--workspace`) cover only what taskflow tagged.** With `--pj <name>`, the
@@ -175,23 +176,32 @@ Claude reads across your pages and answers, **citing each point by page path** s
 can see whether it came from an established (`wiki/…`) or a synthesized (`wiki/derived/…`)
 page. Asking never changes anything — it's read-only.
 
-### Save an answer — when you want to keep it
+### File this conversation — `/wiki-file`
 
-Answers aren't saved unless you ask. Two ways:
+Nothing is saved unless you ask. The most common thing you'll want to keep is the
+conversation you just had, so that has its own command:
 
-- Just say so: *"file that as a page."* It's saved under `wiki/derived/` as synthesis.
-- Or force it deterministically by adding a marker anywhere in your question:
+```
+/wiki-file                          # file this conversation
+/wiki-file just the last answer     # narrow it down
+/wiki-file the retry-policy part    # narrow by topic
+```
 
-  ```
-  what did we decide about retry backoff? llm-wiki:file
-  what did we decide about retry backoff? llm-wiki:file=retry-policy
-  ```
+You don't need to know your session id or type a path — `/wiki-file` already knows which
+conversation you're in. It stops just before your `/wiki-file` line, because that line is
+an instruction to the wiki rather than part of the conversation; everything up to and
+including the previous answer is filed.
 
-  With `=retry-policy` the page is named `wiki/derived/retry-policy.md`; without a name,
-  Claude picks one. The marker saves without a confirmation prompt (you asked for it
-  explicitly), but the same safety checks still apply. The marker is used alongside a
-  question — behavior of a marker-alone turn (a marker with no question) is not
-  guaranteed.
+**Run it as often as you like.** Each turn is remembered the first time it's filed, so a
+second run only picks up what's new. That also means you can file early, keep working,
+and file again later — nothing is duplicated.
+
+Text after the command narrows *which turns* get filed. It cannot change what they say:
+Claude may only drop whole turns, and the engine verifies this by re-checking each
+remaining turn's fingerprint, so a filed turn is always the real one.
+
+Or just say so in passing: *"file that as a page."* It's saved under `wiki/derived/` as
+synthesis, the same as any other filing.
 
 ### Keep it healthy — `/wiki-lint`
 
@@ -316,9 +326,9 @@ so you can run it as often as you like without duplicating anything (see §4).
 
 ## 6. Handy recipes
 
-- **Bulk-import a docs tree:** `/wiki-ingest "./docs/**/*.md"` — always quote the glob so
+- **Bulk-import a docs tree:** `/wiki-ingest-docs "./docs/**/*.md"` — always quote the glob so
   your shell doesn't expand it. Wiki-internal files are skipped automatically.
-- **Import a folder including notes and logs:** `/wiki-ingest ./notes/` — folders pick up
+- **Import a folder including notes and logs:** `/wiki-ingest-docs ./notes/` — folders pick up
   text files (`.md .markdown .txt .text .json .jsonl`) and skip images and binaries.
 - **Turn on full-text search for a big wiki (optional):** see the next section.
 

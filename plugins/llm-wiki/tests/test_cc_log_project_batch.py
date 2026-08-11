@@ -8,10 +8,10 @@ Covers the R1 (case-A scan-collapse) refactor of the projector:
     `project_from_turns` uses THAT hash (single source of truth) — the same
     (role, text) collapses, a ledger-seen hash is dropped and counted;
   - `_group_rows_to_turns` groups projection rows (session_id column present) by
-    record_uuid, pairing tool_result under its tool_use, thinking excluded by the
-    SQL (rows never include it);
-  - `_turn_to_dict` is JSON-safe (round-trips through json.dumps/loads) and its
-    tool_input normalization keeps `_render_tool_use` output identical;
+    record_uuid; rows are text-only (D5) by the SQL, so no
+    tool_use/tool_result/thinking row ever reaches this function, and the D12
+    meta-noise drop (is_meta AND denylist) is applied at record grain here;
+  - `_turn_to_dict` is JSON-safe (round-trips through json.dumps/loads);
   - `extract_turns_batch` splits multi-sid rows per sid (via a monkeypatched row
     source so the test is hermetic — the real DuckDB scan is covered by the E2E
     parity check on the live corpus, not here).
@@ -30,21 +30,19 @@ from llmwiki.ingest import ledger
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
-def _turn(role, uuid, ts, texts, tool_uses=None, order=0):
+def _turn(role, uuid, ts, texts, order=0):
     return proj._Turn(
         role=role, uuid=uuid, ts=ts,
         text_parts=list(texts),
-        tool_uses=list(tool_uses or []),
         order=order,
     )
 
 
-# a projection row matches _PROJECT_COLUMNS order:
-#   record_uuid, session_id, role, ts_str, block_index, block_type, text,
-#   tool_name, tool_input, tool_use_id, tool_result_content
-def _row(uuid, sid, role, ts, bi, btype, text=None, tool_name=None,
-         tool_input=None, tuid=None, trc=None):
-    return (uuid, sid, role, ts, bi, btype, text, tool_name, tool_input, tuid, trc)
+# a projection row matches _PROJECT_COLUMNS order (D5: text-only, no tool cols;
+# D12: is_meta surfaced as the trailing column):
+#   record_uuid, session_id, role, ts_str, block_index, block_type, text, is_meta
+def _row(uuid, sid, role, ts, bi, btype, text=None, is_meta=False):
+    return (uuid, sid, role, ts, bi, btype, text, is_meta)
 
 
 # --------------------------------------------------------------------------- #
@@ -106,49 +104,20 @@ def test_project_from_turns_ledger_diff_drops_and_counts(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# _turn_to_dict JSON-safety + tool_input normalization
+# _turn_to_dict JSON-safety
 # --------------------------------------------------------------------------- #
 def test_turn_to_dict_is_json_safe():
-    t = _turn("assistant", "a1", "ts", ["did a thing"],
-              tool_uses=[("Bash", '{"command": "ls"}', "tuid1", "output")])
+    t = _turn("assistant", "a1", "ts", ["did a thing"])
     d = proj._turn_to_dict(t, ledger=ledger)
     # round-trips through JSON unchanged
     assert json.loads(json.dumps(d, ensure_ascii=False)) == d
-    assert d["tool_uses"][0]["name"] == "Bash"
-    assert d["tool_uses"][0]["tool_input"] == '{"command": "ls"}'
-    assert d["tool_uses"][0]["result"] == "output"
-
-
-def test_turn_to_dict_tool_input_dict_becomes_json_string():
-    # a dict tool_input (rather than a DuckDB json string) is dumped to a string
-    t = _turn("assistant", "a1", "ts", [""],
-              tool_uses=[("Write", {"file_path": "/x/y.md"}, "t2", "")])
-    d = proj._turn_to_dict(t, ledger=ledger)
-    ti = d["tool_uses"][0]["tool_input"]
-    assert isinstance(ti, str)
-    assert json.loads(ti) == {"file_path": "/x/y.md"}
-    # and _render_tool_use produces the same display from the normalized string
-    assert proj._render_tool_use("Write", ti) == "Write: /x/y.md"
+    assert set(d.keys()) == {"role", "uuid", "ts", "projected_text", "hash"}
 
 
 # --------------------------------------------------------------------------- #
-# _group_rows_to_turns: record_uuid grouping, tool_result pairing, ordering
+# _group_rows_to_turns: record_uuid grouping, ordering (D5: text rows only —
+# tool_use/tool_result never reach this function, the SQL excludes them)
 # --------------------------------------------------------------------------- #
-def test_group_rows_pairs_tool_result_under_tool_use():
-    rows = [
-        _row("a1", "s", "assistant", "10:00:00", 0, "text", text="calling"),
-        _row("a1", "s", "assistant", "10:00:00", 1, "tool_use",
-             tool_name="Bash", tool_input='{"command":"ls"}', tuid="T1"),
-        _row("u1", "s", "user", "10:00:01", 0, "tool_result", tuid="T1",
-             trc="file listing"),
-    ]
-    turns = proj._group_rows_to_turns(rows)
-    # the tool_result row is folded under the tool_use, NOT a standalone turn
-    assert [t.uuid for t in turns] == ["a1"]
-    assert turns[0].tool_uses[0][0] == "Bash"
-    assert turns[0].tool_uses[0][3] == "file listing"  # paired result
-
-
 def test_group_rows_multi_text_same_uuid_concatenates():
     # the synthesized replay record shape: one uuid, many text blocks (R2 grain)
     rows = [
@@ -159,6 +128,79 @@ def test_group_rows_multi_text_same_uuid_concatenates():
     turns = proj._group_rows_to_turns(rows)
     assert len(turns) == 1  # ONE record-grain turn (not split into 3)
     assert turns[0].text_parts == ["USER: hi", "ASSISTANT: hello", "USER: bye"]
+
+
+# --------------------------------------------------------------------------- #
+# D12: the meta-noise drop is the AND of the is_meta flag and the denylist.
+# Both halves are load-bearing — see _META_NOISE_PATTERNS.
+# --------------------------------------------------------------------------- #
+def test_meta_noise_record_dropped_when_flag_and_pattern_both_hold():
+    """The F1 case: an expanded SKILL body is a user-role TEXT record carrying
+    isMeta=true — it must not become a turn."""
+    rows = [
+        _row("u1", "s", "user", "10:00:00", 0, "text",
+             text="pj:llm-wiki /progress start some-task"),
+        _row("m1", "s", "user", "10:00:01", 0, "text", is_meta=True,
+             text="Base directory for this skill: c:\\plugins\\taskflow\\skills\\progress\n\n# /progress\n..."),
+    ]
+    turns = proj._group_rows_to_turns(rows)
+    assert [t.uuid for t in turns] == ["u1"]
+
+
+def test_meta_flag_without_denylist_match_is_kept():
+    """Human steering typed mid-turn also carries isMeta=true (measured), so the
+    flag ALONE must never drop a record."""
+    rows = [
+        _row("m1", "s", "user", "10:00:00", 0, "text", is_meta=True,
+             text="mode:survey 1の実測だけやれ"),
+        _row("m2", "s", "user", "10:00:01", 0, "text", is_meta=True,
+             text="The coordinator sent a message while you were working:\n"
+                  "追加検証を実施せよ。"),
+    ]
+    turns = proj._group_rows_to_turns(rows)
+    assert [t.uuid for t in turns] == ["m1", "m2"]
+
+
+def test_denylist_match_without_meta_flag_is_kept():
+    """A user who PASTES a noise-shaped string is not the harness: without the
+    flag the denylist must not fire."""
+    rows = [
+        _row("u1", "s", "user", "10:00:00", 0, "text", is_meta=False,
+             text="Stop hook feedback: why does this line keep appearing?"),
+    ]
+    turns = proj._group_rows_to_turns(rows)
+    assert [t.uuid for t in turns] == ["u1"]
+
+
+@pytest.mark.parametrize("noise", [
+    "Base directory for this skill: /x/y",
+    "Skill /progress is already loaded above; instructions unchanged. Arguments: start",
+    "(Re-invocation of /officecli — the skill instructions were previously loaded.)",
+    "<local-command-caveat>Caveat: ...</local-command-caveat>",
+    "Stop hook feedback:\n[progress capture] session=abc",
+    "Your tool call was malformed and could not be parsed. Please retry.",
+    "The previous response failed to produce a valid tool call. Please retry the tool call now.",
+    "Continue from where you left off.",
+    "[Your previous response had no visible output. Please continue.]",
+    "[Image: original 3259x406, displayed at 2000x249.]",
+])
+def test_is_meta_noise_matches_every_verified_harness_shape(noise):
+    assert proj._is_meta_noise(noise) is True
+
+
+@pytest.mark.parametrize("kept", [
+    "The coordinator sent a message while you were working:\n読み取り専用で検証せよ。",
+    "続き: progress-router の結果を受けて Step 4 へ進む",
+    "mode:survey 1の実測だけやれ",
+    "<task-notification>\n<task-id>abc</task-id>\n<result>real content</result>",
+    # A local command's other two records carry NO isMeta flag (measured), so
+    # they are NOT this denylist's job — D7's _BOILERPLATE_PATTERNS strips them.
+    "<command-name>/model</command-name>",
+    "<local-command-stdout>Set model to claude-sonnet-5</local-command-stdout>",
+    "",
+])
+def test_is_meta_noise_leaves_content_bearing_shapes_alone(kept):
+    assert proj._is_meta_noise(kept) is False
 
 
 # --------------------------------------------------------------------------- #

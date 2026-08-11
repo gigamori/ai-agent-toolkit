@@ -8,17 +8,24 @@ Projects a SINGLE session id (plus its agent children — fork-child records car
 the parent session_id, verified 308/308, so filtering by session_id co-locates
 them) out of the vendored inspect-cc-log DuckDB views, then:
 
-  1. groups the block rows into chronological turns (text + tool_use + paired
-     tool_result), EXCLUDING thinking blocks (S8-c);
-  2. strips the stable injected boilerplate markers at the PROJECTION
+  1. selects TEXT blocks only (D5 — tool_use/tool_result are excluded at the
+     SQL level, not rendered; thinking is excluded by the same filter, S8-c),
+     surfacing each record's ``isMeta`` flag as a column;
+  2. groups the surviving blocks into chronological turns (one turn per
+     ``record_uuid``), dropping a record when ``isMeta`` is true AND its text
+     matches the ``_META_NOISE_PATTERNS`` denylist (D12 — expanded SKILL
+     bodies, retry/continue nudges, local-command wrappers, Stop-hook
+     feedback). The flag alone is NOT sufficient: it also marks genuine human
+     steering typed mid-turn (measured), which must survive;
+  3. strips the stable injected boilerplate markers at the PROJECTION
      normalization stage (F4/U2 — projector side, NOT redaction=D16 which stays
      in frontends.fe_b_prime);
-  3. length-independent EXACT dedup within the sid (F4 — the ≥200-char
+  4. length-independent EXACT dedup within the sid (F4 — the ≥200-char
      min-length guard is WITHDRAWN; identical (role,text) turns collapse to one);
-  4. ledger diff (F1-b/T4) — drops turns whose ``ledger.compute_hash(role,text)``
+  5. ledger diff (F1-b/T4) — drops turns whose ``ledger.compute_hash(role,text)``
      is already in ``ledger.read_seen_hashes(wiki_root)`` (cross-path / cross-run
      idempotency);
-  5. renders markdown for the SURVIVING novel turns (text block + provenance
+  6. renders markdown for the SURVIVING novel turns (text block + provenance
      pointer sid/uuid/ts) in the shape frontends.fe_b_prime expects.
 
 DEDUP UNIT (R2 / F-M1): the dedup + ledger unit is the CC RECORD grain
@@ -45,7 +52,7 @@ consistent; we hash the projected text. The hash is delegated to
 ``ledger.compute_hash`` (single source of truth — NOT reimplemented here).
 
 Two projection entry points (R1 / F-H1 — Path B scan-collapse, case A):
-    Path A (single session, /wiki-ingest) uses ``project_owned`` — one DuckDB
+    Path A (single session, /wiki-file) uses ``project_owned`` — one DuckDB
     scan is fine for one sid.
     Path B (whole project, /wiki-ingest-sessions) must NOT re-scan the whole
     ~/.claude/projects corpus once per sid. So the EXPENSIVE part (the DuckDB
@@ -59,10 +66,10 @@ Two projection entry points (R1 / F-H1 — Path B scan-collapse, case A):
 
 I/O contract:
     extract_turns_batch(sids) -> {sid: [turn_dict, ...]}     # R1: one scan, all sids
-      turn_dict = {role, uuid, ts, projected_text, tool_uses, hash} — the
-      boilerplate-stripped, hash-carrying turn (hash = ledger.compute_hash(role,
-      projected_text), assigned HERE so batch and begin agree on the F5 hash).
-      tool_uses is a list of {name, tool_input, tuid, result} dicts (JSON-safe).
+      turn_dict = {role, uuid, ts, projected_text, hash} — the boilerplate-stripped,
+      hash-carrying turn (hash = ledger.compute_hash(role, projected_text), assigned
+      HERE so batch and begin agree on the F5 hash). No tool fields (D5): the
+      projection is text-only.
 
     project_from_turns(wiki_root, sid, turns, *, ledger) -> ProjectionResult
       Consumes the extracted turns (does NOT open DuckDB): within-sid exact dedup
@@ -84,15 +91,15 @@ I/O contract:
            }
       Raises ProjectionError on DuckDB / read failure.
 
-The markdown shape mirrors the OLD extract_cc_log output (``## Turn N [ts]``,
-``**Human**:``, ``**Assistant**:``, ``**Tool: <name>**`` + ```tool-result```)
-so fe_b_prime's redact→hash→raw/derived/<hash>.md contract is unchanged, with a
-per-turn provenance pointer line appended (sid/uuid/ts).
+The markdown shape mirrors the OLD extract_cc_log output's text turns
+(``## Turn N [ts]``, ``**Human**:``, ``**Assistant**:``) so fe_b_prime's
+redact→hash→raw/derived/<hash>.md contract is unchanged; the tool-call lines
+that extractor also emitted are gone (D5). A per-turn provenance pointer line
+is appended (sid/uuid/ts).
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -139,11 +146,37 @@ class ProjectionError(Exception):
 #     since the 2026-07-30 role-less split: "Two response axes:" (role
 #     present) or "Mode = HOW you process..." (no role — role-less turns
 #     never see Role-axis text at all).
+#   - CC harness: the `<command-name>` / `<command-args>` /
+#     `<local-command-stdout>` wrapper elements a locally-handled slash command
+#     emits, and the `/wiki-file` invocation line itself (D7).
 # The whole injected block is stripped, not just the marker line.
 
 # system-reminder is an XML-ish wrapper; strip the whole element (DOTALL).
 _RE_SYSTEM_REMINDER = re.compile(
     r"<system-reminder>.*?</system-reminder>", re.DOTALL)
+
+# Local-command wrapper elements (D7). A slash command that the CLI handles
+# locally (`/model`, …) emits THREE records; only `<local-command-caveat>`
+# carries `isMeta`, so the other two cannot be caught by D12's flag-gated
+# denylist (measured). They are harness wrapper ELEMENTS of exactly the
+# `<system-reminder>` class, so they strip here — unconditionally, by element,
+# no role or flag condition. A record that is nothing but these wrappers strips
+# to empty and is dropped by the empty-turn guard.
+_RE_LOCAL_COMMAND = re.compile(
+    r"<(command-name|command-message|command-args|local-command-stdout"
+    r"|local-command-stderr)>.*?</\1>", re.DOTALL)
+
+# The `/wiki-file` invocation line (D7). D6's cutoff is POSITIONAL, so it only
+# protects the CURRENT run: on the next invocation the previous run's
+# instruction turn is no longer last and — never having been filed — is not in
+# the ledger either, so it would enter the payload as a novel turn. A slash
+# command is a stable matchable string (measured: the typed invocation sits as
+# PLAIN TEXT inside the user turn, with no `<command-name>` wrapper for skill
+# commands), so content-based exclusion makes it permanent where D6's is
+# positional. Scope is the invocation LINE only — the expanded SKILL body is a
+# separate isMeta record and is D12's job.
+_RE_WIKI_FILE_INVOCATION = re.compile(
+    r"^[ \t]*/(?:llm-wiki:)?wiki-file(?:[ \t][^\n]*)?$", re.MULTILINE)
 
 # HTML-comment markers injected by taskflow (single-line comments).
 _RE_TASKFLOW_COMMENT = re.compile(
@@ -219,6 +252,8 @@ _BOILERPLATE_PATTERNS = (
     _RE_TASKFLOW_COMMENT,
     _RE_PROGRESS_SESSION,
     _RE_MODE_BLOCK,
+    _RE_LOCAL_COMMAND,
+    _RE_WIKI_FILE_INVOCATION,
 )
 
 
@@ -241,17 +276,42 @@ def strip_boilerplate(text: str) -> str:
 
 
 # --- projection: sid -> ordered turns ------------------------------------------
-# One row per content block of the sid (and its agent children), chronological.
-# thinking blocks are EXCLUDED here (S8-c) by not selecting block_type='thinking'
-# — we take text / tool_use / tool_result only. record_uuid + role + ts group
-# blocks into turns; block_index preserves intra-record order.
+# One row per TEXT content block of the sid (and its agent children), chronological.
+# D5: only block_type='text' is selected — tool_use/tool_result never reach this
+# query. thinking blocks are EXCLUDED too (S8-c), unreachable via the same filter.
+# record_uuid + role + ts group blocks into turns; block_index preserves
+# intra-record order.
 #
+# D12: `isMeta` is SURFACED as a column here (it is not a cc_views.sql column —
+# the vendored file stays byte-equal to the canonical
+# `skills/inspect-cc-log/scripts/views.sql`; this is llm-wiki-owned SQL layered
+# on top, reading the raw JSON the L0 `cc_record` view exposes as `j`).
+#
+# It is a SIGNAL, NOT a verdict. Measured on the live corpus (Verified facts,
+# specs/wiki-file-current-session.md): `isMeta: true` marks "injected mid-turn",
+# which covers BOTH pure harness noise (expanded SKILL bodies, retry/continue
+# nudges, `<local-command-*>` wrappers, Stop-hook feedback) AND genuine
+# human steering typed while the agent was working (`mode:survey 1の実測だけやれ`,
+# `続き: …`, coordinator-relayed instructions). Dropping every isMeta record
+# would therefore delete real utterance. The verdict is the AND of this flag
+# with the `_META_NOISE_PATTERNS` denylist below (`_is_meta_noise`).
+# NOTE the parentheses around every `->>` extraction used in the WHERE: DuckDB
+# mis-plans a bare `j->>'k'` inside a conjunction (it tries to cast the whole
+# `j` column to a number -> ConversionException). Measured here, and documented
+# in skills/inspect-cc-log/SKILL.md's "parenthesize ->> in WHERE" gotcha.
+_IS_META_EXPR = """
+  coalesce(record_uuid IN (
+    SELECT j->>'uuid' FROM cc_record
+    WHERE try_cast((j->>'isMeta') AS boolean) AND (j->>'uuid') IS NOT NULL
+  ), false) AS is_meta
+"""
+
 # The batch form (R1 / F-H1) selects MANY sids in one scan with `session_id IN
 # (...)`, carrying session_id in the projection so rows can be split per sid. The
 # single-sid form filters `session_id = ?`. Both keep the same block-type filter
 # and chronological ordering; the batch adds session_id as the leading sort key so
 # each sid's rows are contiguous and internally chronological.
-_PROJECT_COLUMNS = """
+_PROJECT_COLUMNS = f"""
   record_uuid,
   session_id,
   role,
@@ -259,10 +319,7 @@ _PROJECT_COLUMNS = """
   block_index,
   block_type,
   text,
-  tool_name,
-  tool_input,
-  tool_use_id,
-  tool_result_content
+{_IS_META_EXPR}
 """
 
 _PROJECT_SQL = f"""
@@ -270,127 +327,104 @@ SELECT
 {_PROJECT_COLUMNS}
 FROM cc_block
 WHERE session_id = ?
-  AND block_type IN ('text', 'tool_use', 'tool_result')
+  AND block_type = 'text'
 ORDER BY ts ASC, record_uuid ASC, block_index ASC
 """
 
 
+# --- D12 meta-noise denylist (record grain) -------------------------------------
+# A record is dropped ONLY when `is_meta` is true AND its text matches one of
+# these ANCHORED patterns. Both conditions are load-bearing:
+#   - the flag alone over-drops (it also marks real human steering — measured);
+#   - the pattern alone risks a false positive on a user who PASTES one of these
+#     shapes as their own content (the flag proves the harness injected it).
+# Every entry below was verified against the live corpus as 100% harness-emitted.
+# Deliberately NOT listed (they carry real content, so they are kept and their
+# residue is accepted per D9): `The coordinator sent a message while you were
+# working:` (relayed instructions the agent then acted on) and
+# `<task-notification>` (its `<result>` block carries a subagent's actual
+# return value).
+#
+# This is an OPEN denylist: an unlisted noise shape survives into the payload.
+# The cost of a miss is bounded — one raw-tier record and one ledger row, the
+# same posture D7/D9 already accept — and Stage1's semantic distillation keeps
+# it out of page content. D13's cutoff anchor does not depend on this list being
+# exhaustive (see its non-empty-user-turn anchor rule).
+_META_NOISE_PATTERNS = (
+    # The expanded SKILL body a slash-command invocation injects (the F1 finding:
+    # a user-role TEXT record, not a tool_result).
+    re.compile(r"^Base directory for this skill:"),
+    re.compile(r"^Skill /\S+ is already loaded above; instructions unchanged\."),
+    re.compile(r"^\(Re-invocation of /\S+"),
+    # The caveat wrapper a local command prepends, and taskflow's Stop-hook
+    # feedback. NOTE: a local command's OTHER two records (`<command-name>…`
+    # and `<local-command-stdout>…`) are measured to carry NO isMeta flag, so
+    # they cannot be caught here — they are harness wrapper ELEMENTS of the
+    # same class as `<system-reminder>` and belong to `_BOILERPLATE_PATTERNS`
+    # (D7), which strips unconditionally.
+    re.compile(r"^<local-command-caveat>"),
+    re.compile(r"^Stop hook feedback:"),
+    # Harness retry / continue nudges (no conversational content at all).
+    re.compile(r"^Your tool call was malformed"),
+    re.compile(r"^The previous response failed to produce a valid tool call"),
+    re.compile(r"^Continue from where you left off"),
+    re.compile(r"^\[Your previous response had no visible output"),
+    # Image-attachment coordinate note the harness prepends.
+    re.compile(r"^\[Image: original \d+x\d+"),
+)
+
+
+def _is_meta_noise(text: str) -> bool:
+    """True iff `text` matches a known harness-noise shape (D12 denylist).
+
+    Callers MUST also require the record's `is_meta` flag — this function is
+    only half of the verdict (see `_META_NOISE_PATTERNS`).
+    """
+    if not text:
+        return False
+    probe = text.lstrip()
+    return any(pat.match(probe) for pat in _META_NOISE_PATTERNS)
+
+
 @dataclass
 class _Turn:
-    """A grouped turn: one record_uuid's blocks (chronological)."""
+    """A grouped turn: one record_uuid's text blocks (chronological)."""
     role: str                       # "user" | "assistant"
     uuid: str                       # record_uuid (provenance pointer)
     ts: str                         # local ts string (provenance pointer)
     text_parts: list = field(default_factory=list)      # str
-    tool_uses: list = field(default_factory=list)       # (name, input_json, tuid)
     order: int = 0                  # first-seen order (stable sort key)
-
-
-def _render_tool_use(name: str, tool_input_json) -> str:
-    """One-line display for a tool_use block (most-identifying field per tool).
-
-    Mirrors extract_cc_log.render_tool_use so the FE-B' markdown shape is
-    unchanged. tool_input arrives as a JSON string (DuckDB json) or None.
-    """
-    try:
-        inp = json.loads(tool_input_json) if isinstance(tool_input_json, str) else (
-            tool_input_json if isinstance(tool_input_json, dict) else {})
-    except (json.JSONDecodeError, TypeError):
-        inp = {}
-    if not isinstance(inp, dict):
-        inp = {}
-
-    def fld(key: str) -> str:
-        v = inp.get(key, "")
-        return v if isinstance(v, str) else str(v)
-
-    if name == "Bash":
-        return f"Bash: {fld('command')}"
-    if name == "Write":
-        return f"Write: {fld('file_path')}"
-    if name == "Edit":
-        return f"Edit: {fld('file_path')}"
-    if name == "Read":
-        return f"Read: {fld('file_path')}"
-    if name == "Glob":
-        return f"Glob: {fld('pattern')}"
-    if name == "Grep":
-        return f"Grep: {fld('pattern')}"
-    if name == "Agent":
-        sub = inp.get("subagent_type") or inp.get("description") or ""
-        return f"Agent: {sub if isinstance(sub, str) else str(sub)}"
-    if name == "NotebookEdit":
-        return f"NotebookEdit: {fld('notebook_path')}"
-    return name or ""
-
-
-def _tool_result_text(tool_result_content) -> str:
-    """Flatten a tool_result content (json array of blocks, str, or None)."""
-    if tool_result_content is None:
-        return ""
-    val = tool_result_content
-    if isinstance(val, str):
-        # cc_block stores blk->>'content' — for tool_result this is the JSON of
-        # the content (array or string). Try to parse an array of text blocks.
-        stripped = val.lstrip()
-        if stripped.startswith("[") or stripped.startswith("{"):
-            try:
-                val = json.loads(val)
-            except json.JSONDecodeError:
-                return val
-        else:
-            return val
-    if isinstance(val, list):
-        parts = []
-        for part in val:
-            if isinstance(part, dict) and part.get("type") == "text":
-                parts.append(part.get("text") or "")
-            elif isinstance(part, str):
-                parts.append(part)
-        return "\n".join(parts)
-    if isinstance(val, dict):
-        return val.get("text") or ""
-    return str(val)
+    is_meta: bool = False           # D12 signal (harness-injected mid-turn)
 
 
 def _group_rows_to_turns(rows: list) -> list[_Turn]:
     """Group projection rows (for ONE sid) into ordered turns.
 
     Rows are the projection columns (`_PROJECT_COLUMNS`) for a single session,
-    already chronological. A tool_result block is rendered under its tool_use
-    (paired by tool_use_id), not as a standalone turn part. Turns are keyed by
-    record_uuid (the dedup/render unit — R2: CC record grain), role frozen at
-    first-seen (a record_uuid is single-role by construction — verified 0
-    multi-role uuids in the live corpus).
-    """
-    # First pass: collect tool_result text by tool_use_id (a tool_result block
-    # lives on the user row after the assistant tool_use; render it under the
-    # tool_use like the old extractor did).
-    results: dict[str, str] = {}
-    for (_uuid, _sid, _role, _ts, _bi, btype, _text, _tn, _ti, tuid,
-         trc) in rows:
-        if btype == "tool_result" and tuid:
-            results[tuid] = _tool_result_text(trc)
+    already text-only (D5), chronological. Turns are keyed by record_uuid (the
+    dedup/render unit — R2: CC record grain), role frozen at first-seen (a
+    record_uuid is single-role by construction — verified 0 multi-role uuids in
+    the live corpus).
 
+    D12 drop happens HERE, at record grain and only on the AND of the row's
+    `is_meta` flag with the `_META_NOISE_PATTERNS` denylist, evaluated on the
+    record's FULL joined text (so a multi-block injected record is judged as
+    one unit, matching the R2 dedup grain).
+    """
     turns: dict[str, _Turn] = {}
     order = 0
-    for (uuid, _sid, role, ts_str, _bi, btype, text, tool_name, tool_input, tuid,
-         _trc) in rows:
-        if btype == "tool_result":
-            continue  # rendered under its tool_use, not a standalone turn part
+    for (uuid, _sid, role, ts_str, _bi, _btype, text, is_meta) in rows:
         t = turns.get(uuid)
         if t is None:
             t = _Turn(role=role or "", uuid=uuid or "", ts=ts_str or "",
-                      order=order)
+                      order=order, is_meta=bool(is_meta))
             order += 1
             turns[uuid] = t
-        if btype == "text":
-            if text and text.strip():
-                t.text_parts.append(text)
-        elif btype == "tool_use":
-            t.tool_uses.append((tool_name or "", tool_input, tuid or "",
-                                results.get(tuid or "", "")))
-    return sorted(turns.values(), key=lambda x: x.order)
+        if text and text.strip():
+            t.text_parts.append(text)
+    kept = [t for t in turns.values()
+            if not (t.is_meta and _is_meta_noise("\n".join(t.text_parts)))]
+    return sorted(kept, key=lambda x: x.order)
 
 
 def _fetch_turns(sid: str) -> list[_Turn]:
@@ -410,32 +444,14 @@ def _fetch_turns(sid: str) -> list[_Turn]:
 def _turn_text_for_hash(turn: _Turn) -> str:
     """The projected, boilerplate-stripped text that is the hash/dedup basis.
 
-    Only the conversation text is hashed (role ‖ text). tool_use display and
-    tool-results are provenance/rendering, not part of the dedup identity of a
-    turn — the dedup unit is the (role, text) turn per the ledger contract
-    (compute_hash(role, text)). A turn with no text (tool-use-only assistant
-    row) hashes on empty text; those still render but collapse identically.
+    The dedup unit is the (role, text) turn per the ledger contract
+    (compute_hash(role, text)). A turn with no text hashes on empty text —
+    unreachable post-D5/D12 (a turn only exists if it had a text block), so the
+    constant-hash collapse the old tool-inclusive projection produced cannot
+    recur.
     """
     joined = "\n".join(turn.text_parts).strip()
     return strip_boilerplate(joined)
-
-
-def _tool_input_to_jsonsafe(tool_input) -> "str | None":
-    """Normalize a tool_input (DuckDB json str, dict, or None) to a JSON str/None.
-
-    ``extract_turns_batch`` serializes turns to JSON for the on-disk hand-off, so
-    tool_input must be JSON-safe. A dict is dumped to a compact JSON string; a str
-    (the DuckDB json representation) is kept as-is; anything else -> None.
-    ``_render_tool_use`` already accepts a JSON string or dict, so a string
-    round-trips identically to the direct-projection path.
-    """
-    if tool_input is None:
-        return None
-    if isinstance(tool_input, str):
-        return tool_input
-    if isinstance(tool_input, dict):
-        return json.dumps(tool_input, ensure_ascii=False)
-    return None
 
 
 def _turn_to_dict(turn: _Turn, *, ledger) -> dict:
@@ -444,7 +460,6 @@ def _turn_to_dict(turn: _Turn, *, ledger) -> dict:
     Carries the boilerplate-stripped projected text AND the F5 hash
     (``ledger.compute_hash(role, projected_text)``) so the batch extractor and
     begin agree on the exact dedup/ledger key (the hash is assigned ONCE, here).
-    tool_uses become {name, tool_input, tuid, result} dicts (tool_input JSON-safe).
     """
     projected_text = _turn_text_for_hash(turn)
     return {
@@ -453,15 +468,6 @@ def _turn_to_dict(turn: _Turn, *, ledger) -> dict:
         "ts": turn.ts,
         "projected_text": projected_text,
         "hash": ledger.compute_hash(turn.role, projected_text),
-        "tool_uses": [
-            {
-                "name": name,
-                "tool_input": _tool_input_to_jsonsafe(tool_input),
-                "tuid": tuid,
-                "result": res,
-            }
-            for (name, tool_input, tuid, res) in turn.tool_uses
-        ],
     }
 
 
@@ -481,8 +487,8 @@ def extract_turns_batch(sids: "list[str]", *, ledger) -> "dict[str, list[dict]]"
 
     Returns:
         {sid: [turn_dict, ...]} — each turn_dict is the JSON-safe hand-off shape
-        (role, uuid, ts, projected_text, hash, tool_uses). A sid with no rows maps
-        to an empty list (still present in the dict, so the caller sees every sid).
+        (role, uuid, ts, projected_text, hash). A sid with no rows maps to an
+        empty list (still present in the dict, so the caller sees every sid).
     """
     if duckdb is None:  # pragma: no cover
         raise ProjectionError("duckdb not available")
@@ -497,7 +503,11 @@ def extract_turns_batch(sids: "list[str]", *, ledger) -> "dict[str, list[dict]]"
             f"SELECT\n{_PROJECT_COLUMNS}\n"
             f"FROM cc_block\n"
             f"WHERE session_id IN ({placeholders})\n"
-            f"  AND block_type IN ('text', 'tool_use', 'tool_result')\n"
+            f"  AND block_type = 'text'\n"
+            # NOTE: no isMeta predicate here. D12 surfaces the flag as a COLUMN
+            # (`_IS_META_EXPR`, already carried by `_PROJECT_COLUMNS` above) and
+            # the drop decision happens in `_group_rows_to_turns`. Splicing that
+            # expression into the WHERE position would be a SQL syntax error.
             f"ORDER BY session_id ASC, ts ASC, record_uuid ASC, block_index ASC"
         )
         rows = con.execute(sql, list(sids)).fetchall()
@@ -517,12 +527,12 @@ def extract_turns_batch(sids: "list[str]", *, ledger) -> "dict[str, list[dict]]"
     return result
 
 
-def _render_turn_md(turn: dict, n: int) -> str:
+def _render_turn_md(turn: dict, n: int, *, sid: str) -> str:
     """Render one surviving turn's markdown (matches old FE-B' shape + pointer).
 
-    Consumes the JSON-safe turn dict (role, uuid, ts, projected_text, tool_uses
-    with {name, tool_input, tuid, result}). projected_text is the already-stripped
-    text carried on the dict (R1 — strip happened at extraction).
+    Consumes the JSON-safe turn dict (role, uuid, ts, projected_text).
+    projected_text is the already-stripped text carried on the dict (R1 — strip
+    happened at extraction).
     """
     projected_text = turn.get("projected_text") or ""
     role = turn.get("role") or ""
@@ -535,14 +545,10 @@ def _render_turn_md(turn: dict, n: int) -> str:
     else:  # assistant (and any non-user role)
         if projected_text:
             lines += ["**Assistant**:", projected_text, ""]
-        for tu in turn.get("tool_uses") or []:
-            name = tu.get("name") or ""
-            res = tu.get("result") or ""
-            lines += [f"**Tool: {_render_tool_use(name, tu.get('tool_input'))}**", ""]
-            if res:
-                lines += ["```tool-result", res, "```", ""]
     # Provenance pointer (sid/uuid/ts) — promotion evidence re-fetch handle.
-    lines += [f"<!-- provenance: uuid={uuid} ts={ts} -->", ""]
+    # F5: sid is now included so inspect-cc-log can re-fetch this record with a
+    # session-filtered query instead of a full-corpus uuid scan.
+    lines += [f"<!-- provenance: sid={sid} uuid={uuid} ts={ts} -->", ""]
     return "\n".join(lines)
 
 
@@ -573,7 +579,7 @@ def project_from_turns(wiki_root: "str | Path", sid: str, turns: "list[dict]",
     """Project already-extracted turns to novel-turn markdown (R1 — cheap half).
 
     Does NOT open DuckDB. Consumes the JSON-safe turn dicts from
-    ``extract_turns_batch`` (role, uuid, ts, projected_text, hash, tool_uses),
+    ``extract_turns_batch`` (role, uuid, ts, projected_text, hash),
     then: within-sid exact dedup -> ledger diff (drop already-seen) -> markdown.
     This is the per-sid step run INSIDE begin, so the ledger read-after-write (F3)
     stays sequential across the Path B loop.
@@ -600,10 +606,11 @@ def project_from_turns(wiki_root: "str | Path", sid: str, turns: "list[dict]",
     n = 0
     for turn in turns:
         projected_text = turn.get("projected_text") or ""
-        tool_uses = turn.get("tool_uses") or []
-        # A turn with neither text nor tool_uses contributes nothing — skip so it
-        # neither renders an empty turn nor pollutes the ledger.
-        if not projected_text and not tool_uses:
+        # A turn with no text contributes nothing — skip so it neither renders
+        # an empty turn nor pollutes the ledger. (Post-D5/D12 this is normally
+        # unreachable — a turn only exists if it had a text block — but stays
+        # as a defensive guard for a turn whose sole text was boilerplate.)
+        if not projected_text:
             continue
         # The hash was assigned at extraction (F5 single source of truth) — use it.
         h = turn["hash"]
@@ -620,7 +627,7 @@ def project_from_turns(wiki_root: "str | Path", sid: str, turns: "list[dict]",
             ledger_skipped += 1
             continue
         n += 1
-        body.append(_render_turn_md(turn, n))
+        body.append(_render_turn_md(turn, n, sid=sid))
         novel_entries.append({
             "hash": h,
             "first_sid": sid,
@@ -663,8 +670,9 @@ def project_owned(wiki_root: "str | Path", sid: str, *, ledger) -> ProjectionRes
     call this either — it batch-extracts all sids once (``extract_turns_batch``)
     then calls ``project_from_turns`` per sid.
 
-    Steps: project blocks -> group turns (thinking excluded) -> boilerplate strip
-    -> within-sid exact dedup -> ledger diff (drop already-seen) -> markdown.
+    Steps: project TEXT blocks only, thinking/tool_use/tool_result/isMeta excluded
+    at the SQL level (D5/D12) -> group into turns -> boilerplate strip -> within-sid
+    exact dedup -> ledger diff (drop already-seen) -> markdown.
 
     Args:
         wiki_root: the wiki root (to read ledger.read_seen_hashes).

@@ -17,6 +17,7 @@ budget, opening no transaction):
 
   begin <root> <source> [--kind=auto|fe_b|fe_b_prime|fe_pi_log] [--write_mode=..]
         [--apply_fanout_k=..] [--doc_type=..] [--external=..] [--turns=<path>]
+        [--cutoff=none|last-user]
     marker.detect -> config_resolver.resolve_all + declare_all
     -> config_resolver.check_consistency (raises ConfigInconsistency) BEFORE
        locking (plan §3 / D-c: violation surfaces before any side effect)
@@ -30,11 +31,15 @@ budget, opening no transaction):
     -> write the raw artifact (unless dedup no-op) + write the sidecar
     -> print JSON {declaration[], raw_rel_path, declaration_hash,
        stage1_blob_path, origin, doc_type, max_count, max_bytes, apply_fanout_k,
-       dedup_noop, redaction_flags[], ledger_skipped} (E1/D-1: `raw_rel_path`=
+       dedup_noop, redaction_flags[], ledger_skipped, cutoff_dropped}
+       (E1/D-1: `raw_rel_path`=
        `fe.rel_path` + code-side `declaration_hash` REPLACE the old inline
        `redacted_body`). `stage1_blob_path` (#1 follow-up) is the ABSOLUTE path the
-       caller Writes the Stage1 blob to (under `--out_dir` if given, else the system
-       temp dir) — code-authored so the LLM never reconstructs a temp path.
+       caller Writes the Stage1 blob to — code-authored so the LLM never
+       reconstructs a temp path. Its DIRECTORY is run-unique: `--out_dir` when
+       given (Path B's per-batch mkdtemp), else a fresh per-run
+       `llmwiki-stage1-*` temp dir this begin creates (see `_STAGE1_DIR_PREFIX`
+       for the cross-run collision that keying on the source stem alone caused).
     If dedup_noop, the raw already existed so it was NOT written and NO sidecar
     was written; begin auto-closes the transaction itself (rollback +
     release_lock, C1) and returns `auto_closed: true`, so the caller only reports
@@ -55,6 +60,18 @@ budget, opening no transaction):
     the resolved `--kind`; a mismatch is a fail-closed DriverError (a missing
     `"origin"` key, from older project-batch output, is treated as `fe_b_prime`
     for backward compatibility).
+    D14: `--turns` entries are additionally HASH-VERIFIED — each entry's carried
+    `hash` must equal `ledger.compute_hash(role, text)` of that same entry, so a
+    caller (the `/wiki-file` narrowing flow) may only REMOVE entries, never edit
+    them; a mismatch is EX_USAGE.
+    D13: `--cutoff=last-user` (opt-in, projection origins; default `none`) drops
+    the LAST USER-ROLE turn and everything after it — the running session's own
+    `/wiki-file` invocation is an INSTRUCTION, not payload. Role + order only
+    (no text inspection; see `_apply_cutoff` for why the earlier "non-empty"
+    qualifier was removed). Applied to BOTH channels after the turn list is
+    assembled, before the lock; the number of turns it removed is reported as
+    `cutoff_dropped`. Passing it with `--kind=fe_b` is a usage error — a
+    document has no turn list to cut.
 
   plan-fanout <root> <stage1_proposal_path_or_json>
     touched <= k -> one cluster; touched > k -> ceil(touched/k) clusters each
@@ -334,8 +351,17 @@ INGEST_VERBS = (
 # no value, is a usage error (EX_USAGE) rather than a silently-ignored token.
 _BEGIN_OPTS = frozenset({
     "kind", "write_mode", "apply_fanout_k", "doc_type",
-    "external", "turns", "out_dir",
+    "external", "turns", "out_dir", "cutoff",
 })
+
+# --cutoff selectors (D13). Opt-in and projection-origin only; the DEFAULT is
+# no cutoff, so `/wiki-ingest-docs` and `/wiki-ingest-sessions` — which project
+# COMPLETED sessions whose final user turn is a genuine utterance — keep today's
+# behavior untouched. Only `/wiki-file` (filing the RUNNING conversation, whose
+# last user turn is the invocation instruction) passes `last-user`.
+_CUTOFF_NONE = "none"
+_CUTOFF_LAST_USER = "last-user"
+_CUTOFFS = (_CUTOFF_NONE, _CUTOFF_LAST_USER)
 
 
 # --------------------------------------------------------------------------- #
@@ -391,14 +417,97 @@ def _resolve_kind(kind: str) -> str:
     raise DriverUsageError(f"unknown --kind: {kind!r} (auto|fe_b|fe_b_prime|fe_pi_log)")
 
 
+def _turn_text(turn: dict) -> str:
+    """The turn dict's projected text, across both projection origins.
+
+    cc_log_project's hand-off dict carries `projected_text`; pi_log_project's
+    carries `text`. Both hash that value with `ledger.compute_hash(role, text)`
+    (F5), so this one accessor serves the D14 re-verification for either origin.
+    """
+    if "projected_text" in turn:
+        return turn.get("projected_text") or ""
+    return turn.get("text") or ""
+
+
+def _verify_turn_hashes(turn_list: list) -> None:
+    """D14: re-compute every incoming turn's hash and fail closed on a mismatch.
+
+    `--turns` is the ONLY channel through which a caller-supplied turn list
+    reaches the projector, and `/wiki-file`'s natural-language narrowing (D4)
+    drives it: the orchestrator runs the read-only `project-batch` verb, DELETES
+    whole entries per the user's scoping text, and passes the file here. This
+    check makes that channel DROP-ONLY BY CONSTRUCTION — an entry survives
+    byte-for-byte or the ingest refuses — so the LLM never becomes an author of
+    transcript content. It also closes a pre-existing gap: the sid and origin
+    guards proved WHICH session and pipeline the file belonged to, but nothing
+    proved the entries were unmodified.
+
+    Raised as a DriverUsageError (EX_USAGE): a tampered/garbled turns file is
+    protocol drift by the caller, not a data-dependent per-file condition.
+    """
+    for i, turn in enumerate(turn_list):
+        if not isinstance(turn, dict):
+            raise DriverUsageError(
+                f"--turns entry {i} is not an object (fail-closed, D14)")
+        carried = turn.get("hash")
+        recomputed = ledger.compute_hash(turn.get("role") or "", _turn_text(turn))
+        if carried != recomputed:
+            raise DriverUsageError(
+                f"--turns entry {i} (uuid={turn.get('uuid')!r}) fails the hash "
+                f"check: carried {carried!r} but its own role+text hash to "
+                f"{recomputed!r}. The turns file may only have ENTRIES REMOVED, "
+                f"never edited (fail-closed, D14)")
+
+
+def _apply_cutoff(turn_list: list, cutoff: str) -> list:
+    """D13: drop the trailing instruction turns for a running-session filing.
+
+    `last-user` takes every turn BEFORE the LAST USER-ROLE turn, dropping that
+    turn and everything after it. Role + order ONLY — no text inspection, no LLM
+    judgement (D2).
+
+    ROLE ONLY, deliberately: an earlier draft anchored on the last user turn with
+    NON-EMPTY text, reasoning that a pure-boilerplate record could then never
+    become the anchor (D12's denylist is an open list). That qualifier inverted
+    the failure mode and broke the primary case. D7 strips the `/wiki-file`
+    invocation LINE at extraction, so on a bare `/wiki-file` the invocation turn
+    arrives here with EMPTY text — the non-empty rule skipped past it and
+    anchored on the user's last real question, silently dropping the very Q&A
+    the run exists to file (measured before this fix: a 3-turn projection
+    collapsed to 0).
+
+    The two failure modes are not symmetric, which is the whole argument:
+      - anchor too EARLY (the non-empty rule) -> real conversation is deleted;
+      - anchor too LATE (an unlisted noise record trailing the invocation) ->
+        the invocation turn survives into the payload, where D7 has already
+        stripped it to empty and the empty-turn guard drops it, leaving at most
+        some assistant narration — exactly the residue D9 already accepts.
+    Prefer the benign failure.
+
+    With no user turn at all (an assistant-only fragment), nothing is dropped —
+    there is no invocation turn to exclude.
+    """
+    if cutoff == _CUTOFF_NONE:
+        return turn_list
+    anchor = None
+    for i, turn in enumerate(turn_list):
+        if isinstance(turn, dict) and (turn.get("role") or "") == "user":
+            anchor = i
+    return turn_list if anchor is None else turn_list[:anchor]
+
+
 def begin(wiki_root: str, source: str, *, kind: str = "auto",
           write_mode: "str | None" = None,
           apply_fanout_k: "str | None" = None,
           doc_type: "str | None" = None,
           external: "str | None" = None,
           turns: "str | None" = None,
-          out_dir: "str | None" = None) -> dict:
+          out_dir: "str | None" = None,
+          cutoff: str = _CUTOFF_NONE) -> dict:
     root = Path(wiki_root)
+    if cutoff not in _CUTOFFS:
+        raise DriverUsageError(
+            f"unknown --cutoff: {cutoff!r} ({'|'.join(_CUTOFFS)})")
 
     # 1) marker.detect — the directory must be a wiki root (D8).
     mk = marker.detect(root)
@@ -452,6 +561,18 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
     config_resolver.check_consistency(resolutions)
 
     origin = _resolve_kind(kind)
+
+    # 3a) `--cutoff` is meaningful only where there is a TURN LIST to cut, i.e.
+    #     the projection origins. FE-B ingests a document, which has no turns at
+    #     all, so a cutoff there would be silently ignored — refuse instead
+    #     (misuse-resistant, consistent with this verb's other fail-closed
+    #     guards). Raised before acquire_lock, so nothing is locked or written.
+    if cutoff != _CUTOFF_NONE and origin == ORIGIN_FE_B:
+        raise DriverUsageError(
+            f"--cutoff={cutoff} is not applicable to --kind={kind} (origin "
+            f"{origin!r}): a cutoff cuts a projected TURN LIST, and FE-B "
+            f"ingests a document. Drop the flag, or use a projection kind "
+            f"(fe_b_prime / fe_pi_log).")
 
     # 3b) read the source as pure input (no side effect). FE-B reads text+ext;
     #     FE-B' extracts the jsonl transcript to markdown. A non-UTF-8 (binary)
@@ -528,6 +649,10 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
                     f"{origin!r} (fail-closed, F-1)")
             if not isinstance(turn_list, list):
                 raise DriverUsageError("--turns JSON must be a list or {sid, turns:[...]}")
+            # D14: the caller-supplied list must be a SUBSET of what the
+            # projector emitted — every surviving entry hashes to its own
+            # role+text, so the narrowing channel can only DROP.
+            _verify_turn_hashes(turn_list)
         else:
             # Path A: run ONLY the extract half here (read-only: DuckDB / session
             # walk; NO wiki state — `ledger` is used solely for compute_hash).
@@ -547,6 +672,16 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
                 raise DriverOpError(
                     f"projection source unavailable (missing backing store?): "
                     f"{source}") from exc
+
+        # 3c) D13 cutoff — applied to BOTH channels (Path A's fresh extract and
+        #     Path B / narrowed `--turns`), after the list is assembled and
+        #     before the lock, so the in-lock half sees the final turn set.
+        _pre_cutoff_count = len(turn_list)
+        turn_list = _apply_cutoff(turn_list, cutoff)
+        # F-5: how many trailing turns the cutoff removed, surfaced on stdout so
+        # "why is that turn not in the page?" is answerable without re-running
+        # the projector by hand. 0 whenever cutoff is `none`.
+        cutoff_dropped = _pre_cutoff_count - len(turn_list)
 
     # 4) acquire_lock THEN checkpoint (lock-first). Only the lock holder ever
     #    creates/touches the fixed-path journal dir, so a second ingest that fails
@@ -656,6 +791,28 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         transaction.rollback(root, cp)
         transaction.release_lock(handle)
 
+    # 7c) Per-run Stage1 blob dir (`_STAGE1_DIR_PREFIX`) — created ONLY when this
+    #     begin hands back a live transaction AND no `--out_dir` was supplied.
+    #     Both conditions are load-bearing:
+    #       - `not out_dir`: Path B already gets run-uniqueness from
+    #         project-batch's own mkdtemp, and its blob must stay inside that dir
+    #         so `project-batch-cleanup` still sweeps it. Creating a second dir
+    #         there would leak one per sid.
+    #       - `not fe.exists`: a dedup no-op dispatches no stages (the SKILLs stop
+    #         at the `dedup_noop` branch), so a dir made here would be an empty
+    #         leak on every no-op run. Creating it only on the branch that uses it
+    #         means the deterministic paths leave ZERO residue by construction —
+    #         no compensating cleanup on the auto-close or failure branch. Note
+    #         the placement: AFTER the try/except above, so a begin that raises
+    #         has not created one either.
+    #     A crash between here and the closing verb is the only way to strand one;
+    #     `_prune_stale_batch_dirs` (called just below, and by project-batch)
+    #     collects those after 24h.
+    stage1_dir: "Path | None" = None
+    if not out_dir and not fe.exists:
+        _prune_stale_batch_dirs()
+        stage1_dir = Path(tempfile.mkdtemp(prefix=_STAGE1_DIR_PREFIX))
+
     # 8) print the JSON contract (plan §3).
     out = {
         "declaration": declaration,
@@ -675,12 +832,23 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         # reconstructs a temp path across turns — on Windows a reconstructed
         # `AppData\Local\Temp\...` was resolved against the CWD (not %LOCALAPPDATA%),
         # so the blob Read failed once per sid and drove an improvised recovery turn
-        # (the very cost E1/E2 remove). For Path B `--out_dir` is project-batch's
-        # out_dir (so the blob rides project-batch-cleanup); Path A omits it and
-        # falls back to the system temp dir. `Path(source).stem` keys it per sid /
-        # per source file exactly as the two SKILLs named it.
+        # (the very cost E1/E2 remove). `Path(source).stem` keys the FILENAME per sid
+        # / per source file exactly as the two SKILLs named it.
+        #
+        # The DIRECTORY is what carries run-uniqueness (see `_STAGE1_DIR_PREFIX` for
+        # the collision this closes):
+        #   - `--out_dir` given (Path B): project-batch's own per-batch mkdtemp, so
+        #     the blob rides `project-batch-cleanup`. Already run-unique.
+        #   - otherwise (Path A): this run's `stage1_dir` (7c).
+        #   - dedup no-op with no out_dir: no dir was created because no stage will
+        #     run; the system temp fallback keeps the field a well-formed absolute
+        #     path that the caller is instructed never to use.
+        # `plan-fanout` derives each manifest path from THIS path's parent, so the
+        # manifests inherit the same uniqueness with no separate keying.
         "stage1_blob_path": str(
-            Path(out_dir if out_dir else tempfile.gettempdir())
+            (Path(out_dir) if out_dir
+             else (stage1_dir if stage1_dir is not None
+                   else Path(tempfile.gettempdir())))
             / f"stage1-{Path(source).stem}.json"
         ),
         "origin": origin,
@@ -702,6 +870,13 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         # pending_ledger_entries; FE-B has no projection so it is 0.
         "ledger_skipped": (
             proj.ledger_skipped if origin in _PROJECTOR_BY_ORIGIN else 0
+        ),
+        # D13 cutoff drop count (F-5): trailing turns removed by `--cutoff`
+        # BEFORE dedup/ledger ran, so it is a separate signal from
+        # `ledger_skipped` (already-owned) — a `/wiki-file` run reports both.
+        # 0 for FE-B (no turn list) and whenever cutoff is `none`.
+        "cutoff_dropped": (
+            cutoff_dropped if origin in _PROJECTOR_BY_ORIGIN else 0
         ),
     }
     return out
@@ -800,11 +975,17 @@ def plan_fanout(wiki_root: str, stage1_proposal: str) -> dict:
     # the orchestrator/worker never reconstructs a temp path across turns (same
     # defect class + rationale as #1 stage1_blob_path above). Directory, uniform
     # over ALL _load_touched input forms: a FILE-path proposal inherits the blob's
-    # dir (Path A system temp / Path B $OUT_DIR, so the manifest rides the
-    # project-batch-cleanup sweep on Path B); an inline-JSON / bare-list proposal
-    # (legacy/direct callers, no parent dir) falls back to the system temp dir.
+    # dir (Path A this run's `llmwiki-stage1-*` dir / Path B $OUT_DIR, so the
+    # manifest rides the project-batch-cleanup sweep on Path B); an inline-JSON /
+    # bare-list proposal (legacy/direct callers, no parent dir) falls back to the
+    # system temp dir.
     # Filename keys the txn's fe_hash[:12] (already in the sidecar `state`) + the
     # 0-based ordinal (== cluster list INDEX == the ordinal `finish` checks).
+    # NOTE the inheritance is what makes the manifests run-unique too: fe_hash is
+    # a CONTENT hash, so two concurrent runs projecting identical content produce
+    # the same `fe_hash12` — identical manifest FILENAMES. Only the per-run parent
+    # dir separates them, so this must keep deriving from the blob's parent rather
+    # than re-deriving a temp path of its own.
     manifest_dir = (
         Path(stage1_proposal).parent
         if Path(stage1_proposal).is_file()
@@ -869,7 +1050,7 @@ def finish(wiki_root: str, outcome: str, *,
             # finally releases the lock + deletes the sidecar — otherwise a
             # partial index/log/raw + a stale lock/sidecar would strand with no
             # recovery handle. This makes finish honour its invariant: exactly one
-            # of commit / rollback before release_lock (wiki-ingest.md §finish),
+            # of commit / rollback before release_lock (wiki-ingest-docs/SKILL.md §finish),
             # symmetric with begin's post-lock except.
             try:
                 # join (D23 central). Two modes:
@@ -1583,40 +1764,72 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
 # transaction (outside the R-f verb budget), exactly like enumerate/session-plan.
 _BATCH_TURNS_PREFIX = "llmwiki-turns-"
 
-# Backstop prune threshold (C3 step 2 / F4): a `llmwiki-turns-*` temp dir older
-# than this is removed at the next project-batch. 24h is deliberately long so a
-# still-running concurrent batch's live dir is never deleted mid-flight —
-# project_batch is intentionally lock-free (R-f), so age is the only safe
-# liveness signal available here.
+# Per-RUN Stage1 blob dir prefix. `begin` creates one of these (mkdtemp) whenever
+# no `--out_dir` was supplied, so the Stage1 blob — and, by parent-dir
+# inheritance, `plan-fanout`'s manifests — are unique to THIS run.
+#
+# Why it exists: the pre-fix path was
+# `<system temp>/stage1-<Path(source).stem>.json`, keyed ONLY on the source stem,
+# with no run-unique component. Two concurrent runs of the same sid (or the same
+# source filename) therefore shared ONE file. Measured: five parallel `/wiki-file`
+# runs of one sid overwrote each other's blob; `plan-fanout` consumed a foreign
+# run's content, and because `planned_clusters` AND the Stage2 manifest both
+# derive from that same file, `apply-finish`'s F2 gate cannot detect the swap —
+# a run could silently file another run's content and report success. The
+# per-wiki-root `.llmwiki.lock` does NOT cover this: its scope is one wiki root
+# while the blob path was global, so two runs against DIFFERENT roots collided
+# with both locks held legitimately.
+_STAGE1_DIR_PREFIX = "llmwiki-stage1-"
+
+# Backstop prune threshold (C3 step 2 / F4): a `llmwiki-turns-*` /
+# `llmwiki-stage1-*` temp dir older than this is removed at the next
+# project-batch / begin. 24h is deliberately long so a still-running concurrent
+# batch's live dir is never deleted mid-flight — project_batch is intentionally
+# lock-free (R-f), so age is the only safe liveness signal available here.
 _BATCH_STALE_PRUNE_SECONDS = 24 * 60 * 60
 
+# Every driver-created temp dir prefix the backstop prune is responsible for.
+_PRUNABLE_TEMP_PREFIXES = (_BATCH_TURNS_PREFIX, _STAGE1_DIR_PREFIX)
 
-def _prune_stale_batch_dirs(now: "float | None" = None) -> int:
-    """Remove stale `llmwiki-turns-*` temp dirs under `tempfile.gettempdir()`.
 
-    C3 step 2 backstop: `project-batch-cleanup` is the primary deletion path (the
-    temp turn JSON is pre-redaction, F3), but a crashed / interrupted Path B loop
-    can still leave a batch dir behind. Any such dir whose mtime is older than
-    `_BATCH_STALE_PRUNE_SECONDS` (24h) is `rmtree`'d here at the next
-    project-batch. The long threshold avoids deleting a concurrently-running
-    batch's live dir (project_batch is intentionally lock-free, F4). Best-effort:
+def _prune_stale_batch_dirs(now: "float | None" = None,
+                            prefixes: "tuple[str, ...] | None" = None) -> int:
+    """Remove stale driver temp dirs under `tempfile.gettempdir()`.
+
+    C3 step 2 backstop, covering BOTH driver-created temp-dir families
+    (`_PRUNABLE_TEMP_PREFIXES`):
+
+      - `llmwiki-turns-*` (project-batch): `project-batch-cleanup` is the primary
+        deletion path (the temp turn JSON is pre-redaction, F3), but a crashed /
+        interrupted Path B loop can still leave a batch dir behind.
+      - `llmwiki-stage1-*` (begin, no `--out_dir`): the deterministic paths never
+        leak one — begin only creates it on the branch that hands back a live
+        transaction — so only a crash between `begin` and the closing verb can
+        strand one. There is no per-run cleanup verb for it (it is NOT a
+        `project-batch-cleanup` target: that verb's guard admits the turns prefix
+        only), which is exactly why this backstop must cover it.
+
+    Any such dir whose mtime is older than `_BATCH_STALE_PRUNE_SECONDS` (24h) is
+    `rmtree`'d. The long threshold avoids deleting a concurrently-running batch's
+    or run's live dir (project_batch is intentionally lock-free, F4). Best-effort:
     unreadable / racing entries are skipped, never fatal. Returns the count pruned.
     """
     cutoff = (time.time() if now is None else now) - _BATCH_STALE_PRUNE_SECONDS
     tmp_root = Path(tempfile.gettempdir())
     pruned = 0
-    try:
-        candidates = sorted(tmp_root.glob(f"{_BATCH_TURNS_PREFIX}*"))
-    except OSError:
-        return 0
-    for d in candidates:
+    for prefix in (_PRUNABLE_TEMP_PREFIXES if prefixes is None else prefixes):
         try:
-            if not d.is_dir() or d.stat().st_mtime >= cutoff:
-                continue
+            candidates = sorted(tmp_root.glob(f"{prefix}*"))
         except OSError:
             continue
-        shutil.rmtree(d, ignore_errors=True)
-        pruned += 1
+        for d in candidates:
+            try:
+                if not d.is_dir() or d.stat().st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            pruned += 1
     return pruned
 
 
@@ -1763,7 +1976,7 @@ def main(argv: "list[str] | None" = None) -> int:
                 "usage: begin <root> <source> "
                 "[--kind=auto|fe_b|fe_b_prime|fe_pi_log] [--write_mode=...] "
                 "[--apply_fanout_k=N] [--doc_type=...] [--external=...] "
-                "[--turns=<path>] [--out_dir=<dir>]")
+                "[--turns=<path>] [--out_dir=<dir>] [--cutoff=none|last-user]")
             unknown = sorted(k for k in opts if k not in _BEGIN_OPTS)
             if unknown:
                 raise DriverUsageError(
@@ -1790,6 +2003,7 @@ def main(argv: "list[str] | None" = None) -> int:
                 external=opts.get("external"),
                 turns=opts.get("turns"),
                 out_dir=opts.get("out_dir"),
+                cutoff=opts.get("cutoff", _CUTOFF_NONE),
             )
         elif verb == "plan-fanout":
             if len(pos) < 2:

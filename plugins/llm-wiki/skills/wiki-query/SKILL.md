@@ -119,6 +119,17 @@ file/save/record this answer (05-plan §2.2), file it. This legacy path is
 unchanged and remains intact; the marker directive is an ADDITIONAL deterministic
 trigger, not a replacement for it.
 
+**No pre-apply confirmation on this path either — deliberate, not an oversight.** The
+write-bearing commands (`/wiki-file`, `/wiki-ingest-docs`, `/wiki-ingest-sessions`) DO ask
+before applying when `write_mode=explicit`, because there the user chose to file but never
+saw what pages the LLM would author. Here the situation is different in the one way that
+matters: the user is asking for THIS answer — already on screen, already read — to be
+saved. The content is pre-approved by construction; only the page NAME is generated (L-a),
+and that alone does not warrant a gate. Re-asking "shall I save the thing you just asked me
+to save?" is friction without a decision behind it. Residue is at the same level D9 already
+accepts. The D5 declaration line is still emitted, and the full safety envelope (redaction
+→ write-tool location gate → single transaction) is unchanged.
+
 ### Filing execution (identical for BOTH triggers; unchanged)
 
 On either trigger, the filing path is FE-A → allowlist write tool

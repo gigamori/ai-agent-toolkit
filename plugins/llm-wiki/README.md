@@ -71,19 +71,20 @@ A typical session:
 
    **Toggle it per session — `wiki:on` / `wiki:off`.** The wiki is on by default whenever one resolves. Include `wiki:off` anywhere in a prompt to silence it for the current session: the hook suppresses the `wiki-active` / filing injection and emits only a minimal `[wiki:off]` notice (Claude leads its reply with `[wiki:off]` and leaves the wiki untouched). `wiki:on` restores it. The state is a per-session marker under the resolved wiki root (`.llmwiki.toggle.d/<session_id>.off`, existence = off), so it is **sticky within a session** and a **new session starts on**; for a permanent off use the wiki's `activation_scope` in `SCHEMA.md` instead. When no wiki resolves, `wiki:on|off` is ignored (nothing is emitted — same shape as an unassigned pj).
 
-2. **Ingest a source.**
+2. **Put something in.** The command is named after its OBJECT — a document, the conversation you are having, or other sessions' logs:
 
    ```
-   /wiki-ingest ./docs/rfc-routing.md            # a 3rd-party document (FE-B → source tier)
-   /wiki-ingest ./docs/rfc.md external=https://example.com/rfc   # attach a permalink for citation
-   /wiki-ingest ./logs/session.jsonl             # a Claude Code session log (FE-B' → derived tier, pinned doc_type=transcript)
+   /wiki-ingest-docs ./docs/rfc-routing.md       # a 3rd-party document (FE-B → source tier)
+   /wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc   # attach a permalink for citation
+   /wiki-file                                    # THIS conversation (FE-B' → derived tier, pinned doc_type=transcript)
+   /wiki-ingest-sessions --workspace             # other sessions' logs, by scope
    ```
 
-   The argument can also be a **quoted glob** or a **directory** — the driver expands it in Python (not the shell) and ingests **one file per transaction**:
+   `/wiki-ingest-docs`'s argument can also be a **quoted glob** or a **directory** — the driver expands it in Python (not the shell) and ingests **one file per transaction**:
 
    ```
-   /wiki-ingest "./docs/**/*.md"                 # a quoted glob: expanded in Python, wiki-internal paths excluded, one file per transaction
-   /wiki-ingest ./docs/                          # a directory: expanded as ./docs/**/* restricted to the text-type allowlist
+   /wiki-ingest-docs "./docs/**/*.md"            # a quoted glob: expanded in Python, wiki-internal paths excluded, one file per transaction
+   /wiki-ingest-docs ./docs/                     # a directory: expanded as ./docs/**/* restricted to the text-type allowlist
    ```
 
    For a directory, only the text-type allowlist is picked up (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`); non-text files (e.g. images) are skipped. On a batch a per-file failure rolls back **just that file** and the run continues, then a summary `N total / M succeeded / K failed / S dedup-skipped` is reported; zero matches is an error.
@@ -92,18 +93,19 @@ A typical session:
 
 3. **Ask questions.** Just ask in natural language — e.g. *"what did we decide about retry backoff?"* The `wiki-query` skill auto-activates, reads both `wiki/` and `wiki/derived/`, and cites each claim by page path (the path tells you whether it's source or derived tier). This is read-only.
 
-4. **File an answer (optional, explicit).** Querying never writes on its own. To save an answer, ask explicitly — e.g. *"file that as a page"* — and it lands under `wiki/derived/` as derived synthesis.
-
-   For a **deterministic** filing trigger that does not depend on the LLM judging your intent, include the marker `llm-wiki:file` anywhere in an otherwise normal question — a hook detects it and makes filing mandatory (no confirmation: the marker is explicit by definition), and the answer is filed under `wiki/derived/`:
+4. **File the conversation (optional, explicit).** Querying never writes on its own. Two ways to keep what a conversation produced:
 
    ```
-   what did we decide about retry backoff? llm-wiki:file              # force filing; page name generated from the answer
-   what did we decide about retry backoff? llm-wiki:file=retry-policy # fix the page name → wiki/derived/retry-policy.md
+   /wiki-file                          # file this conversation
+   /wiki-file 最後の回答だけ             # narrow to the last answer
+   /wiki-file retry-policy の議論だけ    # narrow by topic
    ```
 
-   `llm-wiki:file=<page-slug>` fixes the page name to `wiki/derived/<page-slug>.md`; without a slug the LLM generates the page name from the answer. The marker is effective only inside a wiki (when `.llmwiki` is present). The safety envelope (redaction → write-tool location gate → single transaction) is unchanged — only the confirmation prompt is skipped. (Filing is suppressed while the session is `wiki:off`; re-enable with `wiki:on` first.)
+   `/wiki-file` needs no session id and no path: it fixes the source to the running session, pins the FE-B' transcript pipeline, and stops the projection before your own invocation (the command is an instruction, not conversation content). Free text after it narrows *which turns* are filed — it never switches pipeline. Re-running it files only what is new: the turn ledger drops every turn a previous run already owns.
 
-   llm-wiki owns two prompt markers: `llm-wiki:file[=<slug>]` (this deterministic filing trigger) and `wiki:on|off` (the per-session toggle in step 1). Both fire only at a string start or after whitespace and are case-insensitive, so they never match mid-token.
+   Or just ask — e.g. *"file that as a page"* — and the answer lands under `wiki/derived/` as derived synthesis.
+
+   (Filing is suppressed while the session is `wiki:off`; re-enable with `wiki:on` first. `wiki:on|off` fires only at a string start or after whitespace and is case-insensitive, so it never matches mid-token.)
 
 5. **Lint.** `/wiki-lint` runs the graph/index checks plus the transcript decision-floor and returns a prioritized "next questions" list. Read-only.
 
@@ -129,16 +131,26 @@ All CLI entrypoints pin their stdio to UTF-8 at startup (stdin strict — corrup
 
 The hook also honors the `wiki:on|off` toggle: a `wiki:on`/`wiki:off` marker in the prompt sets a per-session flag (kept as `.llmwiki.toggle.d/<session_id>.off`, existence = off, under the resolved wiki root, alongside `.llmwiki.lock` / `.cc-turn-ledger.jsonl`; managed by `llmwiki/core/wiki_toggle.py`, best-effort with mtime pruning of abandoned sessions). While off, the whole `wiki-active` / filing block is suppressed and only a minimal `[wiki:off]` notice is injected. The toggle is honored only when a wiki resolves (nothing is emitted otherwise); it is session-sticky and defaults on (a new session starts on). The toggle dir is force-excluded from ingest (`.llmwiki.toggle.d` in the self-ingestion guard), like `.llmwiki.txn.d`.
 
-### Ingest — `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`
+### Ingest a document — `/wiki-ingest-docs <path-or-glob> [doc_type=...] [external=...]`
 
-Ingests a 3rd-party source (FE-B) or a Claude Code session jsonl (FE-B') through the 2-stage `extract → apply` core inside one file-journal transaction. The argument may be a single file, a **quoted glob** (`"./docs/**/*.md"`), or a **directory** (`./docs/`): the driver expands it in Python (never the shell), force-excludes wiki-internal paths, and — for a directory — restricts to the text-type allowlist (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`). A glob/directory is ingested **one file per transaction**; a per-file failure rolls back only that file and the run continues, then a `N total / M succeeded / K failed / S dedup-skipped` summary is reported (zero matches is an error).
+The three write-bearing commands are named after their **object**, not after how heavy their pipeline is: `/wiki-ingest-docs` takes a document, `/wiki-file` takes the conversation you are having, `/wiki-ingest-sessions` takes other sessions' logs. All three run the same 2-stage `extract → apply` core in one file-journal transaction.
 
-`/wiki-ingest` (and `/wiki-ingest-sessions`) is a multi-stage orchestration (`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`), so run it on a **capable model**: a lightweight/minimal model tends to drop the Stage 2 apply dispatch or skip the closing `apply-finish`, which leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages written — clear it with the `abort` verb; see *Recovery* above).
+`/wiki-ingest-docs` ingests a 3rd-party source (FE-B). The argument may be a single file, a **quoted glob** (`"./docs/**/*.md"`), or a **directory** (`./docs/`): the driver expands it in Python (never the shell), force-excludes wiki-internal paths, and — for a directory — restricts to the text-type allowlist (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`). A glob/directory is ingested **one file per transaction**; a per-file failure rolls back only that file and the run continues, then a `N total / M succeeded / K failed / S dedup-skipped` summary is reported (zero matches is an error).
+
+Every one of the three is a multi-stage orchestration (`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`), so run them on a **capable model**: a lightweight/minimal model tends to drop the Stage 2 apply dispatch or skip the closing `apply-finish`, which leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages written — clear it with the `abort` verb; see *Recovery* above).
 
 - **Stage 1 (extract)** — the `wiki-ingest-extract` subagent reads the redacted, untrusted raw source with **no write tool by construction** and emits proposed edits only.
 - **Stage 2 (apply)** — the `wiki-ingest-apply` subagent authors page updates with **no write tool by construction** and returns them as a page manifest; the orchestrator pipes those manifests through the allowlist write tool (`llmwiki/write/write_tool.py`) via the compound `apply-finish` verb, which confines writes to `wiki/` and `wiki/derived/`, rejects `SCHEMA.md` / `.llmwiki` / `raw/` / absolute paths / traversal, and gates on budget. On more than `apply_fanout_k` touched pages, Stage 2 fans out one apply worker per cluster; `apply-finish` then applies every cluster's manifest and centralizes index / log / commit after the join. The total proposed touched-page set is first gated against `max_count`: an ingest proposing more pages than that escalates to the human gate instead of fanning out, so the per-worker write budget can't be silently multiplied by the cluster count. On fan-out, each cluster's worker also receives a code-authored absolute manifest path (`manifest_paths`, returned by `plan-fanout`) so it never has to reconstruct a temp file path itself.
 
-`begin` fails closed on a `.jsonl` source: when `--kind` is omitted/`auto` and the source path ends in `.jsonl`, `begin` refuses to ingest it (nothing locked or written) rather than silently treating a session log as plain text — pass `--kind=fe_b_prime` (cc-log transcript), `--kind=fe_pi_log` (pi-log transcript), or an explicit `--kind=fe_b` to ingest a plain-text `.jsonl` DATA file. In a glob/directory batch (the text-type allowlist still keeps `.jsonl`), a source that hits this refusal is simply counted `failed` in the summary and the run continues.
+`begin` fails closed on a `.jsonl` source: when `--kind` is omitted/`auto` and the source path ends in `.jsonl`, `begin` refuses to ingest it (nothing locked or written) rather than silently treating a session log as plain text. This gate protects the docs sweep itself — the text-type allowlist keeps `.jsonl`, so `/wiki-ingest-docs ./docs/` can enumerate a session log sitting in the tree; the refusal counts it `failed` in the summary and the run continues. `/wiki-ingest-docs` therefore never passes `--kind` (an explicit `--kind=fe_b` resolves to the same origin as `auto`, so it buys nothing but disarming the gate). `/wiki-file` and `/wiki-ingest-sessions` pass their own fixed `--kind=fe_b_prime`; an operator ingesting a genuine `.jsonl` DATA file passes `--kind=fe_b` by hand on a direct CLI call.
+
+### File this conversation — `/wiki-file [narrowing text]`
+
+Files the **running session** as derived synthesis. It takes no path and no session id: the source is fixed to the current sid, the pipeline to FE-B', and the projection stops before your own invocation — the command is an instruction about the wiki, not conversation content, so it and the narration after it are excluded (the previous turn's answer is still filed; only this run's own report is never captured, and the next run picks up anything after the cutoff worth keeping).
+
+Free text after the command **narrows which turns are filed** (`/wiki-file 最後の回答だけ`, `/wiki-file retry-policy の議論だけ`) — it never switches pipeline. Narrowing is drop-only by construction: the driver re-computes every supplied turn's content hash and refuses the ingest if any entry was edited rather than removed, so the model cannot rewrite, summarize, or invent a turn through that channel. A narrowed-out turn is never filed, hence never ledgered — a later `/wiki-file` can still file it.
+
+Re-running is incremental: the turn ledger drops every turn a prior run already owns, and the run reports the ledger-skipped count so an incremental re-run never looks like a silent no-op.
 
 cc-log (FE-B') input is pinned to `doc_type=transcript` with a deterministic decision floor (`llmwiki/ingest/transcript_floor.py`, invoked as `llmwiki floor-check`): a claim is recorded as a decision only with an explicit affirmative token; silence is non-affirmation.
 
@@ -152,7 +164,7 @@ The `--pj <name>` scope (and the no-args `pj`/`prompt` resolution it also backs)
 
 ### Query — the `wiki-query` skill
 
-Description-driven auto-activation when a wiki is active **and not toggled off** (`wiki:off` suppresses the activating injection for the session). It reads **both** `wiki/` and `wiki/derived/` and cites every claim by page path, where the path encodes the trust tier (`wiki/` = source, `wiki/derived/` = derived). Read-only by default; it files an answer back into the wiki only on an explicit filing trigger — either a natural-language ask (LLM-judged) or the deterministic, hook-detected marker `llm-wiki:file[=<page-slug>]` included anywhere in the question. The marker forces filing without confirmation; with a slug the page name is fixed to `wiki/derived/<page-slug>.md`, without one the LLM generates it. Only the confirmation is skipped — the redaction → write-tool gate → single-transaction envelope is unchanged.
+Description-driven auto-activation when a wiki is active **and not toggled off** (`wiki:off` suppresses the activating injection for the session). It reads **both** `wiki/` and `wiki/derived/` and cites every claim by page path, where the path encodes the trust tier (`wiki/` = source, `wiki/derived/` = derived). Read-only by default; it files an answer back into the wiki only on an explicit natural-language ask (LLM-judged) — to file deliberately, use `/wiki-file`, which needs no judgement of your intent at all. The redaction → write-tool gate → single-transaction envelope is the same either way.
 
 ### Search backend (optional external) — qmd
 
@@ -237,7 +249,8 @@ plugins/llm-wiki/
     wiki-ingest-apply.md       # Stage2 apply (authors a page manifest; no write tool)
     wiki-lint.md               # read-centric lint subagent
   skills/                      # all user-facing entries are skills (bare /wiki-*; no plugin namespace prefix)
-    wiki-ingest/SKILL.md          # /wiki-ingest  (ingest orchestrator; single file / glob / directory)
+    wiki-ingest-docs/SKILL.md     # /wiki-ingest-docs (document ingest; single file / glob / directory)
+    wiki-file/SKILL.md            # /wiki-file (file the RUNNING session; source/kind/cutoff fixed)
     wiki-ingest-sessions/SKILL.md # /wiki-ingest-sessions (Path B: ingest a resolved cc-log session set)
     wiki-init/SKILL.md            # /wiki-init (interactive scope select -> llmwiki init)
     wiki-lint/SKILL.md            # /wiki-lint (read-only lint dispatch)

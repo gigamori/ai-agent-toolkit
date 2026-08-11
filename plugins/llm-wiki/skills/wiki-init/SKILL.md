@@ -79,7 +79,7 @@ point at the next step:
 ```
 wiki initialized at <root> (scope: <scope>)
 
-Next: /wiki-view to browse it, or /wiki-ingest to add content.
+Next: /wiki-view to browse it, /wiki-file to save this conversation, or /wiki-ingest-docs to add a document.
 ```
 
 Do not add further commentary.

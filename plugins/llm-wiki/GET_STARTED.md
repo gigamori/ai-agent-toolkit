@@ -15,7 +15,7 @@ llm-wiki turns those scattered materials into pages Claude can use when answerin
 Add one document you regularly need Claude to understand:
 
 ```
-/wiki-ingest ./docs/customer-plan.md
+/wiki-ingest-docs ./docs/customer-plan.md
 ```
 
 For example, add the customer plan before asking, *“What did we agree to do for this customer?”* Claude answers from the wiki and shows the page path for each point, so you can check where the answer came from.
@@ -25,11 +25,11 @@ For example, add the customer plan before asking, *“What did we agree to do fo
 Imagine you want Claude to stay up to date on an important customer plan.
 
 1. Create a wiki once with `/wiki-init`; it asks where to put it.
-2. Add the plan with `/wiki-ingest ./docs/customer-plan.md`.
+2. Add the plan with `/wiki-ingest-docs ./docs/customer-plan.md`.
 3. Review the proposed page updates and approve them when they look right. Nothing is saved until you do.
 4. Continue your work. Later, ask Claude what the plan says or what was decided.
 5. Claude reads the relevant pages and answers with page-path citations.
-6. If an answer is worth keeping, say *“file that as a page.”* Claude keeps it as a clearly labelled conclusion until you choose to promote it.
+6. If the conversation is worth keeping, run `/wiki-file` — or just say *“file that as a page.”* Claude keeps it as a clearly labelled conclusion until you choose to promote it.
 7. The next time you need the answer, ask again instead of rebuilding the context from old chats.
 
 ## See what Claude knows

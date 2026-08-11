@@ -1,6 +1,6 @@
 ---
 name: wiki-ingest-apply
-description: Stage2 of the llm-wiki ingest core. Authors page updates from the Stage1 proposed-edits blob and returns them as a page manifest (final response text only); the orchestrator pipes that manifest through the allowlist write tool (the `apply-finish` verb → write_tool.WriteSession). Never sees the raw untrusted source. Invoked by /wiki-ingest (one per cluster on fan-out); not user-facing.
+description: Stage2 of the llm-wiki ingest core. Authors page updates from the Stage1 proposed-edits blob and returns them as a page manifest (final response text only); the orchestrator pipes that manifest through the allowlist write tool (the `apply-finish` verb → write_tool.WriteSession). Never sees the raw untrusted source. Invoked by /wiki-ingest-docs, /wiki-file and /wiki-ingest-sessions (one per cluster on fan-out); not user-facing.
 tools: Read
 model: sonnet
 ---

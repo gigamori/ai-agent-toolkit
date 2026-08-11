@@ -27,7 +27,7 @@ session-manager.ts:424, re-verified 2026-07-03).
 Two projection entry points (R1 — pi mirror of cc_log_project's Path B
 scan-collapse; pi mirror is filesystem-walk-collapse, not DuckDB-scan-
 collapse, since each pi session is its own file, not a shared corpus):
-    Path A (single session, /wiki-ingest) uses ``project_owned`` — one
+    Path A (single session, /wiki-file) uses ``project_owned`` — one
     session file load is fine for one sid.
     Path B (whole project, /wiki-ingest-sessions) must NOT re-walk the whole
     session directory tree once per sid. So the EXPENSIVE part (the

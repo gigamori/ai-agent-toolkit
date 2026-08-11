@@ -1,11 +1,11 @@
 ---
-name: wiki-ingest
-description: Ingest a 3rd-party source (FE-B) or a cc-log jsonl (FE-B') into the active wiki via the 2-stage extract→apply core. Accepts a single file OR a glob / directory (expanded by the driver, ingested one file per transaction). Explicit write-bearing skill (hook-independent). Usage `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`.
+name: wiki-ingest-docs
+description: Ingest a 3rd-party DOCUMENT into the active wiki via the 2-stage extract→apply core. Accepts a single file OR a glob / directory (expanded by the driver, ingested one file per transaction). To file the conversation you are having, use `/wiki-file`; to ingest OTHER sessions' logs, use `/wiki-ingest-sessions`. Explicit write-bearing skill (hook-independent). Usage `/wiki-ingest-docs <path-or-glob> [doc_type=...] [external=...]`.
 disable-model-invocation: true
 allowed-tools: Bash(uv run --script *), Agent, AskUserQuestion, Write
 ---
 
-# /wiki-ingest
+# /wiki-ingest-docs
 
 Arguments: `$ARGUMENTS`
 
@@ -22,6 +22,12 @@ and, on success, the same verb performs the central join + single commit.
 The source argument may be one file or a glob / directory. A glob / directory
 is expanded by the driver into a list of files, and each file is ingested in its own
 independent transaction — there is no batch-spanning transaction (see Step 0).
+
+**This command's object is a DOCUMENT** — a 3rd-party source you are dropping into the
+raw collection. Conversations are a different object with their own commands: use
+`/wiki-file` to file the session you are having, and `/wiki-ingest-sessions` to ingest
+OTHER sessions' logs. All three converge on this same 2-stage core, so the procedure
+below is shared; they differ only in what they point it at.
 
 ## THE ONE UN-DROPPABLE INVARIANT (read first, never bypass)
 
@@ -125,8 +131,40 @@ no sidecar).
 
 ### Step 0b — loop per file (one independent transaction each) + summary
 
-For each `rel_path` in `files`, run the full per-file cycle Steps 1–5 with that
-`rel_path` as `$SOURCE`. Each iteration is a complete, independent transaction:
+**Before the first `begin`, take the batch-head confirmation (D5).** When `write_mode`
+resolved to `explicit`, a glob/dir run must not ask N times — one question covers the
+whole sweep. Ask ONCE here with `AskUserQuestion`, listing the enumerated `files` (and
+the `excluded` count), for a decision that then applies to every file in the loop:
+
+- **Approve the sweep** → run the loop; do NOT ask again per file.
+- **Decline** → nothing was locked or written yet (`enumerate` is read-only), so simply
+  stop and report. There is no transaction to roll back at this point.
+
+Per-file confirmation is deliberately NOT offered: the pages a given file produces are
+not known until its own Stage2 has run, so a per-file prompt would interrupt the sweep N
+times to show information the batch-head question cannot preview anyway. The gate here is
+over the INPUT SET; the write allowlist and the per-file transaction remain the gates over
+the output. Skip the question entirely when `write_mode` resolved to `implicit` (you
+already announced at Step 1 that per-apply confirmation is skipped).
+
+**A non-interactive run cannot answer this.** `claude -p` and other automated callers have
+no way to reply. Ask before anything is locked — as specified here — so a caller that
+cannot answer simply stops with nothing written. Do NOT guess an answer and do NOT proceed
+to write; report that the run needs an interactive session or a deliberate
+`write_mode=implicit` override.
+
+**A single-file run (Step 0's single-file branch) takes the same confirmation**, asked
+once before its one `begin`.
+
+For each `rel_path` in `files`, run the full per-file cycle Steps 1–5 with
+`"$WIKI_ROOT/$rel_path"` as `$SOURCE` — **not the bare `rel_path`**. `enumerate` returns
+wiki-root-relative POSIX paths (see Step 0a), but `begin` reads its source with
+`Path(source).read_text()`, i.e. resolved against the PROCESS CWD. Passing the bare value
+through therefore fails with `source not readable (missing/dir/permission): <rel_path>`
+whenever the CWD is not the wiki root — measured. Prefixing the resolved root makes the
+two contracts meet without changing either.
+
+Each iteration is a complete, independent transaction:
 `begin` acquires `.llmwiki.lock` and checkpoints (opens the journal), the stages run,
 and `apply-finish` commits (discards the journal) on success — or, when a stage fails
 before apply, `finish fail` rolls back (replays it) — releasing the lock for that one
@@ -199,11 +237,8 @@ still enforces the marker and errors with "not a wiki root" if absent.
 
 Call the driver's `begin` verb once for this file. It detects the marker,
 resolves+declares every config axis (D5), validates the consistency invariant,
-acquires the lock then checkpoints (opens the journal) before the front-end, runs the matching
-front-end (FE-B for a 3rd-party source file/text; FE-B' for a cc-log jsonl, which it
-projects fork-aware from the `session_id` — via `cc_log_project.project_owned` over the
-vendored DuckDB views, deduping turns by content-hash against the turn ledger — then pins
-`doc_type:transcript`), runs redaction + content-hash dedup, writes
+acquires the lock then checkpoints (opens the journal) before the front-end, runs the
+FE-B front-end over the document, runs redaction + content-hash dedup, writes
 the raw artifact (unless a dedup no-op), writes the `.llmwiki.txn` sidecar, and prints
 the contract JSON on stdout. `$SOURCE` is this cycle's source — the single-file token in
 the single-file case, or one `rel_path` from the `enumerate` `files` list in the
@@ -214,17 +249,27 @@ identically to every file in the loop.
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest begin \
   "$WIKI_ROOT" "$SOURCE" \
-  ${KIND:+--kind="$KIND"} \
   ${DOC_TYPE:+--doc_type="$DOC_TYPE"} \
   ${EXTERNAL:+--external="$EXTERNAL"} \
   ${WRITE_MODE:+--write_mode="$WRITE_MODE"} \
   ${APPLY_FANOUT_K:+--apply_fanout_k="$APPLY_FANOUT_K"}
 ```
 
-(Use `--kind=fe_b_prime` for a cc-log jsonl transcript; omit `--kind` / `--kind=auto`
-for a 3rd-party source. An explicit `--kind=fe_b` ingests a plain `.jsonl` DATA file as
-text, bypassing the session-log refusal `--kind=auto` applies to `.jsonl` sources. The
-driver also echoes the resolved-value declaration to stderr.)
+> **NEVER pass `--kind` from this skill (D11).** Omitting it leaves `--kind=auto`, which
+> is what keeps the driver's fail-closed `.jsonl` gate REACHABLE. That gate is not a guard
+> against a skill forgetting a flag — it protects THIS command's own sweep: the driver's
+> text-extension allowlist includes `.jsonl`, so `/wiki-ingest-docs ./docs/` can enumerate
+> a session log sitting in the tree, and the gate refuses it per-file (the sweep continues
+> under G-f). An explicit `--kind=fe_b` resolves to the SAME origin as auto, so it buys
+> nothing functionally — its only effect is to disarm the gate, silently landing a session
+> log in the SOURCE tier. A genuine `.jsonl` DATA file is the documented escape hatch: the
+> operator passes `--kind=fe_b` by hand on a direct CLI call, never this skill.
+>
+> Session logs are not this command's object at all: use `/wiki-file` for the conversation
+> you are having, `/wiki-ingest-sessions` for other sessions' logs. Both pass their own
+> fixed `--kind`.
+>
+> (The driver also echoes the resolved-value declaration to stderr.)
 
 From the printed JSON capture: `declaration` (list of `[wiki] <axis> = <value>
 (<source>)` lines), `declaration_hash` (E1/E4 — the code-side short hash used for the
@@ -232,7 +277,8 @@ per-file declaration-echo mitigation below), `raw_rel_path` (E1/E2 — the wiki-
 of the raw artifact `begin` wrote; `begin` no longer inlines the body, so Stage1 Reads the
 raw from this path in Step 2), `stage1_blob_path` (#1 — the absolute path to Write the
 Stage1 blob to in Step 2; code-authored under the system temp dir, so use it verbatim and
-never reconstruct a temp path yourself), `origin` (`fe_b`|`fe_b_prime`), `doc_type`,
+never reconstruct a temp path yourself), `origin` (always `fe_b` here — this command
+never passes `--kind`, D11), `doc_type`,
 `max_count`, `max_bytes`, `apply_fanout_k`, `dedup_noop`, `redaction_flags`.
 
 Then:
@@ -275,20 +321,18 @@ raw was already journaled+written under the transaction, and Stage1 holds `tools
 it reads the untrusted raw body from that path itself (E2 — no write tool added). Pass the
 `doc_type` from `begin`'s JSON:
 
-- For FE-B input (`origin: fe_b`): the raw at `raw_rel_path` is the redacted source body;
-  pass the `doc_type` hint; the subagent classifies `doc_type` (unmatched → `default`).
-- For FE-B' input (`origin: fe_b_prime`): the raw at `raw_rel_path` is the projected
-  transcript, and `begin` already pinned `doc_type: transcript` (the FE-B' code floor). Pass
-  `doc_type=transcript` and instruct the subagent to honor the pinned type and skip
-  classification.
+The raw at `raw_rel_path` is the redacted source body; pass the `doc_type` hint and let the
+subagent classify `doc_type` (unmatched → `default`). This command always resolves
+`origin: fe_b` (it never passes `--kind`, D11), so there is no transcript branch to take
+here — `/wiki-file` and `/wiki-ingest-sessions` own that one.
 
 **Tier (#2 — symmetric with the Stage2 worker in Step 4).** The output tier is a
-deterministic function of `origin`: instruct Stage1 to propose every affected page's
-`rel_path` under `wiki/derived/…` for `origin: fe_b_prime` (derived tier), or under `wiki/…`
-(non-derived) for `origin: fe_b` (source tier). The driver enforces the derived case in
-code: for `fe_b_prime`, `plan-fanout` (Step 3) rejects a proposal whose touched pages are
-not under `wiki/derived/`, and the Stage2 write gate (D20) admits only `wiki/derived/`. So
-proposing the correct tier here is load-bearing, not cosmetic.
+deterministic function of `origin`, which is `fe_b` here: instruct Stage1 to propose every
+affected page's `rel_path` under `wiki/…` (the non-derived SOURCE tier). Read `origin` from
+`begin`'s JSON rather than assuming it — the driver enforces the tier in code
+(`plan-fanout` rejects a derived-origin proposal that leaves `wiki/derived/`, and the
+Stage2 write gate (D20) admits only `wiki/derived/` for that origin), so a mismatch between
+what you propose and what the driver resolved is a REJECT, not a silent correction.
 
 Stage1 returns a single JSON object — `{"touched": [rel_path, …], "edits": [{rel_path,
 op, proposal}, …], "contradictions": […], "doc_type": …}` (its agent-def Step 3 contract; a
@@ -357,6 +401,10 @@ If a worker errors or fails to return a manifest, this file failed before apply:
 the `apply-finish` call and roll it back via `finish fail` (Step 5's failure path).
 
 ## Step 5 — `apply-finish`: apply every manifest + central join + single commit (or `finish fail` on a pre-apply error)
+
+**The pre-apply confirmation for this run was already taken at Step 0b (batch head).** Do
+NOT ask again here — that is the whole point of hoisting it: one question governs the
+sweep. If it was declined, the loop never started.
 
 When every cluster's worker returned a manifest (Step 4), run the driver's compound
 `apply-finish` verb once for this file, passing one `--manifest` per cluster in ordinal

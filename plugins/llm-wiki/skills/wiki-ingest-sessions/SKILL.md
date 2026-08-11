@@ -1,6 +1,6 @@
 ---
 name: wiki-ingest-sessions
-description: Ingest EVERY cc-log session of the active wiki's resolved scope (Path B) into the wiki via the same 2-stage extract→apply core as /wiki-ingest. Resolves the session-id SET with the driver's read-only `session-plan` verb (ts-ascending; the set follows `--workspace` / `--pj <name>` / the resolved wiki scope), then ingests each session in its OWN independent transaction (one sid = one begin→finish, `--kind=fe_b_prime`). Explicit write-bearing skill (hook-independent). Usage `/wiki-ingest-sessions [--workspace | --pj <name>] [--root <path>] [doc_type=...] [write_mode=...] [apply_fanout_k=...]`.
+description: Ingest EVERY cc-log session of the active wiki's resolved scope (Path B) into the wiki via the same 2-stage extract→apply core as /wiki-ingest-docs. Resolves the session-id SET with the driver's read-only `session-plan` verb (ts-ascending; the set follows `--workspace` / `--pj <name>` / the resolved wiki scope), then ingests each session in its OWN independent transaction (one sid = one begin→finish, `--kind=fe_b_prime`). Explicit write-bearing skill (hook-independent). Usage `/wiki-ingest-sessions [--workspace | --pj <name>] [--root <path>] [doc_type=...] [write_mode=...] [apply_fanout_k=...]`.
 disable-model-invocation: true
 allowed-tools: Bash(uv run --script *), Agent, AskUserQuestion, Write
 ---
@@ -10,7 +10,7 @@ allowed-tools: Bash(uv run --script *), Agent, AskUserQuestion, Write
 Arguments: `$ARGUMENTS`
 
 You are the Path B ingest orchestrator. This is the session-set-wide sibling of
-`/wiki-ingest`: instead of one source token, you ingest every cc-log session of the
+`/wiki-ingest-docs`: instead of one source token, you ingest every cc-log session of the
 resolved set (workspace union, a taskflow project, or the current project — see Step 2).
 You do not run the deterministic envelope yourself — the
 `ingest_driver.py` CLI owns it (config resolution, the single file-journal transaction
@@ -18,7 +18,7 @@ per session, the FE-B' projector front-end, redaction, the turn-content-hash led
 dedup, the central join, index/log). Your job is to (1) resolve the wiki root, (2) call
 the driver's read-only `session-plan` verb to get the ts-ascending session-id set, and
 (3) loop the same per-session `begin → Stage1 → Stage2 → apply-finish` cycle that
-`/wiki-ingest` runs — once per sid, each in its own independent transaction — with
+`/wiki-ingest-docs` runs — once per sid, each in its own independent transaction — with
 failure-continue and a final summary. You do not author wiki page content yourself —
 the Stage2 apply-worker authors it and returns a page manifest; you pass every cluster's
 manifest through the driver's compound `apply-finish` verb (E3), where the allowlist write
@@ -26,7 +26,7 @@ tool (`write_tool.WriteSession`) gates every page write and, on success, the sam
 performs the central join + single commit.
 
 Each session is a complete, independent transaction: there is no batch-spanning
-transaction across sessions (mirrors `/wiki-ingest`'s glob/dir loop, keyed per-sid here
+transaction across sessions (mirrors `/wiki-ingest-docs`'s glob/dir loop, keyed per-sid here
 instead of per-file).
 
 ## THE ONE UN-DROPPABLE INVARIANT (read first, never bypass)
@@ -105,7 +105,7 @@ Parse `$ARGUMENTS` into:
 - `--root <path>` — optional top-override for the wiki root (Q4). It is not a `key=value`
   axis — strip it out first, before the axis parse.
 - axis overrides (`doc_type=...`, `write_mode=...`, `apply_fanout_k=...`, `external=...`)
-  — the same axes `/wiki-ingest` accepts; they apply identically to every session in the
+  — the same axes `/wiki-ingest-docs` accepts; they apply identically to every session in the
   loop.
 
 Do not auto-sniff or invent a project name, and do not decide the session set yourself —
@@ -120,7 +120,7 @@ the driver's `session-plan` verb fails closed (Step 2) with guidance to pass `--
 The wiki root is resolved, not assumed to be the CWD. Resolve it via
 `wiki_root_resolver` (scopes: prompt>pj>workspace>cwd>child), honoring an explicit
 `--root <path>` from Step 0 as the top override (Q4). Pass it as `prompt_root`, else pass
-nothing (identical mechanism/wording to `/wiki-ingest`). Also capture the running
+nothing (identical mechanism/wording to `/wiki-ingest-docs`). Also capture the running
 session's own id as `SID` via the `${CLAUDE_SESSION_ID}` skill-template substitution (the
 harness replaces this placeholder with the literal session id before you see this text —
 it is not an OS env var) and thread it as `--sid` so the resolver's session-aware pj
@@ -234,6 +234,29 @@ and stop; nothing was locked or written.
 
 ## Step 3 — Loop per sid (one independent transaction each) + summary
 
+**Before the first `begin`, take the batch-head confirmation (D5).** When `write_mode`
+resolved to `explicit`, this sweep must not ask once per sid — a workspace-scope run can
+resolve dozens, and N prompts would make the gate unusable. Ask ONCE here with
+`AskUserQuestion`, showing the resolved `scope`, the `pattern`, and `len(sids)` (the set
+Step 2 resolved), for a decision that then applies to every sid in the loop:
+
+- **Approve the sweep** → run the loop; do NOT ask again per sid.
+- **Decline** → `session-plan` and `project-batch` are read-only, so nothing was locked or
+  written; stop and report. Delete the Step 2b temp dir with `project-batch-cleanup`
+  before stopping (Step 3's cleanup line applies to every exit path, including this one).
+
+Per-sid confirmation is deliberately NOT offered: a sid's pages are unknown until its own
+Stage2 runs, so per-sid prompts would interrupt the sweep N times without previewing more
+than the batch-head question already does. The gate here is over the INPUT SET (which
+sessions get filed — the disclosure decision); the write allowlist and the per-sid
+transaction remain the gates over the output. Skip the question entirely when `write_mode`
+resolved to `implicit` (Step 4 already announces that per-apply confirmation is skipped).
+
+**A non-interactive run cannot answer this.** Ask before anything is locked — as specified
+here — so an automated caller that cannot reply stops with nothing written. Do NOT guess an
+answer and do NOT proceed; report that the run needs an interactive session or a deliberate
+`write_mode=implicit` override.
+
 For each `sid` in `sids` (in the returned ts-ascending order), run the full per-sid
 cycle Steps 4–8 with that `sid` as `$SOURCE` and its pre-extracted turn file
 `turns[$sid]` (from Step 2b's map) as `$TURNS_PATH`. Each iteration is a complete,
@@ -306,7 +329,7 @@ mistyped or drifted `$OUT_DIR` can never delete an unrelated path. A crashed loo
 never reaches this line is caught by the driver's backstop prune (stale `llmwiki-turns-*`
 dirs are removed at the next `project-batch`).
 
-The Steps 4–8 below define one per-sid cycle — identical to `/wiki-ingest`'s per-file
+The Steps 4–8 below define one per-sid cycle — identical to `/wiki-ingest-docs`'s per-file
 cycle, keyed on a sid rather than a file path.
 
 ## Step 4 — `begin`: open the transaction, project + normalize, declare (one driver call)
@@ -484,6 +507,10 @@ If a worker errors or fails to return a manifest, this sid failed before apply: 
 the `apply-finish` call and roll the sid back via `finish fail` (Step 8's failure path).
 
 ## Step 8 — `apply-finish`: apply every manifest + central join + single commit (or `finish fail` on a pre-apply error)
+
+**The pre-apply confirmation for this run was already taken at Step 3 (batch head).** Do
+NOT ask again here — that is the point of hoisting it: one question governs the sweep. If
+it was declined, the loop never started.
 
 When every cluster's worker returned a manifest (Step 7), run the driver's compound
 `apply-finish` verb once for this sid, passing one `--manifest` per cluster in ordinal

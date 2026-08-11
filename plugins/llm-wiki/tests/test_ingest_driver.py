@@ -357,6 +357,28 @@ def test_plan_fanout_manifest_paths_file_under_out_dir_rides_cleanup(tmp_path):
     drv.abort(str(tmp_path))
 
 
+def test_plan_fanout_manifests_inherit_the_per_run_stage1_dir(tmp_path):
+    """The manifests inherit run-uniqueness from the blob's parent dir — they need
+    no keying of their own. This is load-bearing: `fe_hash` is a CONTENT hash, so
+    two concurrent runs projecting identical content produce the SAME
+    `manifest-<fe_hash12>-<ordinal>.json` filename, and only the per-run parent
+    dir keeps them apart."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "input.txt"
+    src.write_text("x", encoding="utf-8")
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b")     # no out_dir
+    blob = Path(out["stage1_blob_path"])
+    blob.write_text(json.dumps({"touched": ["wiki/p0.md"]}), encoding="utf-8")
+
+    planned = drv.plan_fanout(str(tmp_path), str(blob))
+    assert planned["manifest_paths"], "expected at least one manifest path"
+    for p in planned["manifest_paths"]:
+        assert Path(p).parent == blob.parent
+        assert Path(p).parent.name.startswith(drv._STAGE1_DIR_PREFIX)
+    drv.abort(str(tmp_path))
+    shutil.rmtree(blob.parent, ignore_errors=True)
+
+
 def test_plan_fanout_manifest_paths_empty_touched_aligned(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
@@ -409,15 +431,90 @@ def test_begin_stage1_blob_path_absolute_under_out_dir(tmp_path):
     drv.abort(str(tmp_path))
 
 
-def test_begin_stage1_blob_path_defaults_to_system_temp(tmp_path):
+def test_begin_stage1_blob_path_defaults_to_a_per_run_temp_dir(tmp_path):
+    """Without `--out_dir` the blob lands in a FRESH per-run `llmwiki-stage1-*`
+    dir under the system temp — not directly in the system temp, which keyed the
+    path on the source stem alone and collided across concurrent runs."""
     _init_wiki(tmp_path)
     src = tmp_path / "doc.md"
     src.write_text("y", encoding="utf-8")
     out = drv.begin(str(tmp_path), str(src), kind="fe_b")   # no out_dir
     blob = Path(out["stage1_blob_path"])
     assert blob.is_absolute()
-    assert blob.parent == Path(tempfile.gettempdir())
-    assert blob.name == "stage1-doc.json"
+    assert blob.name == "stage1-doc.json"                   # filename unchanged
+    assert blob.parent.name.startswith(drv._STAGE1_DIR_PREFIX)
+    assert blob.parent.parent == Path(tempfile.gettempdir())
+    assert blob.parent.is_dir()                             # created eagerly
+    drv.abort(str(tmp_path))
+    shutil.rmtree(blob.parent, ignore_errors=True)
+
+
+def test_begin_stage1_blob_dir_is_unique_per_run(tmp_path):
+    """THE collision regression: two begins on the SAME source must not share a
+    Stage1 blob path. Measured failure before this fix — five parallel runs of one
+    sid overwrote each other's blob, `plan-fanout` consumed a foreign run's
+    content, and `apply-finish`'s F2 gate could not detect it (planned_clusters
+    and the Stage2 manifest both derive from that same file)."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "same-source.md"
+    src.write_text("first", encoding="utf-8")
+
+    first = drv.begin(str(tmp_path), str(src), kind="fe_b")
+    blob1 = Path(first["stage1_blob_path"])
+    drv.abort(str(tmp_path))
+
+    # Same source stem, so the FILENAME is identical by design ...
+    src.write_text("second", encoding="utf-8")
+    second = drv.begin(str(tmp_path), str(src), kind="fe_b")
+    blob2 = Path(second["stage1_blob_path"])
+    drv.abort(str(tmp_path))
+
+    assert blob1.name == blob2.name          # ... keyed on the source stem
+    assert blob1 != blob2                    # ... but the full paths differ
+    assert blob1.parent != blob2.parent      # because the DIR is per-run
+    for d in (blob1.parent, blob2.parent):
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_begin_dedup_noop_creates_no_stage1_dir(tmp_path):
+    """A dedup no-op dispatches no stages, so it must not create a per-run dir
+    (it would be an empty leak on every no-op). begin creates the dir ONLY on the
+    branch that hands back a live transaction — zero residue by construction, no
+    compensating cleanup."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "dup.md"
+    src.write_text("identical body", encoding="utf-8")
+
+    first = drv.begin(str(tmp_path), str(src), kind="fe_b")
+    assert first["dedup_noop"] is False
+    drv.finish(str(tmp_path), "success", expected_pages=[], title="dup")
+    shutil.rmtree(Path(first["stage1_blob_path"]).parent, ignore_errors=True)
+
+    before = set(Path(tempfile.gettempdir()).glob(f"{drv._STAGE1_DIR_PREFIX}*"))
+    second = drv.begin(str(tmp_path), str(src), kind="fe_b")   # same content
+    after = set(Path(tempfile.gettempdir()).glob(f"{drv._STAGE1_DIR_PREFIX}*"))
+
+    assert second["dedup_noop"] is True
+    assert second["auto_closed"] is True
+    assert after == before, "a dedup no-op begin created a stage1 temp dir"
+
+
+def test_begin_with_out_dir_creates_no_extra_stage1_dir(tmp_path):
+    """Path B already gets run-uniqueness from project-batch's own mkdtemp, and the
+    blob must stay INSIDE that dir so `project-batch-cleanup` sweeps it. begin must
+    not create a second dir there (one leak per sid across the loop)."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "b.md"
+    src.write_text("z", encoding="utf-8")
+    out_dir = tmp_path / "batchtmp"
+    out_dir.mkdir()
+
+    before = set(Path(tempfile.gettempdir()).glob(f"{drv._STAGE1_DIR_PREFIX}*"))
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b", out_dir=str(out_dir))
+    after = set(Path(tempfile.gettempdir()).glob(f"{drv._STAGE1_DIR_PREFIX}*"))
+
+    assert Path(out["stage1_blob_path"]).parent == out_dir
+    assert after == before, "begin created a stage1 temp dir despite --out_dir"
     drv.abort(str(tmp_path))
 
 
@@ -790,9 +887,9 @@ def test_begin_ledger_diff_runs_inside_lock(tmp_path, monkeypatch):
     h2 = ld.compute_hash("assistant", "world")
     turns = [
         {"role": "user", "uuid": "u1", "ts": "2026-07-07T00:00:00",
-         "projected_text": "hello", "hash": h1, "tool_uses": []},
+         "projected_text": "hello", "hash": h1},
         {"role": "assistant", "uuid": "u2", "ts": "2026-07-07T00:00:01",
-         "projected_text": "world", "hash": h2, "tool_uses": []},
+         "projected_text": "world", "hash": h2},
     ]
     tf = tmp_path.parent / "race-turns.json"
     tf.write_text(json.dumps({"sid": "sid-a", "origin": drv.ORIGIN_FE_B_PRIME,
@@ -825,6 +922,215 @@ def test_begin_ledger_diff_runs_inside_lock(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# D13 — `--cutoff=last-user`: drop the running session's own invocation turn.
+# Deterministic (role + order only), opt-in, projection origins only. The anchor
+# is the last NON-EMPTY user turn, so an unlisted D12 noise shape cannot
+# silently become the cutoff point.
+# --------------------------------------------------------------------------- #
+def _t(role, text, uuid="u"):
+    from llmwiki.ingest import ledger as ld
+    return {"role": role, "uuid": uuid, "ts": "t",
+            "projected_text": text, "hash": ld.compute_hash(role, text)}
+
+
+def test_cutoff_last_user_drops_invocation_turn_and_everything_after():
+    turns = [
+        _t("user", "real question", "u1"),
+        _t("assistant", "real answer", "a1"),
+        _t("user", "/wiki-file", "u2"),          # the invocation (last user turn)
+        _t("assistant", "active wiki: /w", "a2"),  # narration after it
+    ]
+    kept = drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER)
+    assert [t["uuid"] for t in kept] == ["u1", "a1"]
+
+
+def test_cutoff_none_is_the_default_and_keeps_everything():
+    turns = [_t("user", "q", "u1"), _t("assistant", "a", "a1"),
+             _t("user", "later", "u2")]
+    assert drv._apply_cutoff(turns, drv._CUTOFF_NONE) == turns
+
+
+def test_cutoff_anchors_on_an_empty_user_turn_too():
+    """ROLE ONLY — an EMPTY user turn still anchors the cutoff.
+
+    Regression for the review finding: an earlier draft required the anchor's
+    text to be non-empty, so that an unlisted D12 noise record could not become
+    the cutoff point. But D7 strips the `/wiki-file` invocation LINE at
+    extraction, so the invocation turn reaches the cutoff EMPTY — the non-empty
+    rule skipped it and anchored on the user's last real question, deleting the
+    Q&A the run exists to file. See test_cutoff_survives_the_d7_invocation_strip
+    for the end-to-end composition this protects.
+    """
+    turns = [
+        _t("user", "real question", "u1"),
+        _t("assistant", "real answer", "a1"),
+        _t("user", "", "u2"),             # the D7-stripped invocation turn
+    ]
+    kept = drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER)
+    assert [t["uuid"] for t in kept] == ["u1", "a1"]
+
+
+def test_cutoff_survives_the_d7_invocation_strip(tmp_path):
+    """COMPOSITION test: run the real extraction path (boilerplate strip + hash)
+    into the real cutoff, instead of hand-writing already-projected text.
+
+    The unit fixtures above build turn dicts directly, which is exactly how the
+    original defect slipped through: they carried `projected_text="/wiki-file"`,
+    a string the real pipeline can never produce (D7 strips that line before the
+    cutoff ever sees the turn). Anything that changes `_BOILERPLATE_PATTERNS` or
+    the anchor rule must keep this passing.
+    """
+    def _projected(role, raw_text):
+        t = cc_log_project._Turn(role=role, uuid=f"u-{role}", ts="t")
+        t.text_parts = [raw_text]
+        return cc_log_project._turn_to_dict(t, ledger=ld_mod())
+
+    def ld_mod():
+        from llmwiki.ingest import ledger as _l
+        return _l
+
+    for invocation in ("/wiki-file", "/wiki-file just the last answer",
+                       "/llm-wiki:wiki-file the retry-policy part"):
+        turns = [
+            _projected("user", "real question"),
+            _projected("assistant", "real answer"),
+            _projected("user", invocation),
+        ]
+        # Precondition the defect turned on: D7 emptied the invocation turn.
+        assert turns[-1]["projected_text"] == "", (
+            f"{invocation!r}: expected D7 to strip the invocation line")
+        kept = drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER)
+        assert [t["projected_text"] for t in kept] == [
+            "real question", "real answer"], (
+            f"{invocation!r}: the cutoff must keep the conversation and drop "
+            f"only the invocation turn")
+
+
+def test_cutoff_with_no_user_turn_drops_nothing():
+    turns = [_t("assistant", "one", "a1"), _t("assistant", "two", "a2")]
+    assert drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER) == turns
+
+
+def test_begin_rejects_unknown_cutoff_value(tmp_path):
+    _init_wiki(tmp_path)
+    with pytest.raises(drv.DriverUsageError):
+        drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", cutoff="bogus")
+
+
+def test_begin_rejects_cutoff_on_fe_b(tmp_path):
+    """A document has no turn list, so a cutoff there would be silently ignored
+    — refuse instead (misuse-resistant), before anything is locked or written."""
+    _init_wiki(tmp_path)
+    src = tmp_path / "doc.txt"
+    src.write_text("a document, not a transcript", encoding="utf-8")
+    with pytest.raises(drv.DriverUsageError, match="not applicable"):
+        drv.begin(str(tmp_path), str(src), kind="fe_b",
+                  cutoff=drv._CUTOFF_LAST_USER)
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+
+
+def test_begin_applies_cutoff_on_the_path_a_channel(tmp_path, monkeypatch):
+    """The cutoff must reach Path A (a fresh extract), not just `--turns`."""
+    _init_wiki(tmp_path)
+    extracted = [
+        _t("user", "real question", "u1"),
+        _t("assistant", "real answer", "a1"),
+        _t("user", "/wiki-file", "u2"),
+    ]
+    monkeypatch.setattr(cc_log_project, "extract_owned",
+                        lambda sid, *, ledger: list(extracted))
+    seen = {}
+
+    def _capture(root, sid, turn_list, *, ledger):
+        seen["turns"] = turn_list
+        return cc_log_project.ProjectionResult(markdown="# CC Session transcript\n")
+    monkeypatch.setattr(cc_log_project, "project_from_turns", _capture)
+
+    out = drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime",
+                    cutoff=drv._CUTOFF_LAST_USER)
+    assert [t["uuid"] for t in seen["turns"]] == ["u1", "a1"]
+    # F-5: the drop is observable on stdout, separately from ledger_skipped.
+    assert out["cutoff_dropped"] == 1
+    drv.abort(str(tmp_path))
+
+
+def test_begin_reports_zero_cutoff_dropped_without_the_flag(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    extracted = [_t("user", "real question", "u1"),
+                 _t("user", "/wiki-file", "u2")]
+    monkeypatch.setattr(cc_log_project, "extract_owned",
+                        lambda sid, *, ledger: list(extracted))
+    monkeypatch.setattr(
+        cc_log_project, "project_from_turns",
+        lambda root, sid, turn_list, *, ledger:
+            cc_log_project.ProjectionResult(markdown="# CC Session transcript\n"))
+    out = drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime")
+    assert out["cutoff_dropped"] == 0
+    drv.abort(str(tmp_path))
+
+
+# --------------------------------------------------------------------------- #
+# D14 — `--turns` entries are hash-verified, so the narrowing channel is
+# DROP-ONLY by construction: an entry survives byte-for-byte or begin refuses.
+# --------------------------------------------------------------------------- #
+def _write_turns(tmp_path, turns, sid="sid-a"):
+    tf = tmp_path.parent / "narrowed-turns.json"
+    tf.write_text(json.dumps({"sid": sid, "origin": drv.ORIGIN_FE_B_PRIME,
+                              "turns": turns}), encoding="utf-8")
+    return tf
+
+
+def test_turns_hash_verify_accepts_a_pure_subset(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    full = [_t("user", "keep me", "u1"), _t("assistant", "drop me", "a1")]
+    tf = _write_turns(tmp_path, [full[0]])          # entry REMOVED, none edited
+    seen = {}
+
+    def _capture(root, sid, turn_list, *, ledger):
+        seen["turns"] = turn_list
+        return cc_log_project.ProjectionResult(markdown="# CC Session transcript\n")
+    monkeypatch.setattr(cc_log_project, "project_from_turns", _capture)
+
+    drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
+    assert [t["uuid"] for t in seen["turns"]] == ["u1"]
+    drv.abort(str(tmp_path))
+
+
+def test_turns_hash_verify_rejects_edited_text(tmp_path):
+    """Editing a turn's text while keeping its hash (or vice versa) fails closed
+    — this is what makes the LLM narrowing channel drop-only."""
+    _init_wiki(tmp_path)
+    tampered = _t("user", "original", "u1")
+    tampered["projected_text"] = "rewritten by the LLM"
+    tf = _write_turns(tmp_path, [tampered])
+    with pytest.raises(drv.DriverUsageError, match="hash check"):
+        drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
+    # fail-closed BEFORE the lock: nothing acquired, nothing written.
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
+
+
+def test_turns_hash_verify_rejects_a_fabricated_entry(tmp_path):
+    """An entry the projector never emitted cannot be smuggled in: its hash
+    would have to match a role+text the LLM chose, which the check recomputes."""
+    _init_wiki(tmp_path)
+    fabricated = {"role": "user", "uuid": "u9", "ts": "t",
+                  "projected_text": "content the projector never produced",
+                  "hash": "0" * 32}
+    tf = _write_turns(tmp_path, [fabricated])
+    with pytest.raises(drv.DriverUsageError, match="hash check"):
+        drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
+
+
+def test_turns_hash_verify_rejects_a_non_object_entry(tmp_path):
+    _init_wiki(tmp_path)
+    tf = _write_turns(tmp_path, ["not an object"])
+    with pytest.raises(drv.DriverUsageError, match="not an object"):
+        drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
+
+
+# --------------------------------------------------------------------------- #
 # C3: project-batch-cleanup — code owns the temp-dir deletion (two guards), and
 # project-batch prunes stale llmwiki-turns-* dirs as a backstop.
 #
@@ -853,6 +1159,37 @@ def test_project_batch_cleanup_refuses_outside_temp(tmp_path):
     with pytest.raises(drv.DriverError, match="REFUSED"):
         drv.project_batch_cleanup(str(d))
     assert d.is_dir()            # not deleted
+
+
+def test_project_batch_cleanup_refuses_a_stage1_dir():
+    """The cleanup verb's guard admits the TURNS prefix only. A per-run Stage1 dir
+    is deliberately NOT one of its targets (it is collected by the backstop prune
+    instead), so the verb must refuse it rather than widen its blast radius."""
+    d = Path(tempfile.mkdtemp(prefix=drv._STAGE1_DIR_PREFIX))
+    try:
+        with pytest.raises(drv.DriverError, match="REFUSED"):
+            drv.project_batch_cleanup(str(d))
+        assert d.is_dir()        # not deleted
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_prune_covers_stage1_dirs_too(tmp_path):
+    """The backstop prune is responsible for BOTH driver temp-dir families. A
+    stale `llmwiki-stage1-*` (only strandable by a crash between begin and the
+    closing verb — there is no per-run cleanup verb for it) is collected; a fresh
+    one is retained."""
+    stale = Path(tempfile.mkdtemp(prefix=drv._STAGE1_DIR_PREFIX))
+    fresh = Path(tempfile.mkdtemp(prefix=drv._STAGE1_DIR_PREFIX))
+    old = time.time() - (drv._BATCH_STALE_PRUNE_SECONDS + 3600)   # ~25h ago
+    os.utime(stale, (old, old))
+    try:
+        drv._prune_stale_batch_dirs()
+        assert not stale.exists()
+        assert fresh.exists()
+    finally:
+        shutil.rmtree(fresh, ignore_errors=True)
+        shutil.rmtree(stale, ignore_errors=True)
 
 
 def test_project_batch_cleanup_deletes_valid_dir():
@@ -902,7 +1239,7 @@ def test_project_batch_prunes_stale_turn_dirs(tmp_path, monkeypatch):
 def _apply_cluster(monkeypatch, root, origin, ordinal, manifest) -> int:
     """Run the real `ingest-apply` verb (cli) with a cluster ordinal so it writes
     a dispatch receipt to the sidecar — mirrors the orchestrator's per-cluster
-    apply call (wiki-ingest.md Step 4)."""
+    apply call (wiki-ingest-docs/SKILL.md Step 4)."""
     import io
     from llmwiki import cli
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(manifest)))

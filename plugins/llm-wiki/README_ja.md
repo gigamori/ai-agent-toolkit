@@ -71,19 +71,20 @@ wiki はプラグインの `templates/` から初期化される：
 
    **セッション単位でトグル — `wiki:on` / `wiki:off`。** wiki が解決されている限り既定は on。プロンプトの任意の位置に `wiki:off` を含めると、現在のセッションだけ静かにできる：hook は `wiki-active` / filing の注入を抑止し、最小限の `[wiki:off]` 通知のみを注入する（Claude は返答の冒頭に `[wiki:off]` を出し、wiki に触れない）。`wiki:on` で戻す。状態は解決した wiki root 直下の per-session marker（`.llmwiki.toggle.d/<session_id>.off`、存在 = off）なので、**セッション内では sticky**、**新しいセッションは on** で始まる。*恒久的な* off は代わりに wiki の `SCHEMA.md` の `activation_scope` を使う。wiki が一切解決されない場合、`wiki:on|off` は無視される（何も注入しない — pj 未割当と同型）。
 
-2. **ソースを ingest する。**
+2. **何かを入れる。** コマンドは**対象**で命名されている — ドキュメントか、今している会話か、他セッションのログか：
 
    ```
-   /wiki-ingest ./docs/rfc-routing.md            # 3rd-party ドキュメント（FE-B → source tier）
-   /wiki-ingest ./docs/rfc.md external=https://example.com/rfc   # citation 用の permalink を付ける
-   /wiki-ingest ./logs/session.jsonl             # Claude Code セッションログ（FE-B' → derived tier、doc_type=transcript に pin）
+   /wiki-ingest-docs ./docs/rfc-routing.md       # 3rd-party ドキュメント（FE-B → source tier）
+   /wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc   # citation 用の permalink を付ける
+   /wiki-file                                    # 今のこの会話（FE-B' → derived tier、doc_type=transcript に pin）
+   /wiki-ingest-sessions --workspace             # 他セッションのログを scope 指定で
    ```
 
-   引数は**クォートした glob** や**ディレクトリ**も指定できる — driver が（シェルではなく）Python で展開し、**1 ファイル 1 トランザクション**で ingest する：
+   `/wiki-ingest-docs` の引数は**クォートした glob** や**ディレクトリ**も指定できる — driver が（シェルではなく）Python で展開し、**1 ファイル 1 トランザクション**で ingest する：
 
    ```
-   /wiki-ingest "./docs/**/*.md"                 # クォートした glob：Python で展開、wiki 内部パスを除外、1 ファイル 1 トランザクション
-   /wiki-ingest ./docs/                          # ディレクトリ：./docs/**/* として展開し、テキスト系 allowlist に限定
+   /wiki-ingest-docs "./docs/**/*.md"            # クォートした glob：Python で展開、wiki 内部パスを除外、1 ファイル 1 トランザクション
+   /wiki-ingest-docs ./docs/                     # ディレクトリ：./docs/**/* として展開し、テキスト系 allowlist に限定
    ```
 
    ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）のみ拾い、非テキスト（例：画像）はスキップする。バッチでは 1 ファイルの失敗は**そのファイルだけ**ロールバックして続行し、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する。0 件マッチはエラー。
@@ -92,18 +93,19 @@ wiki はプラグインの `templates/` から初期化される：
 
 3. **質問する。** 自然言語で尋ねるだけ — 例：*「retry backoff について何を決めたっけ？」*。`wiki-query` skill が自動起動し、`wiki/` と `wiki/derived/` の両方を読み、各 claim をページパスで citation する（パスが source / derived tier を示す）。これは read-only。
 
-4. **回答を filing（任意・明示）。** query 自体は書き込まない。回答を保存したい時は明示的に依頼する — 例：*「それをページとして filing して」* — と `wiki/derived/` 配下に derived synthesis として着地する。
-
-   LLM の意図判断に依存しない**決定的**な filing トリガとして、通常の質問の任意の位置に marker `llm-wiki:file` を含められる — hook が検出し filing を必須化する（確認なし：marker は定義上明示的）。回答は `wiki/derived/` 配下に filing される：
+4. **会話を filing（任意・明示）。** query 自体は書き込まない。会話が生んだものを残す手段は 2 つある：
 
    ```
-   retry backoff について何を決めたっけ？ llm-wiki:file              # filing を強制。ページ名は回答から生成
-   retry backoff について何を決めたっけ？ llm-wiki:file=retry-policy # ページ名を固定 → wiki/derived/retry-policy.md
+   /wiki-file                          # この会話を filing
+   /wiki-file 最後の回答だけ             # 最後の回答に絞る
+   /wiki-file retry-policy の議論だけ    # トピックで絞る
    ```
 
-   `llm-wiki:file=<page-slug>` はページ名を `wiki/derived/<page-slug>.md` に固定する。slug 無しの時は LLM が回答からページ名を生成する。marker は wiki の中（`.llmwiki` がある時）でのみ有効。安全境界（redaction → write-tool の location ゲート → 単一トランザクション）は不変で、省略されるのは確認プロンプトのみ。（セッションが `wiki:off` の間は filing も抑止される。先に `wiki:on` で再有効化すること。）
+   `/wiki-file` はセッション ID もパスも要らない：source を実行中セッションに固定し、FE-B' パイプラインを pin し、自分の起動ターンの手前で投影を打ち切る（コマンドは指示であって会話内容ではない）。後続の自由文は *どのターンを* filing するかを絞るだけで、パイプラインは切り替えない。再実行は差分のみ：turn ledger が前回 filing 済みのターンを落とす。
 
-   llm-wiki は 2 つのプロンプトマーカーを領有する：`llm-wiki:file[=<slug>]`（この決定的な filing トリガ）と `wiki:on|off`（step 1 のセッショントグル）。どちらも文字列先頭または空白の直後でのみ発火し、case-insensitive なので token の途中にはマッチしない。
+   あるいは単に依頼してもよい — 例：*「それをページとして filing して」* — と `wiki/derived/` 配下に derived synthesis として着地する。
+
+   （セッションが `wiki:off` の間は filing も抑止される。先に `wiki:on` で再有効化すること。`wiki:on|off` は文字列先頭または空白の直後でのみ発火し、case-insensitive なので token の途中にはマッチしない。）
 
 5. **Lint。** `/wiki-lint` がグラフ / index 検査と transcript の decision floor を実行し、優先順位付きの「next questions」リストを返す。read-only。
 
@@ -129,16 +131,26 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest abort <wiki-root
 
 hook は `wiki:on|off` トグルも扱う：プロンプト中の `wiki:on`/`wiki:off` マーカーが per-session フラグを設定する（解決した wiki root 直下に `.llmwiki.lock` / `.cc-turn-ledger.jsonl` と並べて `.llmwiki.toggle.d/<session_id>.off`、存在 = off として保持。`llmwiki/core/wiki_toggle.py` が管理し、best-effort で放置セッションを mtime prune する）。off の間は `wiki-active` / filing ブロック全体を抑止し、最小限の `[wiki:off]` 通知のみ注入する。トグルは wiki が解決された時のみ効き（それ以外は何も注入しない）、セッション sticky で既定 on（新しいセッションは on で始まる）。トグルディレクトリは ingest から強制除外される（self-ingestion guard の `.llmwiki.toggle.d`）。`.llmwiki.txn.d` と同様。
 
-### Ingest — `/wiki-ingest <path-or-source-or-glob> [doc_type=...] [external=...]`
+### ドキュメントの Ingest — `/wiki-ingest-docs <path-or-glob> [doc_type=...] [external=...]`
 
-3rd-party ソース（FE-B）または Claude Code セッション jsonl（FE-B'）を、2 段 `extract → apply` core を通して単一のファイルジャーナル・トランザクション内で ingest する。引数は単一ファイルのほか、**クォートした glob**（`"./docs/**/*.md"`）や**ディレクトリ**（`./docs/`）も指定できる：driver が（シェルではなく）Python で展開し、wiki 内部パスを強制除外し、ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）に限定する。glob/ディレクトリは**1 ファイル 1 トランザクション**で ingest し、1 ファイルの失敗はそのファイルだけロールバックして続行、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する（0 件マッチはエラー）。
+書込を伴う 3 コマンドは、パイプラインの重さではなく**対象**で命名されている：`/wiki-ingest-docs` はドキュメント、`/wiki-file` は今している会話、`/wiki-ingest-sessions` は他セッションのログを取る。3 つとも同じ 2 段 `extract → apply` core を単一のファイルジャーナル・トランザクション内で回す。
 
-`/wiki-ingest`（および `/wiki-ingest-sessions`）は多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり 最後の `apply-finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
+`/wiki-ingest-docs` は 3rd-party ソース（FE-B）を ingest する。引数は単一ファイルのほか、**クォートした glob**（`"./docs/**/*.md"`）や**ディレクトリ**（`./docs/`）も指定できる：driver が（シェルではなく）Python で展開し、wiki 内部パスを強制除外し、ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）に限定する。glob/ディレクトリは**1 ファイル 1 トランザクション**で ingest し、1 ファイルの失敗はそのファイルだけロールバックして続行、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する（0 件マッチはエラー）。
+
+3 つとも多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり 最後の `apply-finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
 
 - **Stage 1（extract）** — `wiki-ingest-extract` subagent が redaction 済み・untrusted の raw ソースを**構造的に書込ツールなし**で読み、提案編集のみを出力する。
 - **Stage 2（apply）** — `wiki-ingest-apply` subagent が**構造的に書込ツールなし**でページ更新を執筆し、page manifest として返す。orchestrator がそれらの manifest を allowlist write ツール（`llmwiki/write/write_tool.py`）に複合 `apply-finish` verb 経由で通す。同ツールは書込先を `wiki/`・`wiki/derived/` に限定し、`SCHEMA.md` / `.llmwiki` / `raw/` / 絶対パス / traversal を拒否し、budget でゲートする。touch ページが `apply_fanout_k` を超えると Stage 2 は per-cluster の apply worker に fan-out する。その後 `apply-finish` が各 cluster の manifest を適用し、index / log / commit を join 後に中央集約する。提案された touch ページ集合の総数はまず `max_count` でゲートされる：これを超える ingest は fan-out せず human gate へエスカレートするため、per-worker の書込 budget が cluster 数だけ暗黙に乗算されることはない。fan-out 時、各 cluster の worker はコード算出の絶対 manifest パス（`plan-fanout` が返す `manifest_paths`）も受け取るため、temp ファイルパスを自分で再構成する必要がない。
 
-`begin` は `.jsonl` ソースに対し fail-closed：`--kind` が省略または `auto` で、ソースパスが `.jsonl` で終わる場合、`begin` はそれを（lock も書込も一切行わず）ingest 拒否する — session log を暗黙に plain text 扱いしない。`--kind=fe_b_prime`（cc-log transcript）、`--kind=fe_pi_log`（pi-log transcript）、または明示的な `--kind=fe_b` を渡して plain-text の `.jsonl` DATA ファイルとして ingest する。glob/ディレクトリバッチ（テキスト系 allowlist は `.jsonl` を含んだまま）では、この拒否に当たったファイルはサマリで単に `failed` として数えられ、実行は続行する。
+`begin` は `.jsonl` ソースに対し fail-closed：`--kind` が省略または `auto` で、ソースパスが `.jsonl` で終わる場合、`begin` はそれを（lock も書込も一切行わず）ingest 拒否する — session log を暗黙に plain text 扱いしない。このゲートは docs 掃引自身を守る：テキスト系 allowlist は `.jsonl` を含んだままなので `/wiki-ingest-docs ./docs/` はツリー内のセッションログを列挙しうる。拒否されたファイルはサマリで `failed` と数えられ実行は続行する。よって `/wiki-ingest-docs` は `--kind` を一切渡さない（明示 `--kind=fe_b` は `auto` と同じ origin に解決されるため、機能上の利得はゼロでゲート無効化の効果しかない）。`/wiki-file` と `/wiki-ingest-sessions` は固定の `--kind=fe_b_prime` を渡す。本物の `.jsonl` DATA ファイルを ingest したい operator は、直接 CLI 呼び出しで `--kind=fe_b` を手で渡す。
+
+### この会話を filing — `/wiki-file [絞り込みの自由文]`
+
+**実行中セッション**を derived synthesis として filing する。パスもセッション ID も不要：source は現 sid に固定、パイプラインは FE-B' に固定、投影は自分の起動ターンの手前で打ち切られる — コマンドは wiki への指示であって会話内容ではないため、それ以降の narration ごと除外される（直前ターンの回答は filing される。捕捉されないのはこの実行自身の報告だけで、cutoff 以降の残すべき内容は次回の実行が拾う）。
+
+コマンド後の自由文は **どのターンを filing するかを絞る**（`/wiki-file 最後の回答だけ`、`/wiki-file retry-policy の議論だけ`）— パイプラインは切り替えない。絞り込みは構造的に削除専用：driver が渡された各ターンの content hash を再計算し、削除ではなく編集された entry があれば ingest を拒否するため、モデルはこの経路でターンを書き換え・要約・捏造できない。絞り落としたターンは filing されないので ledger にも入らず、後日の `/wiki-file` で改めて filing できる。
+
+再実行は incremental：turn ledger が前回所有済みのターンを落とし、ledger-skipped 数が報告されるため、incremental な再実行が無音の no-op になることはない。
 
 cc-log（FE-B'）入力は `doc_type=transcript` に pin され、決定的な decision floor（`llmwiki/ingest/transcript_floor.py`、`llmwiki floor-check` として起動）が掛かる：claim は明示的な affirmative token がある時のみ decision として記録され、沈黙は非承認として扱う。
 
@@ -152,7 +164,7 @@ Path B は**解決されたセッション集合の全 cc-log セッション**�
 
 ### Query — `wiki-query` skill
 
-wiki が active で**かつ off にトグルされていない**時に description 駆動で自動起動する（`wiki:off` はそのセッションの起動注入を抑止する）。`wiki/` と `wiki/derived/` の**両方**を読み、すべての claim をページパスで citation する。パスが trust tier を表す（`wiki/` = source、`wiki/derived/` = derived）。既定で read-only。明示的な filing トリガがある時のみ回答を wiki へ filing する — 自然言語の依頼（LLM 判断）か、質問の任意の位置に含めた決定的・hook 検出の marker `llm-wiki:file[=<page-slug>]` のいずれか。marker は確認なしで filing を強制する。slug 指定時はページ名を `wiki/derived/<page-slug>.md` に固定し、無指定時は LLM が生成する。省略されるのは確認のみで、redaction → write-tool ゲート → 単一トランザクションの包絡は不変。
+wiki が active で**かつ off にトグルされていない**時に description 駆動で自動起動する（`wiki:off` はそのセッションの起動注入を抑止する）。`wiki/` と `wiki/derived/` の**両方**を読み、すべての claim をページパスで citation する。パスが trust tier を表す（`wiki/` = source、`wiki/derived/` = derived）。既定で read-only。明示的な自然言語の依頼（LLM 判断）がある時のみ回答を wiki へ filing する — 意図の判断を一切挟まず意図的に filing したい場合は `/wiki-file` を使う。どちらの経路でも redaction → write-tool ゲート → 単一トランザクションの包絡は同じ。
 
 ### 検索 backend（任意の外部依存）— qmd
 
@@ -233,7 +245,8 @@ plugins/llm-wiki/
     wiki-ingest-apply.md       # Stage2 apply（page manifest を執筆・書込ツールなし）
     wiki-lint.md               # read 中心の lint subagent
   skills/                      # ユーザー向けエントリは全て skill（bare /wiki-*。plugin 名前空間 prefix なし）
-    wiki-ingest/SKILL.md          # /wiki-ingest  （ingest オーケストレータ。単一ファイル / glob / ディレクトリ）
+    wiki-ingest-docs/SKILL.md     # /wiki-ingest-docs （ドキュメント ingest。単一ファイル / glob / ディレクトリ）
+    wiki-file/SKILL.md            # /wiki-file （実行中セッションを filing。source/kind/cutoff 固定）
     wiki-ingest-sessions/SKILL.md # /wiki-ingest-sessions （Path B：解決されたセッション集合の cc-log セッションを ingest）
     wiki-init/SKILL.md            # /wiki-init（対話的に scope 選択 -> llmwiki init）
     wiki-lint/SKILL.md            # /wiki-lint（read-only lint ディスパッチ）

@@ -2,7 +2,7 @@
 
 The Path B command (wiki-ingest-sessions.md) loops the `session-plan` sid list
 one-sid-per-transaction, passing each bare `sid` to `begin` as `$SOURCE`. This
-must be PARITY with /wiki-ingest's glob/dir loop:
+must be PARITY with /wiki-ingest-docs's glob/dir loop:
   1. a bare `sid` and a `<sid>.jsonl` path derive the SAME sid via
      `Path(source).stem` (the FE-B' branch's normalization), so the two surfaces
      reach the projector identically;
@@ -55,7 +55,7 @@ def _init_wiki(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_bare_sid_and_jsonl_path_derive_same_sid():
     sid = "025c2fff-572d-4aff-8487-853a9719ad9f"
-    # /wiki-ingest (Path A) passes `<sid>.jsonl`; wiki-ingest-sessions (Path B)
+    # /wiki-file (Path A) passes `<sid>.jsonl`; wiki-ingest-sessions (Path B)
     # passes the bare `sid`. Both go through `Path(source).stem` in begin.
     assert Path(f"{sid}.jsonl").stem == sid
     assert Path(sid).stem == sid
@@ -68,7 +68,7 @@ def test_bare_sid_and_jsonl_path_derive_same_sid():
 def test_path_b_loop_failure_continue_independent_transactions(tmp_path, monkeypatch):
     """Loop three sids; the MIDDLE one's begin FAILS. The failing sid strands
     nothing (no lock/sidecar/journal), so the third sid's transaction commits —
-    exactly /wiki-ingest's per-file glob loop (failure-continue, G-f)."""
+    exactly /wiki-ingest-docs's per-file glob loop (failure-continue, G-f)."""
     _init_wiki(tmp_path)
     sids = ["sid-ok-1", "sid-boom", "sid-ok-2"]
 
@@ -166,7 +166,6 @@ def test_project_batch_then_begin_turns_no_rescan(tmp_path, monkeypatch):
                 "role": "user", "uuid": f"u-{sid}", "ts": "t",
                 "projected_text": f"hello from {sid}",
                 "hash": ledger.compute_hash("user", f"hello from {sid}"),
-                "tool_uses": [],
             }]
             for sid in sid_list
         }
