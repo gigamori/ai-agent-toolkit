@@ -10,6 +10,14 @@ an attribute declaring "this step may need a ruling" could only ever be set
 where someone already predicted the fork (xml-wf-decision-request.md §12).
 Its firing barriers are inline for the same reason the fields are: a rule
 that has to be recalled from elsewhere is a rule that decays.
+
+Rule 4 deliberately avoids the word "reply" and pivots on "final response":
+each execution layer defines where the final response goes (run-cc: the
+response itself; run-llm layer B: stepio.RESULT_PROTOCOL's result FILE, with
+the reply channel carrying only a one-line OK/ERROR). An earlier wording said
+"Reply with exactly these lines", and a layer-B subagent duly put the payload
+into the reply channel and wrote no result file -- the request vanished as an
+`aborted` (measured 2026-08-13 E2E; xml-wf-decision-request.md §12).
 """
 
 GUARDRAILS = """\
@@ -24,8 +32,9 @@ the artifacts at exactly the paths the task specifies.
 4. If you reach a fork you may not settle alone -- two defensible readings, or \
 the task simply silent -- do NOT quietly pick one. Fire only when you cannot \
 proceed without a ruling: following a recommendation already recorded upstream \
-is not a fork, and a blocking error is rule 1, not this. Reply with exactly \
-these lines as your final response and stop:
+is not a fork, and a blocking error is rule 1, not this. Make exactly these \
+lines your final response and stop (deliver the final response wherever this \
+prompt's response protocol says it goes):
 DECISION: <one-line summary of the fork>
 fork: <what is ambiguous>
 options:

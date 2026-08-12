@@ -1,8 +1,11 @@
 # LLM orchestration mode (run-llm): execute the XML as a control plane
 
 Alternative to `--run-cc` (wfrun batch execution). Use it for interactive
-sessions where the user wants **supervision, permission, or intervention at
-each step**. When deterministic guarantees matter, use `--run-cc`.
+sessions where the user wants to **watch each step land, grant permission,
+and step in between steps**. When deterministic guarantees matter, use
+`--run-cc`. (Intervening *between* steps is what this mode gives you; a step
+that needs a ruling mid-task has to ask for one, which is the `DECISION:`
+channel below — that works in both modes.)
 
 This protocol is platform-independent: any agent with wfrun (Python) and a
 subagent facility (the Agent tool in Claude Code; the equivalent subtask
@@ -74,6 +77,7 @@ $WFRUN wait runs/.../steps/<id>_handle.json --max 500 \
     --vars vars.json --log steps.log
 #   ok            (0)  -> vars.json updated; move on
 #   error: <class> (1)  -> see "On error" below (same policy as layer B)
+#   decision: ...  (4)  -> the step asked for a ruling; see "On decision"
 #   running        (10) -> not done yet; call wait again
 #   aborted: ...   (3)  -> the wrapper itself never finished (crashed/killed
 #                          externally) -- see "On abort" below, same as layer B
@@ -148,6 +152,8 @@ $WFRUN prompt <xml> <id> --vars vars.json \
 #    control fact (liveness signal), not task content.
 $WFRUN record <xml> <id> --result steps/<id>_result.md --vars vars.json \
     --log steps.log --reply "<the subagent's one reply line, verbatim>"
+#   ok(0) / error(1) / aborted(3) as before, plus:
+#   decision(4)          -> the step asked for a ruling; see "On decision"
 
 # If the subagent never replies, or its reply doesn't look like "OK <id>" /
 # "ERROR:" (interrupted mid-turn, connection drop, garbled output): do NOT
@@ -261,6 +267,49 @@ RETRY, redo from move 1 with `--fix "$(cat steps/<id>_fix.md)"`, **exactly once*
 fabricate substitute results.**
 Stopping is not failure in this mode — every trace is on disk and the user can
 decide; that is the normal terminal state.
+
+## On decision (`record`/`wait` exit 4) — the step hit a fork it may not settle
+
+A `DECISION:` response is **not an error**. It never enters `retry`,
+`on-error`, or the abort machinery: the step did not fail, it asked a
+question it is not allowed to answer alone. Answering it is the user's call,
+never yours — you have no more authority to pick a branch here than the step
+did.
+
+`record`/`wait` already filed the request outside the step's result file (a
+later `prompt --result` deletes result files, which would otherwise destroy
+it) and printed both paths.
+
+1. **Present the two paths and stop.** Say which step asked, give the request
+   path and the answer path. Do **not** read the request — same firewall as
+   everywhere else in this mode; the user reads it, you carry paths
+2. When the user has written the ruling (or told you what to write — then you
+   write exactly that into the answer file, nothing more):
+
+```bash
+$WFRUN record <xml> <id> --result steps/<id>_result.md --vars vars.json \
+    --log steps.log --answer decisions/<id>_dNN_answer.md
+#   ok(0)     -> settled AND the step's deliverable already stood; vars.json
+#                updated from the request's own output. Nothing re-runs
+#   rerun(5)  -> settled, and the step must run again: redo from move 1.
+#                The ruling is injected into the new prompt automatically —
+#                you pass nothing, and every earlier ruling for this step
+#                rides along too, so a settled fork cannot re-open
+#   error(2)  -> nothing was settled: no open request, an unreadable/invalid
+#                answer file (needs a leading `option: <N|none>`), or a
+#                request already answered. Fix and retry; state is unchanged
+```
+
+3. Report one line and continue
+
+The answer file's first line must be `option: <number>` (from the request's
+own numbered list) or `option: none` followed by free text saying what to do
+instead. Nothing else about the file is parsed.
+
+**A decision consumes the workflow's `max`** — the entry lands in steps.log
+with a `"step"` field, like any other attempt, because it *was* a real
+execution. Layer A's `dispatch` widens its own per-cycle cap to match, so a
+ruling never costs you a retry you needed.
 
 ## On abort (`record` exit 3, or `poll` reports `deadline-exceeded`)
 

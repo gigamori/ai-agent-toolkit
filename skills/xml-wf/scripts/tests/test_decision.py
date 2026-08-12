@@ -329,6 +329,24 @@ class TestResumePaths(DecisionExecutorTestCase):
         self.assertIn("later", new[0]["prompt"])
         self.assertEqual(ex2.vars["v"], "art.txt")  # taken from the payload
 
+    def test_batch_answer_against_the_recommendation_forces_a_re_run(self):
+        # Same rule on the batch path: _ingest_answers must not synthesize a
+        # success from an `output:` the ruling did not endorse.
+        self.artifact()
+        self.respond_decision("DO-WORK", then_ok=True, recommendation="2")
+        xml = self.wrap('<step id="s1" role="w" expect-file="art.txt" output="v" '
+                        'output-type="value"><task>DO-WORK</task></step>')
+        ex = self.execute(xml)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        events = self.answer(self.run_dir, "s1", "option: 1\nI disagree")
+        answer_event = [e for e in events if e.get("kind") == "answer"][-1]
+        self.assertEqual(answer_event["verdict"], "b")
+        self.assertEqual(answer_event["b_reason"],
+                         decision_mod.B_REASON_OPTION_NOT_RECOMMENDED)
+        # and no synthetic success was appended, so the step must run live
+        self.assertFalse([e for e in events if e.get("via") == "decision-a"])
+
     def test_form_b_re_runs_carrying_request_and_answer(self):
         self.respond_decision("DO-WORK", then_ok=True, work_state="stopped", output=None)
         xml = self.wrap('<step id="s1" role="w"><task>DO-WORK</task></step>')
@@ -609,6 +627,241 @@ class TestVizDecider(unittest.TestCase):
             '<step id="s1" tools="Read"><task>x</task></step></workflow>')
         # resolved from the default, not just echoed from an attribute (§11)
         self.assertIn("decider=human", viz.mermaid(wf))
+
+
+class TestRunLlmAdjudication(unittest.TestCase):
+    """The run-llm (a)/(b) path (§14): `decisions/` is the ledger, and every
+    enumeration is derived from it rather than carried by the orchestrator."""
+
+    def setUp(self):
+        import os
+        import tempfile
+        from wfrun import parser
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        # This layer resolves expect-file against the caller's cwd — its
+        # documented "orchestrator cwd = subagent cwd" premise — so the test
+        # has to stand where a real run-llm orchestrator stands.
+        self._cwd = os.getcwd()
+        os.chdir(self.root)
+        (self.root / "steps").mkdir()
+        self.vars = self.root / "vars.json"
+        self.vars.write_text("{}", encoding="utf-8")
+        self.log = self.root / "steps.log"
+        self.result = self.root / "steps" / "s1_result.md"
+        self.dec = self.root / "decisions"
+        self.xml = (
+            '<workflow name="t" version="2" max="9">'
+            '<step id="s1" tools="Read" expect-file="art.txt" output="v" '
+            'output-type="value"><task>t</task></step></workflow>')
+        self.wf = parser.parse_string(self.xml)
+        self.step = stepio.find_step(self.wf, "s1")
+
+    def tearDown(self):
+        import os
+        os.chdir(self._cwd)
+        self.tmp.cleanup()
+
+    def record(self, text):
+        self.result.write_text(text, encoding="utf-8")
+        return stepio.record_result(self.step, self.result, self.vars, self.log)
+
+    def answer(self, body):
+        path = self.root / "ans.md"
+        path.write_text(body, encoding="utf-8")
+        return stepio.adjudicate_answer(self.step, self.result, self.vars,
+                                        path, self.log)
+
+    def test_request_survives_the_result_file_being_deleted(self):
+        status, message = self.record(payload())
+        self.assertEqual(status, "decision")
+        filed = self.dec / "s1_d01_request.md"
+        self.assertTrue(filed.is_file())
+        self.assertIn(str(filed), message)
+        # `prompt --result` clears the result file before every attempt; the
+        # filed request must be untouched by that (§14.1)
+        self.result.unlink()
+        self.assertIn("DECISION:", filed.read_text(encoding="utf-8"))
+
+    def test_form_a_sets_the_var_without_re_running(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        self.record(payload())
+        status, message = self.answer("option: 1\ngo with A")
+        self.assertEqual(status, "ok")
+        self.assertEqual(json.loads(self.vars.read_text(encoding="utf-8"))["v"],
+                         "art.txt")
+        self.assertIn("without re-running", message)
+
+    def test_form_b_asks_for_a_re_run(self):
+        self.record(payload(work_state="stopped", output=None))
+        status, message = self.answer("option: 2\nB please")
+        self.assertEqual(status, "rerun")
+        self.assertIn(decision_mod.B_REASON_WORK_STATE_STOPPED, message)
+
+    def test_missing_artifact_collapses_to_missing_file(self):
+        # No art.txt on disk: run-llm cannot tell "never written" from
+        # "written then removed", so both read as missing-file (§14.2)
+        self.record(payload())
+        status, message = self.answer("option: 1\nkeep going")
+        self.assertEqual(status, "rerun")
+        self.assertIn(decision_mod.B_REASON_MISSING_FILE, message)
+        self.assertNotIn("at-resume", message)
+
+    def test_unlisted_option_forces_a_re_run(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        self.record(payload())
+        status, message = self.answer("option: none\ndo something else")
+        self.assertEqual(status, "rerun")
+        self.assertIn(decision_mod.B_REASON_UNLISTED_OPTION, message)
+
+    def test_option_other_than_the_recommendation_forces_a_re_run(self):
+        # Measured 2026-08-13: with recommendation 2 / output 300 and a ruling
+        # of option 1 (375), form (a) applied 300 — the ruling was silently
+        # ignored. `output:` only describes the step's own recommendation, so
+        # any other choice has to re-run rather than substitute a value.
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        self.record(payload(recommendation="2"))
+        status, message = self.answer("option: 1\nI disagree with the step")
+        self.assertEqual(status, "rerun")
+        self.assertIn(decision_mod.B_REASON_OPTION_NOT_RECOMMENDED, message)
+        self.assertEqual(json.loads(self.vars.read_text(encoding="utf-8")), {})
+
+    def test_agreeing_with_the_recommendation_still_reaches_form_a(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        self.record(payload(recommendation="2"))
+        status, message = self.answer("option: 2\nagreed")
+        self.assertEqual(status, "ok")
+        self.assertIn("without re-running", message)
+        self.assertEqual(json.loads(self.vars.read_text(encoding="utf-8"))["v"],
+                         "art.txt")
+
+    def test_a_payload_recommending_none_never_reaches_form_a(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        self.record(payload(recommendation="none"))
+        status, message = self.answer("option: 1\npick the first")
+        self.assertEqual(status, "rerun")
+        self.assertIn(decision_mod.B_REASON_OPTION_NOT_RECOMMENDED, message)
+
+    def test_second_answer_is_refused(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        self.record(payload())
+        self.answer("option: 1\nfirst")
+        with self.assertRaises(stepio.StepIOError) as ctx:
+            self.answer("option: 2\nsecond")
+        self.assertIn("no open decision request", str(ctx.exception))
+
+    def test_answer_without_a_request_is_refused(self):
+        with self.assertRaises(stepio.StepIOError):
+            self.answer("option: 1\nnothing to settle")
+
+    def test_bad_answer_leaves_the_ledger_untouched(self):
+        self.record(payload(work_state="stopped", output=None))
+        for body in ("prose only", "option: 9\nout of range", "option: none\n"):
+            with self.subTest(body):
+                with self.assertRaises(stepio.StepIOError):
+                    self.answer(body)
+        # still open, so a good answer afterwards still works
+        self.assertIsNone(
+            decision_mod.verdict_marker(self.dec, "s1_d01").exists() or None)
+        self.assertEqual(self.answer("option: 1\nfine")[0], "rerun")
+
+    def test_adjudication_lands_in_steps_log(self):
+        self.record(payload(work_state="stopped", output=None))
+        self.answer("option: 2\nB please")
+        entries = [json.loads(line) for line in
+                   self.log.read_text(encoding="utf-8").splitlines() if line.strip()]
+        ruling = [e for e in entries if e.get("status", "").startswith("decision-")]
+        self.assertEqual(len(ruling), 1)
+        self.assertEqual(ruling[0]["option"], 2)
+        self.assertEqual(ruling[0]["request_id"], "s1_d01")
+        self.assertEqual(ruling[0]["b_reason"],
+                         decision_mod.B_REASON_WORK_STATE_STOPPED)
+
+    def test_settled_pairs_accumulate_for_the_re_run_prompt(self):
+        # Deliberately reuses ONE answer path for both rulings: the ledger
+        # must not depend on a file the answerer may overwrite.
+        self.record(payload(work_state="stopped", output=None, fork="first fork"))
+        self.answer("option: 1\nfirst ruling")
+        self.record(payload(work_state="stopped", output=None, fork="second fork"))
+        self.answer("option: 2\nsecond ruling")
+        pairs = decision_mod.settled_pairs(self.dec, "s1")
+        self.assertEqual(len(pairs), 2)
+        joined = "\n".join(r + a for r, a in pairs)
+        for needle in ("first fork", "first ruling", "second fork", "second ruling"):
+            self.assertIn(needle, joined)
+
+    def test_allocation_skips_retired_numbers(self):
+        self.record(payload(work_state="stopped", output=None))
+        (self.dec / "s1_d01_request.md").unlink()
+        self.assertEqual(decision_mod.allocate_request_id(self.dec, "s1"), "s1_d01")
+        self.record(payload(work_state="stopped", output=None))
+        self.record(payload(work_state="stopped", output=None))
+        # highest-plus-one, so a removed file never causes id reuse
+        self.assertEqual(decision_mod.allocate_request_id(self.dec, "s1"), "s1_d03")
+
+    def test_a_and_b_layer_prefixes_do_not_collide(self):
+        self.record(payload(work_state="stopped", output=None))
+        stepio.persist_decision_request(payload(), self.dec, "s1_c01")
+        self.assertEqual(decision_mod.request_ids(self.dec, "s1"), ["s1_d01"])
+        self.assertEqual(decision_mod.request_ids(self.dec, "s1_c01"),
+                         ["s1_c01_d01"])
+
+    def test_unreadable_settled_pair_raises_rather_than_dropping_a_ruling(self):
+        # The verdict marker is what makes a ruling settled, so losing the
+        # request must surface — not make the whole ruling vanish from the
+        # re-run prompt, which is the failure R2 closed on the batch side.
+        self.record(payload(work_state="stopped", output=None))
+        self.answer("option: 1\nfirst")
+        (self.dec / "s1_d01_request.md").unlink()
+        with self.assertRaises(decision_mod.DecisionError):
+            decision_mod.settled_pairs(self.dec, "s1")
+
+    def test_exit_codes(self):
+        from wfrun.__main__ import RECORD_EXIT_CODES
+        self.assertEqual(RECORD_EXIT_CODES["decision"], 4)
+        self.assertEqual(RECORD_EXIT_CODES["rerun"], 5)
+
+    def test_record_answer_settles_an_a_layer_request(self):
+        # The A layer files under <id>_cNN_dNN and `record --answer` is the
+        # only settling verb, so a bare-<id> lookup would leave every A-layer
+        # request detected-but-unanswerable.
+        stepio.persist_decision_request(
+            payload(work_state="stopped", output=None), self.dec, "s1_c03")
+        self.assertEqual(decision_mod.pending_step_request_id(self.dec, "s1"),
+                         "s1_c03_d01")
+        status, message = self.answer("option: 1\nsettle the A-layer request")
+        self.assertEqual(status, "rerun")
+        self.assertIn("s1_c03_d01", message)
+        self.assertTrue(
+            decision_mod.verdict_marker(self.dec, "s1_c03_d01").is_file())
+
+    def test_both_layers_share_one_pending_queue(self):
+        stepio.persist_decision_request(
+            payload(work_state="stopped", output=None), self.dec, "s1")
+        stepio.persist_decision_request(
+            payload(work_state="stopped", output=None), self.dec, "s1_c01")
+        self.assertEqual(decision_mod.step_request_ids(self.dec, "s1"),
+                         ["s1_d01", "s1_c01_d01"])
+        # newest-unsettled across both namespaces
+        self.assertEqual(decision_mod.pending_step_request_id(self.dec, "s1"),
+                         "s1_c01_d01")
+
+    def test_a_layer_files_the_request_under_its_cycle(self):
+        # `wait` goes through apply_result, which the A layer hands its run dir
+        # and `<id>_cNN` because only it knows the cycle.
+        res = CliResult(ok=False, error_class="decision",
+                        text=payload(work_state="stopped", output=None),
+                        error="DECISION: ...")
+        status, message = stepio.apply_result(
+            self.step, res, self.vars, log_path=self.log,
+            result_path=self.result, base_dir=self.root,
+            decisions_dir=self.dec, decision_prefix="s1_c02")
+        self.assertEqual(status, "decision")
+        filed = self.dec / "s1_c02_d01_request.md"
+        self.assertTrue(filed.is_file())
+        self.assertIn(str(filed), message)
+        # and it stays separate from the B-layer namespace
+        self.assertEqual(decision_mod.request_ids(self.dec, "s1"), [])
 
 
 class TestRecordVerdict(unittest.TestCase):

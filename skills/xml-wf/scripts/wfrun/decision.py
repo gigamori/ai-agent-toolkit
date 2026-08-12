@@ -18,11 +18,16 @@ mis-allocation (§6, §13.3).
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 DECISION_PREFIX = "DECISION:"
+
+
+class DecisionError(Exception):
+    """A decision artifact on disk is missing or unreadable when it is needed."""
 
 WORK_STATES = ("complete", "stopped")
 
@@ -37,6 +42,14 @@ B_REASON_MISSING_FILE_AT_RESUME = "missing-file-at-resume"
 B_REASON_SCHEMA_STEP = "schema-step"
 B_REASON_WORK_STATE_STOPPED = "work-state-stopped"
 B_REASON_UNLISTED_OPTION = "unlisted-option"
+# The ruling picked an option other than the one the step recommended, so the
+# step's `output:` -- which states the value it would produce under its OWN
+# recommendation -- no longer corresponds to what was decided. Adopting it
+# anyway silently substitutes a value the adjudicator did not choose (measured
+# 2026-08-13: recommendation 2 / output 300, ruling option 1 (375), applied
+# 300). The chosen option cannot be turned into a value either: option lines
+# are free text. So the step re-runs and produces the value itself.
+B_REASON_OPTION_NOT_RECOMMENDED = "option-not-recommended"
 
 B_REASONS = (
     B_REASON_NO_EXPECT_FILE,
@@ -45,6 +58,7 @@ B_REASONS = (
     B_REASON_SCHEMA_STEP,
     B_REASON_WORK_STATE_STOPPED,
     B_REASON_UNLISTED_OPTION,
+    B_REASON_OPTION_NOT_RECOMMENDED,
 )
 
 _KEY_LINE_RE = re.compile(
@@ -268,6 +282,143 @@ def answer_path(run_dir: str | Path, rid: str) -> Path:
     """Where the answer is *expected* -- the run report names this path so the
     human has somewhere obvious to write, but `--answer` accepts any path."""
     return decisions_dir(run_dir) / f"{rid}_answer.md"
+
+
+# ---------------------------------------------------------------------------
+# run-llm ledger (xml-wf-decision-request.md §14). Batch keeps decision state
+# in events.jsonl; run-llm has no such stream, so the `decisions/` directory
+# IS the ledger and every question about it -- what number comes next, which
+# request is still open, which rulings are settled -- is answered by reading
+# that directory rather than by the orchestrator remembering. Keeping those
+# derivations here is what lets §14's "the orchestrator holds no new memory"
+# invariant hold: an LLM that only ever passes paths cannot mis-enumerate.
+# ---------------------------------------------------------------------------
+
+REQUEST_SUFFIX = "_request.md"
+ANSWER_SUFFIX = "_answer.md"
+VERDICT_SUFFIX = "_verdict.json"
+
+_SEQ_RE = re.compile(r"_d(\d+)\Z")
+
+
+def verdict_marker(dec_dir: str | Path, rid: str) -> Path:
+    """The file whose existence means "this request has been adjudicated".
+
+    Doubles as the double-answer guard (§14.2 step 4) and as the filter for
+    `settled_pairs`, so one artifact carries both duties and they cannot
+    disagree with each other.
+    """
+    return Path(dec_dir) / f"{rid}{VERDICT_SUFFIX}"
+
+
+def request_ids(dec_dir: str | Path, prefix: str) -> list[str]:
+    """Recorded request ids under `prefix`, in allocation order.
+
+    `prefix` is the step id on the run-llm B layer and `<id>_cNN` on the A
+    layer, which is what keeps the two apart: `s1_d01` never matches
+    `s1_c01_d*` and vice versa. Zero-padded sequence numbers make the plain
+    name sort the allocation order.
+    """
+    try:
+        names = sorted(p.name for p in
+                       Path(dec_dir).glob(f"{prefix}_d*{REQUEST_SUFFIX}"))
+    except OSError:
+        return []
+    return [name[:-len(REQUEST_SUFFIX)] for name in names]
+
+
+def allocate_request_id(dec_dir: str | Path, prefix: str) -> str:
+    """The next request id for `prefix`, numbered past the highest on disk.
+
+    Highest-plus-one rather than count-plus-one so a removed file can never
+    make a new request reuse a retired id.
+    """
+    highest = 0
+    for rid in request_ids(dec_dir, prefix):
+        match = _SEQ_RE.search(rid)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return f"{prefix}_d{highest + 1:02d}"
+
+
+def step_request_ids(dec_dir: str | Path, step_id: str) -> list[str]:
+    """Every recorded request for `step_id`, both layers, in allocation order.
+
+    The B layer files under `<id>_dNN` and the A layer under `<id>_cNN_dNN`.
+    Adjudication has to reach both: `record --answer` is the only settling
+    verb, and a caller that knew only the bare id would leave every A-layer
+    request permanently unanswerable -- detected, filed, and stuck.
+    """
+    seen = dict.fromkeys(request_ids(dec_dir, step_id))
+    try:
+        cycles = sorted({p.name.split("_d")[0] for p in
+                         Path(dec_dir).glob(f"{step_id}_c*_d*{REQUEST_SUFFIX}")})
+    except OSError:
+        cycles = []
+    for cycle_prefix in cycles:
+        seen.update(dict.fromkeys(request_ids(dec_dir, cycle_prefix)))
+    return list(seen)
+
+
+def pending_request_id(dec_dir: str | Path, prefix: str) -> str | None:
+    """The newest recorded request with no verdict marker, or None.
+
+    At most one request per step is ever open (§13.1), so "newest unsettled"
+    is the whole answer rather than a heuristic.
+    """
+    for rid in reversed(request_ids(dec_dir, prefix)):
+        if not verdict_marker(dec_dir, rid).is_file():
+            return rid
+    return None
+
+
+def pending_step_request_id(dec_dir: str | Path, step_id: str) -> str | None:
+    """The step's open request, whichever layer filed it."""
+    for rid in reversed(step_request_ids(dec_dir, step_id)):
+        if not verdict_marker(dec_dir, rid).is_file():
+            return rid
+    return None
+
+
+def settled_request_ids(dec_dir: str | Path, prefix: str) -> list[str]:
+    """Adjudicated request ids under `prefix`, in allocation order.
+
+    Enumerated from the verdict markers, NOT from the request files: the
+    marker is what makes a ruling settled, so a missing request file has to
+    surface as an error in `settled_pairs` rather than making the whole
+    ruling disappear from the re-run prompt.
+    """
+    try:
+        names = sorted(p.name for p in
+                       Path(dec_dir).glob(f"{prefix}_d*{VERDICT_SUFFIX}"))
+    except OSError:
+        return []
+    return [name[:-len(VERDICT_SUFFIX)] for name in names]
+
+
+def settled_pairs(dec_dir: str | Path, prefix: str) -> list[tuple[str, str]]:
+    """[(request body, answer body), ...] for every settled request, in order.
+
+    Feeds the form-(b) re-run prompt (§14.3) with the same all-rulings
+    guarantee the batch path gets from its event log: dropping an earlier
+    ruling would let the step walk back into a fork already settled, so an
+    unreadable artifact raises instead of being skipped.
+    """
+    pairs: list[tuple[str, str]] = []
+    for rid in settled_request_ids(dec_dir, prefix):
+        marker = verdict_marker(dec_dir, rid)
+        try:
+            recorded = json.loads(marker.read_text(encoding="utf-8"))
+            request = (Path(dec_dir) / f"{rid}{REQUEST_SUFFIX}").read_text(
+                encoding="utf-8")
+            answer = Path(recorded["answer_path"]).read_text(encoding="utf-8")
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            raise DecisionError(
+                f"decision {rid}: settled, but its request/answer can no "
+                f"longer be read ({e}); the re-run would silently lose that "
+                "ruling") from e
+        pairs.append((request, answer))
+    return pairs
 
 
 def render_options(payload: DecisionPayload) -> list[str]:

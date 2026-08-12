@@ -278,8 +278,17 @@ def _ingest_answers(run_dir: Path, specs: list[str],
         # re-checked — it was true when the run stopped, but the human has had
         # the filesystem to themselves since (§13.2).
         b_reason = request.get("b_reason")
-        if answer.option is None and not b_reason:
-            b_reason = decision_mod.B_REASON_UNLISTED_OPTION
+        if not b_reason:
+            # Same rule as the run-llm path (stepio._answer_b_reason): form (a)
+            # adopts the payload's `output:`, which only describes what the
+            # step would produce under its own recommendation, so any other
+            # ruling has to re-run the step rather than silently substitute a
+            # value nobody chose.
+            recommended = request.get("recommendation")
+            if answer.option is None:
+                b_reason = decision_mod.B_REASON_UNLISTED_OPTION
+            elif recommended is None or answer.option != recommended:
+                b_reason = decision_mod.B_REASON_OPTION_NOT_RECOMMENDED
         missing: list[str] = []
         if not b_reason:
             missing = [p for p in request.get("expect_files") or []
@@ -566,11 +575,19 @@ def cmd_prompt(args) -> int:
                 step, variables, agents_cache,
                 fix=args.fix, result_path=args.result)
         else:
+            # Settled rulings are enumerated from the decisions ledger, never
+            # passed in: the orchestrator carries no memory of them, so it
+            # cannot drop one and let the step re-open a settled fork
+            # (xml-wf-decision-request.md §14.3). Only the run-llm signature
+            # (--result given) has a ledger to read.
+            settled = (decision_mod.settled_pairs(
+                stepio.decisions_dir_for_result(args.result), step.id)
+                if args.result else None)
             prompt = stepio.build_step_prompt(
                 wf, step, variables, base_dir=base_dir,
                 fix=args.fix, agents_cache=agents_cache,
-                result_path=args.result)
-    except stepio.StepIOError as e:
+                result_path=args.result, decision=settled or None)
+    except (stepio.StepIOError, decision_mod.DecisionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     if args.result:
@@ -620,8 +637,9 @@ def cmd_prompt(args) -> int:
 # `decision` (4) is a verdict, not a failure: run-llm's orchestrator decides
 # whether to redo a step from the exit code, and returning 1 for a decision
 # would have it re-dispatch a step that is waiting on a ruling — executing it
-# twice (xml-wf-decision-request.md §8).
-RECORD_EXIT_CODES = {"ok": 0, "error": 1, "aborted": 3, "decision": 4}
+# twice (xml-wf-decision-request.md §8). `rerun` (5) is the answered-form-(b)
+# verdict: settled, and the step must run again from move 1 (§14.2).
+RECORD_EXIT_CODES = {"ok": 0, "error": 1, "aborted": 3, "decision": 4, "rerun": 5}
 
 
 def cmd_record(args) -> int:
@@ -631,8 +649,18 @@ def cmd_record(args) -> int:
     except stepio.StepIOError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    status, message = stepio.record_result(step, args.result, args.vars,
-                                           args.log, reply=args.reply)
+    if args.answer:
+        # Adjudication, not recording: the result file is not re-read (the
+        # request was filed out of its way when the decision was detected).
+        try:
+            status, message = stepio.adjudicate_answer(
+                step, args.result, args.vars, args.answer, args.log)
+        except stepio.StepIOError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    else:
+        status, message = stepio.record_result(step, args.result, args.vars,
+                                               args.log, reply=args.reply)
     print(message)
     return RECORD_EXIT_CODES[status]
 
@@ -871,9 +899,14 @@ def cmd_dispatch(args) -> int:
         return 1
 
     try:
+        # Same auto-enumeration as the B layer, keyed per cycle since the A
+        # layer has one (§14.3).
+        settled = decision_mod.settled_pairs(
+            decision_mod.decisions_dir(run_dir), f"{args.step_id}_c{cycle:02d}")
         system, prompt = stepio.build_step_prompt_parts(
-            wf, step, variables, base_dir, fix=args.fix, agents_cache=agents_cache)
-    except stepio.StepIOError as e:
+            wf, step, variables, base_dir, fix=args.fix,
+            agents_cache=agents_cache, decision=settled or None)
+    except (stepio.StepIOError, decision_mod.DecisionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
@@ -1076,7 +1109,10 @@ def _finish_wait(handle: dict, args, exit_data: dict) -> int:
         result_path=result_path, outputs_dir=outputs_dir,
         # expect-file must be checked against the directory the wrapper ran
         # the step in (the XML's parent), not wherever `wait` was invoked.
-        base_dir=Path(handle["xml"]).resolve().parent)
+        base_dir=Path(handle["xml"]).resolve().parent,
+        # The A layer knows its cycle, so its requests are filed per cycle.
+        decisions_dir=decision_mod.decisions_dir(handle["run_dir"]),
+        decision_prefix=f"{step.id}_c{handle.get('cycle', 1):02d}")
     print(message)
     stepio.write_text_atomic(wait_record, json.dumps(
         {"attempt": handle.get("attempt"), "status": status, "message": message},
@@ -1255,6 +1291,11 @@ def main(argv=None) -> int:
                             "back from the subagent (optional; enables the "
                             "claimed-ok-but-no-result / reply-file-mismatch "
                             "checks when a handle.json exists for this step)")
+    p_rec.add_argument("--answer", metavar="ANSWER_FILE",
+                       help="settle this step's open decision request with "
+                            "this ruling file (first line 'option: <N|none>'). "
+                            "Exits 0 when the step continues without "
+                            "re-running, 5 when it must be re-run from move 1")
     p_rec.set_defaults(func=cmd_record)
 
     p_poll = sub.add_parser(

@@ -106,13 +106,22 @@ def load_handle(step_id: str, result_path: str | Path) -> dict | None:
         return None
 
 
+# The DECISION: sentence closes a measured loss path (2026-08-13 E2E): the
+# reply vocabulary is OK/ERROR and a decision is neither, so without an
+# explicit rule a subagent that raised one had nothing valid to reply -- one
+# put the whole payload into the reply channel, wrote no file, and the
+# request vanished as `aborted`. `OK {step_id}` adds no new vocabulary (the
+# delegation message and record's claim parsing are untouched), and the file
+# is authoritative anyway: record answers a DECISION: file with exit 4
+# regardless of the claim.
 RESULT_PROTOCOL = """\
 ## Response protocol
 Write your full final response to this file: {result_path}
 The LAST non-empty line of that file must be exactly this marker, with \
 nothing after it: {sentinel}
 Your reply to the caller must be a single line starting with "OK {step_id}" \
-or "ERROR:"."""
+or "ERROR:". A DECISION: request is a final response like any other: write \
+it to the file above and reply "OK {step_id}"."""
 
 DECISION_RESOLVED_HEADER = """\
 ## Decisions resolved
@@ -300,11 +309,12 @@ def build_step_prompt(wf: model.Workflow, step: model.Step, variables: dict,
                       base_dir: str | Path, fix: str | None = None,
                       rules_cache: dict[str, str] | None = None,
                       agents_cache: dict[str, AgentDef] | None = None,
-                      result_path: str | None = None) -> str:
+                      result_path: str | None = None,
+                      decision: list[tuple[str, str]] | None = None) -> str:
     """Single combined prompt (run-llm / wfrun prompt): system part + user part."""
     system, user = build_step_prompt_parts(
         wf, step, variables, base_dir, fix=fix, rules_cache=rules_cache,
-        agents_cache=agents_cache, result_path=result_path)
+        agents_cache=agents_cache, result_path=result_path, decision=decision)
     return f"{system}\n\n{user}"
 
 
@@ -390,7 +400,30 @@ def _log_status(status: str) -> str:
     return {"ok": "success"}.get(status, status)
 
 
-def _decision_message(text: str, result_path) -> str:
+def decisions_dir_for_result(result_path: str | Path) -> Path:
+    """`decisions/` beside the directory holding the step's result file.
+
+    run-llm keeps results in `<run>/steps/`, so this lands on
+    `<run>/decisions/` — the same place run-cc writes them. Crucially it is
+    NOT inside `steps/`: `wfrun prompt --result` deletes a leftover result
+    file before every attempt (stale-read prevention), which would otherwise
+    destroy the very request a form-(b) re-run has to quote back
+    (xml-wf-decision-request.md §14.1).
+    """
+    return Path(result_path).parent.parent / "decisions"
+
+
+def persist_decision_request(text: str, dec_dir: str | Path, prefix: str) -> str:
+    """Copy a `DECISION:` payload into the decisions ledger. Returns its id."""
+    dec_dir = Path(dec_dir)
+    dec_dir.mkdir(parents=True, exist_ok=True)
+    rid = decision_mod.allocate_request_id(dec_dir, prefix)
+    (dec_dir / f"{rid}{decision_mod.REQUEST_SUFFIX}").write_text(
+        text.strip(), encoding="utf-8")
+    return rid
+
+
+def _decision_message(text: str, dec_dir: str | Path, prefix: str) -> str:
     """The `record`/`wait` verdict line for a `DECISION:` response.
 
     Content-free by construction, like the guardrail/refusal messages beside
@@ -399,12 +432,18 @@ def _decision_message(text: str, result_path) -> str:
     apart because they need different human actions -- answer it, or go read
     why it cannot be answered (xml-wf-decision-request.md §8).
     """
-    _, errors = decision_mod.parse_payload(modes.strip_mode_line(text))
+    body = modes.strip_mode_line(text)
+    rid = persist_decision_request(body, dec_dir, prefix)
+    request = Path(dec_dir) / f"{rid}{decision_mod.REQUEST_SUFFIX}"
+    _, errors = decision_mod.parse_payload(body)
     if errors:
         return ("decision: step raised a decision request, but its payload is "
                 f"malformed and cannot be answered as-is ({len(errors)} field "
-                f"problem(s)); read it and decide by hand (request: {result_path})")
-    return f"decision: step requested adjudication (request: {result_path})"
+                f"problem(s)); read it and decide by hand (request: {request})")
+    answer = Path(dec_dir) / f"{rid}{decision_mod.ANSWER_SUFFIX}"
+    return (f"decision: step requested adjudication (request: {request}); "
+            f"write the ruling to {answer}, then re-run record with "
+            f"--answer {answer}")
 
 
 def _append_log(log_path, step: model.Step, status: str, result_path):
@@ -447,7 +486,9 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
                  log_path: str | Path | None = None,
                  result_path: str | Path = "<result>",
                  outputs_dir: str | Path | None = None,
-                 base_dir: str | Path | None = None) -> tuple[str, str]:
+                 base_dir: str | Path | None = None,
+                 decisions_dir: str | Path | None = None,
+                 decision_prefix: str | None = None) -> tuple[str, str]:
     """The shared second half of `record_result` (B layer) and `wfrun wait`
     (A layer, reliability-spec.md §5.1: "B層 record 相当を兼ねる"): given an
     ALREADY-CLASSIFIED `claude_cli.CliResult`, update vars.json and append
@@ -459,6 +500,11 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
     `outputs_dir` only for `output-type="file"` steps (B passes the result
     file itself instead; A has no such file and writes one here, mirroring
     run-cc's `runs/<ts>/outputs/<id>.md`).
+
+    `decisions_dir`/`decision_prefix` name where a `DECISION:` payload is
+    filed and under which id (§14.1). The A layer passes its run dir and
+    `<id>_cNN` explicitly, since only it knows the cycle; the B layer lets
+    them default off the result path and the bare step id.
 
     `base_dir` resolves relative `expect-file` paths. The A layer MUST pass
     the same directory it gave the wrapper as cwd (the XML's parent):
@@ -525,13 +571,162 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
             # res.error holds the whole payload body here, so this branch is
             # not optional content-hiding -- without it the `else` below would
             # spill the request into the orchestrator's context.
-            message = _decision_message(res.text, result_path)
+            message = _decision_message(
+                res.text, decisions_dir or decisions_dir_for_result(result_path),
+                decision_prefix or step.id)
         else:
             message = res.error or f"error: {res.error_class or 'failed'}"
 
     status = "decision" if res.error_class == "decision" else ("ok" if ok else "error")
     _append_log(log_path, step, status, result_path)
     return status, message
+
+
+def adjudicate_answer(step: model.Step, result_path: str | Path,
+                      vars_path: str | Path, answer_file: str | Path,
+                      log_path: str | Path | None = None,
+                      decisions_dir: str | Path | None = None,
+                      decision_prefix: str | None = None) -> tuple[str, str]:
+    """Settle the step's open decision request (`record --answer`, §14.2).
+
+    Returns ("ok", msg) for form (a) -- the payload's own output becomes the
+    step's value and nothing re-runs -- or ("rerun", msg) for form (b), where
+    the caller redoes the step from move 1 and the settled rulings are
+    injected for it by `prompt`/`dispatch`. Everything that cannot be settled
+    raises StepIOError, leaving the ledger untouched: a rejected answer must
+    not half-apply.
+
+    Unlike the batch path this evaluates (a)-eligibility once, at answer time,
+    so `missing-file` and `missing-file-at-resume` collapse into the former
+    here (§14.2 step 3) -- run-llm keeps no record of what existed when the
+    step stopped, and both readings route to (b) anyway.
+    """
+    dec_dir = Path(decisions_dir or decisions_dir_for_result(result_path))
+    # Search BOTH layers' namespaces unless the caller pinned one: an A-layer
+    # request is filed under `<id>_cNN_dNN`, and a bare-`<id>` lookup would
+    # leave it detected-but-unanswerable forever (§14.2, relaxed).
+    if decision_prefix:
+        rid = decision_mod.pending_request_id(dec_dir, decision_prefix)
+        settled_ids = decision_mod.request_ids(dec_dir, decision_prefix)
+    else:
+        rid = decision_mod.pending_step_request_id(dec_dir, step.id)
+        settled_ids = decision_mod.step_request_ids(dec_dir, step.id)
+    if rid is None:
+        settled = settled_ids
+        raise StepIOError(
+            f"step '{step.id}': no open decision request in {dec_dir}"
+            + (f" ({len(settled)} already settled -- a recorded ruling is "
+               "never replaced, since later steps may be built on it)"
+               if settled else ""))
+
+    request_file = dec_dir / f"{rid}{decision_mod.REQUEST_SUFFIX}"
+    payload, errors = decision_mod.parse_payload(
+        request_file.read_text(encoding="utf-8"))
+    if errors:
+        raise StepIOError(
+            f"decision {rid}: the recorded payload is malformed "
+            f"({'; '.join(errors)[:300]}); it cannot be answered as-is -- "
+            f"read {request_file} and decide by hand")
+
+    answer_file = Path(answer_file)
+    try:
+        answer_text = answer_file.read_text(encoding="utf-8")
+    except OSError as e:
+        raise StepIOError(f"decision {rid}: cannot read {answer_file}: {e}")
+    answer, answer_errors = decision_mod.parse_answer(
+        answer_text, len(payload.options))
+    if answer_errors:
+        raise StepIOError(
+            f"decision {rid} ({answer_file}): {'; '.join(answer_errors)}; "
+            f"the request lists {len(payload.options)} option(s) in {request_file}")
+
+    b_reason = _decision_b_reason(step, payload, vars_path, result_path)
+    if not b_reason:
+        b_reason = _answer_b_reason(answer, payload)
+    verdict = "b" if b_reason else "a"
+
+    # Copy the ruling into the ledger for the same reason the request was
+    # filed there (§14.1): the answer file belongs to whoever wrote it, and
+    # answering a second request through the same path would otherwise
+    # overwrite the first ruling that a later re-run still has to quote.
+    filed_answer = dec_dir / f"{rid}{decision_mod.ANSWER_SUFFIX}"
+    write_text_atomic(filed_answer, answer_text)
+    write_text_atomic(decision_mod.verdict_marker(dec_dir, rid), json.dumps({
+        "request_id": rid, "step": step.id,
+        "answer_path": str(filed_answer.resolve()),
+        "answer_source": str(answer_file.resolve()),
+        "option": answer.option, "verdict": verdict, "b_reason": b_reason,
+    }, ensure_ascii=False, indent=2))
+
+    chosen = "none" if answer.option is None else f"option {answer.option}"
+    if verdict == "a":
+        variables = json.loads(Path(vars_path).read_text(encoding="utf-8"))
+        message = f"ok [decision {rid}: {chosen}, continues without re-running]"
+        if step.output:
+            variables[step.output] = payload.output
+            Path(vars_path).write_text(
+                json.dumps(variables, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            message = (f"ok (set {step.output}) [decision {rid}: {chosen}, "
+                       "continues without re-running]")
+        status = "ok"
+    else:
+        message = (f"re-run this step from move 1 [decision {rid}: {chosen}, "
+                   f"{b_reason}]; the settled ruling(s) are injected for you")
+        status = "rerun"
+
+    # run-llm's only ledger. Without this the ruling would live nowhere:
+    # there is no events.jsonl here, and P4's adjudication cap counts these.
+    if log_path:
+        with Path(log_path).open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "step": step.id,
+                "status": f"decision-{verdict}", "request_id": rid,
+                "request_file": str(request_file), "answer_file": str(answer_file),
+                "option": answer.option, "b_reason": b_reason,
+            }, ensure_ascii=False) + "\n")
+    return status, message
+
+
+def _answer_b_reason(answer, payload) -> str | None:
+    """Why the ruling itself rules form (a) out, or None (§6).
+
+    Form (a) adopts the payload's `output:` verbatim, and that value states
+    what the step would produce under ITS OWN recommendation. So (a) is only
+    coherent when the ruling agrees with that recommendation; any other
+    choice -- including an unlisted one -- must re-run the step so the value
+    matches what was actually decided.
+    """
+    if answer.option is None:
+        return decision_mod.B_REASON_UNLISTED_OPTION
+    if payload.recommendation is None or answer.option != payload.recommendation:
+        return decision_mod.B_REASON_OPTION_NOT_RECOMMENDED
+    return None
+
+
+def _decision_b_reason(step: model.Step, payload, vars_path, result_path
+                       ) -> str | None:
+    """Why this ruling must re-run the step, or None if (a) is still open.
+
+    Mirrors the batch predicate (§6) on the inputs run-llm actually has;
+    expect-file resolves against the caller's cwd, this layer's standing
+    "orchestrator cwd = subagent cwd" premise.
+    """
+    if not payload.work_complete:
+        return decision_mod.B_REASON_WORK_STATE_STOPPED
+    if step.schema:
+        return decision_mod.B_REASON_SCHEMA_STEP
+    if not step.expect_file:
+        return decision_mod.B_REASON_NO_EXPECT_FILE
+    try:
+        variables = json.loads(Path(vars_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise StepIOError(f"cannot load vars file {vars_path}: {e}")
+    try:
+        missing = _missing_expected(step.expect_file, variables, step.id, None)
+    except InterpError as e:
+        raise StepIOError(f"step '{step.id}' expect-file: {e}")
+    return decision_mod.B_REASON_MISSING_FILE if missing else None
 
 
 def _append_attempt(step_id: str, result_path, handle: dict, status: str):
@@ -647,7 +842,8 @@ def record_result(step: model.Step, result_path: str | Path,
         # produces no step output to validate.
         ok = False
         is_decision = True
-        message = _decision_message(text, result_path)
+        message = _decision_message(
+            text, decisions_dir_for_result(result_path), step.id)
     else:
         if step.expect_file:
             try:
