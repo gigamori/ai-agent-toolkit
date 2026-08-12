@@ -176,10 +176,11 @@ Notes about the work go here (free to rewrite).
 
 For a bigger task, you can hand the whole `## Next Steps` list to the **mode-orchestrator** skill, which assigns a mode to each step, splits it at mode boundaries, and runs every step as an isolated turn. This is an opt-in extra — manual step-by-step progress is unchanged and remains the default.
 
-**Two rules that must not be dropped:**
+**Rules that must not be dropped:**
 
 - **Only the main agent touches the task file.** Orchestrated turns (subagents) never write to it. The `@log` timestamp and session id are copied verbatim from the `iso_ts=` / `sid8=` values in the injected Progress Session context — never computed by hand.
 - **If the skill is not available, do not imitate it.** Fall back to manual step progression. An improvised "orchestration" has none of the skill's guarantees — no sufficiency gate, no turn isolation, no reply contract, no recovery loop — while still performing the real source edits.
+- **Drive it with a mid-tier or better model.** A weak model does not simply fail — it invents a plausible-looking plan with mode names that do not exist and proceeds, which is the imitation the rule above forbids. Measured: two samples on a small model produced zero correct runs, while two samples on the next tier up produced two.
 
 **Prerequisite — read this first.** mode-orchestrator is **not** part of the taskflow plugin and is not installed by `/plugin install taskflow@ai-agent-toolkit`. It is a standalone skill at `skills/mode-orchestrator/` in the [ai-agent-toolkit](https://github.com/gigamori/ai-agent-toolkit) repository; install it separately (e.g. copy that directory into your skills directory). Without it, everything on this page still works — only this subsection does not apply.
 
