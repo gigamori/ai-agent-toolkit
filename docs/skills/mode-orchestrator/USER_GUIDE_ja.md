@@ -37,7 +37,7 @@ path/to/plan.md に mode-orchestrator を使って
 | `--auto` | 承認ゲートを飛ばし、全ターンを承認なしで実行する。 |
 | `--roles` / `--roles=always` | 各ターンに適合する role を推論して付与する。デフォルト: role は推論しないが、todolist に明示された role は honor する。 |
 | `--workflow=<name>` | workflow spec（`workflows/<name>.md`）を defaults として読み込む。todolist 内で spec 名を宣言しても同様に honor される。デフォルト: spec なし — todolist の指定どおりに実行。 |
-| `--decider=human` | `needs-decision` の分岐を自分で裁定する。run はステップ境界で止まり、質問を提示する。デフォルトは `llm` — 挿入されたターンが裁定する。後述の decision ループを参照。 |
+| `--decider=llm` | `needs-decision` の分岐を挿入されたターンに裁定させる。デフォルトは `human` — run はステップ境界で止まり、質問を提示する。後述の decision ループを参照。 |
 
 フラグは意図的に `--` 形式を使う。`mode:` / `role:` のコロン接頭辞は使わない（role-mode フックに捕捉されるため）。
 
@@ -106,8 +106,8 @@ turn plan は各ターンの model と、どの段が決定したかを表示す
 
 その先は `--decider` によって変わる:
 
-- **`llm`（デフォルト）** — 裁定用に `review-dev` ターンを1つ挿入する。フォークを申告したターンの deliverable（それが挿入された debug ターンならその deliverable）、plan があればそれ、そして**入力ドキュメント**（分岐を「何に向けて」決めるかは run の目的であり、それは入力ドキュメントにしか無い）を受け取り、ちょうど1つの選択肢を理由付きで記録する。request に列挙されていない選択肢を採ってもよい（その旨を明記する）。ただし不可逆・外向きの作用を伴う決定、run の目的自体を変える決定は**裁定してはならない** — それらは `needs-human` として利用者に戻る。
-- **`human`** — ターンは挿入しない。run はステップ境界で止まり、質問と deliverable のパスを提示する。あなたの回答が decision record に書かれ、run が続く。非対話実行（`claude -p` など）では回答する主体が居ないので run はそのまま終わる — request はディスク上に残るので、それを読んで再開できる。
+- **`llm`** — 裁定用に `review-dev` ターンを1つ挿入する。フォークを申告したターンの deliverable（それが挿入された debug ターンならその deliverable）、plan があればそれ、そして**入力ドキュメント**（分岐を「何に向けて」決めるかは run の目的であり、それは入力ドキュメントにしか無い）を受け取り、ちょうど1つの選択肢を理由付きで記録する。request に列挙されていない選択肢を採ってもよい（その旨を明記する）。ただし不可逆・外向きの作用を伴う決定、run の目的自体を変える決定は**裁定してはならない** — それらは `needs-human` として利用者に戻る。
+- **`human`（デフォルト）** — ターンは挿入しない。run はステップ境界で止まり、質問と deliverable のパスを提示する。あなたの回答が decision record に書かれ、run が続く。非対話実行（`claude -p` など）では回答する主体が居ないので run はそのまま終わる — request はディスク上に残るので、それを読んで再開できる。
 
 続行は2形態のいずれかで、`Work state` フィールドから読み取る（推測しない）: **`complete`** かつ列挙内の選択肢 → deliverable は有効なまま、decision record を後続ターンの inputs に追加する。**`stopped`** または列挙外の選択肢の採用 → 起点ターンを decision record 付きで再実行する。
 

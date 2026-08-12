@@ -50,7 +50,7 @@ todolist. It does not guess to fill gaps.
 | `--auto` | Skip the approval gate; run all turns without per-plan confirmation. |
 | `--roles` / `--roles=always` | Infer and attach a fitting role to every turn. Default: no inferred roles, but a role explicitly stated in the todolist is honored. |
 | `--workflow=<name>` | Load a workflow spec (`workflows/<name>.md`) as defaults. A spec name declared inside the todolist is honored the same way. Default: no spec — run exactly as the todolist dictates. |
-| `--decider=human` | Decide `needs-decision` forks yourself: the run pauses at the step boundary and shows you the question. Default `llm` — an inserted turn decides. See the decision loop below. |
+| `--decider=llm` | Delegate `needs-decision` forks to an inserted turn that decides. Default `human` — the run pauses at the step boundary and shows you the question. See the decision loop below. |
 
 Flags use the `--` form on purpose — never `mode:` / `role:` colon-prefixes,
 which the role-mode hook would capture.
@@ -166,7 +166,7 @@ real fork from a turn handing its job back.
 
 What happens next depends on `--decider`:
 
-- **`llm` (default)** — an extra `review-dev` turn is inserted to adjudicate. It
+- **`llm`** — an extra `review-dev` turn is inserted to adjudicate. It
   gets the deliverable of the turn that raised the fork (which may itself be an
   inserted debug turn), the plan if there is one, and **the input document**
   (what a fork should be decided *toward* is the run's purpose, which lives only
@@ -174,7 +174,7 @@ What happens next depends on `--decider`:
   option the request did not list, saying so. It must *refuse* to decide
   anything irreversible or outward-facing, or anything that changes what the run
   is for — those come back to you as `needs-human`.
-- **`human`** — no turn is inserted. The run stops at the step boundary and
+- **`human` (default)** — no turn is inserted. The run stops at the step boundary and
   shows you the question and the deliverable path; your answer is written into
   the decision record and the run continues. In a non-interactive run
   (`claude -p` and the like) nothing can answer, so the run simply ends, with
