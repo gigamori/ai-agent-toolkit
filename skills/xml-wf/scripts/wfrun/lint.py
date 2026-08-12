@@ -114,31 +114,21 @@ def lint(wf: model.Workflow, base_dir: str | Path = ".",
                 f"(available: {', '.join(modes.available_modes())})")
 
     # --- decider ---------------------------------------------------------------
-    # TRANSITIONAL (remove when the llm adjudication path lands --
-    # xml-wf-decision-request.md §8 P4): `decider="llm"` is a valid value, but
-    # nothing implements it yet, and accepting it would silently run the
-    # workflow with human adjudication while recording that choice nowhere the
-    # author looks. Rejecting a declared-but-unimplemented feature with a
-    # rewrite hint is this project's standing rule (same as the pi backend's
-    # schema= / on-error="debug" fail-fasts).
-    _LLM_UNIMPLEMENTED = ("decider='llm' is not implemented yet (the llm "
-                          "adjudication path is phase P4); every decision "
-                          "would silently be adjudicated by a human despite "
-                          "the declaration. Use decider=\"human\" or drop "
-                          "the attribute")
+    # `decider="llm"` is implemented (§15) and valid XML under run-cc and
+    # run-llm, so lint only checks the vocabulary. The backend that cannot
+    # support it refuses at startup instead: adjudication runs on the claude
+    # CLI whichever backend executes the steps, so pi_cli.pi_compat_errors
+    # rejects it there, beside the schema= / on-error="debug" fail-fasts it
+    # shares a cause with (§4, §15.8).
     valid_deciders = "/".join(model.DECIDER_VALUES)
     if wf.decider is not None and wf.decider not in model.DECIDER_VALUES:
         err("decider-unknown",
             f"workflow decider='{wf.decider}' is not one of {valid_deciders}")
-    elif wf.decider == "llm":
-        err("decider-llm-unimplemented", f"workflow: {_LLM_UNIMPLEMENTED}")
     for step in steps:
         decider = getattr(step, "decider", None)
         if decider is not None and decider not in model.DECIDER_VALUES:
             err("decider-unknown",
                 f"step '{step.id}': decider='{decider}' is not one of {valid_deciders}")
-        elif decider == "llm":
-            err("decider-llm-unimplemented", f"step '{step.id}': {_LLM_UNIMPLEMENTED}")
         if getattr(step, "decider_model", None) and not decider and not wf.decider:
             warn("decider-model-unused",
                  f"step '{step.id}': decider-model= is set but the decider "

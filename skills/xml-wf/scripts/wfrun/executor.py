@@ -14,6 +14,7 @@ from glob import glob as _glob
 from pathlib import Path
 
 from . import adp, claude_cli, model, modelmap, modes, parser, stepio
+from . import adjudicate as adjudicate_mod
 from . import decision as decision_mod
 from . import lint as lint_mod
 from .agents import discover_agents
@@ -45,8 +46,34 @@ class DecisionRequested(Exception):
         super().__init__(f"decision requested: {ids}")
 
 
-def decision_tables(events: list[dict]) -> tuple[dict, dict, dict]:
-    """(pending, answers, seq_high_water) rebuilt from a run's recorded events.
+class _DecisionSettledA(Exception):
+    """An llm decider settled a request as form (a), in-process (§15.1).
+
+    Internal control flow, never seen outside this module: _handle_decision has
+    already written the value and the synthetic success event, so the step is
+    finished and _exec_step returns. A return value cannot say this -- that
+    channel means "here is the failure message" -- and neither form may fall
+    through to the attempt-failed event a decision must not write (§13.7).
+    """
+
+
+class _DecisionRerun(Exception):
+    """Same, for form (b): re-run this step carrying the settled rulings.
+
+    Carries every (request, answer) pair of this visit, not just the newest,
+    for the reason §13.6 gives: a fresh subagent has no memory of the request
+    it raised, and a re-run shown only the latest ruling can walk back into a
+    fork already settled earlier in the cycle.
+    """
+
+    def __init__(self, context: list[tuple[str, str]]):
+        self.context = context
+        super().__init__("decision settled: re-run the step")
+
+
+def decision_tables(events: list[dict]) -> tuple[dict, dict, dict, dict]:
+    """(pending, answers, seq_high_water, llm_adjudications) rebuilt from a
+    run's recorded events.
 
     pending: {(step id, cycle): decision event} for requests with no `answer`
     event yet -- the steps that must stop again without spending a CLI call.
@@ -63,6 +90,16 @@ def decision_tables(events: list[dict]) -> tuple[dict, dict, dict]:
     re-run that hits a *second* fork in the same cycle numbers it without
     colliding with the first.
 
+    llm_adjudications: {(step id, cycle): how many requests this visit had
+    adjudicated by an llm}, the §7 cap's ledger. There is no separate ledger
+    by design: counting the recorded events makes the tally survive a process
+    restart for free, on the same event-sourcing invariant the rest of resume
+    rests on. Human answers are not counted -- the cap exists to stop an
+    unattended llm loop, and a path where a person answers every time cannot
+    run away (§7, §15.5). Requests that fell back to a human (escalation, cap
+    reached, an adjudication that did not parse) record `decider="human"` and
+    so drop out of the count here.
+
     Both keys are (step, cycle) rather than request_id because that is what
     `_exec_step` knows about itself. At most one request per step is ever
     pending (§13.1), so the collapse is lossless.
@@ -71,11 +108,14 @@ def decision_tables(events: list[dict]) -> tuple[dict, dict, dict]:
     answered: set[str] = set()
     answers: dict[tuple[str, int], list[dict]] = {}
     seq_high_water: dict[tuple[str, int], int] = {}
+    llm_adjudications: dict[tuple[str, int], int] = {}
     for event in events:
         kind = event.get("kind")
         if kind == "decision":
             key = (event["key"], event["cycle"])
             seq_high_water[key] = max(seq_high_water.get(key, 0), event["seq"])
+            if event.get("decider") == model.DECIDER_LLM:
+                llm_adjudications[key] = llm_adjudications.get(key, 0) + 1
             # A malformed payload is recorded too (so its seq is never reused
             # and the run's history shows it), but it can never be pending:
             # there is nothing well-formed to answer.
@@ -89,7 +129,7 @@ def decision_tables(events: list[dict]) -> tuple[dict, dict, dict]:
             answers.setdefault((event["key"], event["cycle"]), []).append(event)
     pending = {(e["key"], e["cycle"]): e
                for rid, e in requests.items() if rid not in answered}
-    return pending, answers, seq_high_water
+    return pending, answers, seq_high_water, llm_adjudications
 
 
 class Executor:
@@ -100,6 +140,7 @@ class Executor:
                  run_claude=claude_cli.run_claude,
                  ask_llm=claude_cli.ask_llm,
                  diagnose=adp.diagnose,
+                 adjudicate=adjudicate_mod.adjudicate,
                  model_runner: str = "cc",
                  inherit_model: str | None = None):
         self.wf = wf
@@ -112,6 +153,7 @@ class Executor:
         self._run_claude = run_claude
         self._ask_llm = ask_llm
         self._diagnose = diagnose
+        self._adjudicate = adjudicate
         self._model_runner = model_runner
         self._inherit_model = inherit_model
 
@@ -128,7 +170,8 @@ class Executor:
         self._lock = threading.Lock()
 
         (self._pending_decisions, self._decision_answers,
-         self._decision_seq) = decision_tables(replay_events or [])
+         self._decision_seq,
+         self._llm_adjudications) = decision_tables(replay_events or [])
         # Every request this run raised, for the report -- kept separately
         # from the exception because a `<parallel>` sibling failure outranks
         # a decision (§9) and the payloads must still be listed.
@@ -317,6 +360,11 @@ class Executor:
                       if model.tools_can_write(dispatch_tools) else None)
         debug_used = False
         attempt = 0
+        # Attempts spent re-running after an in-process ruling. Subtracted from
+        # the retry test below so a settled fork does not eat the budget meant
+        # for flaky failures -- the same treatment debug's one granted attempt
+        # gets, and for the same reason: neither is a failed try (§15.1).
+        decision_reruns = 0
         while True:
             attempt += 1
             with self._lock:
@@ -379,13 +427,26 @@ class Executor:
                 # that case; a malformed payload IS a failure and comes back
                 # as a message that falls through to the ladder below (where
                 # the `decision` class still keeps retry and debug out).
-                res.error = self._handle_decision(step, res, cycle)
+                #
+                # An llm decider settles it in-process instead of stopping
+                # (§15.1); both continuation forms leave through an exception
+                # so neither reaches the attempt-failed event below.
+                try:
+                    res.error = self._handle_decision(step, res, cycle)
+                except _DecisionSettledA:
+                    return  # value and synthetic success already recorded
+                except _DecisionRerun as settled:
+                    decision_reruns += 1
+                    system, prompt = self._build_prompt(
+                        step, decision=settled.context)
+                    continue
 
             self.state.event("step", key=step.id, status="attempt-failed",
                              attempt=seq, error=(res.error or "")[:1000],
                              error_class=res.error_class,
                              cost_usd=res.cost_usd)
-            if attempt <= step.retry and claude_cli.is_retryable(res.error_class):
+            if (attempt - decision_reruns <= step.retry
+                    and claude_cli.is_retryable(res.error_class)):
                 # deterministic retry, identical prompt — skipped for
                 # error_class in NON_RETRYABLE_CLASSES (env/guardrail/
                 # refusal/denied), where the same prompt would just repeat
@@ -497,12 +558,19 @@ class Executor:
 
     # ---------------------------------------------------------- decision ---
     def _handle_decision(self, step: model.Step, res, cycle: int) -> str:
-        """Persist a `DECISION:` response and route it (§1, §13.2).
+        """Persist a `DECISION:` response and route it (§1, §13.2, §15.1).
 
-        Raises DecisionRequested when the payload is well formed — the run
-        stops there and the report becomes the UI. Returns a failure message
-        when it is malformed, which the caller feeds to the ordinary on-error
-        ladder.
+        Four ways out:
+        - a malformed payload is a real failure: returns the message the caller
+          feeds to the ordinary on-error ladder (no adjudicator is ever called
+          for it -- §15.4);
+        - `decider="human"`, an escalation, a cap already spent, or an
+          adjudication that did not come back usable: raises DecisionRequested
+          and the run stops for a person (§5 fail-closed);
+        - an llm ruling that continues as form (a): records the value and the
+          synthetic success, then raises _DecisionSettledA;
+        - one that continues as form (b): raises _DecisionRerun carrying the
+          rulings for the re-run's prompt.
         """
         body = modes.strip_mode_line(res.text).strip()
         with self._lock:
@@ -525,18 +593,130 @@ class Executor:
                     f"read it and decide by hand: {request_file}")
 
         b_reason, expect_files = self._decision_b_reason(step, payload)
+        decider, decider_model = model.resolve_decider(self.wf, step)
+
+        ruling = None
+        extras: dict = {}
+        if decider == model.DECIDER_LLM:
+            with self._lock:
+                spent = self._llm_adjudications.get((step.id, cycle), 0)
+            if spent >= model.DECISION_LLM_CAP:
+                # Falls back to a human rather than ruling again: the cap is
+                # there to stop an unattended loop, and the honest report is
+                # that this visit has already used its rulings (§7).
+                extras["cap_reached"] = True
+            else:
+                ruling = self._adjudicate_request(step, rid, body, payload,
+                                                  decider_model, extras)
+
+        settled = ruling is not None and ruling.verdict == "settled"
         record = self.state.event(
             "decision", key=step.id, request_id=rid, cycle=cycle, seq=seq,
             valid=True, request=str(request_file),
             answer_path=str(decision_mod.answer_path(self.run_dir, rid)),
-            decider="human", work_state=payload.work_state,
+            # Who actually settled it, not who was declared: an escalation, a
+            # spent cap and a failed adjudication all hand the fork to a human,
+            # and the §7 tally counts this field (decision_tables).
+            decider=(model.DECIDER_LLM if settled else model.DECIDER_HUMAN),
+            work_state=payload.work_state,
             option_count=len(payload.options),
             recommendation=payload.recommendation, output=payload.output,
             a_eligible=b_reason is None, b_reason=b_reason,
-            expect_files=expect_files, cost_usd=res.cost_usd)
+            expect_files=expect_files, cost_usd=res.cost_usd, **extras)
+
+        if not settled:
+            with self._lock:
+                self.decisions_raised.append(record)
+            raise DecisionRequested([record])
+        self._settle_in_process(step, rid, cycle, payload, ruling,
+                                b_reason, res)
+
+    def _adjudicate_request(self, step: model.Step, rid: str, body: str,
+                            payload, decider_model: str | None,
+                            extras: dict):
+        """Call the llm decider for one request and record what it cost.
+
+        Never raises on an unusable ruling: it returns one whose verdict says
+        so, and the caller stops the run for a human. `extras` collects the
+        fields that explain the fallback in the decision event -- the person
+        reading the report has to know why the fork reached them (§15.2).
+        """
+        ruling = self._adjudicate(
+            step.id, body, len(payload.options),
+            model=decider_model, cwd=str(self.base_dir), timeout=step.timeout)
+        self._add_cost(ruling.cost_usd)
+        extras["adjudication_cost_usd"] = ruling.cost_usd
+        extras["decider_model"] = decider_model
+        if ruling.verdict == "escalate":
+            extras["escalated"] = True
+            extras["adjudication_note"] = ruling.reason[:1000]
+        elif ruling.verdict != "settled":
+            extras["adjudication_error"] = ruling.reason[:1000]
+            if ruling.raw is not None:
+                # Kept for audit, but NOT at the answer path: that one stays
+                # empty so the human has the obvious place to write (§15.2).
+                attempts = sorted(decision_mod.decisions_dir(self.run_dir)
+                                  .glob(f"{rid}_llm-attempt*.md"))
+                rejected = (decision_mod.decisions_dir(self.run_dir)
+                            / f"{rid}_llm-attempt{len(attempts) + 1:02d}.md")
+                rejected.write_text(ruling.raw, encoding="utf-8")
+                extras["adjudication_rejected"] = str(rejected)
+        return ruling
+
+    def _settle_in_process(self, step: model.Step, rid: str, cycle: int,
+                           payload, ruling, b_reason: str | None, res):
+        """Apply a settled llm ruling without stopping the run (§15.1).
+
+        Writes the same artifacts the human path writes -- the answer file at
+        the same path, an `answer` event, and for form (a) the synthetic
+        success event `resume --answer` would have appended -- so a later
+        resume replays this run exactly as it replays a human-answered one.
+        `missing-file-at-resume` cannot arise here: nothing happens between the
+        stop and the ruling for a file to disappear in (§13.2).
+        """
+        answer_file = decision_mod.answer_path(self.run_dir, rid)
+        answer_file.parent.mkdir(parents=True, exist_ok=True)
+        answer_file.write_text(ruling.answer_text, encoding="utf-8")
+        answer, errors = decision_mod.parse_answer(ruling.answer_text,
+                                                   len(payload.options))
+        if errors:  # adjudicate() already gated this; belt and braces
+            raise WorkflowFailure(
+                f"decision {rid}: the recorded ruling does not parse: "
+                f"{'; '.join(errors)}")
+        if not b_reason:
+            b_reason = decision_mod.answer_b_reason(answer,
+                                                    payload.recommendation)
+        verdict = "b" if b_reason else "a"
+
+        event = self.state.event(
+            "answer", key=step.id, cycle=cycle, request_id=rid,
+            request=str(decision_mod.request_path(self.run_dir, rid)),
+            answer_path=str(answer_file), decider=model.DECIDER_LLM,
+            option=answer.option, verdict=verdict, b_reason=b_reason,
+            missing=[])
+        key = (step.id, cycle)
         with self._lock:
-            self.decisions_raised.append(record)
-        raise DecisionRequested([record])
+            self._llm_adjudications[key] = self._llm_adjudications.get(key, 0) + 1
+            # Feeds the re-run prompt. The construction-time table only holds
+            # replayed answers, so without this a second fork in the same visit
+            # would be re-run without the first ruling in front of it (§13.6).
+            self._decision_answers.setdefault(key, []).append(event)
+
+        if verdict == "b":
+            raise _DecisionRerun(self._decision_context(
+                self._decision_answers[key]))
+
+        # Form (a): the payload's own output becomes the step's value, and the
+        # success event is written in the shape `resume --answer` writes it, so
+        # a resumed run consumes it as an ordinary replay hit (§13.4 step 3).
+        if step.output:
+            with self._lock:
+                self.vars[step.output] = payload.output
+        self.state.event("step", key=step.id, status="success",
+                         via="decision-a", request_id=rid, attempts=1,
+                         cost_usd=res.cost_usd, output_value=payload.output)
+        self._snapshot("running")
+        raise _DecisionSettledA
 
     def _decision_b_reason(self, step: model.Step, payload
                            ) -> tuple[str | None, list[str]]:

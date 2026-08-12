@@ -235,7 +235,7 @@ def _ingest_answers(run_dir: Path, specs: list[str],
     """
     if not specs:
         return events
-    pending, _, _ = decision_tables(events)
+    pending, _, _, _ = decision_tables(events)
     by_step = {step: event for (step, _cycle), event in pending.items()}
     answered_steps = {e["key"] for e in events if e.get("kind") == "answer"}
     state = RunState(run_dir)
@@ -279,16 +279,13 @@ def _ingest_answers(run_dir: Path, specs: list[str],
         # the filesystem to themselves since (§13.2).
         b_reason = request.get("b_reason")
         if not b_reason:
-            # Same rule as the run-llm path (stepio._answer_b_reason): form (a)
-            # adopts the payload's `output:`, which only describes what the
-            # step would produce under its own recommendation, so any other
-            # ruling has to re-run the step rather than silently substitute a
-            # value nobody chose.
-            recommended = request.get("recommendation")
-            if answer.option is None:
-                b_reason = decision_mod.B_REASON_UNLISTED_OPTION
-            elif recommended is None or answer.option != recommended:
-                b_reason = decision_mod.B_REASON_OPTION_NOT_RECOMMENDED
+            # One shared rule for all three adjudication sites
+            # (decision.answer_b_reason): form (a) adopts the payload's
+            # `output:`, which only describes what the step would produce
+            # under its own recommendation, so any other ruling has to re-run
+            # the step rather than silently substitute a value nobody chose.
+            b_reason = decision_mod.answer_b_reason(
+                answer, request.get("recommendation"))
         missing: list[str] = []
         if not b_reason:
             missing = [p for p in request.get("expect_files") or []
@@ -300,7 +297,12 @@ def _ingest_answers(run_dir: Path, specs: list[str],
         appended.append(state.event(
             "answer", key=step_id, cycle=request["cycle"],
             request_id=request["request_id"], request=request["request"],
-            answer_path=str(answer_file), decider="human",
+            # Always human: `resume --answer` IS the human path. An llm
+            # decider settles in-process (§15.1) and never arrives here, so
+            # recording the workflow's declared decider would mislabel a
+            # person's ruling -- and, through decision_tables, spend the §7
+            # cap that human answers are defined not to consume.
+            answer_path=str(answer_file), decider=model.DECIDER_HUMAN,
             option=answer.option, verdict=verdict, b_reason=b_reason,
             missing=missing))
         if verdict == "a":
@@ -391,6 +393,12 @@ def _tree_lines(node, depth=0):
             extras.append(f"on-error={node.on_error}")
         if node.decider:  # only when it overrides the workflow-level setting
             extras.append(f"decider={node.decider}")
+        if node.decider_model:
+            # Shown for the same reason the workflow-level line shows it: plan
+            # output is the run-llm orchestrator's only view of the workflow,
+            # and it cannot name the model for a delegated adjudication it
+            # cannot see (§11, §15.7).
+            extras.append(f"decider-model={node.decider_model}")
         if node.output:
             extras.append(f"-> {node.output}" +
                           ("" if node.output_type == model.DEFAULT_OUTPUT_TYPE
@@ -652,9 +660,18 @@ def cmd_record(args) -> int:
     if args.answer:
         # Adjudication, not recording: the result file is not re-read (the
         # request was filed out of its way when the decision was detected).
+        #
+        # Who ruled is resolved here, from the workflow -- the orchestrator is
+        # not asked to remember it (§14's no-new-memory invariant). --decider
+        # human overrides it for the paths that hand the fork back to a person
+        # (escalation, a spent cap, a ruling that did not parse), so those
+        # answers do not spend the llm cap they are the fallback for (§7).
+        declared, _ = model.resolve_decider(wf, step)
         try:
             status, message = stepio.adjudicate_answer(
-                step, args.result, args.vars, args.answer, args.log)
+                step, args.result, args.vars, args.answer, args.log,
+                decider=(model.DECIDER_HUMAN if args.decider == "human"
+                         else declared))
         except stepio.StepIOError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
@@ -1296,6 +1313,11 @@ def main(argv=None) -> int:
                             "this ruling file (first line 'option: <N|none>'). "
                             "Exits 0 when the step continues without "
                             "re-running, 5 when it must be re-run from move 1")
+    p_rec.add_argument("--decider", choices=list(model.DECIDER_VALUES),
+                       help="who wrote the --answer file. Defaults to the "
+                            "workflow's own decider; pass 'human' when a "
+                            "person answered a request that fell back to "
+                            "them, so it does not spend the llm cap")
     p_rec.set_defaults(func=cmd_record)
 
     p_poll = sub.add_parser(

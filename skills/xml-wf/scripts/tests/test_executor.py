@@ -60,6 +60,11 @@ def fake_ask_factory(answers):
     return fake_ask
 
 
+def _no_adjudicator(*args, **kwargs):
+    raise AssertionError("the llm decider was called; this test did not "
+                         "declare decider='llm'")
+
+
 class ExecutorTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -81,7 +86,8 @@ class ExecutorTestCase(unittest.TestCase):
         self.tmp.cleanup()
 
     def execute(self, xml, params=None, ask=None, diagnose=None, events=None,
-                permission_mode=None, model_runner="cc", inherit_model=None):
+                permission_mode=None, model_runner="cc", inherit_model=None,
+                adjudicate=None):
         wf = parser.parse_string(xml, base_dir=self.tmp.name)
         executor = Executor(
             wf, params or {}, self.run_dir, base_dir=self.tmp.name,
@@ -90,6 +96,9 @@ class ExecutorTestCase(unittest.TestCase):
             run_claude=self.fake,
             ask_llm=ask or fake_ask_factory([]),
             diagnose=diagnose or (lambda *a, **k: Diagnosis("FAIL", "no")),
+            # Default raises rather than returning a ruling: a test that did
+            # not ask for llm adjudication must never reach one silently.
+            adjudicate=adjudicate or _no_adjudicator,
             model_runner=model_runner,
             inherit_model=inherit_model,
         )

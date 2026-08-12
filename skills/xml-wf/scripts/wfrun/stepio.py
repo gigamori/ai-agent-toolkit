@@ -431,6 +431,11 @@ def _decision_message(text: str, dec_dir: str | Path, prefix: str) -> str:
     does (run-llm.md's no-task-content design). Valid and malformed are told
     apart because they need different human actions -- answer it, or go read
     why it cannot be answered (xml-wf-decision-request.md §8).
+
+    The cap is enforced here rather than by the orchestrator: counting settled
+    rulings is a fact about the ledger, and run-llm's standing rule is that the
+    LLM carries paths and verdicts while code does the arithmetic (§15.7). The
+    orchestrator only has to follow the sentence it is handed.
     """
     body = modes.strip_mode_line(text)
     rid = persist_decision_request(body, dec_dir, prefix)
@@ -441,7 +446,12 @@ def _decision_message(text: str, dec_dir: str | Path, prefix: str) -> str:
                 f"malformed and cannot be answered as-is ({len(errors)} field "
                 f"problem(s)); read it and decide by hand (request: {request})")
     answer = Path(dec_dir) / f"{rid}{decision_mod.ANSWER_SUFFIX}"
-    return (f"decision: step requested adjudication (request: {request}); "
+    capped = (decision_mod.llm_adjudications(dec_dir, prefix)
+              >= model.DECISION_LLM_CAP)
+    who = (" an llm decider has already settled "
+           f"{model.DECISION_LLM_CAP} request(s) here, so this one is for a "
+           "person to answer (add --decider human);" if capped else "")
+    return (f"decision: step requested adjudication (request: {request});{who} "
             f"write the ruling to {answer}, then re-run record with "
             f"--answer {answer}")
 
@@ -586,7 +596,8 @@ def adjudicate_answer(step: model.Step, result_path: str | Path,
                       vars_path: str | Path, answer_file: str | Path,
                       log_path: str | Path | None = None,
                       decisions_dir: str | Path | None = None,
-                      decision_prefix: str | None = None) -> tuple[str, str]:
+                      decision_prefix: str | None = None,
+                      decider: str = model.DECIDER_HUMAN) -> tuple[str, str]:
     """Settle the step's open decision request (`record --answer`, §14.2).
 
     Returns ("ok", msg) for form (a) -- the payload's own output becomes the
@@ -600,6 +611,12 @@ def adjudicate_answer(step: model.Step, result_path: str | Path,
     so `missing-file` and `missing-file-at-resume` collapse into the former
     here (§14.2 step 3) -- run-llm keeps no record of what existed when the
     step stopped, and both readings route to (b) anyway.
+
+    `decider` is recorded, not inspected: run-llm settles human and delegated
+    rulings through this one verb, so without the field the §7 cap would have
+    no way to tell an unattended llm loop from a person answering every time
+    (§15.7). The caller resolves it from the workflow, and `--decider human`
+    overrides it for the fallback paths a person is asked to answer.
     """
     dec_dir = Path(decisions_dir or decisions_dir_for_result(result_path))
     # Search BOTH layers' namespaces unless the caller pinned one: an A-layer
@@ -642,7 +659,7 @@ def adjudicate_answer(step: model.Step, result_path: str | Path,
 
     b_reason = _decision_b_reason(step, payload, vars_path, result_path)
     if not b_reason:
-        b_reason = _answer_b_reason(answer, payload)
+        b_reason = decision_mod.answer_b_reason(answer, payload.recommendation)
     verdict = "b" if b_reason else "a"
 
     # Copy the ruling into the ledger for the same reason the request was
@@ -656,6 +673,7 @@ def adjudicate_answer(step: model.Step, result_path: str | Path,
         "answer_path": str(filed_answer.resolve()),
         "answer_source": str(answer_file.resolve()),
         "option": answer.option, "verdict": verdict, "b_reason": b_reason,
+        "decider": decider,
     }, ensure_ascii=False, indent=2))
 
     chosen = "none" if answer.option is None else f"option {answer.option}"
@@ -684,24 +702,9 @@ def adjudicate_answer(step: model.Step, result_path: str | Path,
                 "status": f"decision-{verdict}", "request_id": rid,
                 "request_file": str(request_file), "answer_file": str(answer_file),
                 "option": answer.option, "b_reason": b_reason,
+                "decider": decider,
             }, ensure_ascii=False) + "\n")
     return status, message
-
-
-def _answer_b_reason(answer, payload) -> str | None:
-    """Why the ruling itself rules form (a) out, or None (§6).
-
-    Form (a) adopts the payload's `output:` verbatim, and that value states
-    what the step would produce under ITS OWN recommendation. So (a) is only
-    coherent when the ruling agrees with that recommendation; any other
-    choice -- including an unlisted one -- must re-run the step so the value
-    matches what was actually decided.
-    """
-    if answer.option is None:
-        return decision_mod.B_REASON_UNLISTED_OPTION
-    if payload.recommendation is None or answer.option != payload.recommendation:
-        return decision_mod.B_REASON_OPTION_NOT_RECOMMENDED
-    return None
 
 
 def _decision_b_reason(step: model.Step, payload, vars_path, result_path

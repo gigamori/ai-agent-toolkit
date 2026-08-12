@@ -23,6 +23,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+# The one exception to the rule above: `model` is the pure attribute/vocabulary
+# module and imports nothing from wfrun, so the decider vocabulary can be
+# shared instead of spelled twice.
+from . import model
+
 DECISION_PREFIX = "DECISION:"
 
 
@@ -260,6 +265,28 @@ def parse_answer(text: str, option_count: int) -> tuple[DecisionAnswer | None, l
     return DecisionAnswer(option=number, text=body), []
 
 
+def answer_b_reason(answer: DecisionAnswer, recommendation: int | None) -> str | None:
+    """Why the ruling itself rules form (a) out, or None (§6).
+
+    Form (a) adopts the payload's `output:` verbatim, and that value states
+    what the step would produce under ITS OWN recommendation. So (a) is only
+    coherent when the ruling agrees with that recommendation; any other choice
+    -- including an unlisted one -- must re-run the step so the value matches
+    what was actually decided.
+
+    Lives here so the three adjudication sites share one rule: `resume
+    --answer` (__main__._ingest_answers), run-llm's `record --answer`
+    (stepio.adjudicate_answer) and the in-process llm adjudicator
+    (executor._handle_decision, §15.1). A fourth copy is how the seven-value
+    vocabulary drifts.
+    """
+    if answer.option is None:
+        return B_REASON_UNLISTED_OPTION
+    if recommendation is None or answer.option != recommendation:
+        return B_REASON_OPTION_NOT_RECOMMENDED
+    return None
+
+
 def request_id(step_id: str, cycle: int, seq: int) -> str:
     """Stable identity for one decision request.
 
@@ -394,6 +421,29 @@ def settled_request_ids(dec_dir: str | Path, prefix: str) -> list[str]:
     except OSError:
         return []
     return [name[:-len(VERDICT_SUFFIX)] for name in names]
+
+
+def llm_adjudications(dec_dir: str | Path, prefix: str) -> int:
+    """How many of `prefix`'s settled requests an llm decider ruled on (§7).
+
+    run-llm's cap tally. There is no events.jsonl here, so the verdict markers
+    are the ledger -- the same artifacts that already carry the double-answer
+    guard. Scope follows the prefix and therefore the layer: `<id>_cNN` counts
+    one A-layer visit, a bare step id counts the B layer, which has no cycle
+    concept at all and so counts for the whole run (§15.7). Unreadable markers
+    are skipped rather than assumed: an unparseable file is not evidence that
+    an llm ruled.
+    """
+    total = 0
+    for rid in settled_request_ids(dec_dir, prefix):
+        try:
+            marker = json.loads(
+                verdict_marker(dec_dir, rid).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(marker, dict) and marker.get("decider") == model.DECIDER_LLM:
+            total += 1
+    return total
 
 
 def settled_pairs(dec_dir: str | Path, prefix: str) -> list[tuple[str, str]]:

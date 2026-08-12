@@ -15,7 +15,14 @@ OUTPUT_TYPES = ("file", "value")
 # what an unattended run did; `human` is the default because an `llm` decider
 # judges work produced under the very contract it runs under
 # (xml-wf-decision-request.md §4).
-DECIDER_VALUES = ("human", "llm")
+DECIDER_HUMAN = "human"
+DECIDER_LLM = "llm"
+DECIDER_VALUES = (DECIDER_HUMAN, DECIDER_LLM)
+
+# How many requests one llm decider may settle per step visit before the run
+# stops and hands the fork to a person. Human answers never consume it
+# (xml-wf-decision-request.md §7).
+DECISION_LLM_CAP = 2
 
 DEFAULT_RETRY = 0
 DEFAULT_TIMEOUT = 600

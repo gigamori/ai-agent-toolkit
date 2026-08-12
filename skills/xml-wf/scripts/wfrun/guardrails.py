@@ -11,6 +11,14 @@ where someone already predicted the fork (xml-wf-decision-request.md §12).
 Its firing barriers are inline for the same reason the fields are: a rule
 that has to be recalled from elsewhere is a rule that decays.
 
+Rule 4's `output:` requirement is stated in the positive ("when work-state is
+complete the output line is REQUIRED"). The first wording said only "leave the
+output line out entirely unless work-state is complete" -- a permission to omit,
+with the requirement left implicit in the template line above it -- and a sonnet
+step duly returned `work-state: complete` with no `output:` line, twice out of
+two, making the payload malformed and unanswerable (measured 2026-08-13 E2E,
+xml-wf-decision-request.md §12).
+
 Rule 4 deliberately avoids the word "reply" and pivots on "final response":
 each execution layer defines where the final response goes (run-cc: the
 response itself; run-llm layer B: stepio.RESULT_PROTOCOL's result FILE, with
@@ -47,8 +55,9 @@ Replace each <...> with the value alone and never copy these explanations into \
 it. Give two or more options, numbered from 1. recommendation takes an option \
 number or the bare word none. work-state takes exactly one bare word: complete \
 if the deliverable is already written and only its reading is open, stopped if \
-you halted at the fork. Leave the output line out entirely unless work-state is \
-complete. Refer to data by path; never paste file contents into the request."""
+you halted at the fork. When work-state is complete the output line is \
+REQUIRED; when it is stopped, omit that line entirely. Refer to data by path; \
+never paste file contents into the request."""
 
 ASK_PROMPT = """\
 Answer the following question based on facts. If it references file paths, \
@@ -83,6 +92,46 @@ DEBUG_SCHEMA = """\
 {"type":"object","properties":{"action":{"type":"string","enum":["RETRY","FAIL"]},\
 "reason":{"type":"string"},"fix_instruction":{"type":"string"}},\
 "required":["action","reason"]}"""
+
+# The `decider="llm"` adjudicator (xml-wf-decision-request.md §15.2). Its role
+# text is a constant rather than a .claude/agents definition on purpose: the
+# escalation clause below is part of the contract, and a role file a user can
+# swap is a role file that can drop it -- the one place fail-closed must not be
+# editable (§5). adp.diagnose's discover_agents dependency is the deliberate
+# counter-example; it also buys a failure mode (role missing -> FAIL) that
+# adjudication does not want.
+DECIDE_ROLE = """\
+You adjudicate a fork raised by a workflow step. You did not do the step's \
+work and you must not do it now: rule on the fork only.
+You must NOT settle a fork whose consequences are irreversible, outward-facing \
+(anything that leaves this machine or reaches a third party), or that changes \
+what the workflow is trying to achieve. Escalate those to a human instead. \
+Escalate whenever you are uncertain: a human ruling costs one round trip, a \
+wrong autonomous ruling propagates downstream."""
+
+# Structured output is forced here and only here. The human-facing answer file
+# stays the §13.3 text format -- the caller renders this object into it -- so
+# both deciders still land in decision.parse_answer, the single validity gate
+# (§13.3, §15.2). Free-text generation would reintroduce the transcription trap
+# §12 measured (a model copying a template's parenthetical into the value).
+DECIDE_PROMPT = """\
+## Decision request from step '{step_id}'
+
+{request}
+
+## Your ruling
+
+Return one of:
+- verdict "option" with option set to the number of the listed option you \
+choose, and text saying why.
+- verdict "none" if no listed option is right; text must say what to do \
+instead, since the step re-runs on that text alone.
+- verdict "escalate" if the escalation clause applies; text says why it does."""
+
+DECIDE_SCHEMA = """\
+{"type":"object","properties":{"verdict":{"type":"string",\
+"enum":["option","none","escalate"]},"option":{"type":"integer"},\
+"text":{"type":"string"}},"required":["verdict","text"]}"""
 
 ASK_SCHEMA = """\
 {"type":"object","properties":{"answer":{"type":"boolean"},"reason":{"type":"string"}},\

@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_executor import ExecutorTestCase  # noqa: E402
 
+from wfrun import adjudicate as adjudicate_mod  # noqa: E402
 from wfrun import decision as decision_mod  # noqa: E402
 from wfrun import pi_cli, stepio  # noqa: E402
 from wfrun.__main__ import AnswerError, _ingest_answers  # noqa: E402
@@ -579,6 +580,210 @@ class TestCycleIdentity(DecisionExecutorTestCase):
         self.assertEqual(self.decision_events()[0]["cycle"], 2)
 
 
+def ruling(verdict="settled", option=1, text="because", raw=None, cost=0.5):
+    """One Adjudication, in the shape adjudicate() returns (§15.2)."""
+    answer_text = (adjudicate_mod.render_answer(option, text)
+                   if verdict == "settled" else None)
+    return adjudicate_mod.Adjudication(
+        verdict=verdict, answer_text=answer_text, reason=text, raw=raw,
+        cost_usd=cost)
+
+
+def fake_decider(*rulings, calls=None):
+    """An adjudicate() stand-in handing out `rulings` in order, no API call."""
+    queue = list(rulings)
+
+    def _adjudicate(step_id, request_body, option_count, **kwargs):
+        if calls is not None:
+            calls.append({"step_id": step_id, "request": request_body,
+                          "option_count": option_count, **kwargs})
+        if not queue:
+            raise AssertionError("the decider was called more times than the "
+                                 "test provided rulings for")
+        return queue.pop(0)
+
+    return _adjudicate
+
+
+class TestLlmAdjudication(DecisionExecutorTestCase):
+    """`decider="llm"`: the in-process path (§15.1) and its three fallbacks."""
+
+    def llm(self, inner, *rulings, calls=None, extra='decider="llm"'):
+        return self.execute(self.wrap(inner, extra=extra),
+                            adjudicate=fake_decider(*rulings, calls=calls))
+
+    def test_escalation_stops_for_a_human_without_re_running(self):
+        """T1: the clause in §5 routes the fork to a person, and the step is
+        not re-run on the way."""
+        calls = []
+        self.respond_decision("DO-WORK")
+        ex = self.llm('<step id="s1" role="w"><task>DO-WORK</task></step>',
+                      ruling(verdict="escalate", text="irreversible: it emails"),
+                      calls=calls)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.fake.calls), 1)  # no form-(b) re-run
+        record = self.decision_events()[0]
+        self.assertTrue(record["escalated"])
+        self.assertIn("irreversible", record["adjudication_note"])
+        # the answer path stays empty: it is where the human writes (§15.2)
+        self.assertFalse(Path(record["answer_path"]).exists())
+        # and the fallback is not counted against the cap (§7)
+        self.assertEqual(record["decider"], "human")
+
+    def test_malformed_payload_never_reaches_the_decider(self):
+        """T2: an unanswerable payload stops the run before adjudication."""
+        calls = []
+        self.fake.handlers.append(
+            (lambda p: "DO-WORK" in p,
+             CliResult(ok=True, text="DECISION: no fields at all", cost_usd=0.02)))
+        ex = self.llm('<step id="s1" role="w"><task>DO-WORK</task></step>',
+                      calls=calls)
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        self.assertEqual(calls, [])
+
+    def test_unusable_ruling_falls_back_and_keeps_the_evidence(self):
+        """T2b: a ruling the shared parser rejects is no ruling at all."""
+        self.respond_decision("DO-WORK")
+        ex = self.llm('<step id="s1" role="w"><task>DO-WORK</task></step>',
+                      ruling(verdict="failed", raw="option: 9\n\nbeyond the list",
+                             text="'option: 9' is outside the 1..2 options"))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        record = self.decision_events()[0]
+        self.assertEqual(record["decider"], "human")
+        self.assertIn("outside", record["adjudication_error"])
+        rejected = Path(record["adjudication_rejected"])
+        self.assertEqual(rejected.name, "s1_c01_d01_llm-attempt01.md")
+        self.assertIn("option: 9", rejected.read_text(encoding="utf-8"))
+        self.assertFalse(Path(record["answer_path"]).exists())
+
+    def test_cap_hands_the_third_fork_of_a_visit_to_a_human(self):
+        """T3: two rulings per step visit, then the run stops (§7)."""
+        calls = []
+        self.fake.handlers.append(
+            (lambda p: "DO-WORK" in p,
+             CliResult(ok=True, text=payload(work_state="stopped", output=None),
+                       cost_usd=0.02)))
+        ex = self.llm('<step id="s1" role="w"><task>DO-WORK</task></step>',
+                      ruling(option=1), ruling(option=2), calls=calls)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        self.assertEqual(len(calls), 2)          # the cap, not one more
+        self.assertEqual(len(self.fake.calls), 3)  # two re-runs, then the stop
+        events = self.decision_events()
+        self.assertEqual([e["decider"] for e in events],
+                         ["llm", "llm", "human"])
+        self.assertTrue(events[2]["cap_reached"])
+        self.assertNotIn("adjudication_cost_usd", events[2])
+
+    def test_adjudication_cost_reaches_the_budget_check(self):
+        """T4: the ruling's cost is workflow cost, so budget-usd sees it."""
+        self.artifact()
+        self.respond_decision("DO-WORK")
+        ex = self.llm(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>'
+            '<step id="s2" role="w"><task>later</task></step>',
+            ruling(option=1, cost=0.5),
+            extra='decider="llm" budget-usd="0.4"')
+        with self.assertRaises(WorkflowFailure) as ctx:
+            ex.run()
+        self.assertIn("budget-usd", str(ctx.exception))
+        self.assertIn("before 's2'", str(ctx.exception))
+        self.assertGreaterEqual(ex.cost_usd, 0.5)
+        self.assertEqual(self.decision_events()[0]["adjudication_cost_usd"], 0.5)
+
+    def test_human_answers_never_spend_the_cap(self):
+        """T5: the tally counts llm rulings only, so a human-answered run can
+        stop and be answered any number of times (§7)."""
+        from wfrun.executor import decision_tables
+        events = [{"kind": "decision", "key": "s1", "cycle": 1, "seq": n,
+                   "valid": True, "request_id": f"s1_c01_d{n:02d}",
+                   "decider": "human"} for n in (1, 2, 3)]
+        self.assertEqual(decision_tables(events)[3], {})
+        # and a human-decider run does not call an adjudicator at all: the
+        # harness's default raises if it is reached
+        self.respond_decision("DO-WORK")
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w"><task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+
+    def test_form_a_continues_in_process_and_replays_as_a_hit(self):
+        """T8: the ruling is applied without stopping, in the shape a resumed
+        run consumes as an ordinary replay hit (§15.1)."""
+        self.artifact()
+        self.respond_decision("DO-WORK")
+        ex = self.llm(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>',
+            ruling(option=1))  # matches the payload's recommendation
+        ex.run()
+        self.assertEqual(ex.vars["v"], "art.txt")
+        self.assertEqual(len(self.fake.calls), 1)  # (a) never re-runs
+        success = [e for e in load_events(self.run_dir)
+                   if e.get("kind") == "step" and e.get("status") == "success"]
+        self.assertEqual(success[0]["via"], "decision-a")
+        answer = [e for e in load_events(self.run_dir) if e.get("kind") == "answer"]
+        self.assertEqual(answer[0]["decider"], "llm")
+        self.assertEqual(answer[0]["verdict"], "a")
+        # the ruling is on disk at the human's path, in the human's format
+        self.assertTrue(Path(answer[0]["answer_path"]).read_text(
+            encoding="utf-8").startswith("option: 1"))
+        # replaying those events re-runs nothing
+        replayed = self.execute(self.wrap(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>', extra='decider="llm"'),
+            events=load_events(self.run_dir))
+        replayed.run()
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertEqual(replayed.vars["v"], "art.txt")
+
+    def test_form_b_re_runs_in_place_carrying_every_ruling(self):
+        """T9: the re-run happens inside the same visit, is not a failed
+        attempt, and shows the step every fork already settled (§13.6)."""
+        self.respond_decision("DO-WORK", then_ok=True,
+                              work_state="stopped", output=None)
+        ex = self.llm('<step id="s1" role="w" retry="1"><task>DO-WORK</task></step>',
+                      ruling(option=2, text="take B"))
+        ex.run()
+        self.assertEqual(len(self.fake.calls), 2)
+        self.assertIn("take B", self.fake.calls[1]["prompt"])
+        self.assertIn("DECISION:", self.fake.calls[1]["prompt"])
+        # a settled fork is not a failure (§13.7)
+        self.assertFalse([e for e in load_events(self.run_dir)
+                          if e.get("status") == "attempt-failed"])
+
+    def test_form_b_does_not_spend_the_retry_budget(self):
+        """The re-run is granted, like debug's one attempt -- a later genuine
+        failure still gets the retry the step declared (§15.1)."""
+        seen = {"n": 0}
+
+        def first_call_only(prompt):
+            if "DO-WORK" not in prompt:
+                return False
+            seen["n"] += 1
+            return seen["n"] == 1
+
+        self.fake.handlers.append(
+            (first_call_only,
+             CliResult(ok=True, text=payload(work_state="stopped", output=None),
+                       cost_usd=0.02)))
+        self.fake.handlers.append(
+            (lambda p: "DO-WORK" in p,
+             CliResult(ok=False, error_class="behavioral", error="flaky",
+                       cost_usd=0.01)))
+        ex = self.llm('<step id="s1" role="w" retry="1"><task>DO-WORK</task></step>',
+                      ruling(option=2))
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        # decision + the re-run + the retry the re-run must not have eaten
+        self.assertEqual(len(self.fake.calls), 3)
+
+
 class TestDeciderLint(unittest.TestCase):
     def _lint(self, xml):
         from wfrun import lint as lint_mod
@@ -589,7 +794,9 @@ class TestDeciderLint(unittest.TestCase):
     def _codes(self, xml):
         return {f.code for f in self._lint(xml)}
 
-    def test_llm_is_rejected_until_p4(self):
+    def test_llm_passes_lint_now_that_it_is_implemented(self):
+        """T7: the transitional rejection is gone; the backend that cannot run
+        it refuses at startup instead (§15.8)."""
         for xml in (
             '<workflow name="t" version="2" max="5" decider="llm">'
             '<step id="s1" tools="Read"><task>x</task></step></workflow>',
@@ -597,7 +804,9 @@ class TestDeciderLint(unittest.TestCase):
             '<step id="s1" tools="Read" decider="llm"><task>x</task></step></workflow>',
         ):
             with self.subTest(xml):
-                self.assertIn("decider-llm-unimplemented", self._codes(xml))
+                codes = self._codes(xml)
+                self.assertNotIn("decider-llm-unimplemented", codes)
+                self.assertNotIn("decider-unknown", codes)
 
     def test_human_and_unset_pass(self):
         for xml in (
@@ -610,6 +819,38 @@ class TestDeciderLint(unittest.TestCase):
                 codes = self._codes(xml)
                 self.assertNotIn("decider-llm-unimplemented", codes)
                 self.assertNotIn("decider-unknown", codes)
+
+    def test_pi_refuses_llm_adjudication_at_both_levels(self):
+        """T6: the pi backend rejects it before any process starts -- and the
+        workflow-level attribute names no step, so a step-only scan would miss
+        it (§15.8)."""
+        from wfrun import parser
+        for xml, expected in (
+            ('<workflow name="t" version="2" max="5" decider="llm">'
+             '<step id="s1" tools="Read"><task>x</task></step></workflow>',
+             "this workflow"),
+            ('<workflow name="t" version="2" max="5">'
+             '<step id="s1" tools="Read" decider="llm"><task>x</task></step>'
+             '</workflow>', "step 's1'"),
+        ):
+            with self.subTest(xml):
+                errors = pi_cli.pi_compat_errors(parser.parse_string(xml))
+                self.assertEqual(len(errors), 1)
+                self.assertIn(expected, errors[0])
+                self.assertIn('decider="human"', errors[0])
+                self.assertIn("--backend cc", errors[0])
+
+    def test_pi_accepts_human_adjudication(self):
+        from wfrun import parser
+        for xml in (
+            '<workflow name="t" version="2" max="5" decider="human">'
+            '<step id="s1" tools="Read"><task>x</task></step></workflow>',
+            '<workflow name="t" version="2" max="5">'
+            '<step id="s1" tools="Read"><task>x</task></step></workflow>',
+        ):
+            with self.subTest(xml):
+                self.assertEqual(
+                    pi_cli.pi_compat_errors(parser.parse_string(xml)), [])
 
     def test_unknown_value_stays_decider_unknown(self):
         codes = self._codes(
@@ -629,9 +870,9 @@ class TestVizDecider(unittest.TestCase):
         self.assertIn("decider=human", viz.mermaid(wf))
 
 
-class TestRunLlmAdjudication(unittest.TestCase):
-    """The run-llm (a)/(b) path (§14): `decisions/` is the ledger, and every
-    enumeration is derived from it rather than carried by the orchestrator."""
+class RunLlmAdjudicationTestCase(unittest.TestCase):
+    """Fixture for the run-llm layer: a workflow, a result file and the
+    `decisions/` ledger, with the cwd where an orchestrator would stand."""
 
     def setUp(self):
         import os
@@ -671,6 +912,11 @@ class TestRunLlmAdjudication(unittest.TestCase):
         path.write_text(body, encoding="utf-8")
         return stepio.adjudicate_answer(self.step, self.result, self.vars,
                                         path, self.log)
+
+
+class TestRunLlmAdjudication(RunLlmAdjudicationTestCase):
+    """The run-llm (a)/(b) path (§14): `decisions/` is the ledger, and every
+    enumeration is derived from it rather than carried by the orchestrator."""
 
     def test_request_survives_the_result_file_being_deleted(self):
         status, message = self.record(payload())
@@ -894,6 +1140,72 @@ class TestRecordVerdict(unittest.TestCase):
     def test_exit_code_is_four(self):
         from wfrun.__main__ import RECORD_EXIT_CODES
         self.assertEqual(RECORD_EXIT_CODES["decision"], 4)
+
+
+class TestRunLlmDeciderLedger(RunLlmAdjudicationTestCase):
+    """run-llm's half of the llm decider (§15.7): who ruled is recorded, the
+    cap is counted from the ledger, and nothing half-applies."""
+
+    def answer_as(self, body, decider):
+        path = self.root / "ans.md"
+        path.write_text(body, encoding="utf-8")
+        return stepio.adjudicate_answer(self.step, self.result, self.vars,
+                                        path, self.log, decider=decider)
+
+    def marker(self, rid="s1_d01"):
+        return json.loads((self.dec / f"{rid}_verdict.json")
+                          .read_text(encoding="utf-8"))
+
+    def test_the_ruling_records_who_made_it(self):
+        """T10 (first half): without this field human and delegated rulings
+        are indistinguishable, and the cap has nothing to count."""
+        self.record(payload(work_state="stopped", output=None))
+        self.answer_as("option: 2\nB please", "llm")
+        self.assertEqual(self.marker()["decider"], "llm")
+        entries = [json.loads(line) for line
+                   in self.log.read_text(encoding="utf-8").splitlines()]
+        adjudications = [e for e in entries if e.get("status", "").startswith("decision-")]
+        self.assertEqual(adjudications[-1]["decider"], "llm")
+
+    def test_the_cap_sends_the_next_fork_to_a_person(self):
+        """T10 (second half): two llm rulings on this step, then the verdict
+        message stops asking a subagent (§7, §15.7)."""
+        for n in (1, 2):
+            self.record(payload(work_state="stopped", output=None))
+            self.answer_as(f"option: {n}\nkeep going", "llm")
+        self.assertEqual(decision_mod.llm_adjudications(self.dec, "s1"), 2)
+        _, message = self.record(payload(work_state="stopped", output=None))
+        self.assertIn("--decider human", message)
+        # still content-free: the cap sentence names no part of the payload
+        self.assertNotIn("which join", message)
+
+    def test_human_rulings_do_not_spend_the_cap(self):
+        """T11: the fallback path a person is asked to answer must not count
+        against the budget it is the fallback for."""
+        for n in (1, 2):
+            self.record(payload(work_state="stopped", output=None))
+            self.answer_as(f"option: {n}\nkeep going", "human")
+        self.assertEqual(decision_mod.llm_adjudications(self.dec, "s1"), 0)
+        _, message = self.record(payload(work_state="stopped", output=None))
+        self.assertNotIn("--decider human", message)
+
+    def test_a_rejected_ruling_leaves_no_trace(self):
+        """T12: the three rejections and a missing answer file share one exit,
+        and neither writes a half-settled ledger (§15.4, §15.7)."""
+        self.record(payload(work_state="stopped", output=None))
+        for body in ("no option line here", "option: 9\nout of range",
+                     "option: none\n"):
+            with self.subTest(body=body):
+                with self.assertRaises(stepio.StepIOError):
+                    self.answer_as(body, "llm")
+        # the delegation failing outright lands in the same place
+        with self.assertRaises(stepio.StepIOError):
+            stepio.adjudicate_answer(self.step, self.result, self.vars,
+                                     self.root / "never-written.md", self.log,
+                                     decider="llm")
+        self.assertFalse((self.dec / "s1_d01_verdict.json").exists())
+        self.assertEqual(json.loads(self.vars.read_text(encoding="utf-8")), {})
+        self.assertEqual(decision_mod.llm_adjudications(self.dec, "s1"), 0)
 
 
 if __name__ == "__main__":

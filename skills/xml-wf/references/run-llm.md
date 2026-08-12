@@ -272,32 +272,74 @@ decide; that is the normal terminal state.
 
 A `DECISION:` response is **not an error**. It never enters `retry`,
 `on-error`, or the abort machinery: the step did not fail, it asked a
-question it is not allowed to answer alone. Answering it is the user's call,
-never yours — you have no more authority to pick a branch here than the step
-did.
+question it is not allowed to answer alone. Answering it is never *yours* —
+you have no more authority to pick a branch here than the step did. Who may
+answer instead is the workflow's `decider:`, which `plan` printed for you.
 
 `record`/`wait` already filed the request outside the step's result file (a
 later `prompt --result` deletes result files, which would otherwise destroy
 it) and printed both paths.
 
-1. **Present the two paths and stop.** Say which step asked, give the request
-   path and the answer path. Do **not** read the request — same firewall as
-   everywhere else in this mode; the user reads it, you carry paths
-2. When the user has written the ruling (or told you what to write — then you
-   write exactly that into the answer file, nothing more):
+1. **`decider: human` (the default) — present the two paths and stop.** Say
+   which step asked, give the request path and the answer path. Do **not**
+   read the request — same firewall as everywhere else in this mode; the user
+   reads it, you carry paths
+   - **`decider: llm` — delegate it, the same way you delegate a step.**
+     Spawn one subagent with the model `plan` printed (`decider-model=`, on
+     the workflow line or the step's own), and pass it **paths only**: the
+     request path and the answer path. You still do not read the request
+   - The delegation message says exactly this and nothing about the task:
+     *rule on the decision request at `<request path>`; write the ruling to
+     `<answer path>` with `option: <N|none>` as its first line and your
+     reasons after it; do not settle a fork that is irreversible,
+     outward-facing, or changes what the workflow is for — for those, and
+     whenever you are unsure, write no file and make `escalate: <ground>` your
+     final response. Your final response is exactly one line: `OK` when you
+     wrote the ruling, or `escalate: <ground>` when you did not. `<ground>` is
+     one of irreversible / outward-facing / changes-the-goal / uncertain, plus
+     at most a short clause. Put nothing else in it — no figures, no file
+     contents, no quotes from the request. Your reasons belong in the ruling
+     file, which nobody but the next step reads*
+   - **Why the one-line rule**: the reply channel is the one way task content
+     can still reach you. Measured 2026-08-13: adjudicating subagents put the
+     chosen option's reasoning, `orders.csv` contents and the figures
+     `300 vs 225` into their final responses, and it landed in the
+     orchestrator's context — the delegation passed paths only, but nothing
+     constrained the reply. Like every other prompt-level rule here this is a
+     likelihood, not an enforcement (see "Enforcement boundaries"); the
+     firewall it guards is one-way by construction
+   - **Cost of the rule, accepted**: on this layer an escalation reason is
+     therefore a category, not an explanation. The person you hand the fork to
+     reads the request file themselves. (The batch path keeps the full reason
+     in the decision event's `adjudication_note`, since no orchestrator context
+     is at risk there.)
+   - If that final response starts with `escalate:`, or the verdict message
+     told you an llm decider has already spent its rulings here, fall back to
+     the human presentation above — and when the user answers, add
+     `--decider human` to the command below so their ruling is not counted
+     against the llm's budget
+   - Otherwise run the command below unchanged. Do not check whether the file
+     exists: `record` does that, and a missing or unusable ruling comes back
+     as `error(2)`, which is your signal to fall back to the human path
+2. When the ruling has been written (by the user, by the subagent, or by you
+   under the user's dictation — then you write exactly that, nothing more):
 
 ```bash
 $WFRUN record <xml> <id> --result steps/<id>_result.md --vars vars.json \
     --log steps.log --answer decisions/<id>_dNN_answer.md
+#   [--decider human]  add this when a person answered a request that fell
+#                back to them under `decider: llm`
 #   ok(0)     -> settled AND the step's deliverable already stood; vars.json
 #                updated from the request's own output. Nothing re-runs
 #   rerun(5)  -> settled, and the step must run again: redo from move 1.
 #                The ruling is injected into the new prompt automatically —
 #                you pass nothing, and every earlier ruling for this step
 #                rides along too, so a settled fork cannot re-open
-#   error(2)  -> nothing was settled: no open request, an unreadable/invalid
-#                answer file (needs a leading `option: <N|none>`), or a
-#                request already answered. Fix and retry; state is unchanged
+#   error(2)  -> nothing was settled: no open request, no answer file at that
+#                path, an invalid one (needs a leading `option: <N|none>`), or
+#                a request already answered. State is unchanged. After a
+#                delegated ruling this means the delegation failed: fall back
+#                to the human path rather than delegating again
 ```
 
 3. Report one line and continue
@@ -310,6 +352,11 @@ instead. Nothing else about the file is parsed.
 with a `"step"` field, like any other attempt, because it *was* a real
 execution. Layer A's `dispatch` widens its own per-cycle cap to match, so a
 ruling never costs you a retry you needed.
+
+**The llm decider's budget is counted for you.** Two rulings per step, after
+which the verdict message says so and asks for a person; human rulings marked
+`--decider human` never count. You keep no tally — the ledger in `decisions/`
+is the count, and `record` reads it.
 
 ## On abort (`record` exit 3, or `poll` reports `deadline-exceeded`)
 

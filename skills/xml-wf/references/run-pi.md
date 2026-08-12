@@ -40,8 +40,8 @@ override flag on `resume` itself.
 
 ## What is not available here
 
-Two workflow features are **refused before any pi process starts**. Neither is
-degraded silently: the run stops at startup and names the step.
+Three workflow features are **refused before any pi process starts**. None is
+degraded silently: the run stops at startup and names what declared it.
 
 ### `schema=`
 
@@ -56,8 +56,20 @@ structured output and finds its debug role in Claude Code's own config tree.
 Left enabled it would fail every diagnosis while still looking like a working
 feature.
 
-Both rejections point at build mode for a compatible rewrite — see the two
-sections below for what the rewrite looks like.
+### `decider="llm"`
+
+Adjudication of a `DECISION:` request by an llm decider runs on the claude CLI
+with forced structured output, whichever backend executes the steps — the same
+two things pi cannot provide. A pi run that declared it would start a claude
+process partway through.
+
+The rewrite needs no build mode: either use `decider="human"` (the default —
+the run stops at the fork and a person answers it with `wfrun resume
+--answer`), or run the workflow with `--backend cc`. The `DECISION:` channel
+itself works normally under pi; only unattended adjudication does not.
+
+The first two rejections point at build mode for a compatible rewrite — see the
+two sections below for what the rewrite looks like.
 
 ## Replacing `schema=`
 
