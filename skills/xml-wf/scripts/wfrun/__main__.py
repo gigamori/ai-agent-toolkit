@@ -80,6 +80,12 @@ def _report(executor: Executor, status: str):
         print("outputs:")
         for p in outputs:
             print(f"  {p}")
+    if executor.protocol_warnings:
+        # D9's warning face: stray protocol tokens inside successful
+        # responses. The run stands; the trace is the point.
+        print("warnings:")
+        for warning in executor.protocol_warnings:
+            print(f"  {warning}")
 
 
 def _request_options(path: str) -> list[str]:
@@ -113,6 +119,13 @@ def _report_decisions(records: list[dict], run_dir: Path, *, on_hold: bool = Fal
     for record in records:
         print(f"  step '{record['key']}' ({record['request_id']})")
         print(f"    request: {record['request']}")
+        if record.get("preamble_lines"):
+            # D9: the payload arrived below preamble prose; the request file
+            # holds only the anchored payload, the full response stays in the
+            # step's attempt record.
+            print(f"    note: the response put {record['preamble_lines']} "
+                  "line(s) of prose above the payload (protocol deviation; "
+                  "not filed)")
         for line in _request_options(record["request"]):
             print(f"    {line}")
         print(f"    answer file: {record['answer_path']}")

@@ -411,15 +411,16 @@ def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.
         result.error = blocked[:500]
         return result
 
-    if decision_mod.starts_with_decision(body):
+    claimed, _preamble = decision_mod.claim_decision_body(body)
+    if claimed is not None:
         # Third prefix, classified exactly as on the cc path (this module
         # keeps its classification aligned with claude_cli by design; see the
-        # module docstring). Reachable under the pi backend because only
-        # decider="llm" is refused there, not the channel itself
-        # (xml-wf-decision-request.md §3, §4).
+        # module docstring), including the D9 preamble claim. Reachable under
+        # the pi backend because only decider="llm" is refused there, not the
+        # channel itself (xml-wf-decision-request.md §3, §4).
         result.ok = False
         result.error_class = "decision"
-        result.error = body.strip()
+        result.error = claimed.strip()
         return result
 
     if body.strip() == "":

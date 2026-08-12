@@ -438,6 +438,13 @@ def _decision_message(text: str, dec_dir: str | Path, prefix: str) -> str:
     orchestrator only has to follow the sentence it is handed.
     """
     body = modes.strip_mode_line(text)
+    claimed, _preamble = decision_mod.claim_decision_body(body)
+    # File the anchored slice, not the preamble: the request file is the
+    # numbering authority the answer selects against (§1), so it has to be the
+    # parseable payload and nothing else. The full response stays in the
+    # result file for audit. A first-token body passes through unchanged,
+    # malformed or not (D9).
+    body = (claimed if claimed is not None else body).strip()
     rid = persist_decision_request(body, dec_dir, prefix)
     request = Path(dec_dir) / f"{rid}{decision_mod.REQUEST_SUFFIX}"
     _, errors = decision_mod.parse_payload(body)
@@ -454,6 +461,26 @@ def _decision_message(text: str, dec_dir: str | Path, prefix: str) -> str:
     return (f"decision: step requested adjudication (request: {request});{who} "
             f"write the ruling to {answer}, then re-run record with "
             f"--answer {answer}")
+
+
+def _with_stray_warning(message: str, text: str, result_path) -> str:
+    """Append the D9 stray-token warning to an ok verdict, when one applies.
+
+    Metadata only -- line numbers and prefixes, never content -- so it stays
+    inside run-llm's no-task-content design while making the pass-through
+    visible (D9 4-4: ERROR:/[BLOCKED: keep first-token classification, and a
+    DECISION: line whose tail does not parse is ambiguous evidence; neither
+    may fail a success, but neither may pass in silence either).
+    """
+    strays = decision_mod.stray_protocol_lines(modes.strip_mode_line(text))
+    if not strays:
+        return message
+    detail = ", ".join(f"'{prefix}' at line {number}"
+                       for number, prefix in strays[:5])
+    return (f"{message}; warning: the response carries a line-anchored "
+            f"protocol token it did not open with ({detail}); it was NOT "
+            f"reclassified -- read {result_path} if this step should have "
+            "stopped")
 
 
 def _append_log(log_path, step: model.Step, status: str, result_path):
@@ -587,6 +614,8 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
         else:
             message = res.error or f"error: {res.error_class or 'failed'}"
 
+    if ok:
+        message = _with_stray_warning(message, res.text or "", result_path)
     status = "decision" if res.error_class == "decision" else ("ok" if ok else "error")
     _append_log(log_path, step, status, result_path)
     return status, message
@@ -841,12 +870,15 @@ def record_result(step: model.Step, result_path: str | Path,
     elif modes.blocked_line(text) is not None:
         ok = False
         message = f"error: step blocked by a mode/rules constraint (details: {result_path})"
-    elif decision_mod.starts_with_decision(text):
+    elif decision_mod.claim_decision_body(
+            modes.strip_mode_line(text))[0] is not None:
         # The second classification site (xml-wf-decision-request.md §3): this
         # path never reaches claude_cli.classify_result(), so the prefix is
-        # recognized here too. Peer of the two branches above, and likewise
-        # ahead of the expect-file/schema checks below -- a decision response
-        # produces no step output to validate.
+        # recognized here too -- including the D9 preamble claim, which
+        # _decision_message re-derives to file the anchored slice. Peer of the
+        # two branches above, and likewise ahead of the expect-file/schema
+        # checks below -- a decision response produces no step output to
+        # validate.
         ok = False
         is_decision = True
         message = _decision_message(
@@ -896,6 +928,8 @@ def record_result(step: model.Step, result_path: str | Path,
                              encoding="utf-8")
         message = f"ok (set {step.output})"
 
+    if ok:
+        message = _with_stray_warning(message, text, result_path)
     status = "decision" if is_decision else ("ok" if ok else "error")
     _append_log(log_path, step, status, result_path)
     if handle is not None:

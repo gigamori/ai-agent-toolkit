@@ -1280,5 +1280,197 @@ class TestRunLlmDeciderLedger(RunLlmAdjudicationTestCase):
         self.assertEqual(decision_mod.llm_adjudications(self.dec, "s1"), 0)
 
 
+def preambled(text, lines=("I examined both readings and cannot settle this alone.",
+                           "Filing a decision request instead of picking one:")):
+    """A payload the model wrapped in preamble prose -- the D9 shape."""
+    return "\n".join([*lines, "", text])
+
+
+class TestClaimDecisionBody(unittest.TestCase):
+    """D9 grammar: first-token anchoring stays primary; the claim extends only
+    to a line-anchored `DECISION:` line whose tail parses as a COMPLETE
+    payload, so a mere mention still cannot be caught."""
+
+    def test_first_token_claims_even_malformed(self):
+        body = "DECISION: only a summary"
+        claimed, preamble = decision_mod.claim_decision_body(body)
+        self.assertEqual(claimed, body)
+        self.assertEqual(preamble, "")
+
+    def test_preambled_complete_payload_is_claimed_from_its_anchor(self):
+        claimed, preamble = decision_mod.claim_decision_body(preambled(payload()))
+        self.assertIsNotNone(claimed)
+        self.assertTrue(claimed.startswith("DECISION:"))
+        parsed, errors = decision_mod.parse_payload(claimed)
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed.output, "art.txt")
+        self.assertEqual(len(preamble.splitlines()), 2)
+
+    def test_mid_sentence_mention_is_not_claimed(self):
+        claimed, _ = decision_mod.claim_decision_body(
+            "The task asks about the DECISION: protocol; summarized it in doc.md.")
+        self.assertIsNone(claimed)
+
+    def test_line_anchored_but_incomplete_payload_is_not_claimed(self):
+        claimed, _ = decision_mod.claim_decision_body(
+            preambled("DECISION: raised, then resolved by myself below\nfork: f"))
+        self.assertIsNone(claimed)
+
+    def test_unparseable_first_anchor_falls_through_to_a_complete_one(self):
+        body = "\n".join(["prose first",
+                          "DECISION: incomplete early mention",
+                          "prose in between",
+                          "",
+                          payload(summary="the real one")])
+        claimed, _ = decision_mod.claim_decision_body(body)
+        self.assertIsNotNone(claimed)
+        self.assertTrue(claimed.startswith("DECISION: the real one"))
+
+    def test_empty_and_plain_bodies_make_no_claim(self):
+        for body in ("", "plain result text\nsecond line"):
+            with self.subTest(body=body[:20]):
+                self.assertEqual(decision_mod.claim_decision_body(body),
+                                 (None, ""))
+
+
+class TestStrayProtocolLines(unittest.TestCase):
+    """The warning face (D9 4-2 residue / 4-4): line-anchored tokens inside a
+    body that classified as none of them, reported but never reclassified."""
+
+    def test_line_anchored_tokens_are_reported_with_line_numbers(self):
+        body = ("all done\n"
+                "ERROR: retained log line\n"
+                "  [BLOCKED: quoted refusal]\n"
+                "DECISION: unparseable, no fields\n"
+                "an ERROR: token mid-sentence does not count\n")
+        self.assertEqual(decision_mod.stray_protocol_lines(body),
+                         [(2, "ERROR:"), (3, "[BLOCKED:"), (4, "DECISION:")])
+
+    def test_clean_body_has_none(self):
+        self.assertEqual(decision_mod.stray_protocol_lines("plain result\n1. ok"),
+                         [])
+
+
+class TestPreambleClassification(unittest.TestCase):
+    """D9 wiring on the classification sites, plus the 4-4 contract: ERROR: and
+    [BLOCKED: keep first-token anchoring (no parse gate exists for them, and a
+    mid-body match would turn a real success into a failure)."""
+
+    def _stdout(self, text):
+        return json.dumps({"result": text, "total_cost_usd": 0.01})
+
+    def test_cc_classifies_a_preambled_payload(self):
+        res = classify_result(0, self._stdout(preambled(payload())), "")
+        self.assertFalse(res.ok)
+        self.assertEqual(res.error_class, "decision")
+        self.assertTrue(res.error.startswith("DECISION:"))
+
+    def test_cc_leaves_a_preambled_incomplete_payload_ok(self):
+        res = classify_result(
+            0, self._stdout(preambled("DECISION: but no fields follow")), "")
+        self.assertTrue(res.ok)
+
+    def test_cc_leaves_a_preambled_error_token_ok(self):
+        res = classify_result(0, self._stdout("prose first\n\nERROR: too late"), "")
+        self.assertTrue(res.ok)
+
+    def test_pi_classifies_a_preambled_payload(self):
+        stdout = json.dumps({
+            "type": "turn_end",
+            "message": {"stopReason": "stop",
+                        "content": [{"type": "text",
+                                     "text": preambled(payload())}],
+                        "usage": {"cost": {"total": 0.0}}}})
+        res = pi_cli.classify_result_pi(0, stdout, "")
+        self.assertEqual(res.error_class, "decision")
+
+
+class TestPreambleAnchoring(DecisionExecutorTestCase):
+    """D9 on the batch path: a preambled payload stops the run like a clean
+    one, the filed request is anchored, and the answer machinery runs on it
+    unchanged; a stray token in a success warns without reclassifying."""
+
+    def respond_text(self, needle, text):
+        self.fake.handlers.append(
+            (lambda p, n=needle: n in p,
+             CliResult(ok=True, text=text, cost_usd=0.02)))
+
+    def test_preambled_payload_stops_the_run_anchored(self):
+        self.artifact()
+        self.respond_text("DO-WORK", preambled(payload()))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="2" expect-file="art.txt">'
+            '<task>DO-WORK</task></step>'
+            '<step id="s2" role="w"><task>later</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        self.assertEqual(len(self.fake.calls), 1)
+        record = self.decision_events()[0]
+        body = Path(record["request"]).read_text(encoding="utf-8")
+        self.assertTrue(body.startswith("DECISION:"))  # preamble not filed
+        self.assertEqual(record["preamble_lines"], 2)  # ...but audited
+        self.assertTrue(record["a_eligible"])
+
+    def test_answer_after_a_preambled_stop_takes_form_a(self):
+        self.artifact()
+        self.respond_text("DO-WORK", preambled(payload()))
+        xml = self.wrap('<step id="s1" role="w" expect-file="art.txt" output="v" '
+                        'output-type="value"><task>DO-WORK</task></step>')
+        ex = self.execute(xml)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        calls_before = len(self.fake.calls)
+        events = self.answer(self.run_dir, "s1", "option: 1\nagreed")
+        ex2 = self.execute(xml, events=events)
+        ex2.run()
+        self.assertEqual(len(self.fake.calls), calls_before)  # no re-run
+        self.assertEqual(ex2.vars["v"], "art.txt")
+
+    def test_stray_token_in_a_success_warns_without_failing(self):
+        self.respond_text("DO-WORK",
+                          "fine result\nERROR: quoted from the tool log\nend")
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w"><task>DO-WORK</task></step>'))
+        ex.run()  # still a success: no reclassification (4-4)
+        warnings = [e for e in load_events(self.run_dir)
+                    if e.get("kind") == "warning"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["key"], "s1")
+        self.assertIn("ERROR:", warnings[0]["warning"])
+        self.assertEqual(len(ex.protocol_warnings), 1)
+
+    def test_a_clean_success_emits_no_warning(self):
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w"><task>DO-WORK</task></step>'))
+        ex.run()
+        self.assertFalse([e for e in load_events(self.run_dir)
+                          if e.get("kind") == "warning"])
+        self.assertFalse(ex.protocol_warnings)
+
+
+class TestRunLlmPreamble(RunLlmAdjudicationTestCase):
+    """D9 on the run-llm path: record files the anchored payload and the
+    request stays answerable; a stray token rides the ok message as a warning."""
+
+    def test_preambled_payload_is_filed_anchored_and_answerable(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        status, _ = self.record(preambled(payload()))
+        self.assertEqual(status, "decision")
+        filed = self.dec / "s1_d01_request.md"
+        self.assertTrue(filed.read_text(encoding="utf-8").startswith("DECISION:"))
+        status, message = self.answer("option: 1\nagreed")
+        self.assertEqual(status, "ok")  # form (a) rode the anchored request
+        self.assertEqual(json.loads(self.vars.read_text(encoding="utf-8"))["v"],
+                         "art.txt")
+
+    def test_stray_token_warns_in_the_ok_message(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        status, message = self.record(
+            "wrote art.txt\nERROR: quoted line\nDECISION: no fields follow")
+        self.assertEqual(status, "ok")
+        self.assertIn("warning", message)
+        self.assertIn("ERROR:", message)
+
+
 if __name__ == "__main__":
     unittest.main()

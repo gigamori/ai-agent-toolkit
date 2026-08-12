@@ -176,6 +176,10 @@ class Executor:
         # from the exception because a `<parallel>` sibling failure outranks
         # a decision (§9) and the payloads must still be listed.
         self.decisions_raised: list[dict] = []
+        # D9's warning face: stray line-anchored protocol tokens observed in
+        # successful responses. Never affects classification; the report
+        # prints these so a silent pass-through leaves a trace.
+        self.protocol_warnings: list[str] = []
 
         self._resolve_params(params)
         self._rules_cache = self._load_rules()
@@ -389,14 +393,17 @@ class Executor:
                     res.ok = False
                     res.error_class = "refusal"
                     res.error = blocked_line[:500]
-            if res.ok and decision_mod.starts_with_decision(
-                    modes.strip_mode_line(res.text)):
-                # Same belt-and-braces as the refusal check above: both
-                # backends classify this already, but the executor must not
-                # depend on a particular runner having done so.
-                res.ok = False
-                res.error_class = "decision"
-                res.error = modes.strip_mode_line(res.text).strip()
+            if res.ok:
+                claimed, _preamble = decision_mod.claim_decision_body(
+                    modes.strip_mode_line(res.text))
+                if claimed is not None:
+                    # Same belt-and-braces as the refusal check above: both
+                    # backends classify this already, but the executor must
+                    # not depend on a particular runner having done so. The
+                    # claim covers the D9 preamble shape too.
+                    res.ok = False
+                    res.error_class = "decision"
+                    res.error = claimed.strip()
             if res.ok and step.expect_file:
                 missing = self._missing_expected(step)
                 if missing:
@@ -416,6 +423,7 @@ class Executor:
                 (attempt_dir / "stderr.log").write_text(res.stderr, encoding="utf-8")
 
             if res.ok:
+                self._warn_stray_prefixes(step, res)
                 self._finish_step(step, res, attempt)
                 return
 
@@ -556,6 +564,32 @@ class Executor:
         return [declared for declared, path in self._expected_paths(step)
                 if not path.is_file()]
 
+    def _warn_stray_prefixes(self, step: model.Step, res) -> None:
+        """One warning when a success carries a line-anchored protocol token
+        it did not open with (D9 rulings 4-2 residue and 4-4).
+
+        Observability only, never reclassification: ERROR: and [BLOCKED: have
+        no parseable structure to gate a mid-body match on -- relaxing them
+        would turn real successes into false failures -- and a DECISION: line
+        whose tail does not parse is ambiguous evidence. The success stands;
+        the events stream and the run report get a trace instead of silence.
+        """
+        strays = decision_mod.stray_protocol_lines(
+            modes.strip_mode_line(res.text or ""))
+        if not strays:
+            return
+        detail = ", ".join(f"'{prefix}' at line {number}"
+                           for number, prefix in strays[:5])
+        warning = (f"step '{step.id}': a successful response carries a "
+                   f"line-anchored protocol token it did not open with "
+                   f"({detail}); prefixes bind at the start of the final "
+                   f"response, so it was NOT reclassified -- read the "
+                   f"response if this step should have stopped")
+        self.state.event("warning", key=step.id, warning=warning,
+                         lines=[[number, prefix] for number, prefix in strays])
+        with self._lock:
+            self.protocol_warnings.append(warning)
+
     # ---------------------------------------------------------- decision ---
     def _handle_decision(self, step: model.Step, res, cycle: int) -> str:
         """Persist a `DECISION:` response and route it (§1, §13.2, §15.1).
@@ -572,7 +606,15 @@ class Executor:
         - one that continues as form (b): raises _DecisionRerun carrying the
           rulings for the re-run's prompt.
         """
-        body = modes.strip_mode_line(res.text).strip()
+        full = modes.strip_mode_line(res.text).strip()
+        claimed, preamble = decision_mod.claim_decision_body(full)
+        # File the anchored slice: the request file is the numbering authority
+        # the answer selects against (§1), so it must be the parseable payload
+        # and nothing else; the full response stays in the attempt record. A
+        # first-token body passes through whole, malformed or not, and a body
+        # this method somehow got without a claim falls through whole to the
+        # malformed path below rather than being guessed at (D9).
+        body = (claimed if claimed is not None else full).strip()
         with self._lock:
             key = (step.id, cycle)
             seq = self._decision_seq[key] = self._decision_seq.get(key, 0) + 1
@@ -597,6 +639,10 @@ class Executor:
 
         ruling = None
         extras: dict = {}
+        if preamble.strip():
+            # Audited, not filed: the deviation is worth a report line, but
+            # the prose itself belongs to the attempt record, not the ledger.
+            extras["preamble_lines"] = len(preamble.splitlines())
         if decider == model.DECIDER_LLM:
             with self._lock:
                 spent = self._llm_adjudications.get((step.id, cycle), 0)

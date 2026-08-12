@@ -315,15 +315,18 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
         result.error = blocked[:500]
         return result
 
-    if decision_mod.starts_with_decision(body):
+    claimed, _preamble = decision_mod.claim_decision_body(body)
+    if claimed is not None:
         # Decision protocol: the step hit a fork it may not resolve alone.
-        # The class is pinned here, on the prefix alone -- whether the five
-        # fields are actually well formed is decided later, by whoever holds
-        # the step definition (xml-wf-decision-request.md §1). Doing it in
-        # this order is what keeps a malformed payload out of the retry loop.
+        # On a first-token match the class is pinned on the prefix alone --
+        # whether the five fields are actually well formed is decided later,
+        # by whoever holds the step definition (xml-wf-decision-request.md
+        # §1). A payload below preamble prose is claimed only when it parses
+        # whole (D9). Doing it in this order is what keeps a malformed
+        # payload out of the retry loop.
         result.ok = False
         result.error_class = "decision"
-        result.error = body.strip()
+        result.error = claimed.strip()
         return result
 
     if body.strip() == "" and result.structured is None:

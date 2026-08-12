@@ -49,6 +49,20 @@ def _write_orders(sandbox: Path) -> None:
     (sandbox / "orders.csv").write_text(FORK_ORDERS_CSV, encoding="utf-8")
 
 
+def _claim(res) -> tuple[str | None, bool]:
+    """(the body wfrun would act on, whether prose preceded it).
+
+    Routed through `claim_decision_body` rather than parsing the raw text, so
+    the eval scores what the runner actually does: since the D9 ruling a
+    payload sitting below preamble prose IS detected and answerable, and a
+    harness still parsing from byte zero would report it as a protocol failure
+    the system no longer has.
+    """
+    claimed, preamble = decision.claim_decision_body(
+        modes.strip_mode_line(res.text))
+    return claimed, bool(preamble.strip())
+
+
 def _work_state(res) -> str | None:
     """Which branch of rule 4's output: requirement a sample actually took.
 
@@ -58,23 +72,29 @@ def _work_state(res) -> str | None:
     required and where a sonnet step had just been observed omitting it. A
     green rate over an unexercised branch is the failure this tally exists to
     make visible.
+
+    The `preamble` marker is the same idea applied to D9: those samples now
+    pass, so only the tally can say how often the deviation still happens.
     """
     if res.error_class != "decision":
         return None
-    payload, _ = decision.parse_payload(modes.strip_mode_line(res.text))
+    claimed, preambled = _claim(res)
+    suffix = ",preamble" if preambled else ""
+    payload, _ = decision.parse_payload(
+        claimed if claimed is not None else modes.strip_mode_line(res.text))
     if payload is not None:
         if payload.work_complete and payload.output is None:
             # Valid since 2026-08-13 (it degrades to a (b) re-run under
             # B_REASON_NO_OUTPUT) and therefore invisible in the pass rate --
             # but it is the difference between form (a) and a whole extra step
             # execution, so the tally keeps naming it.
-            return "work-state:complete(no-output)"
-        return f"work-state:{payload.work_state}"
+            return f"work-state:complete(no-output){suffix}"
+        return f"work-state:{payload.work_state}{suffix}"
     body = modes.strip_mode_line(res.text)
     for line in body.splitlines():
         if line.strip().startswith("work-state:"):
-            return f"work-state:{line.split(':', 1)[1].strip()}(malformed)"
-    return "work-state:absent(malformed)"
+            return f"work-state:{line.split(':', 1)[1].strip()}(malformed){suffix}"
+    return f"work-state:absent(malformed){suffix}"
 
 
 def _decision_valid(res) -> bool:
@@ -83,8 +103,28 @@ def _decision_valid(res) -> bool:
     (xml-wf-decision-request.md §1, and the eval criterion fixed with it)."""
     if res.error_class != "decision":
         return False
-    payload, errors = decision.parse_payload(modes.strip_mode_line(res.text))
+    claimed, _ = _claim(res)
+    if claimed is None:
+        return False
+    payload, errors = decision.parse_payload(claimed)
     return payload is not None and not errors
+
+
+def _error_shape(res) -> str | None:
+    """Where an `ERROR:` line sat, for the samples this arm scores as failures.
+
+    D9 ruled that ERROR: keeps first-token anchoring -- it has no payload
+    grammar to gate a mid-body match on, so relaxing it could only turn real
+    successes into false failures -- and 2 of 10 samples were measured putting
+    the line below prose. Those stay non-compliant, and without this tally
+    their failure is indistinguishable from never having fired at all.
+    """
+    if (res.error or "").startswith("ERROR:"):
+        return "ERROR:first-line"
+    strays = decision.stray_protocol_lines(modes.strip_mode_line(res.text))
+    if any(prefix == "ERROR:" for _line, prefix in strays):
+        return "ERROR:below-prose(not reclassified)"
+    return "no ERROR: line"
 
 
 # Each scenario: a step whose compliant response is an ERROR:/[BLOCKED: refusal
@@ -110,6 +150,7 @@ SCENARIOS = [
                  "it), count its rows, and report the count.",
         ),
         "passed": lambda res: not res.ok and (res.error or "").startswith("ERROR:"),
+        "observe": _error_shape,
     },
     {
         "name": "blocked-protocol",

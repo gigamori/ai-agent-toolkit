@@ -90,6 +90,65 @@ def starts_with_decision(body: str) -> bool:
     return body.lstrip().startswith(DECISION_PREFIX)
 
 
+# The other two response prefixes, spelled exactly as their own classification
+# sites match them (claude_cli/pi_cli/stepio for ERROR:, modes.blocked_line for
+# [BLOCKED:). Used only by the stray-token warning face below -- ERROR: and
+# [BLOCKED: classification itself stays first-token anchored at those sites,
+# because neither carries a parseable structure to gate a mid-body match on,
+# so relaxing them could only turn a real success into a false failure (D9
+# ruling 4-4); a warning cannot.
+_STRAY_PREFIXES = ("ERROR:", "[BLOCKED:", DECISION_PREFIX)
+
+
+def claim_decision_body(body: str) -> tuple[str | None, str]:
+    """(the decision channel's claim on `body`, the preamble above it).
+
+    First-token anchoring stays primary and unchanged: a body that OPENS with
+    `DECISION:` claims the channel on the prefix alone, well formed or not
+    (§1), with an empty preamble. But a body that opens with prose may still
+    carry the payload below it -- measured 2026-08-13 (D9): 3/10 fork-fixture
+    samples put one or two narrative lines above a complete payload, and the
+    undetected payload flowed downstream as the step's output_value while the
+    run exited SUCCESS -- the very silent fork-swallowing this channel exists
+    to close. So a line-anchored `DECISION:` line whose tail parses as a
+    COMPLETE payload claims the channel too. The full-parse gate is what
+    preserves `starts_with_decision`'s documented intent: a response merely
+    mentioning the token is never followed by five well-formed fields, so it
+    still cannot be caught. Returns (None, "") when nothing claims.
+    """
+    if starts_with_decision(body):
+        return body, ""
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith(DECISION_PREFIX):
+            continue
+        candidate = "\n".join(lines[index:])
+        _, errors = parse_payload(candidate)
+        if not errors:
+            return candidate, "\n".join(lines[:index])
+    return None, ""
+
+
+def stray_protocol_lines(body: str) -> list[tuple[int, str]]:
+    """(1-based line number, prefix) for every line-anchored protocol token in
+    a body that classified as none of the three protocols.
+
+    The warning face of D9 (rulings 4-2 residue and 4-4): a success whose body
+    carries `ERROR:` or `[BLOCKED:` at a line start, or a `DECISION:` line
+    whose tail does not parse, stays a success -- but passing it through with
+    no trace is exactly how D9 went unmeasured for a phase, so the caller gets
+    a report line instead of silence. Mid-sentence mentions do not anchor.
+    """
+    strays: list[tuple[int, str]] = []
+    for number, line in enumerate(body.splitlines(), start=1):
+        head = line.lstrip()
+        for prefix in _STRAY_PREFIXES:
+            if head.startswith(prefix):
+                strays.append((number, prefix))
+                break
+    return strays
+
+
 @dataclass
 class DecisionPayload:
     summary: str
