@@ -172,6 +172,68 @@ Notes about the work go here (free to rewrite).
 - **`## Next Steps`** is the honest "what's left" list. The guidelines instruct the agent to rewrite it at the end of every turn that advances the task; `/progress audit` verifies it.
 - The **`@log` block is the history** — append-only, one line per session, so you can always see how a task progressed and jump back to the exact session that did the work.
 
+### Orchestrating a task's Next Steps (optional)
+
+For a bigger task, you can hand the whole `## Next Steps` list to the **mode-orchestrator** skill, which assigns a mode to each step, splits it at mode boundaries, and runs every step as an isolated turn. This is an opt-in extra — manual step-by-step progress is unchanged and remains the default.
+
+**Two rules that must not be dropped:**
+
+- **Only the main agent touches the task file.** Orchestrated turns (subagents) never write to it. The `@log` timestamp and session id are copied verbatim from the `iso_ts=` / `sid8=` values in the injected Progress Session context — never computed by hand.
+- **If the skill is not available, do not imitate it.** Fall back to manual step progression. An improvised "orchestration" has none of the skill's guarantees — no sufficiency gate, no turn isolation, no reply contract, no recovery loop — while still performing the real source edits.
+
+**Prerequisite — read this first.** mode-orchestrator is **not** part of the taskflow plugin and is not installed by `/plugin install taskflow@ai-agent-toolkit`. It is a standalone skill at `skills/mode-orchestrator/` in the [ai-agent-toolkit](https://github.com/gigamori/ai-agent-toolkit) repository; install it separately (e.g. copy that directory into your skills directory). Without it, everything on this page still works — only this subsection does not apply.
+
+**Before you start:**
+
+1. Confirm mode-orchestrator is available. If it is not, stop here and work the steps manually.
+2. Check for an existing run directory (`mode-orchestrator-runs/<task-slug>/`). If one exists, reconcile it against `## Next Steps` **before** starting a new run: drop the steps its index shows as finished, and if a decision request is still unanswered, copy its file path and its question to the top of the list. A stale list would re-run source edits that already happened.
+3. Start the task (`/progress start <id>`) if it is not started yet.
+4. Commit or stash work in progress. Orchestrated steps edit real files in the shared tree, and the skill provides no rollback.
+5. Ask for the run. Point at the task file and name the skill — for example:
+
+   > Run the `## Next Steps` in `_projects/<project>/tasks/1_in_progress/<task>.md` with mode-orchestrator, using `--workflow=dev`.
+
+   `--workflow=dev` is the default for implementation work: it is where the choice of turn kinds and models comes from, which is why the task file itself carries none. Pick a different workflow spec if one fits the task better. Two more flags are worth knowing: `--auto` skips the turn-plan approval, and `--decider` (default: you) decides who answers when a step hits a fork it cannot resolve alone.
+
+**Writing Next Steps so they can be orchestrated:**
+
+- Each line must be a single instruction you could act on as-is. Vague lines ("implement the rest") are rejected by the skill's input gate — that rejection is the quality gate working, not a bug.
+- **Do not write mode or model names in the task file.** Choosing them is the orchestrator's job. Express intent with the verb — investigate, design, implement, review, verify. A step whose intent the verb cannot carry is a step that needs rewording.
+- Keep design context out of the body: point at the `project-notes/specs/` file instead. The skill passes inputs by path, so a pointer is all it needs.
+- **A step that reviews something does not fix what it finds.** If you want the findings acted on, follow it with a step that does the fixing — and write that step as the *same kind of work as what was reviewed*: a review of a design is followed by a step that revises the design; a review of an implementation is followed by a step that revises the implementation. Write it with the verb and the right kind of turn follows by itself.
+- Leave out steps that need a live conversation (asking you something, deciding together). Those are surfaced as suggestions rather than run, so a later step depending on one would strand the run.
+- Getting the list to this quality is planning, and planning is not automated — orchestration only takes over the execution.
+
+A list that satisfies all of the above. Its five investigate → design → review → implement → review lines were run through the skill's gate and produced a five-turn plan; the two revision lines are what the rule above adds:
+
+```markdown
+## Context
+
+- Design: `project-notes/specs/csv-export-error-handling.md`
+- Code under change: `src/export.py`
+
+## Next Steps
+
+- Investigate the current error handling in `src/export.py` and its callers
+- Design the error classification and retry policy from that investigation and the design note
+- Review the design
+- Revise the design according to the review findings
+- Implement the design in `src/export.py` and add unit tests
+- Review the implementation
+- Revise the implementation according to the review findings
+```
+
+Each line is actionable on its own, the intent is carried by the verb, the context is a pointer rather than a copy, and each review is followed by a revision of the same kind of work.
+
+**Worth it when** the task has four or more steps, or spans two or more kinds of work. Below that, doing it manually is cheaper.
+
+**When the run stops** — whether it finished, hit a blocker, or is waiting on your decision — the main agent appends one `@log` line and rewrites `## Next Steps` with what is left. That rewritten list is the input for the next session; the skill has no resume mechanism of its own and does not need one. Moving the task to Done still requires your explicit approval.
+
+**Limits:**
+
+- Run artifacts under `mode-orchestrator-runs/` are not committed, so a `git clean` in the same tree destroys them. Keep the pre-run commit/stash habit.
+- In a non-interactive run (`claude -p`), a step that asks for your decision simply ends the run. The request is preserved on disk, so you can restart from it interactively.
+
 ---
 
 ## 6. Saving knowledge to project-notes
