@@ -730,6 +730,10 @@ class Executor:
         """
         if not payload.work_complete:
             return decision_mod.B_REASON_WORK_STATE_STOPPED, []
+        # Checked before the artifact conditions: without a value to adopt,
+        # form (a) is impossible however well the expect-file check goes.
+        if payload.output is None:
+            return decision_mod.B_REASON_NO_OUTPUT, []
         if step.schema:
             return decision_mod.B_REASON_SCHEMA_STEP, []
         if not step.expect_file:

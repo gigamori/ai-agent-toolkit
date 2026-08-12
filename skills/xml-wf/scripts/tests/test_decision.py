@@ -73,7 +73,6 @@ class TestPayloadGrammar(unittest.TestCase):
             "non-sequential": ("DECISION: x\nfork: f\noptions:\n  1. A\n  3. B\n"
                                "recommendation: none\nwork-state: stopped"),
             "bad work-state": payload(work_state="donezo"),
-            "complete without output": payload(output=None),
             "not a decision": "ERROR: nope",
         }
         for label, text in cases.items():
@@ -239,6 +238,69 @@ class TestBatchStop(DecisionExecutorTestCase):
             '<step id="good" role="w" on-error="ignore"><task>good</task></step>'))
         with self.assertRaises(DecisionRequested):
             ex.run()  # a well-formed request is not a failure to ignore (§13.7)
+
+
+class TestNoOutputDegrades(DecisionExecutorTestCase):
+    """`work-state: complete` with no `output:` is answerable, not malformed.
+
+    It used to be a payload error, which took the whole run down (error_class
+    `decision` takes neither retry nor debug) over a slip an eval measured at
+    3 of 6 `complete` samples. The fork was well posed every time; only the
+    value to adopt was missing, so it degrades to a (b) re-run (§1, §6).
+    """
+
+    def test_payload_parses_and_keeps_the_fork_answerable(self):
+        parsed, errors = decision_mod.parse_payload(payload(output=None))
+        self.assertEqual(errors, [])
+        self.assertIsNone(parsed.output)
+        self.assertTrue(parsed.work_complete)
+
+    def test_batch_stops_with_a_ruling_still_possible(self):
+        self.artifact()
+        self.respond_decision("DO-WORK", output=None)
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()  # a decision stop, NOT a WorkflowFailure
+        record = self.decision_events()[0]
+        self.assertTrue(record["valid"])
+        self.assertFalse(record["a_eligible"])
+        self.assertEqual(record["b_reason"], decision_mod.B_REASON_NO_OUTPUT)
+
+    def test_batch_answer_re_runs_instead_of_failing(self):
+        self.artifact()
+        self.respond_decision("DO-WORK", then_ok=True, output=None)
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        events = self.answer(self.run_dir, "s1", "option: 1\ngo with A")
+        answer = [e for e in events if e.get("kind") == "answer"][0]
+        self.assertEqual(answer["verdict"], "b")
+        self.assertEqual(answer["b_reason"], decision_mod.B_REASON_NO_OUTPUT)
+        # and the re-run really happens rather than the run having died
+        resumed = self.execute(self.wrap(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>'), events=events)
+        resumed.run()
+        self.assertEqual(len(self.fake.calls), 2)
+
+    def test_llm_decider_settles_it_in_process(self):
+        """The degradation reaches the llm path too: the adjudicator is called
+        (the payload is answerable) and the run continues via form (b)."""
+        self.artifact()
+        self.respond_decision("DO-WORK", then_ok=True, output=None)
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>', extra='decider="llm"'),
+            adjudicate=fake_decider(ruling(option=1)))
+        ex.run()
+        self.assertEqual(len(self.fake.calls), 2)  # form (b) re-run happened
+        answer = [e for e in load_events(self.run_dir)
+                  if e.get("kind") == "answer"][0]
+        self.assertEqual(answer["b_reason"], decision_mod.B_REASON_NO_OUTPUT)
 
 
 class TestBReasons(DecisionExecutorTestCase):
@@ -943,6 +1005,16 @@ class TestRunLlmAdjudication(RunLlmAdjudicationTestCase):
         status, message = self.answer("option: 2\nB please")
         self.assertEqual(status, "rerun")
         self.assertIn(decision_mod.B_REASON_WORK_STATE_STOPPED, message)
+
+    def test_complete_without_output_re_runs_instead_of_failing(self):
+        """The run-llm mirror of the batch degradation (§6): answerable, not
+        malformed, and it lands in form (b) under no-output."""
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        status, _ = self.record(payload(output=None))
+        self.assertEqual(status, "decision")
+        status, message = self.answer("option: 1\ngo with A")
+        self.assertEqual(status, "rerun")
+        self.assertIn(decision_mod.B_REASON_NO_OUTPUT, message)
 
     def test_missing_artifact_collapses_to_missing_file(self):
         # No art.txt on disk: run-llm cannot tell "never written" from

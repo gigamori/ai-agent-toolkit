@@ -55,6 +55,13 @@ B_REASON_UNLISTED_OPTION = "unlisted-option"
 # 300). The chosen option cannot be turned into a value either: option lines
 # are free text. So the step re-runs and produces the value itself.
 B_REASON_OPTION_NOT_RECOMMENDED = "option-not-recommended"
+# The step said its deliverable was finished but named no `output:` value, so
+# there is nothing for form (a) to adopt. Answerable, just not adoptable: the
+# step re-runs and produces the value itself. This was a malformed-payload
+# error until 2026-08-13, when an eval measured 3 of 6 `complete` samples
+# omitting the line -- too common a slip to be worth failing a run over, and
+# the fork itself was perfectly well posed every time (§1, §6).
+B_REASON_NO_OUTPUT = "no-output"
 
 B_REASONS = (
     B_REASON_NO_EXPECT_FILE,
@@ -64,6 +71,7 @@ B_REASONS = (
     B_REASON_WORK_STATE_STOPPED,
     B_REASON_UNLISTED_OPTION,
     B_REASON_OPTION_NOT_RECOMMENDED,
+    B_REASON_NO_OUTPUT,
 )
 
 _KEY_LINE_RE = re.compile(
@@ -161,9 +169,17 @@ def parse_payload(text: str) -> tuple[DecisionPayload | None, list[str]]:
         errors.append(f"'work-state:' must be one of {'/'.join(WORK_STATES)}, "
                       f"got {work_state[:40]!r}")
 
+    # `output:` missing under work-state: complete is NOT an error. It used to
+    # be, and that made a common model slip fatal: the run failed with
+    # error_class=decision, which takes neither retry nor debug, so a fork that
+    # had been raised perfectly well took the whole run down. Measured
+    # 2026-08-13 on sonnet with a form-(a)-shaped fixture: 3 of the 6 samples
+    # that reached `complete` omitted the line, and rewording the prompt rule
+    # into the positive did not move it. A payload without it is still fully
+    # answerable -- it just cannot take form (a), which adopts that very value
+    # -- so it degrades to a (b) re-run under B_REASON_NO_OUTPUT rather than
+    # killing the run (xml-wf-decision-request.md §1, §6).
     output = "\n".join(sections.get("output", [])).strip() or None
-    if work_state == "complete" and not output:
-        errors.append("'output:' is required when work-state is 'complete'")
 
     if errors:
         return None, errors

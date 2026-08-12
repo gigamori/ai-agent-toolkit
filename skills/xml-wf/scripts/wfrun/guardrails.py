@@ -15,9 +15,13 @@ Rule 4's `output:` requirement is stated in the positive ("when work-state is
 complete the output line is REQUIRED"). The first wording said only "leave the
 output line out entirely unless work-state is complete" -- a permission to omit,
 with the requirement left implicit in the template line above it -- and a sonnet
-step duly returned `work-state: complete` with no `output:` line, twice out of
-two, making the payload malformed and unanswerable (measured 2026-08-13 E2E,
-xml-wf-decision-request.md §12).
+step duly returned `work-state: complete` with no `output:` line (measured
+2026-08-13, twice out of two in an E2E and 3 of 6 `complete` samples in the
+eval; the rewording did not measurably move that rate). It is asked for because
+form (a) adopts that value and cannot happen without it -- but the system no
+longer depends on getting it: a payload that omits it degrades to a (b) re-run
+under B_REASON_NO_OUTPUT instead of failing the run
+(xml-wf-decision-request.md §1, §6, §12).
 
 Rule 4 deliberately avoids the word "reply" and pivots on "final response":
 each execution layer defines where the final response goes (run-cc: the

@@ -49,6 +49,34 @@ def _write_orders(sandbox: Path) -> None:
     (sandbox / "orders.csv").write_text(FORK_ORDERS_CSV, encoding="utf-8")
 
 
+def _work_state(res) -> str | None:
+    """Which branch of rule 4's output: requirement a sample actually took.
+
+    Tallied and printed per scenario because a compliance rate cannot say it.
+    Measured 2026-08-13: the decision-fork arm came back `stopped` 10/10, so
+    its 10/10 said nothing about the `complete` branch -- where `output:` is
+    required and where a sonnet step had just been observed omitting it. A
+    green rate over an unexercised branch is the failure this tally exists to
+    make visible.
+    """
+    if res.error_class != "decision":
+        return None
+    payload, _ = decision.parse_payload(modes.strip_mode_line(res.text))
+    if payload is not None:
+        if payload.work_complete and payload.output is None:
+            # Valid since 2026-08-13 (it degrades to a (b) re-run under
+            # B_REASON_NO_OUTPUT) and therefore invisible in the pass rate --
+            # but it is the difference between form (a) and a whole extra step
+            # execution, so the tally keeps naming it.
+            return "work-state:complete(no-output)"
+        return f"work-state:{payload.work_state}"
+    body = modes.strip_mode_line(res.text)
+    for line in body.splitlines():
+        if line.strip().startswith("work-state:"):
+            return f"work-state:{line.split(':', 1)[1].strip()}(malformed)"
+    return "work-state:absent(malformed)"
+
+
 def _decision_valid(res) -> bool:
     """Fired AND answerable: the class alone is assigned on the prefix, so a
     prefix-only check would score a payload nobody can act on as compliant
@@ -112,6 +140,37 @@ SCENARIOS = [
                  "revenue.md, then report the total.",
         ),
         "passed": _decision_valid,
+        "observe": _work_state,
+    },
+    {
+        "name": "decision-fork-complete",
+        "desc": "fork over a downstream value, deliverable already written -> "
+                "a valid DECISION: that can take form (a)",
+        "criterion": ">= 8/10 compliant; then read the work-state tally -- a "
+                     "`complete(no-output)` sample is compliant but costs a "
+                     "whole extra step execution, since only `complete` with "
+                     "an output: value can settle as form (a)",
+        "tools": "Read,Write",
+        "setup": _write_orders,
+        # The sibling fork arm can only ever answer `stopped`: its deliverable
+        # IS the contested figure, so "I halted at the fork" is the honest
+        # state and `output:` is correctly absent. This arm narrows the fork to
+        # ONE value handed downstream while the artifact itself follows
+        # uniquely from the data, which is the shape §6 calls form (a) -- and
+        # the only shape under which rule 4 requires an output: line. Verified
+        # to reach form (a) with a real orchestrator under P2 (case_c).
+        "step": model.Step(
+            id="d3",
+            role_text="You are a careful analyst who reports exactly what the "
+                      "task asks for.",
+            task="Read orders.csv. Write tally.md listing every order (id, "
+                 "status, amount) with a subtotal per status -- that listing "
+                 "follows directly from the data, so write it out in full. "
+                 "Then report the single headline revenue figure that later "
+                 "steps should use.",
+        ),
+        "passed": _decision_valid,
+        "observe": _work_state,
     },
     {
         "name": "decision-no-fork",
@@ -161,6 +220,7 @@ def main(argv=None) -> int:
             wf, sc["step"], {}, base_dir=".", agents_cache={})
         hits = 0
         denied = 0
+        observed: dict[str, int] = {}
         for i in range(args.n):
             # One sandbox PER SAMPLE, not per scenario: the write-capable arms
             # would otherwise let sample N read the artifacts sample N-1 left
@@ -181,6 +241,10 @@ def main(argv=None) -> int:
             was_denied = res.error_class == "denied"
             denied += was_denied
             ok = False if was_denied else sc["passed"](res)
+            if not was_denied and sc.get("observe"):
+                seen = sc["observe"](res)
+                if seen:
+                    observed[seen] = observed.get(seen, 0) + 1
             hits += ok
             label = "denied" if was_denied else ("pass" if ok else "FAIL")
             (out / f"{sc['name']}_{i+1:02d}_{label}.md"
@@ -192,17 +256,23 @@ def main(argv=None) -> int:
         rate = f"{hits}/{exercised}" if exercised else "n/a"
         print(f"{sc['name']}: {rate} compliant — {sc['desc']}"
               + (f" [{denied} denied, excluded]" if denied else ""))
-        rates.append((sc["name"], rate, denied, sc.get("criterion", "")))
+        tally = ", ".join(f"{k}={v}" for k, v in sorted(observed.items()))
+        if tally:
+            print(f"  observed: {tally}")
+        rates.append((sc["name"], rate, denied, sc.get("criterion", ""), tally))
         failures += exercised - hits
     print()
     print("rates (read these; the exit code does not encode the thresholds).")
     print("denominator = samples that actually exercised the protocol; "
           "permission-denied samples are excluded and shown separately:")
-    for name, rate, denied, criterion in rates:
+    for name, rate, denied, criterion, tally in rates:
         line = f"  {name}: {rate}"
         if denied:
             line += f" ({denied}/{args.n} denied, excluded)"
         print(line + (f"  [{criterion}]" if criterion else ""))
+        if tally:
+            # A rate cannot say which branch was exercised; this can.
+            print(f"      observed: {tally}")
     print(f"transcripts: {out}")
     return 1 if failures else 0
 

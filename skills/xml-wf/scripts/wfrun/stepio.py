@@ -717,6 +717,10 @@ def _decision_b_reason(step: model.Step, payload, vars_path, result_path
     """
     if not payload.work_complete:
         return decision_mod.B_REASON_WORK_STATE_STOPPED
+    # Same order as the batch predicate: no value to adopt rules out form (a)
+    # before any artifact question is asked.
+    if payload.output is None:
+        return decision_mod.B_REASON_NO_OUTPUT
     if step.schema:
         return decision_mod.B_REASON_SCHEMA_STEP
     if not step.expect_file:
