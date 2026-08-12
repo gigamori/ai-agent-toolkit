@@ -786,13 +786,16 @@ class TestErrorsAndResume(ExecutorTestCase):
         child = ('<workflow name="c" version="2" max="5">'
                  '<step id="c1" role="w" output="extra" output-type="value">'
                  '<task>child work</task></step></workflow>')
+        # TAIL-ME, not "end": needles are matched against the WHOLE prompt,
+        # which carries the injected guardrails, and "end" is a substring of
+        # the decision protocol's "recommendation:" key.
         xml = self.wrap(
             '<replan id="r1" role="builder"><task>PLAN-ME</task></replan>'
-            '<step id="tail" role="w"><task>end</task></step>')
+            '<step id="tail" role="w"><task>TAIL-ME</task></step>')
         self.fake.handlers.append(
             (lambda p: "PLAN-ME" in p, CliResult(ok=True, text=child, cost_usd=0.01)))
         self.fake.handlers.append(
-            (lambda p: "end" in p, CliResult(ok=False, error="ERROR: die", cost_usd=0)))
+            (lambda p: "TAIL-ME" in p, CliResult(ok=False, error="ERROR: die", cost_usd=0)))
         ex = self.execute(xml)
         with self.assertRaises(WorkflowFailure):
             ex.run()
@@ -804,7 +807,7 @@ class TestErrorsAndResume(ExecutorTestCase):
         new = self.fake.calls[first_calls:]
         # neither the builder nor the child step re-ran; only the tail did
         self.assertEqual(len(new), 1)
-        self.assertIn("end", new[0]["prompt"])
+        self.assertIn("TAIL-ME", new[0]["prompt"])
 
     def test_budget_exhaustion(self):
         ex = self.execute(self.wrap(

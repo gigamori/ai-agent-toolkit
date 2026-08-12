@@ -68,6 +68,13 @@ Design principles (follow "Workflow authoring guidelines" in spec.md):
   never write any other model string (the validator warns
   `model-not-canonical`). State the reason in the plan table's model column;
   the user approves the tier judgments together with the plan
+- **Do not put a fork-prone step on `haiku`**: raising a `DECISION:` request
+  (spec.md § Execution semantics) means noticing the task is under-specified,
+  which is a harder act than noticing an error. Measured 2026-08-12 with
+  byte-identical prompts, `haiku` raised it 0/10 on a genuinely ambiguous task
+  while `sonnet` raised it 9/10 — and haiku's misses were silent: it picked a
+  reading and returned ok, with different samples picking different answers.
+  Where a step's inputs or rules might be ambiguous, `sonnet` is the floor
 - **Set `mode=` where processing discipline matters**: `execute` for strict
   do-exactly-this operations, `survey` for fact collection, `debug` for
   diagnosis; also available: `plan`, `review`, `review-dev` (aliases

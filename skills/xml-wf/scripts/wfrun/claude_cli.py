@@ -26,13 +26,18 @@ never retried), `timeout` (retried), `behavioral` (empty body, is_error
 with a non-api_error terminal_reason, or a schema violation -- retried),
 `guardrail` (a compliant `ERROR:`-prefixed step response -- not retried,
 but `on-error="debug"` may still fire), `refusal` (a `[BLOCKED:` mode/rules
-refusal -- neither retried nor debugged), `denied` (permission_denials in
+refusal -- neither retried nor debugged), `decision` (a `DECISION:` request
+for human/llm adjudication -- neither retried nor debugged; see
+xml-wf-decision-request.md §1/§3), `denied` (permission_denials in
 the result JSON -- neither retried nor debugged), `transient` (a retryable
 upstream api_error by status code -- retried but never debugged, since
 treating it as a fixable failure is what caused the P3/C3 retry-storm
 incident this spec responds to). `classify_result()` is the single place
-that assigns it; `is_retryable()`/`is_debuggable()` are the executor-facing
-predicates.
+that assigns it **on this path only** -- the run-llm `record` path classifies
+independently in `stepio.record_result` and the pi backend in
+`pi_cli.classify_result_pi`; a new class must be added to all three
+(xml-wf-decision-request.md §3). `is_retryable()`/`is_debuggable()` are the
+executor-facing predicates.
 
 Windows launch path (reliability-spec.md §13): the npm distribution's
 `claude` is a `.cmd`/`.bat` shim. `subprocess.run(["claude", ...])` without
@@ -53,6 +58,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 
+from . import decision as decision_mod
 from .guardrails import ASK_PROMPT, ASK_SCHEMA
 from .modes import blocked_line, strip_mode_line
 
@@ -65,20 +71,26 @@ TRANSIENT_API_ERROR_STATUSES = {429, 500, 502, 503, 504, 529}
 # error_class values for which an identical-prompt retry is pointless: `env`
 # (a config/CLI problem retry can't fix), `guardrail`/`refusal` (the step
 # agent already gave its final, deterministic answer to this exact prompt),
+# `decision` (the step is asking for adjudication -- re-running the identical
+# prompt answers nothing, and the step may have side effects that a second
+# execution would repeat; this holds for a MALFORMED payload too, which is
+# why the class is pinned on the prefix alone, xml-wf-decision-request.md §1),
 # `denied` (a permission problem retry can't fix). Everything else --
 # including error_class=None, which is what pre-Phase-2.1 CliResult
 # construction (and any caller that never classifies) produces -- stays
 # retryable, matching prior behavior (reliability-spec.md §3.2/§13.5).
-NON_RETRYABLE_CLASSES = {"env", "guardrail", "refusal", "denied"}
+NON_RETRYABLE_CLASSES = {"env", "guardrail", "refusal", "decision", "denied"}
 
 # error_class values for which `on-error="debug"` must not fire: `refusal`/
 # `denied` are the step agent's or the permission system's final word on
-# THIS request, not a bug a debug re-diagnosis could fix, and `transient`
-# is an upstream API hiccup -- classifying it as a fixable "failed" and
-# handing it to the recovery loop is the exact misclassification that drove
-# the P3/C3 retry-storm incident this spec responds to (reliability-spec.md
-# §3.2, §13.5).
-NON_DEBUGGABLE_CLASSES = {"refusal", "denied", "transient"}
+# THIS request, not a bug a debug re-diagnosis could fix; `decision` is a
+# request for a judgment, so handing it to debug would have the debug role
+# diagnose a failure that does not exist (xml-wf-decision-request.md §3);
+# and `transient` is an upstream API hiccup -- classifying it as a fixable
+# "failed" and handing it to the recovery loop is the exact
+# misclassification that drove the P3/C3 retry-storm incident this spec
+# responds to (reliability-spec.md §3.2, §13.5).
+NON_DEBUGGABLE_CLASSES = {"refusal", "decision", "denied", "transient"}
 
 
 def is_retryable(error_class: str | None) -> bool:
@@ -218,9 +230,15 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
     since it has been observed with is_error=False) -> denied; is_error ->
     transient/env (api_error, by api_error_status) or behavioral (any other
     terminal_reason); otherwise inspect the response body -> guardrail
-    (ERROR:) / refusal ([BLOCKED:) / behavioral (empty body, or schema
-    given but no structured output). `subtype` is never consulted -- it is
-    not a reliable success/error signal (§13.9.1).
+    (ERROR:) / refusal ([BLOCKED:) / decision (DECISION:) / behavioral (empty
+    body, or schema given but no structured output). `subtype` is never
+    consulted -- it is not a reliable success/error signal (§13.9.1).
+
+    The three body prefixes are peers and ALL precede the schema fallback
+    (xml-wf-decision-request.md §3): a `schema=` step's DECISION: text has no
+    structured output, so a later check would classify it `behavioral` and
+    retry it -- re-running a step that may already have written its
+    deliverable.
     """
     try:
         raw = json.loads(stdout)
@@ -295,6 +313,17 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
         result.ok = False
         result.error_class = "refusal"
         result.error = blocked[:500]
+        return result
+
+    if decision_mod.starts_with_decision(body):
+        # Decision protocol: the step hit a fork it may not resolve alone.
+        # The class is pinned here, on the prefix alone -- whether the five
+        # fields are actually well formed is decided later, by whoever holds
+        # the step definition (xml-wf-decision-request.md §1). Doing it in
+        # this order is what keeps a malformed payload out of the retry loop.
+        result.ok = False
+        result.error_class = "decision"
+        result.error = body.strip()
         return result
 
     if body.strip() == "" and result.structured is None:

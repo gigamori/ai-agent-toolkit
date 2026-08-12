@@ -14,12 +14,13 @@ import time
 from pathlib import Path
 
 from . import adp, claude_cli
+from . import decision as decision_mod
 from . import interp as interp_mod
 from . import lint as lint_mod
 from . import model, modelmap, modes, parser, stepio, viz
 from .ccdirs import claude_config_dirs
-from .executor import Executor, WorkflowFailure
-from .state import load_events
+from .executor import DecisionRequested, Executor, WorkflowFailure, decision_tables
+from .state import RunState, load_events
 
 
 def _parse_params(pairs: list[str]) -> dict[str, str]:
@@ -79,6 +80,61 @@ def _report(executor: Executor, status: str):
         print("outputs:")
         for p in outputs:
             print(f"  {p}")
+
+
+def _request_options(path: str) -> list[str]:
+    """The request's own numbered options, re-read from the payload file.
+
+    Read back rather than carried on the event on purpose: the payload is the
+    authority for the numbering the answer will use, so the report must not be
+    able to print a different list from the one the human opens
+    (xml-wf-decision-request.md §1)."""
+    try:
+        payload, _ = decision_mod.parse_payload(
+            Path(path).read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    return decision_mod.render_options(payload) if payload else []
+
+
+def _report_decisions(records: list[dict], run_dir: Path, *, on_hold: bool = False):
+    """Print the raised decision requests.
+
+    For a batch run this output IS the interface (xml-wf-decision-request.md
+    §2, §8): `wfrun run` is its own process with no live turn to ask in, so
+    everything the human needs to answer — payload path, the numbered options,
+    where to write, and the exact resume command — has to be on stdout before
+    the process exits.
+    """
+    if not records:
+        return
+    print()
+    print(f"decision requests: {len(records)}")
+    for record in records:
+        print(f"  step '{record['key']}' ({record['request_id']})")
+        print(f"    request: {record['request']}")
+        for line in _request_options(record["request"]):
+            print(f"    {line}")
+        print(f"    answer file: {record['answer_path']}")
+    if on_hold:
+        print()
+        print("these are on hold: a step in the same <parallel> failed outright, "
+              "and that has to be fixed before any answer can help. The payloads "
+              "above are saved and will still be pending after the fix.")
+        return
+    print()
+    # ASCII only, deliberately: this block IS the interface for a stopped run,
+    # and stdout here is whatever console the human ran wfrun on -- a cp932
+    # terminal turns one stray em-dash into a UnicodeEncodeError that hides
+    # the instructions entirely.
+    print("answer format (the first line is parsed; the rest is free text):")
+    print("  option: <a number from the list above, or 'none'>")
+    print("  <why, or what to do instead: required when the option is 'none'>")
+    print()
+    flags = " ".join(f"--answer {r['key']}={r['answer_path']}" for r in records)
+    print(f"then: wfrun resume {run_dir} {flags}")
+    print("if the fork invalidates the rest of the workflow, do not resume: "
+          "split or rebuild the XML instead")
 
 
 def _backend_executor_kwargs(backend: str) -> dict:
@@ -149,13 +205,107 @@ def cmd_run(args) -> int:
             print(f"note: {msg}", file=sys.stderr)
     try:
         executor.run()
+    except DecisionRequested:
+        _report(executor, "AWAITING-DECISION")
+        _report_decisions(executor.decisions_raised, run_dir)
+        return 4
     except WorkflowFailure as e:
         _report(executor, "FAILED")
         print(f"error: {e}", file=sys.stderr)
         print(f"resume with: wfrun resume {run_dir}", file=sys.stderr)
+        _report_decisions(executor.decisions_raised, run_dir, on_hold=True)
         return 1
     _report(executor, "SUCCESS")
     return 0
+
+
+class AnswerError(Exception):
+    """A `--answer` that cannot be honored. Always raised before the Executor
+    exists, so a rejected answer leaves the run exactly as it was."""
+
+
+def _ingest_answers(run_dir: Path, specs: list[str],
+                    events: list[dict]) -> list[dict]:
+    """Adjudicate `--answer` flags and return the extended event list (§13.4).
+
+    Order is load-bearing: every append happens here, before `Executor` is
+    constructed, because the synthetic success event a form-(a) answer writes
+    has to already be in the list the ReplayCursor is built from — that event
+    IS what makes (a) cost nothing.
+    """
+    if not specs:
+        return events
+    pending, _, _ = decision_tables(events)
+    by_step = {step: event for (step, _cycle), event in pending.items()}
+    answered_steps = {e["key"] for e in events if e.get("kind") == "answer"}
+    state = RunState(run_dir)
+    appended: list[dict] = []
+
+    for spec in specs:
+        if "=" not in spec:
+            raise AnswerError(f"--answer expects STEP_ID=PATH, got '{spec}'")
+        step_id, _, raw_path = spec.partition("=")
+        step_id = step_id.strip()
+        request = by_step.get(step_id)
+        if request is None:
+            if step_id in answered_steps:
+                raise AnswerError(
+                    f"--answer {step_id}=...: that request was already "
+                    "answered. A recorded answer is never replaced; later "
+                    "steps may already have been built on it. Resume without "
+                    "--answer for this step; if the answer was wrong, start a "
+                    "new run.")
+            known = ", ".join(sorted(by_step)) or "(none)"
+            raise AnswerError(
+                f"--answer {step_id}=...: no decision request is pending for "
+                f"step '{step_id}'. Pending: {known}")
+
+        answer_file = Path(raw_path.strip())
+        try:
+            text = answer_file.read_text(encoding="utf-8")
+        except OSError as e:
+            raise AnswerError(f"--answer {step_id}: cannot read {answer_file}: {e}")
+        option_count = int(request.get("option_count") or 0)
+        answer, errors = decision_mod.parse_answer(text, option_count)
+        if errors:
+            raise AnswerError(
+                f"--answer {step_id} ({answer_file}): {'; '.join(errors)}\n"
+                f"       the request and its {option_count} option(s) are in "
+                f"{request['request']}")
+
+        # A reason recorded when the step stopped still stands; the answer can
+        # only add one. Then, and only then, is the artifact's existence
+        # re-checked — it was true when the run stopped, but the human has had
+        # the filesystem to themselves since (§13.2).
+        b_reason = request.get("b_reason")
+        if answer.option is None and not b_reason:
+            b_reason = decision_mod.B_REASON_UNLISTED_OPTION
+        missing: list[str] = []
+        if not b_reason:
+            missing = [p for p in request.get("expect_files") or []
+                       if not Path(p).is_file()]
+            if missing:
+                b_reason = decision_mod.B_REASON_MISSING_FILE_AT_RESUME
+        verdict = "b" if b_reason else "a"
+
+        appended.append(state.event(
+            "answer", key=step_id, cycle=request["cycle"],
+            request_id=request["request_id"], request=request["request"],
+            answer_path=str(answer_file), decider="human",
+            option=answer.option, verdict=verdict, b_reason=b_reason,
+            missing=missing))
+        if verdict == "a":
+            appended.append(state.event(
+                "step", key=step_id, status="success", via="decision-a",
+                request_id=request["request_id"], attempts=1,
+                cost_usd=float(request.get("cost_usd") or 0.0),
+                output_value=request.get("output")))
+
+        chosen = "none" if answer.option is None else f"option {answer.option}"
+        note = f" [{b_reason}]" if b_reason else ""
+        print(f"answer: {step_id} -> {chosen}; continues as form "
+              f"({verdict}){note}")
+    return events + appended
 
 
 def cmd_resume(args) -> int:
@@ -167,6 +317,11 @@ def cmd_resume(args) -> int:
     wf = parser.parse_file(wf_path)
     params = json.loads(params_path.read_text(encoding="utf-8")) if params_path.is_file() else {}
     events = load_events(run_dir)
+    try:
+        events = _ingest_answers(run_dir, args.answer, events)
+    except AnswerError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     base_dir = Path(args.base_dir).resolve() if args.base_dir else Path.cwd()
 
     # Backend is inherited from the original run, never re-detected: a
@@ -197,9 +352,14 @@ def cmd_resume(args) -> int:
         sys.exit(f"error: {e}")
     try:
         executor.run()
+    except DecisionRequested:
+        _report(executor, "AWAITING-DECISION")
+        _report_decisions(executor.decisions_raised, run_dir)
+        return 4
     except WorkflowFailure as e:
         _report(executor, "FAILED")
         print(f"error: {e}", file=sys.stderr)
+        _report_decisions(executor.decisions_raised, run_dir, on_hold=True)
         return 1
     _report(executor, "SUCCESS")
     return 0
@@ -220,6 +380,8 @@ def _tree_lines(node, depth=0):
             extras.append(f"retry={node.retry}")
         if node.on_error != model.DEFAULT_ON_ERROR:
             extras.append(f"on-error={node.on_error}")
+        if node.decider:  # only when it overrides the workflow-level setting
+            extras.append(f"decider={node.decider}")
         if node.output:
             extras.append(f"-> {node.output}" +
                           ("" if node.output_type == model.DEFAULT_OUTPUT_TYPE
@@ -455,7 +617,11 @@ def cmd_prompt(args) -> int:
     return 0
 
 
-RECORD_EXIT_CODES = {"ok": 0, "error": 1, "aborted": 3}
+# `decision` (4) is a verdict, not a failure: run-llm's orchestrator decides
+# whether to redo a step from the exit code, and returning 1 for a decision
+# would have it re-dispatch a step that is waiting on a ruling — executing it
+# twice (xml-wf-decision-request.md §8).
+RECORD_EXIT_CODES = {"ok": 0, "error": 1, "aborted": 3, "decision": 4}
 
 
 def cmd_record(args) -> int:
@@ -507,6 +673,13 @@ def cmd_poll(args) -> int:
 # that produced the P3/C3 retry-storm incident this spec responds to.
 DISPATCH_DEBUG_GRANTS = 1
 DISPATCH_ABORTED_REDISPATCH = 1
+# Extra cap headroom per decision already raised in this cycle: the request
+# attempt itself, plus the one re-run its answer grants. The cap is a runaway
+# backstop, and a loop that needs a human keystroke every turn is not a
+# runaway -- without this, a legitimately-answered step would hit "cap
+# exceeded" while a decision-free runaway still stops at the same count
+# (xml-wf-decision-request.md §13.8).
+DISPATCH_DECISION_GRANTS = 2
 
 WAIT_POLL_INTERVAL = 1.0
 # Grace beyond the wrapper's own step.timeout before `wait` gives up on ever
@@ -675,13 +848,17 @@ def cmd_dispatch(args) -> int:
 
     # The cap is per cycle (one step-node visit), matching run-cc's
     # per-visit retry budget; wf.max below is the run-wide backstop.
-    cap = step.retry + 1 + DISPATCH_DEBUG_GRANTS + DISPATCH_ABORTED_REDISPATCH
+    decision_attempts = sum(1 for a in attempts if a.get("class") == "decision")
+    cap = (step.retry + 1 + DISPATCH_DEBUG_GRANTS + DISPATCH_ABORTED_REDISPATCH
+           + DISPATCH_DECISION_GRANTS * decision_attempts)
     if len(attempts) >= cap:
         print(f"error: dispatch cap exceeded for step '{args.step_id}' "
               f"(cycle {cycle}): {len(attempts)} attempts already recorded, "
               f"cap is {cap} (retry={step.retry} + 1 initial + "
               f"{DISPATCH_DEBUG_GRANTS} debug + "
-              f"{DISPATCH_ABORTED_REDISPATCH} aborted-redispatch). "
+              f"{DISPATCH_ABORTED_REDISPATCH} aborted-redispatch"
+              + (f" + {DISPATCH_DECISION_GRANTS}x{decision_attempts} decision"
+                 if decision_attempts else "") + "). "
               f"If this is a new <while>/<each> iteration rather than a "
               f"retry, pass --new-cycle", file=sys.stderr)
         return 1
@@ -928,6 +1105,13 @@ def cmd_plan(args) -> int:
     steps = list(wf.iter_steps())
     print(f"workflow: {wf.name} (max={wf.max}"
           + (f", budget-usd={wf.budget_usd}" if wf.budget_usd else "") + ")")
+    # Resolved, not raw: this output is the run-llm orchestrator's only view of
+    # the workflow (run-llm.md), so a decision verdict arriving there is
+    # unreadable without knowing which policy is in force
+    # (xml-wf-decision-request.md §11).
+    decider, decider_model = model.resolve_decider(wf)
+    print(f"decider:  {decider}"
+          + (f" (model={decider_model})" if decider == "llm" else ""))
     for p in wf.params:
         flag = "required" if p.required else f"default={p.default!r}"
         print(f"param:    {p.name} ({flag})")
@@ -994,6 +1178,13 @@ def main(argv=None) -> int:
     p_res.add_argument("run_dir")
     p_res.add_argument("--base-dir", help="project dir for agents/rules (default: cwd)")
     p_res.add_argument("--permission-mode")
+    p_res.add_argument("--answer", action="append", default=[],
+                       metavar="STEP_ID=PATH",
+                       help="settle a pending decision request: the file's "
+                            "first line must be 'option: <N|none>'. Repeat for "
+                            "several. Without it a run that stopped for a "
+                            "decision just re-prints the request and stops "
+                            "again, at no cost")
     p_res.set_defaults(func=cmd_resume)
 
     p_plan = sub.add_parser("plan", help="print the step tree without executing")

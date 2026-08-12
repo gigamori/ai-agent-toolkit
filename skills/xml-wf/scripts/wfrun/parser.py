@@ -19,6 +19,7 @@ class ParseError(Exception):
 _STEP_ATTRS = {
     "id", "role", "mode", "model", "effort", "output", "output-type", "schema",
     "rules", "tools", "expect-file", "retry", "timeout", "on-error",
+    "decider", "decider-model",
 }
 _CONTROL_TAGS = {"step", "set", "seq", "if", "while", "each", "parallel", "replan"}
 _REPLAN_ATTRS = {"id", "role", "model", "effort", "max-steps", "outputs",
@@ -80,7 +81,8 @@ def _no_text(el: ET.Element):
 def _parse_workflow(root: ET.Element, base_dir: Path) -> model.Workflow:
     if root.tag != "workflow":
         raise ParseError(f"root element must be <workflow>, got <{root.tag}>")
-    _check_attrs(root, {"name", "version", "max", "budget-usd"})
+    _check_attrs(root, {"name", "version", "max", "budget-usd",
+                        "decider", "decider-model"})
     version = _require(root, "version")
     if version != "2":
         raise ParseError(f"unsupported workflow version '{version}' (expected \"2\")")
@@ -90,6 +92,11 @@ def _parse_workflow(root: ET.Element, base_dir: Path) -> model.Workflow:
         version=version,
         max=_int_attr(root, "max"),
         budget_usd=float(root.get("budget-usd")) if root.get("budget-usd") else None,
+        # Value checking is lint's (`decider-unknown`), not the parser's:
+        # `wfrun run` lints before executing, so a typo is still caught before
+        # anything launches.
+        decider=root.get("decider"),
+        decider_model=root.get("decider-model"),
     )
 
     for el in root:
@@ -231,6 +238,8 @@ def _parse_step(el: ET.Element, base_dir: Path) -> model.Step:
         retry=_int_attr(el, "retry", model.DEFAULT_RETRY),
         timeout=_int_attr(el, "timeout", model.DEFAULT_TIMEOUT),
         on_error=on_error,
+        decider=el.get("decider"),
+        decider_model=el.get("decider-model"),
     )
 
 

@@ -10,6 +10,12 @@ from dataclasses import dataclass, field
 
 ON_ERROR_VALUES = ("fail", "ignore", "debug")
 OUTPUT_TYPES = ("file", "value")
+# Who settles a step's `DECISION:` request. Vocabulary and default are shared
+# with mode-orchestrator's --decider so the two skills cannot disagree about
+# what an unattended run did; `human` is the default because an `llm` decider
+# judges work produced under the very contract it runs under
+# (xml-wf-decision-request.md §4).
+DECIDER_VALUES = ("human", "llm")
 
 DEFAULT_RETRY = 0
 DEFAULT_TIMEOUT = 600
@@ -18,6 +24,8 @@ DEFAULT_OUTPUT_TYPE = "file"
 DEFAULT_ASK_MODEL = "haiku"
 DEFAULT_PARALLEL_WORKERS = 2
 DEFAULT_REPLAN_MAX_STEPS = 20
+DEFAULT_DECIDER = "human"
+DEFAULT_DECIDER_MODEL = "opus"
 DEBUG_ROLE = "debug"
 
 # Tools that can mutate the filesystem (directly or by delegation). Used to
@@ -70,6 +78,10 @@ class Step:
     retry: int = DEFAULT_RETRY
     timeout: int = DEFAULT_TIMEOUT
     on_error: str = DEFAULT_ON_ERROR
+    # None means "inherit the workflow-level setting" — distinct from an
+    # explicit value, which is why neither carries the default directly.
+    decider: str | None = None
+    decider_model: str | None = None
 
 
 @dataclass
@@ -144,10 +156,28 @@ class Workflow:
     params: list[Param] = field(default_factory=list)
     rules: dict[str, Rules] = field(default_factory=dict)
     body: Seq = field(default_factory=Seq)
+    decider: str | None = None
+    decider_model: str | None = None
 
     def iter_steps(self):
         """Yield every Step and Replan in the tree (static, ignores control flow)."""
         yield from _walk_steps(self.body)
+
+
+def resolve_decider(wf: Workflow, step=None) -> tuple[str, str]:
+    """(decider, decider-model) actually in force: step attribute, else
+    workflow attribute, else the defaults (xml-wf-decision-request.md §4).
+
+    Resolution lives here, not at the display sites, so `wfrun plan` and
+    `wfrun viz` cannot disagree with what a run would do — plan output is the
+    run-llm orchestrator's only view of the workflow, so a divergence there is
+    invisible rather than merely wrong.
+    """
+    decider = (getattr(step, "decider", None) if step is not None else None) \
+        or wf.decider or DEFAULT_DECIDER
+    decider_model = (getattr(step, "decider_model", None) if step is not None else None) \
+        or wf.decider_model or DEFAULT_DECIDER_MODEL
+    return decider, decider_model
 
 
 def role_label(node) -> str | None:

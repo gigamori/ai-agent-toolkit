@@ -32,7 +32,12 @@ class RunState:
         return record
 
     def snapshot(self, *, status: str, variables: dict, step_count: int,
-                 cost_usd: float, error: str | None = None):
+                 cost_usd: float, error: str | None = None,
+                 decisions: list[str] | None = None):
+        """`status` is running/success/failed, plus `awaiting-decision` — a
+        stop that is neither (xml-wf-decision-request.md §8). `decisions` names
+        the request ids that stop is waiting on; the key is omitted entirely
+        when there are none, so ordinary runs keep their existing shape."""
         payload = {
             "status": status,
             "vars": {k: _jsonable(v) for k, v in variables.items()},
@@ -41,6 +46,8 @@ class RunState:
             "error": error,
             "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
+        if decisions:
+            payload["decisions"] = decisions
         with self._lock:
             (self.run_dir / "state.json").write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -1,8 +1,15 @@
 """Static text appended to every step prompt.
 
 This is the only surviving descendant of the v1 defensive-prompt apparatus:
-three rules aimed at the step agent (the orchestrator is Python and needs no
+four rules aimed at the step agent (the orchestrator is Python and needs no
 persuasion).
+
+Rule 4 (the `DECISION:` channel) is injected on every step rather than opted
+into per step, because the whole point is that forks are not foreseeable --
+an attribute declaring "this step may need a ruling" could only ever be set
+where someone already predicted the fork (xml-wf-decision-request.md §12).
+Its firing barriers are inline for the same reason the fields are: a rule
+that has to be recalled from elsewhere is a rule that decays.
 """
 
 GUARDRAILS = """\
@@ -13,7 +20,26 @@ results. Return a concise technical report starting with "ERROR:" as your final 
 response and stop. Recovery belongs to the orchestrator.
 2. Do not write to any file that the task does not explicitly name.
 3. Do not substitute, abbreviate, or summarize the deliverable. Produce exactly \
-the artifacts at exactly the paths the task specifies."""
+the artifacts at exactly the paths the task specifies.
+4. If you reach a fork you may not settle alone -- two defensible readings, or \
+the task simply silent -- do NOT quietly pick one. Fire only when you cannot \
+proceed without a ruling: following a recommendation already recorded upstream \
+is not a fork, and a blocking error is rule 1, not this. Reply with exactly \
+these lines as your final response and stop:
+DECISION: <one-line summary of the fork>
+fork: <what is ambiguous>
+options:
+  1. <option> -- <the cost of choosing it wrongly>
+  2. <option> -- <the cost of choosing it wrongly>
+recommendation: <option number>
+work-state: <complete|stopped>
+output: <the value that becomes this step's output>
+Replace each <...> with the value alone and never copy these explanations into \
+it. Give two or more options, numbered from 1. recommendation takes an option \
+number or the bare word none. work-state takes exactly one bare word: complete \
+if the deliverable is already written and only its reading is open, stopped if \
+you halted at the fork. Leave the output line out entirely unless work-state is \
+complete. Refer to data by path; never paste file contents into the request."""
 
 ASK_PROMPT = """\
 Answer the following question based on facts. If it references file paths, \

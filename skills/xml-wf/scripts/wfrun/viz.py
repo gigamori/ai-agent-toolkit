@@ -40,6 +40,8 @@ def _step_label(step: model.Step) -> str:
         attrs.append(f"retry={step.retry}")
     if step.on_error != model.DEFAULT_ON_ERROR:
         attrs.append(f"on-error={step.on_error}")
+    if step.decider:  # only when it overrides the workflow-level setting
+        attrs.append(f"decider={step.decider}")
     lines = [f"<b>{_esc(step.id)}</b>", _esc(" ".join(attrs))]
     extra = []
     if step.output:
@@ -172,7 +174,14 @@ class _Builder:
 
 def mermaid(wf: model.Workflow) -> str:
     b = _Builder()
-    b.emit(f'S(("start<br/>{_esc(wf.name)}"))')
+    # Workflow-level policy on the start node, resolved the same way a run
+    # resolves it (spec §11: plan AND viz must show it; step labels only carry
+    # their override). Model shown only for llm — human never calls one.
+    decider, decider_model = model.resolve_decider(wf)
+    start_label = f"start<br/>{_esc(wf.name)}<br/>decider={decider}"
+    if decider == "llm":
+        start_label += f" ({_esc(decider_model)})"
+    b.emit(f'S(("{start_label}"))')
     entry, exits = b.walk(wf.body)
     b.emit('E((end))')
     if entry is None:

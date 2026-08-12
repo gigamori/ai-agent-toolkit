@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from . import model, modes
+from . import decision as decision_mod
 from .agents import AgentDef, discover_agents
 from .guardrails import GUARDRAILS
 from .interp import InterpError, interpolate
@@ -112,6 +113,33 @@ The LAST non-empty line of that file must be exactly this marker, with \
 nothing after it: {sentinel}
 Your reply to the caller must be a single line starting with "OK {step_id}" \
 or "ERROR:"."""
+
+DECISION_RESOLVED_HEADER = """\
+## Decisions resolved
+Earlier attempts at this step raised decision request(s). All of them have
+been answered. Every settled pair is listed -- also the earlier ones, so no
+already-settled fork looks open again."""
+
+DECISION_RESOLVED_PAIR = """\
+### Request {n}
+{request}
+
+### Answer {n}
+{answer}"""
+
+DECISION_RESOLVED_FOOTER = ("Continue the step under these decisions. Do not "
+                            "re-raise any fork settled above.")
+
+
+def format_decisions(pairs: list[tuple[str, str]]) -> str:
+    """The `## Decisions resolved` block for a form-(b) re-run: header, every
+    (request, answer) pair in adjudication order, footer (§13.6)."""
+    blocks = [DECISION_RESOLVED_HEADER]
+    blocks += [DECISION_RESOLVED_PAIR.format(n=n, request=request.strip(),
+                                             answer=answer.strip())
+               for n, (request, answer) in enumerate(pairs, start=1)]
+    blocks.append(DECISION_RESOLVED_FOOTER)
+    return "\n\n".join(blocks)
 
 REPLAN_PROMPT = """\
 You are a continuation planner inside a running workflow. Based on the results
@@ -225,13 +253,22 @@ def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dic
                             base_dir: str | Path, fix: str | None = None,
                             rules_cache: dict[str, str] | None = None,
                             agents_cache: dict[str, AgentDef] | None = None,
-                            result_path: str | None = None) -> tuple[str, str]:
+                            result_path: str | None = None,
+                            decision: list[tuple[str, str]] | None = None
+                            ) -> tuple[str, str]:
     """(system_text, user_text) for a step.
 
     system = framework header + role (when declared) + mode/_common + rules —
     the constraint layers, placed in the high-authority channel by run-cc.
-    user = the interpolated task (+ fix), response protocol, and guardrails.
-    run-llm joins the two (the Agent tool has no system-prompt input).
+    user = the interpolated task (+ fix, + resolved decisions), response
+    protocol, and guardrails. run-llm joins the two (the Agent tool has no
+    system-prompt input).
+
+    `decision` is every settled (request body, answer body) pair of the
+    current cycle, for a form-(b) re-run. It rides the USER channel next to
+    `fix`, never the system one: an answer is task input, and promoting it
+    would let it outrank the mode and rules layers
+    (xml-wf-decision-request.md §13.6).
     """
     if rules_cache is None:
         rules_cache = load_rules(wf, base_dir)
@@ -248,6 +285,8 @@ def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dic
         raise StepIOError(f"step '{step.id}': {e}") from e
     if fix:
         task += f"\n\n## Fix instructions for the previous failure\n{fix}"
+    if decision:
+        task += "\n\n" + format_decisions(decision)
     user_parts = [task]
     if result_path:
         user_parts.append(RESULT_PROTOCOL.format(
@@ -346,8 +385,26 @@ def unwrap_value(structured, text: str):
 
 def _log_status(status: str) -> str:
     """steps.log entry status: aborted joins the pre-existing success/error
-    (reliability-spec.md §4.2)."""
+    (reliability-spec.md §4.2); `decision` joins them in turn
+    (xml-wf-decision-request.md §8)."""
     return {"ok": "success"}.get(status, status)
+
+
+def _decision_message(text: str, result_path) -> str:
+    """The `record`/`wait` verdict line for a `DECISION:` response.
+
+    Content-free by construction, like the guardrail/refusal messages beside
+    it: the payload never enters the orchestrator's context, only its path
+    does (run-llm.md's no-task-content design). Valid and malformed are told
+    apart because they need different human actions -- answer it, or go read
+    why it cannot be answered (xml-wf-decision-request.md §8).
+    """
+    _, errors = decision_mod.parse_payload(modes.strip_mode_line(text))
+    if errors:
+        return ("decision: step raised a decision request, but its payload is "
+                f"malformed and cannot be answered as-is ({len(errors)} field "
+                f"problem(s)); read it and decide by hand (request: {result_path})")
+    return f"decision: step requested adjudication (request: {result_path})"
 
 
 def _append_log(log_path, step: model.Step, status: str, result_path):
@@ -410,7 +467,8 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
     so checking expect-file against the caller's cwd would report a
     correctly-written artifact as missing.
 
-    Returns (status, message) like record_result ("aborted" is decided
+    Returns (status, message) like record_result -- including "decision",
+    whose class `classify_result()` already assigned ("aborted" is decided
     before a CliResult exists at all, by the caller -- never returned here).
     """
     ok = res.ok
@@ -463,10 +521,15 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
             message = f"error: step reported ERROR (details: {result_path})"
         elif res.error_class == "refusal":
             message = f"error: step blocked by a mode/rules constraint (details: {result_path})"
+        elif res.error_class == "decision":
+            # res.error holds the whole payload body here, so this branch is
+            # not optional content-hiding -- without it the `else` below would
+            # spill the request into the orchestrator's context.
+            message = _decision_message(res.text, result_path)
         else:
             message = res.error or f"error: {res.error_class or 'failed'}"
 
-    status = "ok" if ok else "error"
+    status = "decision" if res.error_class == "decision" else ("ok" if ok else "error")
     _append_log(log_path, step, status, result_path)
     return status, message
 
@@ -501,8 +564,9 @@ def record_result(step: model.Step, result_path: str | Path,
                   reply: str | None = None) -> tuple[str, str]:
     """Read a subagent's result file, update the vars file, append the log.
 
-    Returns (status, message): status is "ok" / "error" / "aborted"
-    (reliability-spec.md §4.2's decision table; CLI exit codes 0/1/3 are
+    Returns (status, message): status is "ok" / "error" / "aborted" /
+    "decision" (reliability-spec.md §4.2's decision table plus
+    xml-wf-decision-request.md §8; CLI exit codes 0/1/3/4 are
     __main__.cmd_record's job, not this function's). message never contains
     step output content — failures point at the result file instead of
     quoting it.
@@ -558,6 +622,7 @@ def record_result(step: model.Step, result_path: str | Path,
     message = "ok"
     value = None
     variables = None
+    is_decision = False
     if step.expect_file or step.output:
         vars_path = Path(vars_path)
         try:
@@ -574,6 +639,15 @@ def record_result(step: model.Step, result_path: str | Path,
     elif modes.blocked_line(text) is not None:
         ok = False
         message = f"error: step blocked by a mode/rules constraint (details: {result_path})"
+    elif decision_mod.starts_with_decision(text):
+        # The second classification site (xml-wf-decision-request.md §3): this
+        # path never reaches claude_cli.classify_result(), so the prefix is
+        # recognized here too. Peer of the two branches above, and likewise
+        # ahead of the expect-file/schema checks below -- a decision response
+        # produces no step output to validate.
+        ok = False
+        is_decision = True
+        message = _decision_message(text, result_path)
     else:
         if step.expect_file:
             try:
@@ -619,7 +693,7 @@ def record_result(step: model.Step, result_path: str | Path,
                              encoding="utf-8")
         message = f"ok (set {step.output})"
 
-    status = "ok" if ok else "error"
+    status = "decision" if is_decision else ("ok" if ok else "error")
     _append_log(log_path, step, status, result_path)
     if handle is not None:
         _append_attempt(step.id, result_path, handle, status)

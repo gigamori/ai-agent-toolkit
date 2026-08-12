@@ -1,0 +1,647 @@
+"""`DECISION:` channel tests (xml-wf-decision-request.md P1).
+
+Three layers, all with a fake runner (no API calls, no cost):
+  - the payload/answer grammar (decision.py)
+  - classification on all three sites that assign error_class (§3)
+  - the batch stop/resume machinery: form (a) vs (b), the six (b) reasons, the
+    no-cost re-stop, partial-answer <parallel>, and failure-outranks-decision
+
+The resume tests drive `__main__._ingest_answers` rather than re-implementing
+adjudication, since the ordering it enforces (answer event, then the synthetic
+success, then the Executor) is itself the thing under test (§13.4).
+"""
+import contextlib
+import io
+import json
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# `unittest discover -s tests` puts this directory on the path itself, but
+# `python -m unittest tests.test_decision` does not — and the harness below is
+# imported from a sibling module either way.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from test_executor import ExecutorTestCase  # noqa: E402
+
+from wfrun import decision as decision_mod  # noqa: E402
+from wfrun import pi_cli, stepio  # noqa: E402
+from wfrun.__main__ import AnswerError, _ingest_answers  # noqa: E402
+from wfrun.claude_cli import (CliResult, classify_result, is_debuggable,  # noqa: E402
+                              is_retryable)
+from wfrun.executor import DecisionRequested, WorkflowFailure  # noqa: E402
+from wfrun.state import load_events  # noqa: E402
+
+
+def payload(work_state="complete", output="art.txt", options=("A -- loses rows",
+                                                              "B -- loses columns"),
+            recommendation="1", summary="which join", fork="two readings of 'merge'"):
+    lines = [f"DECISION: {summary}", f"fork: {fork}", "options:"]
+    lines += [f"  {i}. {opt}" for i, opt in enumerate(options, start=1)]
+    lines.append(f"recommendation: {recommendation}")
+    lines.append(f"work-state: {work_state}")
+    if output is not None:
+        lines.append(f"output: {output}")
+    return "\n".join(lines)
+
+
+class TestPayloadGrammar(unittest.TestCase):
+    def test_valid(self):
+        parsed, errors = decision_mod.parse_payload(payload())
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed.work_state, "complete")
+        self.assertEqual(parsed.recommendation, 1)
+        self.assertEqual(parsed.output, "art.txt")
+        self.assertEqual(len(parsed.options), 2)
+
+    def test_wrapped_fork_and_option_lines_are_joined(self):
+        text = ("DECISION: x\nfork: first line\nsecond line\noptions:\n"
+                "  1. A\n     continued\n  2. B\nrecommendation: none\n"
+                "work-state: stopped")
+        parsed, errors = decision_mod.parse_payload(text)
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed.fork, "first line\nsecond line")
+        self.assertEqual(parsed.options[0], "A continued")
+        self.assertIsNone(parsed.recommendation)
+
+    def test_malformed_cases(self):
+        cases = {
+            "missing key": "DECISION: x\nfork: f\noptions:\n  1. A\n  2. B",
+            "one option": payload(options=("only",)),
+            "non-sequential": ("DECISION: x\nfork: f\noptions:\n  1. A\n  3. B\n"
+                               "recommendation: none\nwork-state: stopped"),
+            "bad work-state": payload(work_state="donezo"),
+            "complete without output": payload(output=None),
+            "not a decision": "ERROR: nope",
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                parsed, errors = decision_mod.parse_payload(text)
+                self.assertIsNone(parsed)
+                self.assertTrue(errors)
+
+
+class TestAnswerGrammar(unittest.TestCase):
+    def test_valid_number_and_none(self):
+        answer, errors = decision_mod.parse_answer("option: 2\nbecause B is safer", 2)
+        self.assertEqual((errors, answer.option), ([], 2))
+        answer, errors = decision_mod.parse_answer("option: none\ndo C instead", 2)
+        self.assertEqual((errors, answer.option), ([], None))
+
+    def test_three_rejections(self):
+        cases = {
+            "no option line": "just prose about the fork",
+            "out of range": "option: 5\nwhy",
+            "none without text": "option: none\n   \n",
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                answer, errors = decision_mod.parse_answer(text, 2)
+                self.assertIsNone(answer)
+                self.assertTrue(errors)
+
+
+class TestClassification(unittest.TestCase):
+    def _stdout(self, text):
+        return json.dumps({"result": text, "total_cost_usd": 0.01})
+
+    def test_decision_class_is_neither_retryable_nor_debuggable(self):
+        self.assertFalse(is_retryable("decision"))
+        self.assertFalse(is_debuggable("decision"))
+
+    def test_classify_result_assigns_decision(self):
+        res = classify_result(0, self._stdout(payload()), "")
+        self.assertFalse(res.ok)
+        self.assertEqual(res.error_class, "decision")
+
+    def test_schema_step_still_classifies_as_decision(self):
+        # The hazard §3 exists to close: with schema= set, a later check would
+        # call this `behavioral` and retry a step that may already have written
+        # its deliverable.
+        res = classify_result(0, self._stdout(payload()), "", schema='{"type":"object"}')
+        self.assertEqual(res.error_class, "decision")
+
+    def test_malformed_payload_keeps_the_decision_class(self):
+        res = classify_result(0, self._stdout("DECISION: only a summary"), "")
+        self.assertEqual(res.error_class, "decision")
+        self.assertFalse(is_retryable(res.error_class))
+
+    def test_pi_backend_classifies_the_same(self):
+        stdout = json.dumps({
+            "type": "turn_end",
+            "message": {"stopReason": "stop",
+                        "content": [{"type": "text", "text": payload()}],
+                        "usage": {"cost": {"total": 0.0}}}})
+        res = pi_cli.classify_result_pi(0, stdout, "")
+        self.assertEqual(res.error_class, "decision")
+
+    def test_error_and_blocked_prefixes_still_win(self):
+        for text, expected in (("ERROR: x", "guardrail"),
+                               ("[BLOCKED: mode-rule x]", "refusal")):
+            with self.subTest(expected):
+                res = classify_result(0, self._stdout(text), "")
+                self.assertEqual(res.error_class, expected)
+
+
+class DecisionExecutorTestCase(ExecutorTestCase):
+    """Adds decision-shaped fake responses to the shared executor harness."""
+
+    def respond_decision(self, needle, *, then_ok=False, **payload_kwargs):
+        """Answer prompts containing `needle` with a DECISION: payload.
+
+        With then_ok, only the FIRST such prompt gets it — which is what a
+        form-(b) re-run needs: the step is expected to settle once it has been
+        told what was decided.
+        """
+        state = {"n": 0}
+
+        def predicate(prompt):
+            if needle not in prompt:
+                return False
+            state["n"] += 1
+            return not (then_ok and state["n"] > 1)
+
+        self.fake.handlers.append(
+            (predicate, CliResult(ok=True, text=payload(**payload_kwargs),
+                                  cost_usd=0.02)))
+
+    def artifact(self, name="art.txt"):
+        path = Path(self.tmp.name) / name
+        path.write_text("deliverable", encoding="utf-8")
+        return path
+
+    def decision_events(self, valid_only=True):
+        return [e for e in load_events(self.run_dir)
+                if e.get("kind") == "decision"
+                and (e.get("valid") is not False or not valid_only)]
+
+    def answer(self, run_dir, step_id, body):
+        """Write an answer file and run it through the real ingestion path."""
+        path = Path(self.tmp.name) / f"{step_id}_answer.md"
+        path.write_text(body, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return _ingest_answers(run_dir, [f"{step_id}={path}"],
+                                   load_events(run_dir))
+
+
+class TestBatchStop(DecisionExecutorTestCase):
+    def test_valid_request_stops_and_records(self):
+        self.artifact()
+        self.respond_decision("DO-WORK")
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="2" expect-file="art.txt">'
+            '<task>DO-WORK</task></step>'
+            '<step id="s2" role="w"><task>later</task></step>'))
+        with self.assertRaises(DecisionRequested) as ctx:
+            ex.run()
+        # retry=2 must not have fired, and the downstream step never ran
+        self.assertEqual(len(self.fake.calls), 1)
+        self.assertEqual(len(ctx.exception.requests), 1)
+
+        record = self.decision_events()[0]
+        self.assertEqual(record["request_id"], "s1_c01_d01")
+        self.assertTrue(Path(record["request"]).is_file())
+        self.assertTrue(record["a_eligible"])
+        self.assertIsNone(record["b_reason"])
+        # the recorded expect-file path is absolute, so a resume from another
+        # cwd re-checks the same file (§13.2)
+        self.assertTrue(Path(record["expect_files"][0]).is_absolute())
+        snapshot = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(snapshot["status"], "awaiting-decision")
+        self.assertEqual(snapshot["decisions"], ["s1_c01_d01"])
+
+    def test_malformed_payload_fails_without_retry(self):
+        self.fake.handlers.append(
+            (lambda p: "DO-WORK" in p,
+             CliResult(ok=True, text="DECISION: no fields at all", cost_usd=0.02)))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="2"><task>DO-WORK</task></step>'))
+        with self.assertRaises(WorkflowFailure) as ctx:
+            ex.run()
+        self.assertIn("malformed", str(ctx.exception))
+        self.assertEqual(len(self.fake.calls), 1)  # class blocks the retry
+        self.assertFalse(self.decision_events(valid_only=True))
+        self.assertTrue(self.decision_events(valid_only=False))
+
+    def test_on_error_ignore_absorbs_a_malformed_payload(self):
+        self.fake.handlers.append(
+            (lambda p: "bad" in p,
+             CliResult(ok=True, text="DECISION: no fields", cost_usd=0.02)))
+        ex = self.execute(self.wrap(
+            '<step id="bad" role="w" on-error="ignore"><task>bad</task></step>'))
+        ex.run()  # malformed IS a failure, so ignore may swallow it
+
+    def test_on_error_ignore_does_not_absorb_a_real_request(self):
+        self.respond_decision("good", work_state="stopped", output=None)
+        ex = self.execute(self.wrap(
+            '<step id="good" role="w" on-error="ignore"><task>good</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()  # a well-formed request is not a failure to ignore (§13.7)
+
+
+class TestBReasons(DecisionExecutorTestCase):
+    """All six (b) reasons, the vocabulary §6 fixes."""
+
+    def _reason_at_stop(self, step_xml, **payload_kwargs):
+        self.respond_decision("DO-WORK", **payload_kwargs)
+        ex = self.execute(self.wrap(step_xml))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        return self.decision_events()[0]["b_reason"]
+
+    def test_work_state_stopped(self):
+        self.assertEqual(
+            self._reason_at_stop('<step id="s1" role="w" expect-file="art.txt">'
+                                 '<task>DO-WORK</task></step>',
+                                 work_state="stopped", output=None),
+            decision_mod.B_REASON_WORK_STATE_STOPPED)
+
+    def test_schema_step(self):
+        self.artifact()
+        self.assertEqual(
+            self._reason_at_stop(
+                '<step id="s1" role="w" expect-file="art.txt" '
+                'schema=\'{"type":"object"}\'><task>DO-WORK</task></step>'),
+            decision_mod.B_REASON_SCHEMA_STEP)
+
+    def test_no_expect_file(self):
+        self.assertEqual(
+            self._reason_at_stop('<step id="s1" role="w"><task>DO-WORK</task></step>'),
+            decision_mod.B_REASON_NO_EXPECT_FILE)
+
+    def test_missing_file(self):
+        self.assertEqual(
+            self._reason_at_stop('<step id="s1" role="w" expect-file="art.txt">'
+                                 '<task>DO-WORK</task></step>'),
+            decision_mod.B_REASON_MISSING_FILE)
+
+    def test_unlisted_option_is_decided_at_resume(self):
+        self.artifact()
+        self.respond_decision("DO-WORK", then_ok=True)
+        ex = self.execute(self.wrap('<step id="s1" role="w" expect-file="art.txt" '
+                                    'output="v" output-type="value">'
+                                    '<task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        events = self.answer(self.run_dir, "s1", "option: none\ndo something else")
+        answer_event = [e for e in events if e.get("kind") == "answer"][-1]
+        self.assertEqual(answer_event["verdict"], "b")
+        self.assertEqual(answer_event["b_reason"],
+                         decision_mod.B_REASON_UNLISTED_OPTION)
+
+    def test_missing_file_at_resume(self):
+        artifact = self.artifact()
+        self.respond_decision("DO-WORK", then_ok=True)
+        ex = self.execute(self.wrap('<step id="s1" role="w" expect-file="art.txt" '
+                                    'output="v" output-type="value">'
+                                    '<task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        self.assertTrue(self.decision_events()[0]["a_eligible"])
+        artifact.unlink()  # the human tidied up while the run was stopped
+        events = self.answer(self.run_dir, "s1", "option: 1\nkeep going")
+        answer_event = [e for e in events if e.get("kind") == "answer"][-1]
+        self.assertEqual(answer_event["verdict"], "b")
+        self.assertEqual(answer_event["b_reason"],
+                         decision_mod.B_REASON_MISSING_FILE_AT_RESUME)
+
+
+class TestResumePaths(DecisionExecutorTestCase):
+    def test_form_a_synthesizes_and_never_re_runs(self):
+        self.artifact()
+        self.respond_decision("DO-WORK")
+        xml = self.wrap('<step id="s1" role="w" expect-file="art.txt" output="v" '
+                        'output-type="value"><task>DO-WORK</task></step>'
+                        '<step id="s2" role="w"><task>later</task></step>')
+        ex = self.execute(xml)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        calls_before = len(self.fake.calls)
+
+        events = self.answer(self.run_dir, "s1", "option: 1\nA is right")
+        self.assertEqual([e for e in events if e.get("kind") == "answer"][-1]["verdict"], "a")
+
+        ex2 = self.execute(xml, events=events)
+        ex2.run()
+        new = self.fake.calls[calls_before:]
+        self.assertEqual(len(new), 1)              # only s2 ran
+        self.assertIn("later", new[0]["prompt"])
+        self.assertEqual(ex2.vars["v"], "art.txt")  # taken from the payload
+
+    def test_form_b_re_runs_carrying_request_and_answer(self):
+        self.respond_decision("DO-WORK", then_ok=True, work_state="stopped", output=None)
+        xml = self.wrap('<step id="s1" role="w"><task>DO-WORK</task></step>')
+        ex = self.execute(xml)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        calls_before = len(self.fake.calls)
+
+        events = self.answer(self.run_dir, "s1", "option: 2\nB, because rows matter")
+        ex2 = self.execute(xml, events=events)
+        ex2.run()
+        new = self.fake.calls[calls_before:]
+        self.assertEqual(len(new), 1)
+        prompt = new[0]["prompt"]
+        self.assertIn("## Decisions resolved", prompt)
+        self.assertIn("B, because rows matter", prompt)   # the answer
+        self.assertIn("two readings of 'merge'", prompt)  # the original request
+        # the answer rides the user channel, never the constraint layers
+        self.assertNotIn("Decisions resolved", new[0]["system_prompt"])
+
+    def test_second_fork_in_same_cycle_keeps_the_first_ruling_visible(self):
+        # d01 answered -> (b) re-run raises a SECOND fork (d02) -> answered.
+        # The next re-run must carry BOTH settled pairs; dropping d01 would
+        # let the agent walk back into the settled fork (§13.6).
+        state = {"n": 0}
+
+        def predicate(prompt):
+            if "DO-WORK" not in prompt:
+                return False
+            state["n"] += 1
+            return state["n"] <= 2  # attempts 1 and 2 raise; attempt 3 settles
+
+        def result_for(prompt):
+            fork = ("first fork" if state["n"] == 1 else "second fork")
+            return CliResult(ok=True, text=payload(work_state="stopped",
+                                                   output=None, fork=fork),
+                             cost_usd=0.02)
+
+        # FakeClaude returns a fixed CliResult per handler, so route through a
+        # tiny stateful wrapper instead of two static handlers.
+        def fake_call(prompt, **kwargs):
+            self.fake.calls.append({"prompt": prompt, **kwargs})
+            if predicate(prompt):
+                return result_for(prompt)
+            return CliResult(ok=True, text="settled", cost_usd=0.01)
+
+        xml = self.wrap('<step id="s1" role="w"><task>DO-WORK</task></step>')
+        from wfrun import parser
+        from wfrun.executor import Executor
+        from wfrun.adp import Diagnosis
+
+        def build(events=None):
+            wf = parser.parse_string(xml, base_dir=self.tmp.name)
+            return Executor(wf, {}, self.run_dir, base_dir=self.tmp.name,
+                            replay_events=events, run_claude=fake_call,
+                            ask_llm=lambda *a, **k: (True, "", 0.0),
+                            diagnose=lambda *a, **k: Diagnosis("FAIL", "no"))
+
+        with self.assertRaises(DecisionRequested):
+            build().run()                                  # raises d01
+        a1 = Path(self.tmp.name) / "a1.md"
+        a1.write_text("option: 1\nfirst ruling", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            events = _ingest_answers(self.run_dir, [f"s1={a1}"],
+                                     load_events(self.run_dir))
+        with self.assertRaises(DecisionRequested):
+            build(events).run()                            # re-run raises d02
+
+        self.assertEqual(self.decision_events()[-1]["request_id"], "s1_c01_d02")
+        a2 = Path(self.tmp.name) / "a2.md"
+        a2.write_text("option: 2\nsecond ruling", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            events = _ingest_answers(self.run_dir, [f"s1={a2}"],
+                                     load_events(self.run_dir))
+        build(events).run()                                # settles
+
+        final_prompt = self.fake.calls[-1]["prompt"]
+        for needle in ("first fork", "first ruling", "second fork",
+                       "second ruling", "### Request 2"):
+            self.assertIn(needle, final_prompt)
+
+    def test_bare_resume_re_stops_at_no_cost_and_is_idempotent(self):
+        self.respond_decision("DO-WORK", work_state="stopped", output=None)
+        xml = self.wrap('<step id="s1" role="w"><task>DO-WORK</task></step>')
+        ex = self.execute(xml)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        calls_before = len(self.fake.calls)
+        events_before = len(load_events(self.run_dir))
+
+        for _ in range(2):  # repeated bare resumes must all be free and inert
+            ex2 = self.execute(xml, events=load_events(self.run_dir))
+            with self.assertRaises(DecisionRequested):
+                ex2.run()
+            self.assertEqual(len(self.fake.calls), calls_before)
+
+        # no new decision event: re-raising must not let the ledger advance on
+        # nothing but a re-print (§13.5)
+        self.assertEqual(len(self.decision_events()), 1)
+        # only the run-level start/awaiting-decision pairs were appended
+        appended = load_events(self.run_dir)[events_before:]
+        self.assertTrue(all(e["kind"] == "run" for e in appended))
+
+    def test_re_answering_an_answered_request_is_refused(self):
+        self.artifact()
+        self.respond_decision("DO-WORK", then_ok=True)
+        ex = self.execute(self.wrap('<step id="s1" role="w" expect-file="art.txt">'
+                                    '<task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        self.answer(self.run_dir, "s1", "option: 1\nfirst answer")
+        with self.assertRaises(AnswerError) as ctx:
+            self.answer(self.run_dir, "s1", "option: 2\nchanged my mind")
+        self.assertIn("already answered", str(ctx.exception))
+
+    def test_answer_parser_rejections_reach_the_cli_layer(self):
+        self.respond_decision("DO-WORK", work_state="stopped", output=None)
+        ex = self.execute(self.wrap('<step id="s1" role="w"><task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        for body in ("prose with no option line", "option: 9\nout of range",
+                     "option: none\n"):
+            with self.subTest(body):
+                with self.assertRaises(AnswerError):
+                    self.answer(self.run_dir, "s1", body)
+        # an unknown step id is refused too, rather than silently ignored
+        with self.assertRaises(AnswerError):
+            self.answer(self.run_dir, "nosuch", "option: 1\nx")
+
+
+class TestParallel(DecisionExecutorTestCase):
+    def _parallel_xml(self):
+        return self.wrap(
+            '<parallel max-workers="2">'
+            '<step id="p1" role="w"><task>alpha</task></step>'
+            '<step id="p2" role="w"><task>beta</task></step>'
+            '</parallel>')
+
+    def test_all_siblings_are_collected(self):
+        self.respond_decision("alpha", work_state="stopped", output=None)
+        self.respond_decision("beta", work_state="stopped", output=None)
+        ex = self.execute(self._parallel_xml())
+        with self.assertRaises(DecisionRequested) as ctx:
+            ex.run()
+        self.assertEqual({r["key"] for r in ctx.exception.requests}, {"p1", "p2"})
+
+    def test_partial_answer_advances_only_the_answered_sibling(self):
+        self.respond_decision("alpha", then_ok=True, work_state="stopped", output=None)
+        self.respond_decision("beta", work_state="stopped", output=None)
+        xml = self._parallel_xml()
+        ex = self.execute(xml)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        calls_before = len(self.fake.calls)
+
+        events = self.answer(self.run_dir, "p1", "option: 1\ngo with A")
+        ex2 = self.execute(xml, events=events)
+        with self.assertRaises(DecisionRequested) as ctx:
+            ex2.run()
+        # p1 re-ran (form b); p2 re-stopped without spending anything
+        new = self.fake.calls[calls_before:]
+        self.assertEqual(len(new), 1)
+        self.assertIn("alpha", new[0]["prompt"])
+        self.assertEqual([r["key"] for r in ctx.exception.requests], ["p2"])
+
+    def test_partial_answer_form_a_synthesizes_without_any_call(self):
+        # The (a) variant of partial answer goes through a DIFFERENT mechanism
+        # from (b): the synthetic success is consumed by take_group as a
+        # PARTIAL group (which disables further replay), while the unanswered
+        # sibling falls through to the free pending re-raise. Neither side may
+        # spend a CLI call.
+        self.artifact()
+        self.respond_decision("alpha")
+        self.respond_decision("beta")
+        xml = self.wrap(
+            '<parallel max-workers="2">'
+            '<step id="p1" role="w" expect-file="art.txt" output="va" '
+            'output-type="value"><task>alpha</task></step>'
+            '<step id="p2" role="w" expect-file="art.txt" output="vb" '
+            'output-type="value"><task>beta</task></step>'
+            '</parallel>')
+        ex = self.execute(xml)
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        calls_before = len(self.fake.calls)
+
+        events = self.answer(self.run_dir, "p1", "option: 1\ngo with A")
+        ex2 = self.execute(xml, events=events)
+        with self.assertRaises(DecisionRequested) as ctx:
+            ex2.run()
+        self.assertEqual(len(self.fake.calls), calls_before)  # zero CLI spend
+        self.assertEqual([r["key"] for r in ctx.exception.requests], ["p2"])
+        self.assertEqual(ex2.vars["va"], "art.txt")  # synthesized from payload
+
+    def test_a_failing_sibling_outranks_a_decision(self):
+        self.respond_decision("alpha", work_state="stopped", output=None)
+        self.fake.handlers.append(
+            (lambda p: "beta" in p, CliResult(ok=False, error="ERROR: died",
+                                              error_class="guardrail", cost_usd=0)))
+        ex = self.execute(self._parallel_xml())
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        # the request is still saved and still listed for the report (§9)
+        self.assertEqual([r["key"] for r in ex.decisions_raised], ["p1"])
+        self.assertTrue(Path(self.decision_events()[0]["request"]).is_file())
+
+
+class TestCycleIdentity(DecisionExecutorTestCase):
+    def test_cycle_counts_visits_not_attempts(self):
+        # iteration 1 succeeds, iteration 2 raises: the request must be tagged
+        # c02, which is only true if the counter runs per step-node visit
+        state = {"n": 0}
+
+        def predicate(prompt):
+            if "loop" not in prompt:
+                return False
+            state["n"] += 1
+            return state["n"] >= 2
+
+        self.fake.handlers.append(
+            (predicate, CliResult(ok=True, text=payload(work_state="stopped",
+                                                        output=None), cost_usd=0.02)))
+        ex = self.execute(self.wrap(
+            '<each range="3" as="k"><do>'
+            '<step id="s1" role="w"><task>loop</task></step>'
+            '</do></each>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        self.assertEqual(self.decision_events()[0]["request_id"], "s1_c02_d01")
+        self.assertEqual(self.decision_events()[0]["cycle"], 2)
+
+
+class TestDeciderLint(unittest.TestCase):
+    def _lint(self, xml):
+        from wfrun import lint as lint_mod
+        from wfrun import parser
+        wf = parser.parse_string(xml)
+        return lint_mod.lint(wf, check_roles=False)
+
+    def _codes(self, xml):
+        return {f.code for f in self._lint(xml)}
+
+    def test_llm_is_rejected_until_p4(self):
+        for xml in (
+            '<workflow name="t" version="2" max="5" decider="llm">'
+            '<step id="s1" tools="Read"><task>x</task></step></workflow>',
+            '<workflow name="t" version="2" max="5">'
+            '<step id="s1" tools="Read" decider="llm"><task>x</task></step></workflow>',
+        ):
+            with self.subTest(xml):
+                self.assertIn("decider-llm-unimplemented", self._codes(xml))
+
+    def test_human_and_unset_pass(self):
+        for xml in (
+            '<workflow name="t" version="2" max="5" decider="human">'
+            '<step id="s1" tools="Read"><task>x</task></step></workflow>',
+            '<workflow name="t" version="2" max="5">'
+            '<step id="s1" tools="Read"><task>x</task></step></workflow>',
+        ):
+            with self.subTest(xml):
+                codes = self._codes(xml)
+                self.assertNotIn("decider-llm-unimplemented", codes)
+                self.assertNotIn("decider-unknown", codes)
+
+    def test_unknown_value_stays_decider_unknown(self):
+        codes = self._codes(
+            '<workflow name="t" version="2" max="5" decider="robot">'
+            '<step id="s1" tools="Read"><task>x</task></step></workflow>')
+        self.assertIn("decider-unknown", codes)
+        self.assertNotIn("decider-llm-unimplemented", codes)
+
+
+class TestVizDecider(unittest.TestCase):
+    def test_start_node_carries_the_resolved_decider(self):
+        from wfrun import parser, viz
+        wf = parser.parse_string(
+            '<workflow name="t" version="2" max="5">'
+            '<step id="s1" tools="Read"><task>x</task></step></workflow>')
+        # resolved from the default, not just echoed from an attribute (§11)
+        self.assertIn("decider=human", viz.mermaid(wf))
+
+
+class TestRecordVerdict(unittest.TestCase):
+    """`record`'s verdict for the run-llm path — the second classification
+    site, which never reaches classify_result()."""
+
+    def _record(self, tmp, text, step_xml='<step id="s1" role="w"><task>t</task></step>'):
+        from wfrun import parser
+        wf = parser.parse_string(f'<workflow name="t" version="2" max="5">{step_xml}</workflow>')
+        step = stepio.find_step(wf, "s1")
+        result = Path(tmp) / "s1_result.md"
+        result.write_text(text, encoding="utf-8")
+        vars_path = Path(tmp) / "vars.json"
+        vars_path.write_text("{}", encoding="utf-8")
+        return stepio.record_result(step, result, vars_path)
+
+    def test_valid_and_malformed_both_report_decision(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            status, message = self._record(tmp, payload())
+            self.assertEqual(status, "decision")
+            self.assertIn("requested adjudication", message)
+
+            status, message = self._record(tmp, "DECISION: nothing else")
+            self.assertEqual(status, "decision")
+            self.assertIn("malformed", message)
+            # never quotes the payload back at the orchestrator
+            self.assertNotIn("nothing else", message)
+
+    def test_exit_code_is_four(self):
+        from wfrun.__main__ import RECORD_EXIT_CODES
+        self.assertEqual(RECORD_EXIT_CODES["decision"], 4)
+
+
+if __name__ == "__main__":
+    unittest.main()

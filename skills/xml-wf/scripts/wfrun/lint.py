@@ -113,6 +113,43 @@ def lint(wf: model.Workflow, base_dir: str | Path = ".",
                 f"step '{step.id}': mode '{mode}' is not a known execution mode "
                 f"(available: {', '.join(modes.available_modes())})")
 
+    # --- decider ---------------------------------------------------------------
+    # TRANSITIONAL (remove when the llm adjudication path lands --
+    # xml-wf-decision-request.md §8 P4): `decider="llm"` is a valid value, but
+    # nothing implements it yet, and accepting it would silently run the
+    # workflow with human adjudication while recording that choice nowhere the
+    # author looks. Rejecting a declared-but-unimplemented feature with a
+    # rewrite hint is this project's standing rule (same as the pi backend's
+    # schema= / on-error="debug" fail-fasts).
+    _LLM_UNIMPLEMENTED = ("decider='llm' is not implemented yet (the llm "
+                          "adjudication path is phase P4); every decision "
+                          "would silently be adjudicated by a human despite "
+                          "the declaration. Use decider=\"human\" or drop "
+                          "the attribute")
+    valid_deciders = "/".join(model.DECIDER_VALUES)
+    if wf.decider is not None and wf.decider not in model.DECIDER_VALUES:
+        err("decider-unknown",
+            f"workflow decider='{wf.decider}' is not one of {valid_deciders}")
+    elif wf.decider == "llm":
+        err("decider-llm-unimplemented", f"workflow: {_LLM_UNIMPLEMENTED}")
+    for step in steps:
+        decider = getattr(step, "decider", None)
+        if decider is not None and decider not in model.DECIDER_VALUES:
+            err("decider-unknown",
+                f"step '{step.id}': decider='{decider}' is not one of {valid_deciders}")
+        elif decider == "llm":
+            err("decider-llm-unimplemented", f"step '{step.id}': {_LLM_UNIMPLEMENTED}")
+        if getattr(step, "decider_model", None) and not decider and not wf.decider:
+            warn("decider-model-unused",
+                 f"step '{step.id}': decider-model= is set but the decider "
+                 f"resolves to '{model.DEFAULT_DECIDER}', which never calls a model")
+        if isinstance(step, model.Step) and step.schema:
+            warn("decision-schema",
+                 f"step '{step.id}': schema= forces structured output, so this "
+                 "step may be unable to return a plain-text 'DECISION:' request "
+                 "when it hits a fork; and a decision on a schema= step can "
+                 "only ever continue by re-running it")
+
     # --- misc step warnings ---------------------------------------------------
     for step in steps:
         if step.on_error == "ignore":

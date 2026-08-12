@@ -49,6 +49,7 @@ import subprocess
 import tempfile
 
 from . import claude_cli, model, stepio
+from . import decision as decision_mod
 from .guardrails import ASK_PROMPT
 from .modes import blocked_line, strip_mode_line
 
@@ -408,6 +409,17 @@ def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.
         result.ok = False
         result.error_class = "refusal"
         result.error = blocked[:500]
+        return result
+
+    if decision_mod.starts_with_decision(body):
+        # Third prefix, classified exactly as on the cc path (this module
+        # keeps its classification aligned with claude_cli by design; see the
+        # module docstring). Reachable under the pi backend because only
+        # decider="llm" is refused there, not the channel itself
+        # (xml-wf-decision-request.md §3, §4).
+        result.ok = False
+        result.error_class = "decision"
+        result.error = body.strip()
         return result
 
     if body.strip() == "":

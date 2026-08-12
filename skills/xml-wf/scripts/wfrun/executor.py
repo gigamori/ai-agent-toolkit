@@ -14,6 +14,7 @@ from glob import glob as _glob
 from pathlib import Path
 
 from . import adp, claude_cli, model, modelmap, modes, parser, stepio
+from . import decision as decision_mod
 from . import lint as lint_mod
 from .agents import discover_agents
 from .ccdirs import claude_config_dirs
@@ -23,6 +24,72 @@ from .state import ReplayCursor, RunState
 
 class WorkflowFailure(Exception):
     pass
+
+
+class DecisionRequested(Exception):
+    """One or more steps asked for adjudication and the run stopped for it.
+
+    Deliberately NOT a WorkflowFailure subclass (xml-wf-decision-request.md
+    §8): `cmd_run` reports a WorkflowFailure as FAILED and points at a plain
+    `wfrun resume`, which would both mislabel this stop and hand back a resume
+    command that cannot make progress. A separate type forces a separate
+    report and exit code.
+
+    `requests` holds one record per pending request -- more than one only via
+    `<parallel>`, where every sibling is allowed to finish first (§9).
+    """
+
+    def __init__(self, requests: list[dict]):
+        self.requests = requests
+        ids = ", ".join(r["request_id"] for r in requests)
+        super().__init__(f"decision requested: {ids}")
+
+
+def decision_tables(events: list[dict]) -> tuple[dict, dict, dict]:
+    """(pending, answers, seq_high_water) rebuilt from a run's recorded events.
+
+    pending: {(step id, cycle): decision event} for requests with no `answer`
+    event yet -- the steps that must stop again without spending a CLI call.
+    answers: {(step id, cycle): [answer events, adjudication order]} for every
+    answered request, regardless of verdict. ALL of them, not the latest: a
+    (b) re-run can raise a second fork in the same cycle, and a later re-run
+    that carries only the newest ruling would let the agent walk back into
+    the already-settled first fork -- the settled ones have to stay visible
+    (§13.6). Form (a) normally never reaches the live path (its synthetic
+    step event replays first), but if replay fell off earlier the step runs
+    live anyway and is better off carrying the answers than not.
+
+    seq_high_water: {(step id, cycle): highest seq already recorded}, so a (b)
+    re-run that hits a *second* fork in the same cycle numbers it without
+    colliding with the first.
+
+    Both keys are (step, cycle) rather than request_id because that is what
+    `_exec_step` knows about itself. At most one request per step is ever
+    pending (§13.1), so the collapse is lossless.
+    """
+    requests: dict[str, dict] = {}
+    answered: set[str] = set()
+    answers: dict[tuple[str, int], list[dict]] = {}
+    seq_high_water: dict[tuple[str, int], int] = {}
+    for event in events:
+        kind = event.get("kind")
+        if kind == "decision":
+            key = (event["key"], event["cycle"])
+            seq_high_water[key] = max(seq_high_water.get(key, 0), event["seq"])
+            # A malformed payload is recorded too (so its seq is never reused
+            # and the run's history shows it), but it can never be pending:
+            # there is nothing well-formed to answer.
+            if event.get("valid", True):
+                requests[event["request_id"]] = event
+        elif kind == "answer":
+            answered.add(event["request_id"])
+            # File order IS adjudication order: at most one request per step
+            # is pending at a time (§13.1), so answers for the same (step,
+            # cycle) can only have been appended one resume after another.
+            answers.setdefault((event["key"], event["cycle"]), []).append(event)
+    pending = {(e["key"], e["cycle"]): e
+               for rid, e in requests.items() if rid not in answered}
+    return pending, answers, seq_high_water
 
 
 class Executor:
@@ -52,8 +119,20 @@ class Executor:
         self.step_count = 0
         self.cost_usd = 0.0
         self._attempt_seq: dict[str, int] = {}
+        # Visits to each step node. Incremented at the top of _exec_step,
+        # BEFORE the replay early-return, so a resumed run reconstructs the
+        # same numbers (replay still calls _exec_step; it just returns early).
+        # This is the `cycle` half of a decision request's identity (§13.1).
+        self._cycle_seq: dict[str, int] = {}
         self._child_caps: list[tuple[int, int]] = []  # (count at start, cap)
         self._lock = threading.Lock()
+
+        (self._pending_decisions, self._decision_answers,
+         self._decision_seq) = decision_tables(replay_events or [])
+        # Every request this run raised, for the report -- kept separately
+        # from the exception because a `<parallel>` sibling failure outranks
+        # a decision (§9) and the payloads must still be listed.
+        self.decisions_raised: list[dict] = []
 
         self._resolve_params(params)
         self._rules_cache = self._load_rules()
@@ -112,6 +191,11 @@ class Executor:
                          resume=self.replay.active)
         try:
             self._walk(self.wf.body)
+        except DecisionRequested as e:
+            ids = [r["request_id"] for r in e.requests]
+            self._snapshot("awaiting-decision", decisions=ids)
+            self.state.event("run", status="awaiting-decision", requests=ids)
+            raise
         except WorkflowFailure as e:
             self._snapshot("failed", error=str(e))
             self.state.event("run", status="failed", error=str(e))
@@ -120,10 +204,11 @@ class Executor:
         self.state.event("run", status="success")
         return "success"
 
-    def _snapshot(self, status: str, error: str | None = None):
+    def _snapshot(self, status: str, error: str | None = None,
+                  decisions: list[str] | None = None):
         self.state.snapshot(status=status, variables=self.vars,
                             step_count=self.step_count, cost_usd=self.cost_usd,
-                            error=error)
+                            error=error, decisions=decisions)
 
     # ------------------------------------------------------------ walker ---
     def _walk(self, node):
@@ -173,7 +258,8 @@ class Executor:
         with self._lock:
             self.cost_usd += amount
 
-    def _build_prompt(self, step: model.Step, fix: str | None = None
+    def _build_prompt(self, step: model.Step, fix: str | None = None,
+                      decision: tuple[str, str] | None = None
                       ) -> tuple[str, str]:
         """(system_text, user_text) — run-cc puts the constraint layers
         (role/mode/rules) in the system channel via --append-system-prompt."""
@@ -181,14 +267,21 @@ class Executor:
             return stepio.build_step_prompt_parts(
                 self.wf, step, self.vars, self.base_dir,
                 fix=fix, rules_cache=self._rules_cache,
-                agents_cache=self._agents_cache)
+                agents_cache=self._agents_cache, decision=decision)
         except stepio.StepIOError as e:
             raise WorkflowFailure(str(e)) from e
 
     # -------------------------------------------------------------- step ---
     def _exec_step(self, step: model.Step, replay_pool: dict | None = None):
+        # Before everything, including the replay return: a resumed run must
+        # arrive at the same cycle number it did originally (§13.1).
+        with self._lock:
+            cycle = self._cycle_seq[step.id] = self._cycle_seq.get(step.id, 0) + 1
         self._bump_limits(step.id)
 
+        # (1) replay hit — including the synthetic success `resume --answer`
+        # writes for a form-(a) decision, which is consumed right here and is
+        # the whole reason (a) costs nothing (§13.5).
         if replay_pool is not None:
             replayed = replay_pool.pop(step.id, None)
         else:
@@ -200,7 +293,22 @@ class Executor:
             self._add_cost(float(replayed.get("cost_usd") or 0.0))
             return
 
-        system, prompt = self._build_prompt(step)
+        # (2) an unanswered request for THIS visit — stop again without
+        # spending a CLI call, and record nothing (§13.5). Re-raising is a
+        # read-only operation: appending another `decision` event here would
+        # make a bare `wfrun resume` non-idempotent and let the llm-adjudication
+        # cap advance on nothing but a re-print.
+        pending = self._pending_decisions.get((step.id, cycle))
+        if pending is not None:
+            with self._lock:
+                self.decisions_raised.append(pending)
+            raise DecisionRequested([pending])
+
+        # (3) answered — form (b): re-run carrying every settled request and
+        # answer of this cycle, not just the newest (§13.6).
+        answer_events = self._decision_answers.get((step.id, cycle))
+        decision_ctx = self._decision_context(answer_events) if answer_events else None
+        system, prompt = self._build_prompt(step, decision=decision_ctx)
         dispatch_model, dispatch_tools = stepio.dispatch_for(step, self._agents_cache)
         dispatch_model = self._map_model(dispatch_model, step.id)
         # Least privilege: --permission-mode (e.g. acceptEdits) reaches only
@@ -233,6 +341,14 @@ class Executor:
                     res.ok = False
                     res.error_class = "refusal"
                     res.error = blocked_line[:500]
+            if res.ok and decision_mod.starts_with_decision(
+                    modes.strip_mode_line(res.text)):
+                # Same belt-and-braces as the refusal check above: both
+                # backends classify this already, but the executor must not
+                # depend on a particular runner having done so.
+                res.ok = False
+                res.error_class = "decision"
+                res.error = modes.strip_mode_line(res.text).strip()
             if res.ok and step.expect_file:
                 missing = self._missing_expected(step)
                 if missing:
@@ -255,6 +371,16 @@ class Executor:
                 self._finish_step(step, res, attempt)
                 return
 
+            if res.error_class == "decision":
+                # Ahead of the retry/debug/ignore ladder on purpose (§13.7): a
+                # well-formed request is not a failure, so `on-error="ignore"`
+                # must not absorb it — that would silently drop the fork this
+                # whole channel exists to surface. _handle_decision raises in
+                # that case; a malformed payload IS a failure and comes back
+                # as a message that falls through to the ladder below (where
+                # the `decision` class still keeps retry and debug out).
+                res.error = self._handle_decision(step, res, cycle)
+
             self.state.event("step", key=step.id, status="attempt-failed",
                              attempt=seq, error=(res.error or "")[:1000],
                              error_class=res.error_class,
@@ -276,8 +402,12 @@ class Executor:
                                  cost_usd=diagnosis.cost_usd)
                 if diagnosis.action == "RETRY":
                     debug_used = True
+                    # decision_ctx is carried through: a (b) re-run that then
+                    # fails for some other reason must not lose the answer it
+                    # was re-run to apply.
                     system, prompt = self._build_prompt(
-                        step, fix=diagnosis.fix_instruction)
+                        step, fix=diagnosis.fix_instruction,
+                        decision=decision_ctx)
                     continue  # exactly one debug-granted attempt
 
             if step.on_error == "ignore":
@@ -339,20 +469,121 @@ class Executor:
                 "enabled provider, chosen over pi's own defaultModel) -- "
                 "rather than this session's: " + ", ".join(missing)]
 
-    def _missing_expected(self, step: model.Step) -> list[str]:
-        """expect-file paths (comma-separated, {var}-interpolated, relative to
-        the XML dir = subprocess cwd) that do not exist after the response."""
+    def _expected_paths(self, step: model.Step) -> list[tuple[str, Path]]:
+        """(as declared, resolved absolute) per expect-file entry.
+
+        Comma-separated and {var}-interpolated; relative entries resolve
+        against the XML dir, which is the step subprocess's cwd. The absolute
+        half is what a decision event records, so that a later `resume` --
+        whose own base_dir defaults to the caller's cwd, not the XML dir --
+        re-checks the same files the original run meant (§13.2).
+        """
         raw = self._interp(step.expect_file, f"step '{step.id}' expect-file")
-        missing = []
+        pairs = []
         for part in (p.strip() for p in raw.split(",")):
             if not part:
                 continue
             path = Path(part)
             if not path.is_absolute():
                 path = self.base_dir / path
-            if not path.is_file():
-                missing.append(part)
-        return missing
+            pairs.append((part, path))
+        return pairs
+
+    def _missing_expected(self, step: model.Step) -> list[str]:
+        """expect-file paths (comma-separated, {var}-interpolated, relative to
+        the XML dir = subprocess cwd) that do not exist after the response."""
+        return [declared for declared, path in self._expected_paths(step)
+                if not path.is_file()]
+
+    # ---------------------------------------------------------- decision ---
+    def _handle_decision(self, step: model.Step, res, cycle: int) -> str:
+        """Persist a `DECISION:` response and route it (§1, §13.2).
+
+        Raises DecisionRequested when the payload is well formed — the run
+        stops there and the report becomes the UI. Returns a failure message
+        when it is malformed, which the caller feeds to the ordinary on-error
+        ladder.
+        """
+        body = modes.strip_mode_line(res.text).strip()
+        with self._lock:
+            key = (step.id, cycle)
+            seq = self._decision_seq[key] = self._decision_seq.get(key, 0) + 1
+        rid = decision_mod.request_id(step.id, cycle, seq)
+        request_file = decision_mod.request_path(self.run_dir, rid)
+        request_file.parent.mkdir(parents=True, exist_ok=True)
+        request_file.write_text(body, encoding="utf-8")
+
+        payload, errors = decision_mod.parse_payload(body)
+        if errors:
+            self.state.event("decision", key=step.id, request_id=rid,
+                             cycle=cycle, seq=seq, valid=False,
+                             request=str(request_file), errors=errors[:10],
+                             cost_usd=res.cost_usd)
+            return (f"step '{step.id}' raised a decision request whose payload "
+                    f"is malformed ({len(errors)} field problem(s)): "
+                    f"{'; '.join(errors)[:400]}. It cannot be answered as-is; "
+                    f"read it and decide by hand: {request_file}")
+
+        b_reason, expect_files = self._decision_b_reason(step, payload)
+        record = self.state.event(
+            "decision", key=step.id, request_id=rid, cycle=cycle, seq=seq,
+            valid=True, request=str(request_file),
+            answer_path=str(decision_mod.answer_path(self.run_dir, rid)),
+            decider="human", work_state=payload.work_state,
+            option_count=len(payload.options),
+            recommendation=payload.recommendation, output=payload.output,
+            a_eligible=b_reason is None, b_reason=b_reason,
+            expect_files=expect_files, cost_usd=res.cost_usd)
+        with self._lock:
+            self.decisions_raised.append(record)
+        raise DecisionRequested([record])
+
+    def _decision_b_reason(self, step: model.Step, payload
+                           ) -> tuple[str | None, list[str]]:
+        """(why this must take form (b), recorded absolute expect-file paths).
+
+        None means form (a) is still on the table — the answer selecting a
+        listed option is the last condition, and only `resume` knows that
+        (§6, §13.2). Evaluated HERE, at the moment the step stopped, because
+        "did it finish writing before asking" is a fact about that instant;
+        measuring it later would fold in whatever later steps wrote.
+        """
+        if not payload.work_complete:
+            return decision_mod.B_REASON_WORK_STATE_STOPPED, []
+        if step.schema:
+            return decision_mod.B_REASON_SCHEMA_STEP, []
+        if not step.expect_file:
+            return decision_mod.B_REASON_NO_EXPECT_FILE, []
+        pairs = self._expected_paths(step)
+        absolute = [str(path) for _, path in pairs]
+        if not pairs:
+            return decision_mod.B_REASON_NO_EXPECT_FILE, []
+        if any(not path.is_file() for _, path in pairs):
+            return decision_mod.B_REASON_MISSING_FILE, absolute
+        return None, absolute
+
+    def _decision_context(self, answer_events: list[dict]
+                          ) -> list[tuple[str, str]]:
+        """[(request body, answer body), ...] for a form-(b) re-run's prompt,
+        one pair per settled decision of this cycle, in adjudication order
+        (§13.6).
+
+        A fresh subagent has no memory of the requests it raised, so the
+        re-run has to carry every settled pair -- dropping the earlier ones
+        would let it walk back into an already-settled fork. Unreadable files
+        fail the run rather than quietly re-running without a ruling.
+        """
+        pairs = []
+        for event in answer_events:
+            try:
+                request = Path(event["request"]).read_text(encoding="utf-8")
+                reply = Path(event["answer_path"]).read_text(encoding="utf-8")
+            except OSError as e:
+                raise WorkflowFailure(
+                    f"decision {event['request_id']}: cannot read the "
+                    f"recorded request/answer needed to re-run the step: {e}") from e
+            pairs.append((request, reply))
+        return pairs
 
     def _finish_step(self, step: model.Step, res, attempts: int):
         output_value = None
@@ -559,6 +790,7 @@ class Executor:
     def _exec_parallel(self, node: model.Parallel):
         pool = self.replay.take_group("step", {s.id for s in node.children})
         errors = []
+        decisions: list[dict] = []
         with ThreadPoolExecutor(max_workers=node.max_workers) as pool_exec:
             futures = {pool_exec.submit(self._exec_step, s, pool): s
                        for s in node.children}
@@ -567,5 +799,16 @@ class Executor:
                     future.result()
                 except WorkflowFailure as e:
                     errors.append(str(e))
+                except DecisionRequested as e:
+                    # Collected, not propagated mid-loop: running siblings are
+                    # left to finish and every request gets listed (§9). A
+                    # sibling that already stopped for an unanswered request
+                    # arrives here too, at no cost.
+                    decisions.extend(e.requests)
         if errors:
+            # Failure outranks a decision (§9): the requests stay on disk and
+            # in `decisions_raised` for the report, but there is no point
+            # answering one while the run cannot get past the failure anyway.
             raise WorkflowFailure("; ".join(errors))
+        if decisions:
+            raise DecisionRequested(decisions)
