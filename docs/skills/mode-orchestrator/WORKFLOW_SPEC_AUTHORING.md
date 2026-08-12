@@ -38,7 +38,9 @@ A spec file has these sections:
    to `review-dev`, which the decision loop spawns dynamically for the same
    reason — include it even if the recommended sequence never uses it.
 4. **Failure policy** — the recovery cycle cap (engine default 2 if omitted) and,
-   optionally, the decision insertion cap (engine default 2 if omitted). These
+   optionally, the decision insertion cap (engine default 2 if omitted — it
+   bounds inserted decision turns, so the value a spec sets has no effect on a
+   `--decider=human` run, where nothing is inserted). These
    two caps are the only failure/decision parameters a spec controls, and the
    engine counts them separately. Which outcomes reach which loop is fixed by the
    engine and not spec-tunable: only `failed` enters recovery and only

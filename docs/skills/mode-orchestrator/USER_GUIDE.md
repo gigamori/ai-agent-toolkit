@@ -201,6 +201,12 @@ must still pass the Step 0 gate. The original plan stays in the run index, so
 the drift from what you approved stays visible.
 
 The per-turn **decision cap** is 2 insertions (a workflow spec can override it).
+It counts *inserted* turns, so it applies to `--decider=llm` only: when you are
+the decider nothing is inserted and nothing is capped, and the same turn may
+bring you a third and a fourth fork. The cap exists to stop an unattended run
+from adjudicating in circles, which a run that needs your answer every round
+cannot do — capping it would only mean your third legitimate fork comes back as
+"cap reached" instead of being asked.
 At the cap the run stops with `needs-human`, not `blocked`: two rounds that fail
 to converge means the judgement is overloaded, and what is missing is your
 judgement, not a capability. The decision cap and the recovery cycle cap are
@@ -213,8 +219,9 @@ fresh budget every round simply by inserting a turn.
 A fork can also be raised by an *inserted* turn — a debug turn that finds
 several candidate fixes, say. When that happens and the continuation is form
 (b), what gets re-run is the turn that raised the fork (the debug turn), not
-the original one; and that re-run spends from the decision budget, not the
-recovery one.
+the original one; and that re-run consumes no recovery cycle — the recovery cap
+counts failed cycles, and a fork is not a failure. What the round spent, if
+anything, is a decision insertion, and only under `--decider=llm`.
 
 `--auto` does **not** override `--decider=human`: it skips only the initial
 turn-plan approval, so a human-decided run still waits at its forks.
