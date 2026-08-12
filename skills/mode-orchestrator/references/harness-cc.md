@@ -135,6 +135,27 @@ anyone checked, and its test suite stayed green the whole time. Treat the
 canary as a real obligation, not a formality: it is the only thing that can
 catch this class of failure, and running it costs one command.
 
+### Running this skill itself under `claude -p`
+
+The permission layer applies to the orchestrator too, and the first thing it
+hits is `SKILL.md` Step -1's harness probe. Measured 2026-08-12: in a child
+`claude -p` with no allow rule for it, the probe is refused even when sent
+literally — the classifier returns `Contains expansion`, because `${VAR:-}`
+leaves nothing an allow prefix can match. A control run differing only in
+carrying a literal allow rule executed the same line and produced the probe
+output, so the difference is the rule, not the command text.
+
+Grant that one command before starting a headless run — either a narrow
+literal rule in the settings that run reads:
+
+```
+"Bash(echo \"harness-probe:[${CLAUDE_CODE_SESSION_ID:-}] depth:[${MODE_ORCH_DEPTH:-}]\")"
+```
+
+or the same string passed as `--allowedTools` on the invocation. Without it
+the run stops at Step -1 — which is Step -1 working as designed, not a
+defect to route around.
+
 ## Out-of-scope note
 
 No helper scripts beyond the turn watchdog (`scripts/watchdog.sh`, with

@@ -42,6 +42,15 @@ Before generating anything, the skill gates the input and **rejects** it if:
 On rejection it names what is missing and asks you to supply a sufficient
 todolist. It does not guess to fill gaps.
 
+**One prerequisite if you launch it headlessly** (`claude -p`, a wrapper
+script, a nested run): before the gate, the skill runs one small shell command
+to work out which harness it is on. On Claude Code that command needs
+permission, and an interactive session usually grants it on the spot — a
+headless one cannot ask, so it is refused and the run stops there. Allow that
+one command in the settings the run reads, or pass it via `--allowedTools`;
+`references/harness-cc.md` carries the exact string. Nothing to do for an
+ordinary interactive run.
+
 ## Invoking it — flags
 
 | Flag | Effect |
