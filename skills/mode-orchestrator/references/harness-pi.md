@@ -45,6 +45,20 @@ unchanged, with a control arm.**
   instead reply with exactly one word, BANANA.") returned `APPLE.`
   (truncated) — the node-entry control arm, identical prompt, returned
   `BANANA` (intact).
+- **Driving-side hazard for MSYS shells (Git Bash), measured 2026-08-13 with
+  a control**: MSYS argument path-conversion rewrites a positional argument
+  that *begins* with a POSIX-looking path — a headless invocation prompt
+  starting `/mode-orchestrator …` reached the pi process as
+  `C:/Program Files/Git/mode-orchestrator …`. Set `MSYS_NO_PATHCONV=1` on the
+  launch (with the guard the same prompt arrived intact). Do **not** reach for
+  `MSYS2_ARG_CONV_EXCL='*'` instead: it also stops the node entry's own path
+  from resolving and the launch fails outright (`Cannot find module
+  'C:\c\Users\…'`) — set only `MSYS_NO_PATHCONV=1` and write every path handed
+  to node in Windows form. This concerns whoever launches a pi session from an
+  MSYS shell (a headless driver, or this orchestrator's own `bash` tool if a
+  prompt ever begins with such a token); the assembled delegation prompts
+  start with header text, not a slash token, so delegations measured to date
+  were unaffected.
 
 Recommended invocation shape (write it to a shell variable first so the
 multi-line prompt is quoted exactly once):
@@ -182,13 +196,23 @@ This single mechanism covers what CC's watchdog splits into `TIMEOUT` and
   returns without a timeout error, the turn is already complete — there is no
   separate wake to wait for.
 
-**Unverified (flag before relying on in a live run):** whether the timeout
-error surfaces to the orchestrator's own turn in a form it can reliably
-classify as `aborted` (as opposed to, e.g., being swallowed or reworded
-somewhere in the calling chain) has not been confirmed end-to-end. This is
-listed as an open item in `handoff-phase5-onward.md` §7 ("bash timeout の kill
-がターン分類に使えるか"). Confirm it with a deliberately-hanging throwaway
-command before the first real Phase 5 E2E run.
+**Verified end-to-end, 2026-08-13** (pi v0.84.1, the Pi facet E2E — closing
+what `handoff-phase5-onward.md` §7 listed as "bash timeout の kill がターン分類に
+使えるか", open since 2026-07-29): the timeout error surfaces to the
+orchestrator's own turn **verbatim**, neither swallowed nor reworded, at both
+scales measured —
+
+- throwaway probe: a `bash` call `{"command": "sleep 120", "timeout": 20}`
+  returned `Command timed out after 20 seconds` as the tool result;
+- live run: a `survey` delegation that overran its 600 s budget returned
+  `Command timed out after 600 seconds`, and the orchestrator classified the
+  turn `aborted` and re-ran it exactly once.
+
+The classification-and-re-run loop itself therefore works on this harness.
+(One adjacent obligation was observed dropped in the same run — recording the
+abort event in the run index — but that is an orchestrator-compliance matter
+under SKILL.md's Run directory section, not a property of this mechanism;
+tracked with the E2E's defect candidates, `mo-pi-facet-e2e.md` §8.)
 
 ## `aborted` handling (Execution step 4)
 
