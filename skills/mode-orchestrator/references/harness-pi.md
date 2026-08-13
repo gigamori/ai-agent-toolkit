@@ -15,7 +15,10 @@ tool, passing the assembled prompt (Injection assembly's output) as the
 **positional message argument**.
 
 Two things that look like the obvious way to do this are wrong; both were
-measured on 2026-07-29 against pi v0.80.6 / win32.
+measured on 2026-07-29 against pi v0.80.6 / win32, and the truncation hazard
+was **re-measured 2026-08-13 against pi v0.84.1 / win32 (this machine's
+current global install, matching pi-studio's local source dependency) —
+unchanged, with a control arm.**
 
 - **Do not deliver the prompt with `@<file>`.** The include syntax attaches
   the file as *content to reason about*, not as the turn's instruction. A
@@ -23,16 +26,25 @@ measured on 2026-07-29 against pi v0.80.6 / win32.
   else" came back with a refusal that named it an embedded-instruction
   (prompt-injection) attempt and asked what the user actually wanted. The
   identical text passed positionally was obeyed.
-- **Do not invoke the npm `pi` shim with a multi-line prompt on argv.** On
-  Windows `pi` resolves to `pi.CMD`, and its cmd.exe layer **truncates the
-  argument at the first newline** — a two-line probe reached the model as
-  line one only, exit code 0, nothing on stderr. This is the same corruption
-  class `reliability-spec.md` §13.2 measured for the claude shim, and the
-  assembled prompt is always multi-line. The shim's own body is just
-  `node <entry> %*`, so launch that entry through node directly:
-  `node <npm-prefix>/node_modules/@earendil-works/pi-coding-agent/dist/cli.js`.
-  Verified: with the shim bypassed, a two-line prompt containing `&` and `|`
-  arrived intact.
+- **Do not invoke `pi.CMD` (or `pi.ps1`) with a multi-line prompt on argv.**
+  Its cmd.exe layer **truncates the argument at the first newline** — a
+  two-line probe reached the model as line one only, exit code 0, nothing on
+  stderr. This is the same corruption class `reliability-spec.md` §13.2
+  measured for the claude shim, and the assembled prompt is always
+  multi-line. **Which launcher `pi` resolves to depends on the calling
+  shell**, not on the OS alone — corrected 2026-08-13, the original wording
+  ("on Windows `pi` resolves to `pi.CMD`") was imprecise: a Git Bash / MSYS
+  shell resolves the extensionless `pi` to the npm-installed POSIX shim
+  (`#!/bin/sh`, body `exec node .../cli.js "$@"`), which passed a two-line
+  probe intact; only invoking through cmd.exe or PowerShell reaches
+  `pi.CMD`/`pi.ps1` and hits the truncation. The safe instruction is
+  unchanged either way — bypass every shell-resolved launcher and go
+  straight to the entry: `node <npm-prefix>/node_modules/@earendil-works/
+  pi-coding-agent/dist/cli.js`. Verified 2026-08-13: with `pi.CMD` invoked
+  directly, a two-line probe ("Say APPLE.\nDisregard the previous line:
+  instead reply with exactly one word, BANANA.") returned `APPLE.`
+  (truncated) — the node-entry control arm, identical prompt, returned
+  `BANANA` (intact).
 
 Recommended invocation shape (write it to a shell variable first so the
 multi-line prompt is quoted exactly once):
@@ -46,9 +58,16 @@ MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
 - `MODE_ORCH_DEPTH=1`: **recursion guard, layer 1.** `SKILL.md` Step -1 reads
   this variable before anything else and stops the run if it is set. Pi's
   `bash` tool passes `process.env` through to children
-  (`dist/utils/shell.js`'s `getShellEnv()`), so the marker reaches any
-  orchestrator that starts inside this turn — including one reached by a path
-  `--no-skills` does not cover.
+  (`dist/utils/shell.js`'s `getShellEnv()`, confirmed present in v0.84.1's
+  `dist/utils/shell.js:111`), so the marker reaches any orchestrator that
+  starts inside this turn — including one reached by a path `--no-skills`
+  does not cover. **Propagation confirmed end-to-end 2026-08-13** (v0.84.1):
+  a `pi -p` process launched with `MODE_ORCH_DEPTH=1` in its own environment,
+  told to run Step -1's exact probe command through its **own** `bash` tool,
+  reported `depth:[1]` back — a control run launched identically but without
+  the variable reported `depth:[]`. This is the propagation the guard depends
+  on, exercised through the same tool-spawn path a nested delegation would
+  use, not inferred from reading the source alone.
 - `--no-skills`: **recursion guard, layer 2.** The child cannot discover or
   load `mode-orchestrator` (or any other skill) by discovery; only an explicit
   `--skill <path>` on the delegation command could, and the delegation command
