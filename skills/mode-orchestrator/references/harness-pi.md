@@ -66,8 +66,43 @@ multi-line prompt is quoted exactly once):
 ```
 MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
    --model <the turn's resolved model> \
-   --no-skills --session-dir <run-dir>/sessions "$PROMPT"
+   --no-skills --session-dir <run-dir>/sessions "$PROMPT" \
+   > <run-dir>/raw/<NN>.jsonl \
+ && node ~/.pi/agent/skills/mode-orchestrator/scripts/pi_reply.js <run-dir>/raw/<NN>.jsonl
 ```
+
+**You do not read the event stream.** It goes to a file; what you read is the
+extractor's stdout, which is the turn's reply text and nothing else. The rest
+of this section still documents the stream's shape, because the extractor is
+built on it and a version bump can change it — but that is background, not a
+thing to parse by hand in a turn.
+
+Why the seam exists, measured 2026-08-13 (pi 0.84.1, the Pi facet E2E): the
+`--mode json` stream is orders of magnitude larger than the reply it carries —
+a captured orchestrator stream ran **5.7 MB across 18 `turn_end` events and 145
+`message_update` deltas**, and even a clean terminal `turn_end` carries a
+`thinking` block beside the reply text. Handed to you as a tool result, that
+overflows the `bash` tool's result budget, which spills it to a temp log
+(`%TEMP%/pi-bash-<hash>.log`) that you then have to read to find the reply.
+That is exactly what happened in the E2E, and it drags a whole turn's raw
+transcript into the context this skill's Context discipline exists to protect.
+The extractor closes that path structurally rather than by asking you to be
+careful.
+
+- **`<run-dir>/raw/` must exist before the first delegation** — create it with
+  the run directory. The `>` redirect does not create directories, so a
+  missing `raw/` fails the very first delegation.
+- **When the extractor exits non-zero** it prints one line to stderr and
+  nothing to stdout — so the tool result carries no `status:` line, and
+  Execution step 4 classifies the turn `aborted` through its missing-status
+  path. No extra rule is needed: exit 3 means the stream held no `turn_end`,
+  exit 4 means the terminal one did not stop cleanly (`stopReason` and any
+  `errorMessage` are named in the stderr line), exit 2 is a usage or read
+  error. Its self-tests are `scripts/pi_reply_test.sh`, whose fixtures are
+  carved from a real captured stream.
+- **The raw stream stays on disk** as `<run-dir>/raw/<NN>.jsonl`. This is
+  strictly more observable than before, when the same bytes flowed through a
+  tool result and a temp log and were gone.
 
 - `MODE_ORCH_DEPTH=1`: **recursion guard, layer 1.** `SKILL.md` Step -1 reads
   this variable before anything else and stops the run if it is set. Pi's
@@ -115,13 +150,23 @@ MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
   single result object like `claude -p --output-format json`. Measured shape
   (19 lines for a trivial turn): `session`, `agent_start`, `turn_start`, then
   `message_start` / `message_update`* / `message_end` per message, then
-  `turn_end`, `agent_end`, `agent_settled`. **Read the turn's reply from the
-  `turn_end` line**: `.message.content` is a block array (`{"type":"text",
-  "text":...}`, plus `thinking` blocks when the model reasons) and
-  `.message.stopReason` is `"stop"` on a clean finish. Concatenate the `text`
-  blocks in order to get the reply whose final line must carry the
-  reply-contract `status:` line. `.message.usage` carries
-  `{input, output, cacheRead, cacheWrite, totalTokens, cost:{...,total}}`.
+  `turn_end`, `agent_end`, `agent_settled`. **This is what `pi_reply.js`
+  parses on your behalf; it is documented so the extractor is auditable, not
+  so you read it in a turn.** Its rule: take the **last** `turn_end` (one is
+  emitted per tool round — 18 in a measured 17-tool-call run), require
+  `.message.stopReason === "stop"`, and concatenate that message's
+  `{"type":"text"}` blocks in order — the reply whose final line carries the
+  reply-contract `status:` line. `thinking` blocks sit in the same array when
+  the model reasons and are dropped. `.message.usage` carries
+  `{input, output, cacheRead, cacheWrite, totalTokens, cost:{...,total}}` for
+  anyone reading the saved stream afterwards.
+- **Two harness-only subdirectories of the run directory.** `SKILL.md`'s Run
+  directory section is harness-neutral and names neither; both are created
+  with the run directory here: `<run-dir>/raw/` for the delegation streams
+  (`<NN>.jsonl`, the redirect above — it must exist before the first
+  delegation) and `<run-dir>/sessions/` for the children's own transcripts
+  (below). Neither is an artifact the run index has to list; they are
+  evidence, kept for a human.
 - `--session-dir <run-dir>/sessions`: keeps the child's transcript **on disk**
   — `SKILL.md` Execution step 4 tells the orchestrator to discard an aborted
   turn's output and leave "the transcript on disk for a human to read", and

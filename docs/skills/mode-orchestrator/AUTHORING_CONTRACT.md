@@ -10,7 +10,7 @@ Because both facets live in one skill and Pi loads it via a symlink into `~/.pi/
 
 - Before landing a change to `SKILL.md`'s Execution steps, or to anything a harness reference file governs (delegation method, time-bound signaling, the denial check), read BOTH `references/harness-cc.md` and `references/harness-pi.md` and judge explicitly whether each still holds.
 - A change scoped to one harness reference (e.g. a Claude Code watchdog fix) needs no edit to the other — but state that scoping decision, don't leave it implicit.
-- Re-run `scripts/watchdog_test.sh` and `scripts/deny_scan_test.sh` after touching either script; both are self-contained (they build their own fake session logs) so this costs nothing to skip accidentally — don't.
+- Re-run `scripts/watchdog_test.sh`, `scripts/deny_scan_test.sh` and `scripts/pi_reply_test.sh` after touching any of those scripts; all three are self-contained (they build their own fake session logs, or read committed fixtures) so this costs nothing to skip accidentally — don't. `pi_reply_test.sh` additionally guards a Pi-side contract: its `fixtures/*.jsonl` are carved from a real `pi -p --mode json` stream, so if a pi version bump changes that stream's shape, re-carve the fixtures from a fresh capture rather than editing them to match the extractor.
 
 ## Relationship to xml-wf
 
