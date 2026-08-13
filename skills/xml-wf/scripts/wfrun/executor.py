@@ -625,10 +625,22 @@ class Executor:
 
         payload, errors = decision_mod.parse_payload(body)
         if errors:
+            # The shape marker rides on the event so the misuse rate can be
+            # recounted from a run's log later (§11, §18.3). Nothing branches
+            # on it -- the run still fails, as a malformed payload always has.
+            misused = decision_mod.looks_like_completion_report(body)
             self.state.event("decision", key=step.id, request_id=rid,
                              cycle=cycle, seq=seq, valid=False,
                              request=str(request_file), errors=errors[:10],
+                             completion_report_shape=misused,
                              cost_usd=res.cost_usd)
+            if misused:
+                return (f"step '{step.id}' wrapped a completion report in the "
+                        "decision channel: the payload declares `work-state:` "
+                        "but names no fork (no `fork:` / `options:` / "
+                        "`recommendation:`). `DECISION:` is for a fork the step "
+                        "may not settle alone; a step that finished reports "
+                        "normally instead. Request: " + str(request_file))
             return (f"step '{step.id}' raised a decision request whose payload "
                     f"is malformed ({len(errors)} field problem(s)): "
                     f"{'; '.join(errors)[:400]}. It cannot be answered as-is; "
@@ -778,8 +790,19 @@ class Executor:
             return decision_mod.B_REASON_WORK_STATE_STOPPED, []
         # Checked before the artifact conditions: without a value to adopt,
         # form (a) is impossible however well the expect-file check goes.
-        if payload.output is None:
+        # Only when the step HAS somewhere to put it, though -- a step with no
+        # `output=` never reads the payload's value at all (form (a) sets a
+        # variable only when one is declared), so demoting it for a missing
+        # value would re-run a step to protect nothing (§18.5, A-1b).
+        if step.output and payload.output is None:
             return decision_mod.B_REASON_NO_OUTPUT, []
+        # A value-typed output is adopted verbatim into the variable, so form
+        # (a) would hand downstream whatever the step wrote BEFORE the ruling
+        # existed -- measured never to be the ruling's value (§18.2). Only
+        # file-typed steps can take (a); everything else re-runs and produces
+        # the value itself.
+        if step.output and step.output_type != "file":
+            return decision_mod.B_REASON_VALUE_OUTPUT, []
         if step.schema:
             return decision_mod.B_REASON_SCHEMA_STEP, []
         if not step.expect_file:

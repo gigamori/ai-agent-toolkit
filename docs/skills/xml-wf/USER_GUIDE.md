@@ -160,9 +160,11 @@ the run stops in a safe state (`awaiting-decision`).
 You will see: what is ambiguous, the numbered options with the cost of getting
 each one wrong, the step's own recommendation, and where to write your answer.
 Answering takes one line — `option: 2` (or `option: none` followed by what to
-do instead) — and the run resumes. If the step had already finished its
-deliverable and you accepted its recommendation, nothing re-runs; otherwise
-the step runs once more, with your ruling in front of it.
+do instead) — and the run resumes. If the step had already written its
+deliverable **to a file** and you accepted its recommendation, nothing
+re-runs; otherwise the step runs once more, with your ruling in front of it.
+A step whose output is a plain value always re-runs, since the value it wrote
+before asking cannot be the one your ruling chose.
 
 If you would rather not be interrupted, declare `decider="llm"` on the
 workflow (or a single step): a separate adjudicator model settles such forks

@@ -3,7 +3,7 @@
 Three layers, all with a fake runner (no API calls, no cost):
   - the payload/answer grammar (decision.py)
   - classification on all three sites that assign error_class (§3)
-  - the batch stop/resume machinery: form (a) vs (b), the six (b) reasons, the
+  - the batch stop/resume machinery: form (a) vs (b), the nine (b) reasons, the
     no-cost re-stop, partial-answer <parallel>, and failure-outranks-decision
 
 The resume tests drive `__main__._ingest_answers` rather than re-implementing
@@ -303,8 +303,74 @@ class TestNoOutputDegrades(DecisionExecutorTestCase):
         self.assertEqual(answer["b_reason"], decision_mod.B_REASON_NO_OUTPUT)
 
 
+class TestValueOutputDegrades(DecisionExecutorTestCase):
+    """Form (a) is closed to everything but `output-type="file"` (§18.2).
+
+    (a) adopts the payload's `output:` as the step's value without re-running.
+    For a value-typed output that value is whatever the step wrote BEFORE the
+    ruling existed -- an eval measured 0 of 28 such payloads carrying a value
+    the ruling could have chosen (23 were self-invalidating prose). So the
+    ruling would govern in name while the pre-ruling text went downstream.
+    """
+
+    VALUE_STEP = ('<step id="s1" role="w" expect-file="art.txt" output="v" '
+                  'output-type="value"><task>DO-WORK</task></step>')
+
+    def test_batch_demotes_a_value_typed_step(self):
+        self.artifact()
+        self.respond_decision("DO-WORK", output="the figure is undecided")
+        ex = self.execute(self.wrap(self.VALUE_STEP))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        record = self.decision_events()[0]
+        self.assertFalse(record["a_eligible"])
+        self.assertEqual(record["b_reason"], decision_mod.B_REASON_VALUE_OUTPUT)
+
+    def test_batch_agreeing_with_the_recommendation_still_re_runs(self):
+        """The distinction from OPTION_NOT_RECOMMENDED: the ruling agrees, and
+        the step re-runs anyway because the VALUE could not have been it."""
+        self.artifact()
+        self.respond_decision("DO-WORK", then_ok=True,
+                              output="the figure is undecided")
+        ex = self.execute(self.wrap(self.VALUE_STEP))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        events = self.answer(self.run_dir, "s1", "option: 1\nagreed, A")
+        answer = [e for e in events if e.get("kind") == "answer"][0]
+        self.assertEqual(answer["verdict"], "b")
+        self.assertEqual(answer["b_reason"], decision_mod.B_REASON_VALUE_OUTPUT)
+
+    def test_the_file_typed_twin_still_reaches_form_a(self):
+        """The control: same fixture, same payload, `file` output type."""
+        self.artifact()
+        self.respond_decision("DO-WORK")
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        record = self.decision_events()[0]
+        self.assertTrue(record["a_eligible"])
+        self.assertIsNone(record["b_reason"])
+
+    def test_a_step_with_no_output_is_not_demoted_for_a_missing_value(self):
+        """A-1b: `no-output` is about a value the step cannot place, so a step
+        that declares no `output=` never triggers it -- (a) sets a variable
+        only when one exists, so re-running would protect nothing (§18.5)."""
+        self.artifact()
+        self.respond_decision("DO-WORK", output=None)
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" expect-file="art.txt">'
+            '<task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        record = self.decision_events()[0]
+        self.assertTrue(record["a_eligible"])
+        self.assertIsNone(record["b_reason"])
+
+
 class TestBReasons(DecisionExecutorTestCase):
-    """All six (b) reasons, the vocabulary §6 fixes."""
+    """All nine (b) reasons, the vocabulary §6 fixes."""
 
     def _reason_at_stop(self, step_xml, **payload_kwargs):
         self.respond_decision("DO-WORK", **payload_kwargs)
@@ -343,7 +409,7 @@ class TestBReasons(DecisionExecutorTestCase):
         self.artifact()
         self.respond_decision("DO-WORK", then_ok=True)
         ex = self.execute(self.wrap('<step id="s1" role="w" expect-file="art.txt" '
-                                    'output="v" output-type="value">'
+                                    'output="v">'
                                     '<task>DO-WORK</task></step>'))
         with self.assertRaises(DecisionRequested):
             ex.run()
@@ -357,7 +423,7 @@ class TestBReasons(DecisionExecutorTestCase):
         artifact = self.artifact()
         self.respond_decision("DO-WORK", then_ok=True)
         ex = self.execute(self.wrap('<step id="s1" role="w" expect-file="art.txt" '
-                                    'output="v" output-type="value">'
+                                    'output="v">'
                                     '<task>DO-WORK</task></step>'))
         with self.assertRaises(DecisionRequested):
             ex.run()
@@ -375,7 +441,7 @@ class TestResumePaths(DecisionExecutorTestCase):
         self.artifact()
         self.respond_decision("DO-WORK")
         xml = self.wrap('<step id="s1" role="w" expect-file="art.txt" output="v" '
-                        'output-type="value"><task>DO-WORK</task></step>'
+                        '><task>DO-WORK</task></step>'
                         '<step id="s2" role="w"><task>later</task></step>')
         ex = self.execute(xml)
         with self.assertRaises(DecisionRequested):
@@ -398,7 +464,7 @@ class TestResumePaths(DecisionExecutorTestCase):
         self.artifact()
         self.respond_decision("DO-WORK", then_ok=True, recommendation="2")
         xml = self.wrap('<step id="s1" role="w" expect-file="art.txt" output="v" '
-                        'output-type="value"><task>DO-WORK</task></step>')
+                        '><task>DO-WORK</task></step>')
         ex = self.execute(xml)
         with self.assertRaises(DecisionRequested):
             ex.run()
@@ -587,9 +653,9 @@ class TestParallel(DecisionExecutorTestCase):
         xml = self.wrap(
             '<parallel max-workers="2">'
             '<step id="p1" role="w" expect-file="art.txt" output="va" '
-            'output-type="value"><task>alpha</task></step>'
+            '><task>alpha</task></step>'
             '<step id="p2" role="w" expect-file="art.txt" output="vb" '
-            'output-type="value"><task>beta</task></step>'
+            '><task>beta</task></step>'
             '</parallel>')
         ex = self.execute(xml)
         with self.assertRaises(DecisionRequested):
@@ -1093,7 +1159,7 @@ class RunLlmAdjudicationTestCase(unittest.TestCase):
         self.xml = (
             '<workflow name="t" version="2" max="9">'
             '<step id="s1" tools="Read" expect-file="art.txt" output="v" '
-            'output-type="value"><task>t</task></step></workflow>')
+            '><task>t</task></step></workflow>')
         self.wf = parser.parse_string(self.xml)
         self.step = stepio.find_step(self.wf, "s1")
 
@@ -1317,6 +1383,115 @@ class TestRunLlmAdjudication(RunLlmAdjudicationTestCase):
         self.assertIn(str(filed), message)
         # and it stays separate from the B-layer namespace
         self.assertEqual(decision_mod.request_ids(self.dec, "s1"), [])
+
+
+class TestRunLlmValueOutput(RunLlmAdjudicationTestCase):
+    """The run-llm mirror of §18.2: the two predicates must agree, or the same
+    workflow settles differently depending on which layer executed it."""
+
+    def retype(self, attrs):
+        """Re-point the fixture at a step declared with `attrs`."""
+        from wfrun import parser
+        wf = parser.parse_string(
+            '<workflow name="t" version="2" max="9">'
+            f'<step id="s1" tools="Read" expect-file="art.txt" {attrs}>'
+            '<task>t</task></step></workflow>')
+        self.step = stepio.find_step(wf, "s1")
+
+    def test_value_typed_step_re_runs(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        self.retype('output="v" output-type="value"')
+        self.record(payload(output="the figure is undecided"))
+        status, message = self.answer("option: 1\ngo with A")
+        self.assertEqual(status, "rerun")
+        self.assertIn("re-run", message)
+        entry = json.loads(self.log.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(entry["b_reason"], decision_mod.B_REASON_VALUE_OUTPUT)
+        # (b) means the value is NOT adopted -- the variable stays unset
+        self.assertNotIn("v", json.loads(self.vars.read_text(encoding="utf-8")))
+
+    def test_step_with_no_output_keeps_form_a(self):
+        (self.root / "art.txt").write_text("deliverable", encoding="utf-8")
+        self.retype("")
+        self.record(payload(output=None))
+        status, _ = self.answer("option: 1\ngo with A")
+        self.assertEqual(status, "ok")  # A-1b: nowhere to put a value, so no demotion
+        entry = json.loads(self.log.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertIsNone(entry["b_reason"])
+
+
+class TestCompletionReportShape(unittest.TestCase):
+    """B-3 (§18.3): a completion report wrapped in the decision channel is
+    still malformed and still fails, but it is DIAGNOSED as itself.
+
+    An eval measured 7 of 45 unambiguous steps doing this. The generic
+    "malformed payload" line sends the reader looking for a missing field in a
+    request that was never a request, so the shape is named instead.
+    """
+
+    def test_detector_separates_the_two_shapes(self):
+        report = ("DECISION: none -- task unambiguous\n"
+                  "work-state: complete\noutput: art.txt")
+        self.assertTrue(decision_mod.looks_like_completion_report(report))
+        # a real request that merely lost a field is NOT this shape
+        broken = "DECISION: x\nfork: f\nwork-state: complete\noutput: art.txt"
+        self.assertFalse(decision_mod.looks_like_completion_report(broken))
+        # nor is a fork that never got as far as work-state
+        self.assertFalse(decision_mod.looks_like_completion_report(
+            "DECISION: x\nfork: f\noptions:\n  1. A"))
+
+
+WRAPPED_REPORT = ("DECISION: none -- task unambiguous\n"
+                  "work-state: complete\noutput: art.txt")
+
+
+class TestCompletionReportBatch(DecisionExecutorTestCase):
+    """B-3 on the batch side: the run still dies (a malformed payload always
+    has), and the event carries the shape so the misuse rate stays countable
+    from a run's log."""
+
+    def test_names_the_shape_and_marks_the_event(self):
+        self.fake.handlers.append(
+            (lambda p: "DO-WORK" in p,
+             CliResult(ok=True, cost_usd=0.02, text=WRAPPED_REPORT)))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="2"><task>DO-WORK</task></step>'))
+        with self.assertRaises(WorkflowFailure) as ctx:
+            ex.run()
+        self.assertIn("wrapped a completion report", str(ctx.exception))
+        self.assertEqual(len(self.fake.calls), 1)  # still no retry
+        record = self.decision_events(valid_only=False)[0]
+        self.assertFalse(record["valid"])
+        self.assertTrue(record["completion_report_shape"])
+
+    def test_an_ordinary_malformed_payload_is_not_marked(self):
+        self.fake.handlers.append(
+            (lambda p: "DO-WORK" in p,
+             CliResult(ok=True, cost_usd=0.02,
+                       text="DECISION: x\nfork: f\nwork-state: complete")))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w"><task>DO-WORK</task></step>'))
+        with self.assertRaises(WorkflowFailure) as ctx:
+            ex.run()
+        self.assertIn("malformed", str(ctx.exception))
+        self.assertNotIn("completion report", str(ctx.exception))
+        self.assertFalse(self.decision_events(valid_only=False)[0]
+                         ["completion_report_shape"])
+
+
+class TestCompletionReportRunLlm(RunLlmAdjudicationTestCase):
+    def test_record_names_the_shape_without_quoting_the_body(self):
+        status, message = self.record(WRAPPED_REPORT)
+        self.assertEqual(status, "decision")
+        self.assertIn("wrapped a completion report", message)
+        # the shape claim is the only thing said about the body (§18.3)
+        self.assertNotIn("unambiguous", message)
+
+    def test_ordinary_malformed_keeps_the_generic_line(self):
+        status, message = self.record("DECISION: x\nfork: f\nwork-state: complete")
+        self.assertEqual(status, "decision")
+        self.assertIn("malformed", message)
+        self.assertNotIn("completion report", message)
 
 
 class TestRecordVerdict(unittest.TestCase):
@@ -1552,7 +1727,7 @@ class TestPreambleAnchoring(DecisionExecutorTestCase):
         self.artifact()
         self.respond_text("DO-WORK", preambled(payload()))
         xml = self.wrap('<step id="s1" role="w" expect-file="art.txt" output="v" '
-                        'output-type="value"><task>DO-WORK</task></step>')
+                        '><task>DO-WORK</task></step>')
         ex = self.execute(xml)
         with self.assertRaises(DecisionRequested):
             ex.run()

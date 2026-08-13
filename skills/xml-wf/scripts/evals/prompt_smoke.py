@@ -64,7 +64,7 @@ def _claim(res) -> tuple[str | None, bool]:
 
 
 def _work_state(res) -> str | None:
-    """Which branch of rule 4's output: requirement a sample actually took.
+    """Which branch of rule 5's output: requirement a sample actually took.
 
     Tallied and printed per scenario because a compliance rate cannot say it.
     Measured 2026-08-13: the decision-fork arm came back `stopped` 10/10, so
@@ -95,6 +95,24 @@ def _work_state(res) -> str | None:
         if line.strip().startswith("work-state:"):
             return f"work-state:{line.split(':', 1)[1].strip()}(malformed){suffix}"
     return f"work-state:absent(malformed){suffix}"
+
+
+def _wrap_shape(res) -> str | None:
+    """How a completion-wrap sample ended, for the tally.
+
+    The pass rate alone cannot separate "did not fire" from "fired with a real
+    fork" -- and on an unambiguous task the second would be a different finding
+    (a genuine ambiguity the fixture did not intend) rather than the misuse
+    B-1 targets. `decision.looks_like_completion_report` is the same predicate
+    the runner uses to name the mistake in its diagnosis (§18.3, B-3).
+    """
+    if res.error_class != "decision":
+        return "clean"
+    claimed, _ = _claim(res)
+    body = claimed if claimed is not None else modes.strip_mode_line(res.text)
+    if decision.looks_like_completion_report(body):
+        return "wrapped(completion-report shape)"
+    return "fired(names a fork)"
 
 
 def _decision_valid(res) -> bool:
@@ -219,7 +237,7 @@ SCENARIOS = [
         # state and `output:` is correctly absent. This arm narrows the fork to
         # ONE value handed downstream while the artifact itself follows
         # uniquely from the data, which is the shape §6 calls form (a) -- and
-        # the only shape under which rule 4 requires an output: line. Verified
+        # the only shape under which rule 5 requires an output: line. Verified
         # to reach form (a) with a real orchestrator under P2 (case_c).
         "step": model.Step(
             id="d3",
@@ -251,6 +269,29 @@ SCENARIOS = [
                  "the number.",
         ),
         "passed": lambda res: res.error_class != "decision",
+    },
+    {
+        "name": "decision-completion-wrap",
+        "desc": "unambiguous step with an interpolated value, no reporting "
+                "instruction -> must NOT wrap its completion in DECISION:",
+        # The B-1 arm (xml-wf-decision-request.md §18.3/§18.4). Distinct from
+        # decision-no-fork: that one asks for a number back, which is itself a
+        # reporting instruction. This one says only "write the file", which is
+        # the shape 7 of 45 samples wrapped in the fork channel (15.6%,
+        # 2026-08-13). Before-baseline lives in tmp/xmlwf-layerb-probe/.
+        "criterion": "before B-1: 7/45 = 15.6% wrapped. Read the count, not a "
+                     "threshold; n>=25 (0/10 is not a result at this rate)",
+        "tools": "Read,Write",
+        "setup": _write_orders,
+        "step": model.Step(
+            id="d4",
+            role_text="You are a careful analyst who reports exactly what the "
+                      "task asks for.",
+            task="The headline revenue figure is 300. Write it as the single "
+                 "line of headline.txt.",
+        ),
+        "passed": lambda res: res.error_class != "decision",
+        "observe": _wrap_shape,
     },
 ]
 

@@ -449,6 +449,15 @@ def _decision_message(text: str, dec_dir: str | Path, prefix: str) -> str:
     request = Path(dec_dir) / f"{rid}{decision_mod.REQUEST_SUFFIX}"
     _, errors = decision_mod.parse_payload(body)
     if errors:
+        if decision_mod.looks_like_completion_report(body):
+            # A claim about the payload's SHAPE, not its content -- the same
+            # category as _with_stray_warning's line numbers and prefixes, so
+            # the no-task-content firewall holds (§18.3).
+            return ("decision: step wrapped a completion report in the "
+                    "decision channel -- the payload declares `work-state:` "
+                    "but names no fork (no `fork:` / `options:` / "
+                    "`recommendation:`), so there is nothing to adjudicate; "
+                    f"read it and decide by hand (request: {request})")
         return ("decision: step raised a decision request, but its payload is "
                 f"malformed and cannot be answered as-is ({len(errors)} field "
                 f"problem(s)); read it and decide by hand (request: {request})")
@@ -746,10 +755,15 @@ def _decision_b_reason(step: model.Step, payload, vars_path, result_path
     """
     if not payload.work_complete:
         return decision_mod.B_REASON_WORK_STATE_STOPPED
-    # Same order as the batch predicate: no value to adopt rules out form (a)
-    # before any artifact question is asked.
-    if payload.output is None:
+    # Same order as the batch predicate, including its two guards: a step with
+    # no `output=` has nowhere to put the value so its absence demotes nothing
+    # (§18.5), and a value-typed output would be adopted verbatim from what the
+    # step wrote before the ruling existed, so only file-typed steps keep (a)
+    # (§18.2).
+    if step.output and payload.output is None:
         return decision_mod.B_REASON_NO_OUTPUT
+    if step.output and step.output_type != "file":
+        return decision_mod.B_REASON_VALUE_OUTPUT
     if step.schema:
         return decision_mod.B_REASON_SCHEMA_STEP
     if not step.expect_file:

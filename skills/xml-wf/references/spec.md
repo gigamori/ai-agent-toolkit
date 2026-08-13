@@ -466,7 +466,7 @@ misclassified as fixable, spawned dozens of child sessions per minute).
 
 A step that reaches a fork it may not settle alone — two defensible readings,
 or the task simply silent — must not quietly pick one. Every step prompt
-carries a protocol (guardrail rule 4) for declaring it:
+carries a protocol (guardrail rule 5) for declaring it:
 
 ```
 DECISION: <one-line summary of the fork>
@@ -499,9 +499,13 @@ or debug. What happens next is the `decider=` attribute's call:
   human's file.
 
 How an answered fork continues: if the step declared its deliverable already
-written (`work-state: complete` with an `output:` value, `expect-file`
-verified, and the answer picked the recommended option), the value is adopted
-**without re-running the step** — form (a). Anything else re-runs the step
+written (`work-state: complete`, `expect-file` verified, and the answer picked
+the recommended option), the value is adopted **without re-running the step** —
+form (a). A step that declares an `output` variable has two more conditions to
+meet: the payload must carry the `output:` value, and the variable must be
+`output-type="file"`. A value-typed variable would take that line verbatim as
+the step's output, and it was written before the ruling existed — so a
+value-typed step re-runs and produces the value itself. Anything else re-runs the step
 once with every settled ruling of that visit injected into its prompt — form
 (b) — and the report says why (`b_reason`). A malformed payload is the one
 genuine failure: the run stops FAILED with the payload path for a human to

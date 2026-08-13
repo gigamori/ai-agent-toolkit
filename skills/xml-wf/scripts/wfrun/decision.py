@@ -62,6 +62,21 @@ B_REASON_OPTION_NOT_RECOMMENDED = "option-not-recommended"
 # omitting the line -- too common a slip to be worth failing a run over, and
 # the fork itself was perfectly well posed every time (§1, §6).
 B_REASON_NO_OUTPUT = "no-output"
+# The step declares `output-type="value"`, so form (a) would take the payload's
+# `output:` as the step's value without re-running anything. Measured
+# 2026-08-13: of 28 payloads that could otherwise have reached (a), NONE
+# carried a bare value there -- 23 were prose that invalidated itself ("the
+# figure is undecided"), 4 prose with a number in it, 1 a path. Adopting that
+# is not continuation, it is continuation with a value nobody chose.
+#
+# This is the symmetry of B_REASON_OPTION_NOT_RECOMMENDED rather than a new
+# principle: that one covers a ruling that disagreed with the recommendation,
+# this one covers the case where the ruling AGREED and the value still is not
+# the ruling's. Together they close (a) to the one region where a ruling and
+# the standing deliverable cannot disagree -- `output-type="file"`, ruling ==
+# recommendation, expect-file present -- which is what makes "the human's
+# ruling governs" structurally true instead of merely intended (§18.2).
+B_REASON_VALUE_OUTPUT = "value-output"
 
 B_REASONS = (
     B_REASON_NO_EXPECT_FILE,
@@ -72,6 +87,7 @@ B_REASONS = (
     B_REASON_UNLISTED_OPTION,
     B_REASON_OPTION_NOT_RECOMMENDED,
     B_REASON_NO_OUTPUT,
+    B_REASON_VALUE_OUTPUT,
 )
 
 _KEY_LINE_RE = re.compile(
@@ -127,6 +143,39 @@ def claim_decision_body(body: str) -> tuple[str | None, str]:
         if not errors:
             return candidate, "\n".join(lines[:index])
     return None, ""
+
+
+def looks_like_completion_report(body: str) -> bool:
+    """True when a malformed payload has the shape of a completion report that
+    was wrapped in the fork channel rather than a fork that lost fields.
+
+    The shape, measured 2026-08-13 across 7 of 45 unambiguous steps (15.6%):
+    `work-state:` present, and NONE of `fork:` / `options:` / `recommendation:`
+    -- a step announcing that it finished, using the vocabulary that exists to
+    announce that it cannot. The `DECISION:` lines carried literals like
+    `none`, `N/A -- task unambiguous`, `File written as instructed`.
+
+    Diagnosis only. Nothing downstream branches on this: a malformed payload
+    stays malformed, keeps error_class `decision`, and still fails the run
+    (§1, §15.4-1). What it buys is a message that names the mistake instead of
+    counting missing fields, and a marker on the decision event so the rate can
+    be recounted from a run's log afterwards (§18.3, B-3).
+
+    Deliberately NOT a rescue: reading such a payload as success would remove
+    the fail-closed guarantee for exactly the case where a step's own account
+    of itself is known to be unreliable.
+    """
+    fork_keys, has_work_state = set(), False
+    for line in body.splitlines():
+        match = _KEY_LINE_RE.match(line)
+        if not match:
+            continue
+        key = match.group(1)
+        if key in ("fork", "options", "recommendation"):
+            fork_keys.add(key)
+        elif key == "work-state":
+            has_work_state = True
+    return has_work_state and not fork_keys
 
 
 def stray_protocol_lines(body: str) -> list[tuple[int, str]]:

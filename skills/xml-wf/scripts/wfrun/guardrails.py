@@ -1,17 +1,27 @@
 """Static text appended to every step prompt.
 
 This is the only surviving descendant of the v1 defensive-prompt apparatus:
-four rules aimed at the step agent (the orchestrator is Python and needs no
+five rules aimed at the step agent (the orchestrator is Python and needs no
 persuasion).
 
-Rule 4 (the `DECISION:` channel) is injected on every step rather than opted
+Rule 4 exists because rule 5 was the only response template in the prompt.
+Measured 2026-08-13: 7 of 45 unambiguous steps (15.6%) wrapped a plain
+completion report in the `DECISION:` channel -- `work-state:` and `output:`
+with no fork named, the marker line reading `none` or `N/A -- task
+unambiguous`. The rate did not move when the interpolated value was made
+ordinary, so the trigger was not a strange input; what the prompt lacked was
+any shape for the normal ending. Rule 4 supplies one in a single line and
+deliberately does NOT template it -- a long skeleton is what §12 twice
+measured being transcribed verbatim (xml-wf-decision-request.md §18.3, B-1).
+
+Rule 5 (the `DECISION:` channel) is injected on every step rather than opted
 into per step, because the whole point is that forks are not foreseeable --
 an attribute declaring "this step may need a ruling" could only ever be set
 where someone already predicted the fork (xml-wf-decision-request.md §12).
 Its firing barriers are inline for the same reason the fields are: a rule
 that has to be recalled from elsewhere is a rule that decays.
 
-Rule 4's `output:` requirement is stated in the positive ("when work-state is
+Rule 5's `output:` requirement is stated in the positive ("when work-state is
 complete the output line is REQUIRED"). The first wording said only "leave the
 output line out entirely unless work-state is complete" -- a permission to omit,
 with the requirement left implicit in the template line above it -- and a sonnet
@@ -23,7 +33,7 @@ longer depends on getting it: a payload that omits it degrades to a (b) re-run
 under B_REASON_NO_OUTPUT instead of failing the run
 (xml-wf-decision-request.md §1, §6, §12).
 
-Rule 4 deliberately avoids the word "reply" and pivots on "final response":
+Rule 5 deliberately avoids the word "reply" and pivots on "final response":
 each execution layer defines where the final response goes (run-cc: the
 response itself; run-llm layer B: stepio.RESULT_PROTOCOL's result FILE, with
 the reply channel carrying only a one-line OK/ERROR). An earlier wording said
@@ -41,7 +51,9 @@ response and stop. Recovery belongs to the orchestrator.
 2. Do not write to any file that the task does not explicitly name.
 3. Do not substitute, abbreviate, or summarize the deliverable. Produce exactly \
 the artifacts at exactly the paths the task specifies.
-4. If you reach a fork you may not settle alone -- two defensible readings, or \
+4. When the task is done and nothing was ambiguous, just report what you did \
+in plain text -- no marker, no template.
+5. If you reach a fork you may not settle alone -- two defensible readings, or \
 the task simply silent -- do NOT quietly pick one. Fire only when you cannot \
 proceed without a ruling: following a recommendation already recorded upstream \
 is not a fork, and a blocking error is rule 1, not this. Make exactly these \
@@ -54,7 +66,7 @@ options:
   2. <option> -- <the cost of choosing it wrongly>
 recommendation: <option number>
 work-state: <complete|stopped>
-output: <the value that becomes this step's output>
+output: <the path of the deliverable you already wrote>
 Replace each <...> with the value alone and never copy these explanations into \
 it. Give two or more options, numbered from 1. recommendation takes an option \
 number or the bare word none. work-state takes exactly one bare word: complete \
