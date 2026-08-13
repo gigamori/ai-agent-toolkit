@@ -217,6 +217,48 @@ class CliResult:
     raw: dict | None = field(default=None, repr=False)
 
 
+_DENIED_COMMAND_LIMIT = 200
+
+
+def _denied_command_fragment(denials: list) -> str:
+    """The first denial's own command text, truncated, for the error string.
+
+    `tool_name` alone cannot distinguish the two ways a step gets denied, and
+    that ambiguity has cost real measurement time: an eval logged ten `denied`
+    samples as "sonnet reached for Bash outside the tools grant" and stayed
+    stuck there, because widening `tools=` did not stop them. Measured
+    2026-08-12: a command containing `${VAR:-}` is refused by the permission
+    classifier even when the tool IS granted, since the expansion cannot be
+    matched against an allow prefix. Reaching for an ungranted tool and
+    sending an unmatchable command look identical through `tool_name`; the
+    command text tells them apart, and the payload already carries it
+    (`permission_denials[].tool_input.command`) -- it was simply discarded.
+
+    First denial only, truncated to 200 chars: the full record is kept
+    untruncated in the run dir (executor writes `res.raw` per attempt), so
+    this string is for the report/console surface and for eval sample files,
+    which keep no raw. `description` is the fallback because a denial without
+    a command still names what it tried.
+
+    Degrades silently to "" on any shape that is not a dict carrying text --
+    a diagnostic must never be the thing that raises.
+    """
+    for denial in denials:
+        if not isinstance(denial, dict):
+            continue
+        tool_input = denial.get("tool_input")
+        if not isinstance(tool_input, dict):
+            continue
+        for key in ("command", "description"):
+            text = tool_input.get(key)
+            if isinstance(text, str) and text.strip():
+                text = " ".join(text.split())
+                if len(text) > _DENIED_COMMAND_LIMIT:
+                    text = text[:_DENIED_COMMAND_LIMIT] + "..."
+                return f"; first denial: {text}"
+    return ""
+
+
 def classify_result(returncode: int, stdout: str, stderr: str, *,
                     schema: str | None = None) -> CliResult:
     """Turn a completed claude -p invocation's (returncode, stdout, stderr)
@@ -268,7 +310,8 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
         tools = sorted({d.get("tool_name") for d in denials
                         if isinstance(d, dict) and d.get("tool_name")})
         result.error = ("claude reported permission_denials"
-                        + (f" for: {', '.join(tools)}" if tools else ""))
+                        + (f" for: {', '.join(tools)}" if tools else "")
+                        + _denied_command_fragment(denials))
         return result
 
     # _common.md (mode injection) mandates a leading [Mode: x] line; it must

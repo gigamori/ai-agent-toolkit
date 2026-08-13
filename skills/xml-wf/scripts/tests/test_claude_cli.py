@@ -397,6 +397,88 @@ class ClassifyResultTests(unittest.TestCase):
         res = claude_cli.classify_result(0, stdout, "")
         self.assertEqual(res.error_class, "denied")
 
+    def test_denied_carries_the_command_that_was_refused(self):
+        """`tool_name` alone cannot tell "reached for an ungranted tool" from
+        "sent a command no allow prefix could match" -- the distinction an
+        eval spent three runs failing to make. The payload has the command;
+        the error string now shows it (truncated)."""
+        stdout = json.dumps({
+            "result": "x", "is_error": False,
+            "permission_denials": [{
+                "tool_name": "Bash", "tool_use_id": "t1",
+                "tool_input": {"command": 'echo "harness-probe:[${VAR:-}]"',
+                               "description": "probe"},
+            }],
+        })
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertEqual(res.error_class, "denied")
+        self.assertIn("Bash", res.error)
+        self.assertIn("${VAR:-}", res.error)
+
+    def test_denied_command_is_truncated_and_single_line(self):
+        long_command = "echo " + "x" * 500
+        stdout = json.dumps({
+            "result": "x", "is_error": False,
+            "permission_denials": [{
+                "tool_name": "Bash",
+                "tool_input": {"command": long_command + "\nsecond line"},
+            }],
+        })
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertIn("...", res.error)
+        self.assertNotIn("\n", res.error)
+        # the fragment itself stays within the cap (the prefix is extra)
+        fragment = res.error.split("first denial: ", 1)[1]
+        self.assertLessEqual(len(fragment.rstrip(".")),
+                             claude_cli._DENIED_COMMAND_LIMIT)
+
+    def test_denied_degrades_when_tool_input_is_absent_or_odd(self):
+        """A diagnostic must never be the thing that raises: every shape below
+        falls back to the pre-existing tool_name-only message."""
+        for label, denials in (
+            ("no tool_input", [{"tool_name": "Bash"}]),
+            ("tool_input not a dict", [{"tool_name": "Bash",
+                                        "tool_input": "echo hi"}]),
+            ("empty tool_input", [{"tool_name": "Bash", "tool_input": {}}]),
+            ("blank command", [{"tool_name": "Bash",
+                                "tool_input": {"command": "   "}}]),
+            ("non-string command", [{"tool_name": "Bash",
+                                     "tool_input": {"command": 42}}]),
+            ("denial not a dict", ["Bash"]),
+        ):
+            with self.subTest(label):
+                stdout = json.dumps({"result": "x", "is_error": False,
+                                     "permission_denials": denials})
+                res = claude_cli.classify_result(0, stdout, "")
+                self.assertEqual(res.error_class, "denied")
+                self.assertNotIn("first denial:", res.error)
+
+    def test_denied_falls_back_to_description(self):
+        stdout = json.dumps({
+            "result": "x", "is_error": False,
+            "permission_denials": [{
+                "tool_name": "Write",
+                "tool_input": {"description": "write the report file"},
+            }],
+        })
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertIn("write the report file", res.error)
+
+    def test_denied_reports_only_the_first_denial(self):
+        stdout = json.dumps({
+            "result": "x", "is_error": False,
+            "permission_denials": [
+                {"tool_name": "Bash", "tool_input": {"command": "FIRST-CMD"}},
+                {"tool_name": "Write", "tool_input": {"command": "SECOND-CMD"}},
+            ],
+        })
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertIn("FIRST-CMD", res.error)
+        self.assertNotIn("SECOND-CMD", res.error)
+        # every denied tool is still named, so the set is not lost
+        self.assertIn("Bash", res.error)
+        self.assertIn("Write", res.error)
+
     def test_success_path(self):
         stdout = json.dumps({"result": "4", "is_error": False})
         res = claude_cli.classify_result(0, stdout, "")
