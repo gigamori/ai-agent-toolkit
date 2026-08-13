@@ -68,6 +68,24 @@ Design principles (follow "Workflow authoring guidelines" in spec.md):
   never write any other model string (the validator warns
   `model-not-canonical`). State the reason in the plan table's model column;
   the user approves the tier judgments together with the plan
+- **Decision requests (`DECISION:`) need no authoring** — the protocol is
+  injected into every step, because forks are not foreseeable (an attribute
+  saying "this step may fork" could only be set where someone already
+  predicted the fork). What IS the builder's call:
+  - **`decider=`** (workflow or per-step): default `human` stops the run at a
+    fork for a `resume --answer`; `llm` lets an adjudicator (`decider-model=`,
+    default `opus`) settle it unattended — capped at 2 rulings per step visit,
+    with irreversible / outward-facing / goal-changing forks escalated to a
+    human regardless. Declare `llm` only where unattended operation is worth
+    a ruling made under the same contract the work was produced under
+  - **Give heavy fork-prone steps an `expect-file`**: an answered fork skips
+    the re-run (form (a)) only when the step's deliverable is verifiable —
+    declared in `expect-file` and present. Without it, every ruling re-runs
+    the whole step
+  - The firing conditions are in the injected text, not the task: following a
+    recommendation already recorded upstream is not a fork, a blocking error
+    is `ERROR:`, and the request fires only when the step cannot proceed
+    without a ruling. Task text never needs to (and should not) restate this
 - **Do not put a fork-prone step on `haiku`**: raising a `DECISION:` request
   (spec.md § Execution semantics) means noticing the task is under-specified,
   which is a harder act than noticing an error. Measured 2026-08-12 with

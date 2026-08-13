@@ -159,7 +159,8 @@ file path.</task>
 ### Elements
 
 - **`<workflow>`** (root) — `name`, `version="2"`, `max` (cap on total step
-  executions; runaway protection) are required; `budget-usd` optional.
+  executions; runaway protection) are required; `budget-usd`, `decider`,
+  `decider-model` optional.
 - **`<param>`** — run-time arguments injected via `wfrun run wf.xml -p key=value`
   (`name` required; `required`, `default` optional).
 - **`<rules id="…">`** — a prompt fragment injected only into steps whose
@@ -167,7 +168,8 @@ file path.</task>
 - **`<step>`** — one task run by one agent. `<task>` (required) holds the
   instruction; `<role>` may hold an inline role. Attributes: `id`, `role`,
   `mode`, `model`, `effort`, `output`, `output-type`, `schema`, `rules`,
-  `tools`, `expect-file`, `retry`, `timeout`, `on-error`.
+  `tools`, `expect-file`, `retry`, `decider`, `decider-model`, `timeout`,
+  `on-error`.
 - **`<replan>`** — defers part of the plan to run time: a builder agent returns a
   continuation workflow that `wfrun` validates and runs inline (one level deep).
 - **`<set>`** — assign a variable by interpolation (`value=`) or safe expression
@@ -307,8 +309,9 @@ inside the run dir before resuming — do not change already-succeeded definitio
 ## Error handling
 
 Detection priority: non-zero exit / `is_error` → timeout → response body starts
-with `ERROR:` → first line starts with `[BLOCKED:` (mode/rules refusal) →
-`schema` given but no structured output → an `expect-file` path is missing.
+with `ERROR:` → first line starts with `[BLOCKED:` (mode/rules refusal) → the
+body carries a `DECISION:` request (not an error — see below) → `schema` given
+but no structured output → an `expect-file` path is missing.
 
 Handling: deterministic **`retry`** (identical prompt) → then `on-error`:
 `fail` (stop; resume is the recovery path), `ignore` (record and continue), or
@@ -318,6 +321,16 @@ fix_instruction?}`; RETRY re-runs exactly once with the fix appended).
 Give every file-producing step an `expect-file=`: the `ERROR:`/`[BLOCKED:`
 protocols catch only *compliant* refusals, while `expect-file` verifies the
 deliverable itself.
+
+**Decision requests.** A step that hits a genuinely ambiguous fork raises
+`DECISION:` (options, recommendation, work state) instead of guessing. Under
+the default `decider="human"` the run stops (`awaiting-decision`, exit 4) and
+`wfrun resume <dir> --answer <step>=<file>` continues it; with
+`decider="llm"` an adjudicator model (`decider-model`, default `opus`)
+settles the fork in-process — capped at 2 rulings per step visit, with
+irreversible / outward-facing / goal-changing forks escalated to a human.
+Works on both backends (schema-forced ruling on claude, text ruling on pi).
+See `references/spec.md`, "Decision requests".
 
 ---
 

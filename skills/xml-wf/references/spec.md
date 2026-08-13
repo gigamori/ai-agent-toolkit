@@ -57,7 +57,9 @@ file shows.
 | `name` | ✔ | Workflow name (used in the run dir name) |
 | `version` | ✔ | Fixed `"2"` |
 | `max` | ✔ | Cap on total step executions (including loops, branches, and post-retry re-runs). Runaway protection |
-| `budget-usd` | - | Cumulative cost ceiling (USD). When exceeded, execution stops before the next step starts |
+| `budget-usd` | - | Cumulative cost ceiling (USD). When exceeded, execution stops before the next step starts. Adjudication calls under `decider="llm"` count toward it |
+| `decider` | - | Who settles a `DECISION:` request a step raises (see "Decision requests"). Default `human`: the run stops and a person answers via `resume --answer`. `llm`: an adjudicator model settles it in-process and the run continues — capped at 2 rulings per step visit, and escalated forks still stop for a human. A step-level `decider=` overrides this |
+| `decider-model` | - | Model for the `llm` adjudicator (default `opus`; a canonical class, or any name the runner's model table accepts). Step attribute > workflow attribute > default |
 
 ### `<param>` (direct child of workflow)
 
@@ -99,6 +101,8 @@ instruction body; `<role>` (see below) may hold an inline role definition.
 | `tools` | - | role frontmatter | Forwarded to `--allowedTools` (e.g. `"Read,Write"`; step attribute wins). Names are Claude Code's; run-pi translates them to pi's (`Glob` → `find`, the rest lowercased) and **stops the step** on a name it cannot map (`MultiEdit`, `NotebookEdit`, `Task`, `Agent`, typos) rather than dropping it silently |
 | `expect-file` | - | - | Comma-separated paths (`{var}`-interpolated; relative to the XML dir) that must exist after the step. Missing = step failure (retry / on-error apply). The deterministic deliverable check — a compliant-looking response without the artifact is caught |
 | `retry` | - | `0` | Deterministic retry count (re-run with the identical prompt) |
+| `decider` | - | workflow attr | Per-step override of the workflow's `decider=` (see the root table and "Decision requests") |
+| `decider-model` | - | workflow attr | Per-step override of the adjudicator model. The adjudication call also uses this step's `timeout` |
 | `timeout` | - | `600` | Seconds. Process is killed on overrun → error |
 | `on-error` | - | `fail` | `fail` (stop immediately) / `ignore` (record and continue) / `debug` (debug-role diagnosis). **`debug` is run-cc only** — it is built on the claude CLI's structured output and Claude Code's config tree, so the pi backend refuses such a workflow at startup (`references/run-pi.md`, "Replacing `on-error=\"debug\"`") |
 
@@ -391,17 +395,26 @@ string-matching `error`.
 4. Response body starts with `ERROR:` (guardrail protocol) → `guardrail`
 5. Response body's first line starts with `[BLOCKED:` (mode/rules refusal —
    the line is recorded as the error reason) → `refusal`
-6. Response body is empty (after stripping the `[Mode: x]` line) and no
+6. Response body opens with `DECISION:` — **or** contains, below preamble
+   prose, a line-anchored `DECISION:` line whose tail parses as a complete
+   5-field payload (a measured model behaviour; a mere mention never
+   matches) → `decision`. **Not a failure**: a well-formed request stops
+   the run for adjudication instead of entering retry/on-error (see
+   "Decision requests" below); only a malformed payload fails the run
+7. Response body is empty (after stripping the `[Mode: x]` line) and no
    structured output came back → `behavioral`
-7. `schema` was given but no structured output came back → `behavioral`
-8. A path named in `expect-file` does not exist after the response
+8. `schema` was given but no structured output came back → `behavioral`
+9. A path named in `expect-file` does not exist after the response
    (checked by the executor, not `classify_result()`) → `behavioral`
 
-Items 4–5 are single-token-prefix protocols and catch only *compliant*
-refusals (an agent that narrates before the marker, or half-works then
-apologizes, classifies as success). They are likelihood levers, not gates —
-the deterministic layer is items 7–8 plus downstream `test=` checks; give
-every file-producing step an `expect-file`.
+Items 4–6 are token-prefix protocols and catch only *compliant* reports (an
+agent that narrates before the marker, or half-works then apologizes,
+classifies as success — with the one payload-parse exception item 6 states).
+They are likelihood levers, not gates — the deterministic layer is items 8–9
+plus downstream `test=` checks; give every file-producing step an
+`expect-file`. A *successful* response that carries a stray line-anchored
+`ERROR:`/`[BLOCKED:`/`DECISION:` token is reported as a run warning rather
+than silently passing.
 
 ### Error handling (modernized ADP)
 
@@ -449,16 +462,66 @@ misclassified as fixable, spawned dozens of child sessions per minute).
 4. `ignore`: record the failure and continue (the output variable stays
    unset; do not overuse)
 
+### Decision requests (`DECISION:`)
+
+A step that reaches a fork it may not settle alone — two defensible readings,
+or the task simply silent — must not quietly pick one. Every step prompt
+carries a protocol (guardrail rule 4) for declaring it:
+
+```
+DECISION: <one-line summary of the fork>
+fork: <what is ambiguous>
+options:
+  1. <option> -- <the cost of choosing it wrongly>
+  2. <option> -- <the cost of choosing it wrongly>
+recommendation: <option number | none>
+work-state: <complete|stopped>
+output: <the value that becomes this step's output>   (complete only)
+```
+
+A well-formed request is **not an error** — it never enters retry, `on-error`,
+or debug. What happens next is the `decider=` attribute's call:
+
+- **`human` (default)**: the run stops (`awaiting-decision`, exit 4) and the
+  report prints the request path, its numbered options, and the exact
+  `wfrun resume <dir> --answer <step>=<file>` command. The answer file's first
+  line is `option: <N|none>`; the rest is free text (required with `none`).
+- **`llm`**: an adjudicator model (`decider-model`, resolved per backend) is
+  called in-process and the run continues on its ruling — no stop. Bounds:
+  at most **2 llm rulings per step visit** (the third stops for a human, and
+  human answers never consume the cap); forks that are irreversible,
+  outward-facing, or change the workflow's goal are **escalated** to a human
+  rather than settled (the run stops, the answer path stays empty, and the
+  reason is recorded); any unusable ruling likewise falls back to a human.
+  Adjudication cost joins `cost_usd` / `budget-usd`. On run-cc the ruling is
+  schema-forced; on run-pi the adjudicator writes the answer format itself —
+  either way one shared parser validates it, exactly as it validates a
+  human's file.
+
+How an answered fork continues: if the step declared its deliverable already
+written (`work-state: complete` with an `output:` value, `expect-file`
+verified, and the answer picked the recommended option), the value is adopted
+**without re-running the step** — form (a). Anything else re-runs the step
+once with every settled ruling of that visit injected into its prompt — form
+(b) — and the report says why (`b_reason`). A malformed payload is the one
+genuine failure: the run stops FAILED with the payload path for a human to
+read, and no retry or debug fires.
+
+Procedures live per backend: `run-cc.md` ("On decision"), `run-pi.md`
+(`decider="llm"` works here), `run-llm.md` ("On decision" — the orchestrator
+delegates the ruling and never reads the request).
+
 ### Run dir and resume
 
 ```
 runs/<name>_<YYYYMMDD-HHMMSS>/
 ├── workflow.xml        # snapshot taken at run time (resume reads this)
 ├── params.json
-├── state.json          # {status, vars, step_count, cost_usd, error}
-├── events.jsonl        # append-only execution log (step/cond/test/set/debug/replan/run)
+├── state.json          # {status, vars, step_count, cost_usd, error}; status adds awaiting-decision
+├── events.jsonl        # append-only log (step/cond/test/set/debug/replan/run/decision/answer)
 ├── outputs/<id>.md     # response bodies for output-type=file
 ├── replans/<id>_<nn>.xml  # validated replan continuations
+├── decisions/          # DECISION: ledger: <id>_cNN_dNN_request.md + _answer.md
 └── steps/<id>_<attempt n>/
     ├── system.md       # system-channel part (role/mode/rules) actually sent
     ├── prompt.md       # user-channel part (task/protocol/guardrails)

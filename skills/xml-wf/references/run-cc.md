@@ -49,6 +49,36 @@ On success, report:
   regeneration attempts — see events.jsonl; generated continuations are saved
   under `runs/<ts>/replans/`)
 
+## On decision (exit 4, `state.json` status `awaiting-decision`)
+
+A step raised a `DECISION:` request — a fork it may not settle alone
+(`references/spec.md`, "Decision requests"). **This is not a failure**: nothing
+went wrong, the run stopped to ask.
+
+Under the default `decider="human"`, the run's own stdout is the interface: it
+prints each request's payload path, its numbered options, the answer-file path
+and the exact resume command. Relay that to the user; when they have written
+the ruling (first line `option: <N|none>`, then free text — or told you what
+to write, in which case write exactly that):
+
+```bash
+$WFRUN resume runs/<ts>/ --answer <step_id>=<answer file>
+```
+
+The run continues from the recorded state — either adopting the payload's own
+output without re-running the step (form (a)) or re-running it once with the
+ruling injected (form (b)); the report says which and why. A bare `resume`
+without `--answer` just re-prints the pending requests, free of charge. An
+already-answered request is never re-answerable.
+
+Under `decider="llm"` there is normally nothing to do — an adjudicator settles
+the fork in-process and the run continues. It still stops (exit 4) when the
+adjudicator escalates (irreversible / outward-facing / goal-changing forks, or
+whenever it is unsure), when its ruling is unusable, or when the per-visit cap
+(2 llm rulings) is spent — in every such case answer it as above; the human
+path is always open. Adjudication cost appears in `cost_usd` and counts
+against `budget-usd`.
+
 ## On failure / resume (resume mode enters here)
 
 1. Present `error` from `state.json` and the failing step's

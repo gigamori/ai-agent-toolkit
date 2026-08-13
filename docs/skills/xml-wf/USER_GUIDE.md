@@ -150,7 +150,31 @@ The agent will not repeatedly re-run the same failure without your say-so.
 
 ---
 
-## 8. Interactive mode (optional)
+## 8. When a step asks for a decision
+
+Sometimes nothing fails, but a step hits a genuine fork — the task allows two
+defensible readings and picking one silently could poison everything
+downstream. Instead of guessing, the step raises a **decision request** and
+the run stops in a safe state (`awaiting-decision`).
+
+You will see: what is ambiguous, the numbered options with the cost of getting
+each one wrong, the step's own recommendation, and where to write your answer.
+Answering takes one line — `option: 2` (or `option: none` followed by what to
+do instead) — and the run resumes. If the step had already finished its
+deliverable and you accepted its recommendation, nothing re-runs; otherwise
+the step runs once more, with your ruling in front of it.
+
+If you would rather not be interrupted, declare `decider="llm"` on the
+workflow (or a single step): a separate adjudicator model settles such forks
+on the spot and the run keeps going. Guard rails apply — at most two rulings
+per step, and anything irreversible, outward-facing (leaving your machine), or
+goal-changing is escalated back to you no matter what. Escalations and any
+ruling the validator rejects simply stop the run the normal way, so the worst
+case is always "it waited for you", never "it decided badly in silence".
+
+---
+
+## 9. Interactive mode (optional)
 
 If you want to supervise each step — approve it, watch it, or step in — ask to
 run **interactively**. The agent then runs one step at a time and reports each as
@@ -164,7 +188,7 @@ specifically want a human in the loop; otherwise normal **Run** is the default.
 
 ---
 
-## 9. Reading the results
+## 10. Reading the results
 
 Every run creates a folder under `runs/`, named with the workflow name and a
 timestamp. The pieces you'll care about:
@@ -182,7 +206,7 @@ they're always there for inspection.
 
 ---
 
-## 10. Troubleshooting & FAQ
+## 11. Troubleshooting & FAQ
 
 **"It says a role is missing."** A step referenced a named role (an AI persona
 defined in a `.claude/agents/` file) that doesn't exist in your project. Either
@@ -221,6 +245,9 @@ each run.
 - **Run directory** — the timestamped folder under `runs/` holding everything
   about one execution.
 - **Resume** — continuing a failed run from where it stopped.
+- **Decision request** — a step's way of saying "this is genuinely ambiguous
+  and I won't guess"; the run stops for an answer (or an adjudicator model
+  settles it, if you opted in with `decider="llm"`).
 - **Validate** — the static check that a workflow is well-formed before running.
 
 ---
@@ -328,6 +355,8 @@ optional — at most one form (either a `role=` attribute **or** an inline
 | `tools` | no | role's setting | Which tools the agent may use, e.g. `"Read,Write"` |
 | `expect-file` | no | — | Comma-separated file paths (with `{var}`) that must exist after the step; missing = failure |
 | `retry` | no | `0` | Times to re-run the identical prompt on failure |
+| `decider` | no | `human` | Who settles a decision request this step raises (see §8): `human` stops the run for your answer, `llm` lets an adjudicator model settle it on the spot. Also valid on `<workflow>` for the whole run |
+| `decider-model` | no | `opus` | The adjudicator's model when `decider="llm"` |
 | `timeout` | no | `600` | Seconds before the step is killed as a failure |
 | `on-error` | no | `fail` | `fail` (stop), `ignore` (record and continue), or `debug` (let the debug role diagnose). `debug` is **claude CLI only** — on pi the whole workflow is refused at startup (see §2) |
 

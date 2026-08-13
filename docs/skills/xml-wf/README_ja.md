@@ -155,7 +155,7 @@ file path.</task>
 ### 要素
 
 - **`<workflow>`**（ルート）— `name`・`version="2"`・`max`（総ステップ実行回数の
-  上限。暴走防止）が必須、`budget-usd` は任意。
+  上限。暴走防止）が必須、`budget-usd`・`decider`・`decider-model` は任意。
 - **`<param>`** — `wfrun run wf.xml -p key=value` で注入される実行時引数
   （`name` 必須、`required`・`default` は任意）。
 - **`<rules id="…">`** — `rules=` 属性で参照したステップにのみ注入される
@@ -163,7 +163,7 @@ file path.</task>
 - **`<step>`** — 1 エージェントが実行する 1 タスク。`<task>`（必須）が指示本体、
   `<role>` はインラインロールを保持可能。属性: `id`・`role`・`mode`・`model`・
   `effort`・`output`・`output-type`・`schema`・`rules`・`tools`・`expect-file`・
-  `retry`・`timeout`・`on-error`。
+  `retry`・`decider`・`decider-model`・`timeout`・`on-error`。
 - **`<replan>`** — プランの一部を実行時に委ねる。builder エージェントが継続
   ワークフローを返し、`wfrun` が検証してインラインで実行する（ネスト 1 段まで）。
 - **`<set>`** — 変数を補間（`value=`）または安全な式評価（`expr=`）で代入。
@@ -293,8 +293,9 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 ## エラーハンドリング
 
 検出優先度: 非ゼロ終了 / `is_error` → タイムアウト → 応答本文が `ERROR:` で始まる
-→ 先頭行が `[BLOCKED:` で始まる（mode/rules 拒否）→ `schema` を与えたのに構造化
-出力が返らない → `expect-file` のパスが存在しない。
+→ 先頭行が `[BLOCKED:` で始まる（mode/rules 拒否）→ 本文が `DECISION:` 要求を
+運んでいる（エラーではない — 後述）→ `schema` を与えたのに構造化出力が返らない
+→ `expect-file` のパスが存在しない。
 
 処理: 決定論的 **`retry`**（同一プロンプトで再実行）→ その後 `on-error`:
 `fail`（停止。回復経路は resume）、`ignore`（記録して継続）、`debug`（debug ロール
@@ -304,6 +305,15 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 ファイルを生成するステップには必ず `expect-file=` を与えてください。
 `ERROR:`/`[BLOCKED:` プロトコルは *素直な* 拒否しか捕捉しませんが、`expect-file`
 は成果物そのものを検証します。
+
+**判断要求（decision request）。** 本当に曖昧なフォークに当たったステップは、
+推測する代わりに `DECISION:`（選択肢・推奨・作業状態）を発行します。既定の
+`decider="human"` では run が停止し（`awaiting-decision`、exit 4）、
+`wfrun resume <dir> --answer <step>=<file>` で継続します。`decider="llm"` なら
+裁定モデル（`decider-model`、既定 `opus`）がその場でフォークを解決します——
+1 ステップ訪問につき裁定は最大 2 回、不可逆・外向き・目的変更のフォークは human へ
+エスカレーションされます。両 backend で動きます（claude では schema 強制の裁定、
+pi ではテキスト裁定）。`references/spec.md` の "Decision requests" を参照。
 
 ---
 

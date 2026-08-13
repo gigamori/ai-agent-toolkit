@@ -17,9 +17,17 @@ Because Pi loads this skill via a symlink into `~/.pi/agent/skills/` (not a copy
 
 ## Relationship to mode-orchestrator
 
-xml-wf and `skills/mode-orchestrator/` are separate products that independently reimplement the same idea — running an isolated, mode-tagged turn per step — over different substrates (xml-wf: `wfrun`'s deterministic Python control flow over `<step>` elements; mode-orchestrator: one subagent call per todolist step). Neither is canonical for the other; there is no shared file and no propagation obligation between them.
+xml-wf and `skills/mode-orchestrator/` are separate products that independently reimplement the same idea — running an isolated, mode-tagged turn per step — over different substrates (xml-wf: `wfrun`'s deterministic Python control flow over `<step>` elements; mode-orchestrator: one subagent call per todolist step). Neither is canonical for the other; there is no shared file, and — with the one exception below — no propagation obligation between them.
 
 When a change here alters step-execution semantics in a way that looks generally useful (e.g. how a stale completion signal is discarded, how the harness/model resolution works, retry/escalation policy), consider whether `skills/mode-orchestrator/` would benefit from the same idea and note it for its maintainer — a suggestion to evaluate, not an obligation to port.
+
+## Decision contract (aligned with mode-orchestrator — the one propagation obligation)
+
+The demand-driven decision channel (`DECISION:` requests, `references/spec.md` "Decision requests") shares a **deliberately aligned user-facing contract** with mode-orchestrator's decision loop: the decider vocabulary (`human`/`llm`, default `human`), the cap semantics (llm rulings only — human answers never consume it), and the escalation grounds (irreversible / outward-facing / goal-changing → human). The alignment exists because users move between the two skills, and defaults that disagree tax every unattended run's post-mortem.
+
+The implementations are independent (xml-wf enforces the contract in `wfrun` code; mode-orchestrator enforces it as prompt contract in `SKILL.md`) and some divergences are **deliberate** — e.g. xml-wf's run-llm orchestrator never reads a request body while mode-orchestrator permits a scoped read of its `## Decision request` section; xml-wf has continuation forms (a)/(b), mode-orchestrator has amend-plan. Do not "fix" those toward each other.
+
+When editing either side's decider vocabulary, defaults, cap semantics, or escalation grounds, the `generate-sibling-handoff` registry (`references/families.md`, **decision-contract** family) owns the propagation trigger and the consumer list — consult it before landing the change, and do not duplicate its content here. Precedent: the cap-scope alignment landed as P3 (`9168a52`).
 
 ## Mode prompt fragments
 
