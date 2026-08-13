@@ -303,6 +303,7 @@ _projects/
       procedures/             人間向け手順書
       backlog/                候補・アイデア
       _archive/               役目終了
+    llm-handoff/              LLM 間 handoff メモ（flat・index なし・一時的）
     _archive/                 プロジェクトレベル archive
     plans/                    plan コピー（自動・履歴保管）
     memory/                   memory コピー（自動・履歴保管）

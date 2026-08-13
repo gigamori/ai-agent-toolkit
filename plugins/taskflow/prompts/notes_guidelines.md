@@ -92,5 +92,7 @@ When the user explicitly says "save this to notes" (or equivalent), skip the con
 
 - Do NOT save information that can be derived from code (function signatures, file paths). It decays as code evolves.
 - Do NOT save temporary memos that are only useful within a single session.
+- Do NOT save **LLM-to-LLM** handoffs here — a message written for another LLM session to consume (a cross-session hand-off, a sibling-repo request). They are transient memos, not durable notes. Write them to `_projects/<project>/llm-handoff/` instead — a flat directory, no index (neither `project-notes/index.md` nor one of its own), no status tracking, no progress.md linkage, freely deleted by hand, and never loaded into context unless referenced explicitly (`@llm-handoff/<filename>`). Nothing is distilled out of them before deletion.
+  - A handoff a **human** executes — an e2e / debug handoff whose tester is a person and whose filled-in result is a record worth keeping — is durable, and stays in `checks/`. The dividing line is who consumes it, not the word "handoff".
 - Do NOT add a `category:` field to frontmatter. The folder is the sole source of truth.
 - Do NOT exceed 100 characters in `Description` in `index.md`. Move detail to the note body.

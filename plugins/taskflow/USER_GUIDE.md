@@ -269,6 +269,12 @@ How to use it, in plain language:
 
 For investigation-style requests, Claude will *proactively offer* to save — you always approve first, and it only saves on a yes. Plain questions, debugging, and trivial edits don't trigger the offer.
 
+### What does *not* go into notes: LLM-to-LLM handoffs
+
+A handoff written for **another Claude session** to pick up — a cross-session brief, a sibling-repo request — is a transient memo, not durable knowledge. It goes to `_projects/<project>/llm-handoff/` instead: a flat directory with no index, no status folders, and no link to `progress.md`. Nothing there is loaded into Claude's context unless you point at it (`@llm-handoff/<filename>`), and you can delete files by hand whenever you like — nothing is distilled out of them first.
+
+A handoff **you** run — an E2E or debug handoff where you are the tester and the filled-in result is worth keeping — is the opposite: it is a durable record and stays in `project-notes/checks/`. What decides the destination is who consumes the document, not the word "handoff".
+
 ---
 
 ## 7. Seeing everything at once — `/kanban`

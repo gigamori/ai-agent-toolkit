@@ -8,7 +8,7 @@ GUIDELINES manifest — full guidelines were injected at session start and re-in
 - PROHIBIT: frontmatter / @table / @log / 2_done / progress.md-section bans
 - FORMAT: filenames, priority, @log entry form, ≤-limits
 - AUTHORITY: folder=status, H1=summary, table=cache
-- NOTES: 6 categories, autosave-confirm, no code-derivable
+- NOTES: 6 categories, autosave-confirm, no code-derivable, LLM→LLM handoff → llm-handoff/, human-executed e2e/debug handoff → checks/
 - AUTOSAVE: autosave-signal handling
 - TASK WRITE: body-replace / log-append / Next-Steps / status-moves
 ROUTER: [Progress Session] with non-empty current_project → invoke subagent taskflow:project-router (Agent tool) BEFORE answering; empty → do not invoke.

@@ -143,6 +143,7 @@ Separately from the handoff, generate one setup script that bundles the determin
 - Confirm the destination with the human before writing
 - Auto-suggest a slug candidate as `debug-handoff-<target-system>-<YYYY-MM-DD>.md`
 - Default destination is decided by exploring the workspace: if `_projects/` exists (ideally `_projects/*/project-notes/`), suggest `_projects/<project>/project-notes/checks/<slug>.md` as the default (`<project>` is the one clear from the conversation context if the target is clear, otherwise ask the user; do not re-implement project routing). If it does not exist, suggest a neutral destination slug. This is not a dependency on taskflow but an opportunistic default based on detecting a conventional directory
+- This handoff is a **durable** verification document — the tester is a human, and the filled-in result is a record worth keeping — so it belongs in `project-notes/checks/`, not in the transient `llm-handoff/` tree (which is for LLM-to-LLM messages)
 - Save the setup script in the same directory as the handoff, and after saving fill its absolute path into the Scenario 0 run command of the handoff
 - Do not create directories in the repository arbitrarily
 

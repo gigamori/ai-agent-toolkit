@@ -304,6 +304,7 @@ _projects/
       procedures/             step-by-step instructions
       backlog/                candidate items, ideas
       _archive/               exhausted
+    llm-handoff/              LLM-to-LLM handoff memos (flat, unindexed, transient)
     _archive/                 project-level archive
     plans/                    plan copies (auto-archived history)
     memory/                   memory copies (auto-archived history)

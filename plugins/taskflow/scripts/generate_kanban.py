@@ -1495,7 +1495,7 @@ def _postprocess_md_links(html: str, md_dir: Path, roots: list[Path]) -> str:
 
 
 PATH_TEXT_RE = re.compile(
-    r'(?:_projects/[\w-]+/)?(?:project-notes|handoff|tasks|plans)(?:/[\w.@-]+)+\.md'
+    r'(?:_projects/[\w-]+/)?(?:project-notes|llm-handoff|handoff|tasks|plans)(?:/[\w.@-]+)+\.md'
 )
 
 
