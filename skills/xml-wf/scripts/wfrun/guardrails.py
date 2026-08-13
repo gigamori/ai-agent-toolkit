@@ -137,6 +137,49 @@ DECIDE_SCHEMA = """\
 "enum":["option","none","escalate"]},"option":{"type":"integer"},\
 "text":{"type":"string"}},"required":["verdict","text"]}"""
 
+# The same adjudication, for an execution facility with no forced structured
+# output (the pi backend -- xml-wf-decision-request.md §17.1). The ruling is
+# written in the §13.3 answer format itself, so decision.parse_answer stays the
+# single validity gate for every decider: schema where one exists, this shape
+# where it does not.
+#
+# Three rules earn their place, all from measurement:
+# - the template block carries `<...>` placeholders only, with every condition
+#   after it, and states requirements in the positive: an explanation next to a
+#   value gets transcribed with the value, and a requirement phrased as
+#   permission-to-omit gets read as permission (§12, both measured).
+# - "final response" rather than "reply": each execution layer defines where a
+#   final response goes, and "reply" collided with a layer's own reply-channel
+#   contract once already (§12).
+# - nothing above the ruling and no quoting of the request. Prose above a
+#   protocol line is measured behaviour (§16's preamble claim exists because a
+#   step did it 3 times in 10), and here it would push the first line off the
+#   anchor that decides between `option:` and `escalate:`. Quoting is worse
+#   than untidy: the reply is classified before it reaches the adjudicator's
+#   own parsing, so a quoted request can make the whole response read as a
+#   fresh DECISION: request (§17.1).
+DECIDE_PROMPT_TEXT = """\
+## Decision request from step '{step_id}'
+
+{request}
+
+## Your ruling
+
+Make your final response exactly one of these two shapes and nothing else.
+
+To settle it:
+option: <the number of the option you choose, or the bare word none>
+<why -- one short paragraph>
+
+To decline it:
+escalate: <why the escalation clause applies>
+
+Choose the second shape when the escalation clause applies, and whenever you \
+are unsure. Use `option: none` only when no listed option is right: the step \
+re-runs on your text alone, so say what to do instead. Start your final \
+response with `option:` or `escalate:` -- write nothing above it, and do not \
+quote the request back."""
+
 ASK_SCHEMA = """\
 {"type":"object","properties":{"answer":{"type":"boolean"},"reason":{"type":"string"}},\
 "required":["answer","reason"]}"""

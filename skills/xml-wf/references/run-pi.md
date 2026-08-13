@@ -40,8 +40,8 @@ override flag on `resume` itself.
 
 ## What is not available here
 
-Three workflow features are **refused before any pi process starts**. None is
-degraded silently: the run stops at startup and names what declared it.
+Two workflow features are **refused before any pi process starts**. Neither is
+degraded silently: the run stops at startup and names the step.
 
 ### `schema=`
 
@@ -56,20 +56,45 @@ structured output and finds its debug role in Claude Code's own config tree.
 Left enabled it would fail every diagnosis while still looking like a working
 feature.
 
-### `decider="llm"`
+Both rejections point at build mode for a compatible rewrite — see the two
+sections below for what the rewrite looks like.
 
-Adjudication of a `DECISION:` request by an llm decider runs on the claude CLI
-with forced structured output, whichever backend executes the steps — the same
-two things pi cannot provide. A pi run that declared it would start a claude
-process partway through.
+## `decider="llm"` works here
 
-The rewrite needs no build mode: either use `decider="human"` (the default —
-the run stops at the fork and a person answers it with `wfrun resume
---answer`), or run the workflow with `--backend cc`. The `DECISION:` channel
-itself works normally under pi; only unattended adjudication does not.
+An llm decider settles a step's `DECISION:` fork in-process, so the run
+continues unattended, exactly as under `--backend cc`. The difference is only
+how the ruling is made machine-readable: the cc adjudicator is given a forced
+output schema, and this one — having no such facility — is asked to write the
+answer format itself:
 
-The first two rejections point at build mode for a compatible rewrite — see the
-two sections below for what the rewrite looks like.
+```
+option: <a number from the request's own list, or the bare word none>
+<why>
+```
+
+or, to decline the fork:
+
+```
+escalate: <why the escalation clause applies>
+```
+
+Both go through the same validator a human's answer file goes through. Anything
+else — prose above the ruling, an option number outside the list, `option: none`
+with nothing after it, an empty or errored reply — settles nothing: the run
+stops at the fork and a person answers it with `wfrun resume --answer`, the
+same as `decider="human"`. The rejected text is kept beside the request as
+`<request-id>_llm-attempt<NN>.md`, and the answer path is left empty for the
+human.
+
+`decider-model` resolves through the **`llm`** table of `model_map.json` (steps
+resolve the same way), so it takes any model name your pi install accepts.
+
+**This is prompt adherence, not an enforced format.** Without a schema to force
+the shape, how often a given model produces a usable ruling is a measured
+property of that model — see the sampling harness at
+`scripts/evals/adjudicator_smoke.py`. Every failure is fail-closed (the fork
+reaches a human), so the cost of a weak model here is round trips, not wrong
+rulings.
 
 ## Replacing `schema=`
 

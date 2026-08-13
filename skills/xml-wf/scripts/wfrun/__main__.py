@@ -13,6 +13,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import adjudicate as adjudicate_mod
 from . import adp, claude_cli
 from . import decision as decision_mod
 from . import interp as interp_mod
@@ -152,15 +153,22 @@ def _report_decisions(records: list[dict], run_dir: Path, *, on_hold: bool = Fal
 
 def _backend_executor_kwargs(backend: str) -> dict:
     """The Executor constructor kwargs (run_claude=/ask_llm=/diagnose=/
-    model_runner=) for a resolved backend ("cc" or "pi" -- never "auto").
-    Shared by cmd_run and cmd_resume so a resumed run always reconstructs
-    the same execution facility it started with (design §1, §3.3)."""
+    adjudicate=/model_runner=) for a resolved backend ("cc" or "pi" -- never
+    "auto"). Shared by cmd_run and cmd_resume so a resumed run always
+    reconstructs the same execution facility it started with (design §1, §3.3).
+
+    `adjudicate=` splits by backend for the same reason `run_claude=` does: the
+    cc adjudicator forces structured output, which pi has no equivalent for, so
+    the pi one takes the ruling as §13.3 text instead. Both land in the same
+    parser (xml-wf-decision-request.md §17.1)."""
     if backend == "cc":
         return dict(run_claude=claude_cli.run_claude, ask_llm=claude_cli.ask_llm,
-                    diagnose=adp.diagnose, model_runner="cc")
+                    diagnose=adp.diagnose,
+                    adjudicate=adjudicate_mod.adjudicate, model_runner="cc")
     from . import pi_cli  # deferred: needs the pi CLI only when backend=="pi"
     return dict(run_claude=pi_cli.run_pi, ask_llm=pi_cli.ask_llm_pi,
-                diagnose=pi_cli.diagnose_stub_pi, model_runner="llm")
+                diagnose=pi_cli.diagnose_stub_pi,
+                adjudicate=adjudicate_mod.adjudicate_pi, model_runner="llm")
 
 
 def cmd_run(args) -> int:

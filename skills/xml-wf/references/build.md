@@ -75,6 +75,20 @@ Design principles (follow "Workflow authoring guidelines" in spec.md):
   while `sonnet` raised it 9/10 — and haiku's misses were silent: it picked a
   reading and returned ok, with different samples picking different answers.
   Where a step's inputs or rules might be ambiguous, `sonnet` is the floor
+  - **The same holds on the pi backend, against its own model range.** Measured
+    2026-08-13 with one ambiguous fixture: `google/gemini-3.1-flash-lite`
+    raised nothing (1 run — it picked a figure silently and returned ok, the
+    haiku failure exactly), while `google/gemini-3.5-flash-lite` raised a
+    well-formed request in all 3 runs it was given. Those N are far too small
+    to be a rate; what they establish is that the floor is a property of the
+    model, not of the backend, so a pi workflow needs its own floor chosen the
+    same way. **Choosing a cheap model for a fork-prone step does not make the
+    fork cheaper — it makes it invisible**
+  - A model's floor for *raising* a fork and its floor for *ruling* on one are
+    different capabilities: the same 3.1-flash-lite that raised nothing above
+    produced a usable ruling in 40/40 samples as a `decider-model`
+    (`scripts/evals/adjudicator_smoke.py`, 2026-08-13). Pick the two
+    independently
 - **Set `mode=` where processing discipline matters**: `execute` for strict
   do-exactly-this operations, `survey` for fact collection, `debug` for
   diagnosis; also available: `plan`, `review`, `review-dev` (aliases

@@ -846,6 +846,144 @@ class TestLlmAdjudication(DecisionExecutorTestCase):
         self.assertEqual(len(self.fake.calls), 3)
 
 
+class FakeTextRunner:
+    """A run_pi/run_claude stand-in that replays canned response bodies."""
+
+    def __init__(self, *responses):
+        self.queue = list(responses)
+        self.calls = []
+
+    def __call__(self, prompt, **kwargs):
+        self.calls.append({"prompt": prompt, **kwargs})
+        if not self.queue:
+            raise AssertionError("the text adjudicator was called more times "
+                                 "than the test provided responses for")
+        nxt = self.queue.pop(0)
+        if isinstance(nxt, CliResult):
+            return nxt
+        return CliResult(ok=True, text=nxt, cost_usd=0.03)
+
+
+class TestPiTextAdjudication(DecisionExecutorTestCase):
+    """`--backend pi` settles forks with a text ruling through the one shared
+    parser (§17.1). No forced structured output exists on that facility."""
+
+    def pi_run(self, inner, *responses, extra='decider="llm"'):
+        self.runner = FakeTextRunner(*responses)
+        return self.execute(
+            self.wrap(inner, extra=extra),
+            adjudicate=lambda *a, **k: adjudicate_mod.adjudicate_text(
+                *a, runner=self.runner, **k))
+
+    def test_settled_ruling_continues_the_run(self):
+        """U1: a §13.3-shaped reply lands exactly where the cc ruling lands."""
+        self.artifact()
+        self.respond_decision("DO-WORK")
+        ex = self.pi_run(
+            '<step id="s1" role="w" expect-file="art.txt" output="v">'
+            '<task>DO-WORK</task></step>',
+            "option: 1\n\ngo with the gross figure")
+        ex.run()
+        self.assertEqual(ex.vars["v"], "art.txt")          # form (a)
+        self.assertEqual(len(self.fake.calls), 1)          # no re-run
+        answer = [e for e in load_events(self.run_dir)
+                  if e.get("kind") == "answer"][0]
+        self.assertEqual(answer["decider"], "llm")
+        self.assertTrue(Path(answer["answer_path"]).read_text(
+            encoding="utf-8").startswith("option: 1"))
+
+    def test_form_b_re_runs(self):
+        """U1 (b): a stopped payload re-runs in place, as on cc."""
+        self.respond_decision("DO-WORK", then_ok=True,
+                              work_state="stopped", output=None)
+        ex = self.pi_run('<step id="s1" role="w"><task>DO-WORK</task></step>',
+                         "option: 2\n\ntake B")
+        ex.run()
+        self.assertEqual(len(self.fake.calls), 2)
+        self.assertIn("take B", self.fake.calls[1]["prompt"])
+
+    def test_escalate_line_stops_for_a_human(self):
+        """U2: an `escalate:` first line declines the fork; the answer path is
+        left empty and the reason is recorded."""
+        self.respond_decision("DO-WORK")
+        ex = self.pi_run('<step id="s1" role="w"><task>DO-WORK</task></step>',
+                         "escalate: outward-facing\n\nit bills a customer")
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        record = self.decision_events()[0]
+        self.assertTrue(record["escalated"])
+        self.assertIn("outward-facing", record["adjudication_note"])
+        self.assertIn("bills a customer", record["adjudication_note"])
+        self.assertFalse(Path(record["answer_path"]).exists())
+
+    def test_escalate_is_case_insensitive(self):
+        """§17.1: one anchoring convention with parse_answer's option: line."""
+        ruling = adjudicate_mod.adjudicate_text(
+            "s1", "req", 2, runner=FakeTextRunner("ESCALATE: uncertain"))
+        self.assertEqual(ruling.verdict, "escalate")
+
+    def test_unusable_rulings_fall_back_to_a_human(self):
+        """U3: every non-ruling shape is `failed`, with no rescue path -- prose
+        above the ruling included (§17.1)."""
+        cases = {
+            "preamble": "Here is my ruling.\n\noption: 1\nbecause",
+            "out of range": "option: 9\n\nbeyond the list",
+            "none without text": "option: none\n",
+            "not a ruling": "I think option 1 is best.",
+            "empty": "   ",
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                ruling = adjudicate_mod.adjudicate_text(
+                    "s1", "req", 2, runner=FakeTextRunner(text))
+                self.assertEqual(ruling.verdict, "failed")
+        # a runner that classified the reply itself is likewise not a ruling
+        classified = CliResult(ok=False, text="DECISION: quoted back",
+                               cost_usd=0.01)
+        classified.error_class = "decision"
+        ruling = adjudicate_mod.adjudicate_text(
+            "s1", "req", 2, runner=FakeTextRunner(classified))
+        self.assertEqual(ruling.verdict, "failed")
+        self.assertIn("decision", ruling.reason)
+
+    def test_failed_ruling_keeps_the_evidence(self):
+        """U3: the rejected text is retained for audit but not at the answer
+        path, which stays free for the human."""
+        self.respond_decision("DO-WORK")
+        ex = self.pi_run('<step id="s1" role="w"><task>DO-WORK</task></step>',
+                         "option: 9\n\nbeyond the list")
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        record = self.decision_events()[0]
+        self.assertEqual(record["decider"], "human")
+        self.assertTrue(Path(record["adjudication_rejected"]).is_file())
+        self.assertFalse(Path(record["answer_path"]).exists())
+
+    def test_prompt_and_model_reach_the_runner(self):
+        """U6: the ruling call carries the request, the `llm`-table model and
+        the read-only tool grant."""
+        adjudicate_mod.adjudicate_text(
+            "s1", "THE-REQUEST-BODY", 2,
+            runner=(runner := FakeTextRunner("option: 1\n\nfine")),
+            model="google/gemini-3.1-flash-lite")
+        call = runner.calls[0]
+        self.assertIn("THE-REQUEST-BODY", call["prompt"])
+        self.assertNotIn("schema", call)  # pi rejects schema= outright
+        self.assertEqual(call["model"], "google/gemini-3.1-flash-lite")
+        self.assertEqual(call["tools"], adjudicate_mod.DECIDE_TOOLS)
+
+
+class TestPiBackendWiring(unittest.TestCase):
+    def test_pi_backend_gets_the_text_adjudicator(self):
+        """U4: `--backend pi` constructs the Executor with adjudicate_pi, and
+        cc keeps the schema one (§17.2)."""
+        from wfrun.__main__ import _backend_executor_kwargs
+        self.assertIs(_backend_executor_kwargs("cc")["adjudicate"],
+                      adjudicate_mod.adjudicate)
+        self.assertIs(_backend_executor_kwargs("pi")["adjudicate"],
+                      adjudicate_mod.adjudicate_pi)
+
+
 class TestDeciderLint(unittest.TestCase):
     def _lint(self, xml):
         from wfrun import lint as lint_mod
@@ -882,29 +1020,16 @@ class TestDeciderLint(unittest.TestCase):
                 self.assertNotIn("decider-llm-unimplemented", codes)
                 self.assertNotIn("decider-unknown", codes)
 
-    def test_pi_refuses_llm_adjudication_at_both_levels(self):
-        """T6: the pi backend rejects it before any process starts -- and the
-        workflow-level attribute names no step, so a step-only scan would miss
-        it (§15.8)."""
-        from wfrun import parser
-        for xml, expected in (
-            ('<workflow name="t" version="2" max="5" decider="llm">'
-             '<step id="s1" tools="Read"><task>x</task></step></workflow>',
-             "this workflow"),
-            ('<workflow name="t" version="2" max="5">'
-             '<step id="s1" tools="Read" decider="llm"><task>x</task></step>'
-             '</workflow>', "step 's1'"),
-        ):
-            with self.subTest(xml):
-                errors = pi_cli.pi_compat_errors(parser.parse_string(xml))
-                self.assertEqual(len(errors), 1)
-                self.assertIn(expected, errors[0])
-                self.assertIn('decider="human"', errors[0])
-                self.assertIn("--backend cc", errors[0])
-
-    def test_pi_accepts_human_adjudication(self):
+    def test_pi_accepts_llm_adjudication(self):
+        """U5: the P4-era refusal is gone -- pi settles the fork itself now
+        (§17). Its own two fail-fasts are untouched."""
         from wfrun import parser
         for xml in (
+            '<workflow name="t" version="2" max="5" decider="llm">'
+            '<step id="s1" tools="Read"><task>x</task></step></workflow>',
+            '<workflow name="t" version="2" max="5">'
+            '<step id="s1" tools="Read" decider="llm"><task>x</task></step>'
+            '</workflow>',
             '<workflow name="t" version="2" max="5" decider="human">'
             '<step id="s1" tools="Read"><task>x</task></step></workflow>',
             '<workflow name="t" version="2" max="5">'
@@ -913,6 +1038,18 @@ class TestDeciderLint(unittest.TestCase):
             with self.subTest(xml):
                 self.assertEqual(
                     pi_cli.pi_compat_errors(parser.parse_string(xml)), [])
+
+    def test_pi_still_refuses_schema_and_debug(self):
+        """The removal is scoped: the two features pi genuinely cannot do stay
+        refused."""
+        from wfrun import parser
+        errors = pi_cli.pi_compat_errors(parser.parse_string(
+            '<workflow name="t" version="2" max="5" decider="llm">'
+            '<step id="s1" tools="Read" schema=\'{"type":"object"}\' '
+            'on-error="debug"><task>x</task></step></workflow>'))
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(any("schema=" in e for e in errors))
+        self.assertTrue(any('on-error="debug"' in e for e in errors))
 
     def test_unknown_value_stays_decider_unknown(self):
         codes = self._codes(

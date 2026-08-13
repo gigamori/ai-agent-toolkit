@@ -600,15 +600,6 @@ error: step '{id}' uses on-error="debug", which the pi backend does not
          should continue and the failure needs recording instead of fixing
        See references/run-pi.md, "Replacing on-error=debug".'''
 
-_DECIDER_LLM_FAIL_FAST = '''\
-error: {where} declares decider="llm", which the pi backend does not support
-       (llm adjudication runs on the claude CLI with forced structured
-       output, neither of which pi can satisfy).
-       Either use decider="human" (the run then stops at a fork and a
-       person answers it with `wfrun resume --answer`), or run this
-       workflow with --backend cc.'''
-
-
 def pi_compat_errors(wf: model.Workflow) -> list[str]:
     """Startup fail-fast for `wfrun run --backend pi` (design §2.2, §2.3):
     reject, before any pi process launches, a workflow whose steps declare
@@ -622,19 +613,18 @@ def pi_compat_errors(wf: model.Workflow) -> list[str]:
     (Executor._exec_replan never calls self._diagnose), so it is not a
     pi-specific gap this check needs to close.
 
-    decider="llm" joins them for the same reason (xml-wf-decision-request.md
-    §4, §15.8): adjudication is a claude call with a forced schema whichever
-    backend runs the steps, so a pi run that declared it would start a claude
-    process mid-run. Checked at BOTH levels -- the attribute is a workflow
-    attribute too, and a workflow-level declaration reaches every step while
-    naming none of them, so a step-only loop would let it through.
+    `decider="llm"` is NOT rejected here. It was, between P4 and P6, on the
+    reasoning that adjudication is a claude call with a forced schema whichever
+    backend runs the steps -- true of `adjudicate` but not a property of the
+    feature. `adjudicate_pi` settles the fork on pi itself, with the ruling
+    written as §13.3 text instead of a schema object, so nothing claude-shaped
+    is started mid-run and there is nothing to refuse (xml-wf-decision-request
+    .md §17, D7 = option 3).
 
     Returns one fully-formatted rejection message per violation, in step
     order (empty list when the workflow is pi-compatible).
     """
     errors = []
-    if wf.decider == model.DECIDER_LLM:
-        errors.append(_DECIDER_LLM_FAIL_FAST.format(where="this workflow"))
     for node in wf.iter_steps():
         if not isinstance(node, model.Step):
             continue
@@ -642,7 +632,4 @@ def pi_compat_errors(wf: model.Workflow) -> list[str]:
             errors.append(_SCHEMA_FAIL_FAST.format(id=node.id))
         if node.on_error == "debug":
             errors.append(_ON_ERROR_DEBUG_FAIL_FAST.format(id=node.id))
-        if node.decider == model.DECIDER_LLM:
-            errors.append(_DECIDER_LLM_FAIL_FAST.format(
-                where=f"step '{node.id}'"))
     return errors
