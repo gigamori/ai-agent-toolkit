@@ -62,6 +62,8 @@ Run this first, before any generation or execution. REJECT and stop (generate an
 
 On reject: report exactly what is missing or insufficient — name the offending steps and the absent context — and ask the user to supply a sufficient todolist. Do not guess or fill gaps to proceed.
 
+One thing is deliberately **not** a reject ground: todolist wording that conflicts with the injected turn contract — a step directing where a reply's status line goes, what a deliverable must contain, or anything else the contract already fixes. Pass such steps through verbatim. The contract governs at run time, and its positional reading absorbs a violation as at worst one `aborted` re-run (Execution step 4), which is cheaper and better-recorded than stopping here: a Step 0 stop on a non-interactive run leaves no run directory and no index, the most silent outcome this skill can produce. Do not pre-adjudicate the conflict — this gate is structural (is there an actionable list with its context), and semantic contract-compatibility was measured to be judged inconsistently when left open: the same conflicting todolist passed this gate on one invocation and was stopped on another, same skill version (2026-08-13, E2E round 3/4 finding G1).
+
 ## Mode catalog and routing
 
 Hardcoded mode list (rules bundled under `modes/`). Aliases: `verify` → `debug`, `implement` → `execute`.
@@ -159,7 +161,7 @@ Finally, append the **reply contract** verbatim — it is what makes a turn's ou
 - `failed` means "the procedure ran and a planned check did not pass", and only an `execute` turn runs such a check — so only an `execute` turn is offered it.
 - `needs-decision` is offered to every autonomous mode **except an inserted decision turn**, which must not be able to raise a decision about a decision. Unlike `failed`, there is no mode where a fork cannot legitimately arise: `survey` finds a fact that changes the remaining steps, `plan` cannot pick an architecture, `execute` hits ambiguity, `review` / `review-dev` cannot name one recommendation, `debug` has several candidate fixes.
 
-All three shapes carry these placement rules verbatim. They are two rules because both failures were observed in one measured run of 36 turns:
+All three shapes carry these placement rules verbatim. Every rule is a measured failure: the first two were both observed in one run of 36 turns; the third in the round that verified them, where a turn copied its deliverable's mandated footer into its reply — harmless that time (the orchestrator read the last line, as contracted), but a copied line landing *last* would displace the status and cost the turn (2026-08-13, finding G2):
 
 ```
 Nothing may follow the status line — no gist, no sign-off, no closing
@@ -170,6 +172,9 @@ Do not put a `status:` line in your deliverable either. The status line
 belongs to your reply. One in the deliverable is a second, competing
 status that cannot be honoured — the orchestrator does not read
 deliverables.
+The mirror also holds: text the task tells you to write into a file
+belongs only in that file. Your reply carries nothing but your own
+gist and the status line — never a copy of deliverable content.
 ```
 
 The two shapes that can return `needs-decision` additionally share this clause verbatim; the decision-turn shape omits it, having no such value to spend:
