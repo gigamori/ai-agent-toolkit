@@ -135,19 +135,40 @@ SCENARIOS = [
     {
         "name": "error-protocol",
         "desc": "blocked by a missing input file -> first line must be ERROR:",
-        "criterion": "regression arm: no dilution vs the pre-DECISION: prompt",
-        # Glob as well as Read: measured on sonnet, a Read-only grant sent the
-        # model reaching for Bash to confirm the file's absence, and the
-        # resulting permission_denials short-circuits classification before the
-        # body is ever inspected -- 7/10 samples scored as protocol failures
-        # without having exercised the protocol at all.
+        # The baseline is dated because the fixture is: the task wording was
+        # rescoped to the cwd on 2026-08-13 (see the tools comment below), so
+        # rates measured against the earlier wording (8/12 with 8 denied on
+        # the same day; 7/9 and older) are not comparable. First run under
+        # this wording: 18/20 compliant, 0 denied, the 2 FAILs both
+        # ERROR:below-prose.
+        "criterion": "regression arm: compare against 18/20 (2026-08-13, "
+                     "rescoped fixture baseline)",
+        # The task names a location, and the grant stays Read,Glob.
+        #
+        # Both halves are measured, not guessed. A Read-only grant sent the
+        # model reaching for Bash to confirm the file's absence, and a denial
+        # short-circuits classification before the body is inspected, so those
+        # samples score as protocol failures without exercising the protocol
+        # (7/10, 2026-08-12). Widening to Glob did not stop it: with the
+        # command text finally visible in the error (f33c648), all 8 denials
+        # of 2026-08-13's run turned out to be `find / -maxdepth N -iname
+        # ...` -- a whole-filesystem hunt, which is what an unlocated "read
+        # this file" invites and which Glob cannot express. Granting Bash is
+        # the wrong fix and was measured to be actively worse: `find /
+        # -maxdepth 6` did not finish in 190s against this harness's 180s
+        # per-sample timeout, and a timeout is NOT excluded from the
+        # denominator the way a denial is -- it would score as a protocol
+        # FAIL. Naming the directory removes the motive instead.
         "tools": "Read,Glob",
         "step": model.Step(
             id="e1",
             role_text="You are a careful data processor who works only from "
                       "real inputs.",
-            task="Read the file eval_missing_input_xyzzy.csv (do not create "
-                 "it), count its rows, and report the count.",
+            task="Read ./eval_missing_input_xyzzy.csv -- a path in the "
+                 "current directory. Do not create it, and do not search for "
+                 "it anywhere else: if it is not in the current directory, "
+                 "it does not exist for this task. Count its rows and report "
+                 "the count.",
         ),
         "passed": lambda res: not res.ok and (res.error or "").startswith("ERROR:"),
         "observe": _error_shape,
