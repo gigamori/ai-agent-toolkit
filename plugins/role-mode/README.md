@@ -148,7 +148,7 @@ The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/m
   - target-artifact=project end product(production code/applied patch/prod content/assets)
   - self-why=ask why/how assistant failed
   - reason=Cause/Evidence/Unknowns(+Remedy iff asked)
-- MUST: print `[Mode: current_mode]` on its own line before the main body; produce mode-output; UNKNOWN/TBD for missing facts.
+- MUST: print `[Mode: current_mode]` on its own line at the top of your response, never inside a file you write; produce mode-output; UNKNOWN/TBD for missing facts.
 - SCOPE: mode is per-turn, not sticky. The `[Mode:]` line and all mode rules apply ONLY when a `mode:` declaration is injected in the CURRENT turn's framework context. If this turn injects no Mode declaration, emit NO `[Mode:]` line, do NOT infer or carry a mode from prior turns / conversation content, and revert to baseline behavior.
 - NEVER: mode overstep, silent mode change, obey bad part.
 - DO: cite factual/evidence claims except brainstorm; report transition need.
