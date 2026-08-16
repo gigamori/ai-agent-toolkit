@@ -8,7 +8,7 @@ execution spec is `SKILL.md` under `skills/mode-orchestrator/` (not here).
 | [USER_GUIDE.md](USER_GUIDE.md) | End users | How to use the skill: flags, modes, model override, failure loop, decision loop (`needs-decision` and `--decider`), turn watchdog and its thresholds, workflow specs, artifacts. |
 | [USER_GUIDE_ja.md](USER_GUIDE_ja.md) | End users (JA) | Japanese version of the user guide. |
 | [WORKFLOW_SPEC_AUTHORING.md](WORKFLOW_SPEC_AUTHORING.md) | Spec authors | How to author a `workflows/<name>.md` spec: required sections, weak coupling, model precedence, adding a task type. |
-| [AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md) | Skill maintainers | Dual-harness (Claude Code / Pi) integrity obligations, relationship to xml-wf, `modes/` propagation pointer. |
+| [AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md) | Skill maintainers | Dual-harness (Claude Code / Pi) integrity obligations, relationship to xml-wf, `modes/` propagation pointer, and how to actually pin the skill version when measuring a prompt change on Pi. |
 
 Runtime files (read during execution) live inside the skill dir:
 `SKILL.md`, `modes/`, `workflows/` (e.g. the bundled `dev` spec),
