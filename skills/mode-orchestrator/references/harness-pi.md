@@ -120,7 +120,7 @@ do not re-derive them per turn:
 MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
    --model <the turn's resolved model> \
    --no-skills --session-dir <run-dir>/sessions "$PROMPT" \
-   > <run-dir>/raw/<NN>.jsonl \
+   < /dev/null > <run-dir>/raw/<NN>.jsonl \
  && node <pi-reply> <run-dir>/raw/<NN>.jsonl
 ```
 
@@ -157,6 +157,31 @@ careful.
   strictly more observable than before, when the same bytes flowed through a
   tool result and a temp log and were gone.
 
+- `< /dev/null`: **determinism, not diagnostics.** A child `pi -p` inherits this
+  turn's stdin, and pi reads it unconditionally whenever stdin is not a TTY —
+  `readPipedStdin()` (`src/main.ts`, pi 0.84.1) resolves only on stdin's `end`
+  event, with no timeout and no fallback, and runs even when the prompt was
+  passed on argv. Two failures follow from an inherited stdin, and the second is
+  why this is not optional:
+  - **An stdin that never closes hangs the child forever, silently.** Not one
+    byte reaches stdout — the session header is written later than this wait,
+    and startup diagnostics are redirected away by pi's own stdout takeover, so
+    stdout and stderr are both empty. There is nothing to read and nothing to
+    time out.
+  - **An stdin carrying even one byte rewrites the prompt.**
+    `buildInitialMessage()` (`src/cli/initial-message.ts`) pushes the stdin
+    content *ahead of* the prompt argument and concatenates with
+    `parts.join("")` — **no separator**. The turn no longer receives the prompt
+    you assembled, and any leading slash token is no longer leading, so it stops
+    resolving as a command. This failure **starts normally**, so it never reads
+    as a hang: it reads as a turn that ran and ignored its instructions, which
+    is far more expensive to diagnose than a stall.
+
+  Scope: **every child `pi -p` this skill launches.** The one exception is a
+  measurement arm investigating a startup failure — pinning stdin there destroys
+  the only evidence that can attribute it (whether fd 0 was still open when the
+  child stalled), so such an arm leaves stdin inherited and records fd 0's state
+  instead. Ordinary runs are not measurement arms; pin them.
 - `MODE_ORCH_DEPTH=1`: **recursion guard, layer 1.** `SKILL.md` Step -1 reads
   this variable before anything else and stops the run if it is set. Pi's
   `bash` tool passes `process.env` through to children
