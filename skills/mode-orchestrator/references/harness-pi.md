@@ -10,25 +10,43 @@ both implemented through the `bash` tool.
 
 ## P0 — Paths (resolve once, before the first delegation)
 
-Every delegation needs two absolute paths. Resolve both at the start of the run
-with these two commands, record them in the run index, and reuse them for every
-turn — Step -1's bounded-resolution rule applies, so if either fails the run is
+Every delegation needs two absolute paths. They sit under **two different roots,
+and the roots are not interchangeable** — the pi CLI is installed by npm, while
+the extractor ships with this skill inside the agent dir. Resolve each with its
+own command, record both in the run index, and reuse them for every turn.
+Step -1's bounded-resolution rule applies: if a command fails, the run is
 `blocked` and you never go looking for the file.
+
+**`<pi-cli-entry>`** — the pi CLI. Root = **the npm global prefix**, never the
+agent dir.
 
 ```
 npm prefix -g
+```
+
+Join that output with `node_modules/@earendil-works/pi-coding-agent/dist/cli.js`.
+Verified 2026-08-17 (pi 0.84.1, win32): the entry reached this way is
+byte-identical to the local source build's `dist/cli.js` and answers
+`--version`.
+
+**`<pi-reply>`** — the reply extractor, this skill's own `scripts/pi_reply.js`.
+Root = **the agent dir**, never the npm prefix.
+
+```
 node -e "console.log(require('path').resolve(process.env.PI_CODING_AGENT_DIR || require('os').homedir() + '/.pi/agent', 'skills/mode-orchestrator/scripts/pi_reply.js'))"
 ```
 
-- **`<pi-cli-entry>`** = the first command's output joined with
-  `node_modules/@earendil-works/pi-coding-agent/dist/cli.js`. Verified
-  2026-08-17 (pi 0.84.1, win32): the entry reached this way is byte-identical
-  to the local source build's `dist/cli.js` and answers `--version`.
-- **`<pi-reply>`** = the second command's output, i.e. the extractor. Node
-  resolves it, so it comes back in the platform's own path form, and it honors
-  `PI_CODING_AGENT_DIR` — the lever the shadow-agent-dir measurement procedure
-  depends on (`docs/skills/mode-orchestrator/AUTHORING_CONTRACT.md`). Both
-  properties are lost the moment you hard-code `~/.pi/…` instead.
+That output is already the whole path: node resolved it, so it comes back in the
+platform's own path form, and it honors `PI_CODING_AGENT_DIR` — the lever the
+shadow-agent-dir measurement procedure depends on
+(`docs/skills/mode-orchestrator/AUTHORING_CONTRACT.md`). Both properties are lost
+the moment you hard-code `~/.pi/…` instead.
+
+Measured 2026-08-17: an orchestrator holding both commands still looked for the
+**CLI under the agent dir** first. It recovered cheaply — one `ls`, nothing
+there, switch to the npm prefix — which is the bounded behaviour this section
+exists to produce rather than a scan. Naming the root on each line is what
+removes the swap itself.
 
 **Why this section exists — measured 2026-08-17.** Writing the extractor call
 as `node ~/.pi/agent/skills/…/pi_reply.js` breaks *precisely when* the
