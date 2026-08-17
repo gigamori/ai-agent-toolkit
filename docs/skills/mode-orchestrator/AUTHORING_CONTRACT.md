@@ -41,6 +41,7 @@ Measured 2026-08-16: an arm pinned to the pre-change commit injected the **post*
 Two obligations follow:
 
 - **Switch the agent dir, not the working tree.** Point `PI_CODING_AGENT_DIR` (`config.ts`, `ENV_AGENT_DIR`) at a shadow directory that symlinks every entry of the real agent dir except the one skill under test, which points at the target worktree. Symlink rather than copy so no credential file (`auth.json`) is duplicated into a temporary location.
+- **The shadow dir now reaches the extractor too.** `harness-pi.md`'s P0 resolves `pi_reply.js` through `PI_CODING_AGENT_DIR` rather than a hard-coded `~/.pi/agent`, so an arm pointed at a shadow dir runs that arm's extractor. Before 2026-08-17 it did not: the lever moved the skill text while the extractor stayed pinned to the real agent dir, which is a silent cross-arm leak of exactly the kind this section exists to catch.
 - **Verify the injected text after the run, from the run's own artifacts.** Grep the delegation `raw/*.jsonl` for the wording verbatim and report the per-arm counts. `drift_check.py` cannot serve here: it compares copies *inside the repository* and says nothing about what a running agent loaded. A zero that has not passed this gate is inconclusive, not a pass.
 
 This also explains a class of confound in the recorded Pi-facet runs: when a commit lands mid-session, the runs before and after it were executed against different skill text even though nothing about the harness changed. Runs are not a single skill version unless the agent dir was pinned.

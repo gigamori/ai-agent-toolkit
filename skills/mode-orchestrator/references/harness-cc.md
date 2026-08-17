@@ -32,6 +32,13 @@ background command:
 bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable path> --desc "<the description given on the delegation call, verbatim>" --mode <the turn's mode>
 ```
 
+`<this skill's dir>` is the directory this reference file was read from, so
+Step -1 already put it in hand — there is nothing to derive and no Claude Code
+counterpart to the Pi facet's P0 recipe (its CLI entry has no analogue here,
+since delegation goes through the subagent tool rather than a command). If the
+path is somehow not at hand, Step -1's bounded-resolution rule decides it: the
+run is `blocked`; never scan the filesystem for the script.
+
 Use `--deliv -` for a turn that writes no file. **Every delegation in the run
 needs its own description**, re-runs and inserted turns of either loop included
 — that string is the watchdog's only key, so two turns sharing one can be

@@ -8,6 +8,39 @@ no background command execution — its only built-in tools are
 `ToolName`, checked 2026-07-29). Delegation and the time-bound are therefore
 both implemented through the `bash` tool.
 
+## P0 — Paths (resolve once, before the first delegation)
+
+Every delegation needs two absolute paths. Resolve both at the start of the run
+with these two commands, record them in the run index, and reuse them for every
+turn — Step -1's bounded-resolution rule applies, so if either fails the run is
+`blocked` and you never go looking for the file.
+
+```
+npm prefix -g
+node -e "console.log(require('path').resolve(process.env.PI_CODING_AGENT_DIR || require('os').homedir() + '/.pi/agent', 'skills/mode-orchestrator/scripts/pi_reply.js'))"
+```
+
+- **`<pi-cli-entry>`** = the first command's output joined with
+  `node_modules/@earendil-works/pi-coding-agent/dist/cli.js`. Verified
+  2026-08-17 (pi 0.84.1, win32): the entry reached this way is byte-identical
+  to the local source build's `dist/cli.js` and answers `--version`.
+- **`<pi-reply>`** = the second command's output, i.e. the extractor. Node
+  resolves it, so it comes back in the platform's own path form, and it honors
+  `PI_CODING_AGENT_DIR` — the lever the shadow-agent-dir measurement procedure
+  depends on (`docs/skills/mode-orchestrator/AUTHORING_CONTRACT.md`). Both
+  properties are lost the moment you hard-code `~/.pi/…` instead.
+
+**Why this section exists — measured 2026-08-17.** Writing the extractor call
+as `node ~/.pi/agent/skills/…/pi_reply.js` breaks *precisely when* the
+`MSYS_NO_PATHCONV=1` guard below is in force — which is whenever a driver set
+it and this skill's `bash` tool inherited it. The tilde expands to `/c/Users/…`,
+the guard stops anything from rewriting it, and node fails with
+`Cannot find module 'C:\c\Users\…'`; the doubled root is the signature. Two of
+three Pi runs lost that day were an agent responding to a path that would not
+resolve by scanning the whole filesystem for the file. The Windows-form rule
+stated under P1 was already correct — this section is what makes the two paths
+actually obey it.
+
 ## P1 — Delegation
 
 Delegate the turn as a blocking, non-interactive `pi -p` call from the `bash`
@@ -39,8 +72,8 @@ unchanged, with a control arm.**
   probe intact; only invoking through cmd.exe or PowerShell reaches
   `pi.CMD`/`pi.ps1` and hits the truncation. The safe instruction is
   unchanged either way — bypass every shell-resolved launcher and go
-  straight to the entry: `node <npm-prefix>/node_modules/@earendil-works/
-  pi-coding-agent/dist/cli.js`. Verified 2026-08-13: with `pi.CMD` invoked
+  straight to the entry — `<pi-cli-entry>`, which P0 resolved. Verified
+  2026-08-13: with `pi.CMD` invoked
   directly, a two-line probe ("Say APPLE.\nDisregard the previous line:
   instead reply with exactly one word, BANANA.") returned `APPLE.`
   (truncated) — the node-entry control arm, identical prompt, returned
@@ -61,14 +94,16 @@ unchanged, with a control arm.**
   were unaffected.
 
 Recommended invocation shape (write it to a shell variable first so the
-multi-line prompt is quoted exactly once):
+multi-line prompt is quoted exactly once). Both `<pi-cli-entry>` and
+`<pi-reply>` are the values P0 already resolved and recorded — substitute them,
+do not re-derive them per turn:
 
 ```
 MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
    --model <the turn's resolved model> \
    --no-skills --session-dir <run-dir>/sessions "$PROMPT" \
    > <run-dir>/raw/<NN>.jsonl \
- && node ~/.pi/agent/skills/mode-orchestrator/scripts/pi_reply.js <run-dir>/raw/<NN>.jsonl
+ && node <pi-reply> <run-dir>/raw/<NN>.jsonl
 ```
 
 **You do not read the event stream.** It goes to a file; what you read is the

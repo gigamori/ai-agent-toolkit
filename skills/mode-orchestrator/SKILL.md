@@ -52,6 +52,8 @@ Then read `harness-probe:`.
 
 Resolve once per invocation and record both results in the run index. Every delegation (Execution step 2) and every wall-clock bound (Execution step 4) is defined by the reference read here; the rest of this file is harness-neutral.
 
+**Resolving a path is bounded work.** Every path this skill or its harness reference names — the harness's own CLI entry, a helper under `scripts/` — comes from the one recipe that reference gives. Run it once, record the result in the run index, reuse it for the whole run. If the recipe does not yield an existing file, **report the run `blocked`** and name the path that failed; a missing helper is a setup fault stated in one line, not a puzzle to solve. Do **not** search the filesystem for it: a scan rooted at `/`, at a drive root, or at `$HOME` does not terminate usefully on a developer machine. Measured 2026-08-17 — three Pi runs were lost to exactly that (`find / -name …`, twice for the harness CLI entry and once for a helper script), and each left orphaned `find` processes still scanning after the run itself was killed.
+
 ## Step 0 — Todolist sufficiency gate (reject)
 
 Run this first, before any generation or execution. REJECT and stop (generate and execute nothing) if any of these holds:
