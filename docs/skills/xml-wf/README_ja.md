@@ -194,7 +194,8 @@ file path.</task>
 ## CLI リファレンス
 
 ```
-wfrun validate <wf.xml> [--json] [--no-role-check] [--as-child] [--defined-vars VARS_JSON]
+wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi]
+                        [--as-child] [--defined-vars VARS_JSON]
 wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi] [--inherit-model M]
 wfrun resume   <run_dir> [--base-dir D] [--permission-mode ...]
 wfrun plan     <wf.xml>                 # ステップツリーを表示（実行なし）

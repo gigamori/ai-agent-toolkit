@@ -5,6 +5,7 @@ Run: python -m unittest discover -s tests -v
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -393,13 +394,66 @@ class TestLint(unittest.TestCase):
             '<task>t</task></step>'))
         self.assertIn("var-undefined", self.codes(findings, "error"))
 
-    def test_model_not_canonical_warns(self):
+    # Model names are a pi-only concern: on cc the canonical vocabulary is all
+    # a workflow may use and model_map binds it to claude CLI names, so there
+    # is no catalog for a name to be missing from and nothing is checked.
+    CATALOG = [("google", "gemini-3.5-flash"), ("pi-claude-agent-sdk", "opus[1m]"),
+               ("pi-claude-agent-sdk", "sonnet"), ("openai-codex", "gpt-5.6-luna")]
+
+    _DEFAULT = object()
+
+    def lint_pi(self, text, catalog=_DEFAULT):
+        """Lint as the pi backend with a stubbed catalog — never launches pi.
+        Pass catalog=None for "the catalog could not be read"."""
+        from wfrun import pi_cli
+        wf = parser.parse_string(text)
+        rows = self.CATALOG if catalog is self._DEFAULT else catalog
+        with mock.patch.object(pi_cli, "list_available_models",
+                               return_value=rows):
+            return lint.lint(wf, check_roles=False, backend="pi")
+
+    def test_model_not_canonical_silent_on_cc(self):
         findings = self.lint(self.wrap(
-            '<step id="s1" role="w" model="gpt-5"><task>x</task></step>'
+            '<step id="s1" role="w" model="gpt-5"><task>x</task></step>'))
+        self.assertNotIn("model-not-canonical", self.codes(findings))
+
+    def test_model_not_canonical_warns_on_pi(self):
+        findings = self.lint_pi(self.wrap(
+            '<step id="s1" role="w" model="gemini-3.5-flash"><task>x</task></step>'
             '<step id="s2" role="w" model="sonnet"><task>y</task></step>'))
         warns = [f for f in findings if f.code == "model-not-canonical"]
         self.assertEqual(len(warns), 1)
         self.assertIn("s1", warns[0].message)
+        # ...and it is only a vocabulary nudge: the name does resolve on pi.
+        self.assertNotIn("pi-model-unavailable", self.codes(findings))
+
+    def test_pi_model_unavailable_is_an_error(self):
+        findings = self.lint_pi(self.wrap(
+            '<step id="s1" role="w" model="gemni-3.5-flash"><task>x</task></step>'))
+        errs = [f for f in findings if f.code == "pi-model-unavailable"]
+        self.assertEqual(len(errs), 1)
+        self.assertIn("gemni-3.5-flash", errs[0].message)
+
+    def test_pi_model_substring_match_resolves(self):
+        # pi's tryMatchModel falls back to substring on id, so the canonical
+        # `opus` reaches `opus[1m]`. An exact-equality check would reject the
+        # default adjudicator on every pi workflow.
+        findings = self.lint_pi(self.wrap(
+            '<step id="s1" role="w" decider="llm"><task>x</task></step>'))
+        self.assertNotIn("pi-model-unavailable", self.codes(findings))
+
+    def test_pi_decider_model_checked_only_when_llm_decides(self):
+        bad = '<step id="s1" role="w" decider="llm" decider-model="nope-9"><task>x</task></step>'
+        self.assertIn("pi-model-unavailable", self.codes(self.lint_pi(self.wrap(bad))))
+        human = bad.replace('decider="llm"', 'decider="human"')
+        self.assertNotIn("pi-model-unavailable", self.codes(self.lint_pi(self.wrap(human))))
+
+    def test_pi_unreadable_catalog_warns_instead_of_failing_everything(self):
+        findings = self.lint_pi(self.wrap(
+            '<step id="s1" role="w" model="anything"><task>x</task></step>'),
+            catalog=None)
+        self.assertNotIn("pi-model-unavailable", self.codes(findings))
+        self.assertIn("pi-model-unverified", self.codes(findings))
 
     def test_mode_write_tools_warns(self):
         findings = self.lint(self.wrap(

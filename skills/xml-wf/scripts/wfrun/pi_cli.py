@@ -600,6 +600,83 @@ error: step '{id}' uses on-error="debug", which the pi backend does not
          should continue and the failure needs recording instead of fixing
        See references/run-pi.md, "Replacing on-error=debug".'''
 
+MODEL_CATALOG_TIMEOUT = 60
+
+
+def _parse_model_table(stdout: str) -> list[tuple[str, str]]:
+    """The `(provider, id)` pairs in pi's `--list-models` table.
+
+    Layout is `provider  model  context  max-out  thinking  images`, header
+    first. Neither a provider nor a model id contains whitespace, so splitting
+    on it is enough; the header is recognised by its first column.
+    """
+    rows = []
+    for line in stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] == "provider":
+            continue
+        rows.append((parts[0], parts[1]))
+    return rows
+
+
+def list_available_models() -> list[tuple[str, str]] | None:
+    """`(provider, id)` for every model pi currently reports as available.
+
+    **None means the catalog could not be read** -- pi not launchable, non-zero
+    exit, timeout. Callers must treat None as "unverifiable" and never as an
+    empty catalog: an empty list would make every model name look invalid, so a
+    missing pi install would turn into a wall of false errors.
+
+    Cached per process, like the launcher: lint asks once per model name.
+    """
+    if "models" in _resolution_cache:
+        return _resolution_cache["models"]
+    launcher = resolve_pi_launcher()
+    rows: list[tuple[str, str]] | None = None
+    if launcher is not None:
+        try:
+            proc = subprocess.run(
+                launcher + ["--list-models"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=MODEL_CATALOG_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            rows = _parse_model_table(proc.stdout)
+    _resolution_cache["models"] = rows
+    return rows
+
+
+def model_is_resolvable(name: str, catalog: list[tuple[str, str]]) -> bool:
+    """Whether pi could resolve `name` against `catalog`.
+
+    Mirrors `tryMatchModel` (pi's `src/core/model-resolver.ts`): an exact hit on
+    `id` or `provider/id` wins (case-insensitive); failing that, ANY model whose
+    id contains the pattern is a match. pi never fails on ambiguity -- it takes
+    the alias, else the newest dated version -- so the single unresolvable case
+    is **zero candidates**, and that is the only thing this reports False for.
+    A `:thinking` suffix is tried both whole and split on the last colon,
+    because pi tries the full string before splitting.
+
+    Two narrowings this cannot see, both recorded in build.md § Model selection:
+    pi also matches a model's display `name`, which `--list-models` does not
+    print, and it applies an authenticated-only filter the catalog does not
+    reflect. Both make this check *narrower* than pi, i.e. it can only miss a
+    resolvable name whose sole match is by display name.
+    """
+    candidates = {name.strip().lower()}
+    if ":" in name:
+        candidates.add(name.rsplit(":", 1)[0].strip().lower())
+    candidates.discard("")
+    for pattern in candidates:
+        for provider, model_id in catalog:
+            if (model_id.lower() == pattern
+                    or f"{provider}/{model_id}".lower() == pattern
+                    or pattern in model_id.lower()):
+                return True
+    return False
+
+
 def pi_compat_errors(wf: model.Workflow) -> list[str]:
     """Startup fail-fast for `wfrun run --backend pi` (design §2.2, §2.3):
     reject, before any pi process launches, a workflow whose steps declare

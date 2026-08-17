@@ -118,7 +118,12 @@ def main(argv=None) -> int:
     # decision arm there scored 9/9 and 6/10, so N=10 is too noisy to judge
     # against an 80% threshold.
     ap.add_argument("-n", type=int, default=20, help="samples per arm")
-    ap.add_argument("--model", default="google/gemini-3.1-flash-lite",
+    # The measurement-layer candidate for this provider (build.md, "Assign
+    # `model=` by difficulty"). Until 2026-08-17 the default was
+    # 3.1-flash-lite, and the 40/40 ruling rate build.md cites was measured on
+    # THAT variant: a re-run under this default is a new sample, not a
+    # continuation of that figure.
+    ap.add_argument("--model", default="google/gemini-3.5-flash-lite",
                     help="resolved through model_map's table for --backend")
     ap.add_argument("--backend", default="pi", choices=("pi", "cc"),
                     help="which facility runs the adjudicator (default: pi, "

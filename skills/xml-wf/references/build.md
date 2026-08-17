@@ -63,11 +63,11 @@ Design principles (follow "Workflow authoring guidelines" in spec.md):
 - **Assign `model=` by difficulty, canonical names only**: `haiku` =
   mechanical extraction / formatting / simple transforms; `sonnet` = standard
   analysis and writing (the default when unsure); `opus` = design, diagnosis,
-  review-grade judgment. These names are difficulty classes — at dispatch,
-  wfrun binds them to actual models per runner via `model_map.json` — so
-  never write any other model string (the validator warns
-  `model-not-canonical`). State the reason in the plan table's model column;
-  the user approves the tier judgments together with the plan
+  review-grade judgment. State the reason in the plan table's model column;
+  the user approves the tier judgments together with the plan. The rules that
+  constrain this choice — why these are classes and not models, which concrete
+  models each layer may bind, and what has been measured about model floors —
+  are in **§ Model selection** below
 - **Decision requests (`DECISION:`) need no authoring** — the protocol is
   injected into every step, because forks are not foreseeable (an attribute
   saying "this step may fork" could only be set where someone already
@@ -86,27 +86,8 @@ Design principles (follow "Workflow authoring guidelines" in spec.md):
     recommendation already recorded upstream is not a fork, a blocking error
     is `ERROR:`, and the request fires only when the step cannot proceed
     without a ruling. Task text never needs to (and should not) restate this
-- **Do not put a fork-prone step on `haiku`**: raising a `DECISION:` request
-  (spec.md § Execution semantics) means noticing the task is under-specified,
-  which is a harder act than noticing an error. Measured 2026-08-12 with
-  byte-identical prompts, `haiku` raised it 0/10 on a genuinely ambiguous task
-  while `sonnet` raised it 9/10 — and haiku's misses were silent: it picked a
-  reading and returned ok, with different samples picking different answers.
-  Where a step's inputs or rules might be ambiguous, `sonnet` is the floor
-  - **The same holds on the pi backend, against its own model range.** Measured
-    2026-08-13 with one ambiguous fixture: `google/gemini-3.1-flash-lite`
-    raised nothing (1 run — it picked a figure silently and returned ok, the
-    haiku failure exactly), while `google/gemini-3.5-flash-lite` raised a
-    well-formed request in all 3 runs it was given. Those N are far too small
-    to be a rate; what they establish is that the floor is a property of the
-    model, not of the backend, so a pi workflow needs its own floor chosen the
-    same way. **Choosing a cheap model for a fork-prone step does not make the
-    fork cheaper — it makes it invisible**
-  - A model's floor for *raising* a fork and its floor for *ruling* on one are
-    different capabilities: the same 3.1-flash-lite that raised nothing above
-    produced a usable ruling in 40/40 samples as a `decider-model`
-    (`scripts/evals/adjudicator_smoke.py`, 2026-08-13). Pick the two
-    independently
+- **Do not put a fork-prone step on a model below the raising floor** — the
+  floor and the evidence for it are in **§ Model selection** below
 - **Set `mode=` where processing discipline matters**: `execute` for strict
   do-exactly-this operations, `survey` for fact collection, `debug` for
   diagnosis; also available: `plan`, `review`, `review-dev` (aliases
@@ -164,6 +145,78 @@ Fix and re-run until there are zero errors. Review warnings and resolve any
 that are not intentional. Finally report the XML path together with the output
 of `$WFRUN plan <path>`; when the flow has branches/loops/parallel worth
 seeing, also attach a diagram via `$WFRUN viz <path> --out <path>.mmd`.
+
+## Model selection
+
+Canonical for both this skill and `mode-orchestrator` — that skill's
+`AUTHORING_CONTRACT.md` points here rather than restating the lists, so they
+cannot drift.
+
+**The rule: a concrete model ID is never written at runtime.** `haiku` /
+`sonnet` / `opus` are difficulty *classes*, not models. wfrun binds a class to
+an actual model per runner at dispatch via `model_map.json`, so the
+provider-qualified name belongs in that table (config) or in this section
+(documentation) — never in a step. `decider-model=` may name a
+provider-qualified model directly — spec.md and run-pi.md both grant it "any
+name the runner's model table accepts", because a pi adjudicator has to be
+nameable and pi's models are not in the canonical vocabulary. That is the one
+place such an ID belongs in a workflow.
+
+**What `wfrun validate` checks depends on the backend.** Under `--backend pi`
+it resolves every `model=` and every adjudicator an `llm` decider would
+actually be sent, then matches each against `pi --list-models`: a name matching
+nothing is an **error** (`pi-model-unavailable`), a non-canonical `model=` is a
+warning (`model-not-canonical`), and an unreadable catalog is the warning
+`pi-model-unverified` rather than a pass. The match mirrors pi's own resolver —
+exact on `id`/`provider/id`, else substring on `id` — so `opus` reaches
+`opus[1m]` and the default adjudicator is not flagged. Under `cc` **no model
+name is checked**: those runs stay inside the canonical vocabulary, which
+`model_map.json` binds to claude CLI names, so there is no catalog for a name
+to be missing from.
+
+**Approved candidates per layer (2026-08-17).** The split records which role
+each model was measured in — it is not a cost ranking, and fitness for one
+layer never transfers to the other.
+
+| Layer | What runs on it | Candidates |
+|---|---|---|
+| Orchestrator | a step, a delegated turn, an adjudication | `opus`, `gpt-5.6-terra`, `gemini-3.6-flash` |
+| Measurement | an eval or sampling harness, where per-sample cost decides how large N can be | `sonnet`, `gpt-5.6-luna`, `gemini-3.5-flash-lite` |
+
+Both tables in `model_map.json` currently bind all three classes to the
+identity (Anthropic) names, so choosing a non-Anthropic candidate means editing
+that table's values.
+
+**Measured floors.** Two capabilities are separate and must be chosen
+separately: *raising* a `DECISION:` fork (noticing the task is under-specified
+— spec.md § Execution semantics) and *ruling* on one. Raising is the harder
+act, and its failures are silent: the model picks a reading and returns ok.
+
+| Model | Raising a fork | Ruling on one | Measured |
+|---|---|---|---|
+| `haiku` | 0/10 (silent, samples disagreed) | — | 2026-08-12, byte-identical prompts |
+| `sonnet` | 9/10 | — | 2026-08-12, same prompts |
+| `google/gemini-3.1-flash-lite` | 0/1 (silent, the haiku failure exactly) | 40/40 as `decider-model` | 2026-08-13 (`scripts/evals/adjudicator_smoke.py`) |
+| `google/gemini-3.5-flash-lite` | 3/3 well-formed | — | 2026-08-13, one ambiguous fixture |
+
+Reading these numbers:
+
+- **`sonnet` is the floor for raising** where a step's inputs or rules might be
+  ambiguous. The N above are far too small to be rates; what they establish is
+  that the floor is a property of the **model**, not of the backend — so a pi
+  workflow needs its own floor chosen the same way. **Choosing a cheap model
+  for a fork-prone step does not make the fork cheaper; it makes it invisible.**
+- **A measurement licenses a role, not a family name.** The two flash-lite
+  variants hold opposite records, so neither name generalizes: `3.5-flash-lite`
+  raised 3/3 here yet was **rejected for the orchestrator layer on 2026-08-17**
+  (driving a mode-orchestrator run it set no timeout on any of its 3
+  delegations and dropped every other element that harness reference requires),
+  while `3.1-flash-lite` raised nothing yet ruled 40/40. Read every model name
+  in this section as a claim about the role it was measured in, and re-measure
+  before reusing one in the other role.
+- `adjudicator_smoke.py`'s default moved to `3.5-flash-lite` on 2026-08-17 to
+  match the measurement-layer list, so the 40/40 above belongs to
+  `3.1-flash-lite` and a re-run is a new sample, not a continuation of it.
 
 ## Backend compatibility
 

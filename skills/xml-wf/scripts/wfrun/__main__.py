@@ -46,7 +46,8 @@ def cmd_validate(args) -> int:
     defined = set(_load_vars(args.defined_vars)) if args.defined_vars else None
     findings = lint_mod.lint(wf, base_dir=Path(args.workflow).parent,
                              check_roles=not args.no_role_check,
-                             as_child=args.as_child, defined_vars=defined)
+                             as_child=args.as_child, defined_vars=defined,
+                             backend=_resolve_backend(args.backend, quiet=True))
     if args.json:
         print(json.dumps({
             "errors": [str(f) for f in findings if f.level == "error"],
@@ -60,10 +61,11 @@ def cmd_validate(args) -> int:
     return 1 if lint_mod.has_errors(findings) else 0
 
 
-def _load_validated(path: str, no_role_check: bool) -> model.Workflow:
+def _load_validated(path: str, no_role_check: bool,
+                    backend: str = "cc") -> model.Workflow:
     wf = parser.parse_file(path)
     findings = lint_mod.lint(wf, base_dir=Path(path).parent,
-                             check_roles=not no_role_check)
+                             check_roles=not no_role_check, backend=backend)
     for f in findings:
         print(f, file=sys.stderr)
     if lint_mod.has_errors(findings):
@@ -172,8 +174,10 @@ def _backend_executor_kwargs(backend: str) -> dict:
 
 
 def cmd_run(args) -> int:
-    wf = _load_validated(args.workflow, args.no_role_check)
+    # Backend first: validation's model-name checks are backend-specific, so a
+    # pi run must be linted as pi (an unavailable model is an error there).
     backend = _resolve_backend(args.backend)
+    wf = _load_validated(args.workflow, args.no_role_check, backend)
 
     if backend == "pi":
         from . import pi_cli  # deferred: needs the pi CLI only for this check
@@ -500,17 +504,19 @@ def _detect_ask_backend() -> str:
     return "cc" if os.environ.get("CLAUDE_CODE_SESSION_ID") else "pi"
 
 
-def _resolve_backend(explicit: str) -> str:
-    """`--backend {auto,cc,pi}` resolution shared by `run` and `ask`
+def _resolve_backend(explicit: str, quiet: bool = False) -> str:
+    """`--backend {auto,cc,pi}` resolution shared by `run`, `ask` and `validate`
     (mode-orchestrator-runs/phase6-run-pi-design.md §3.1: "same determinant,
     same default" as `ask --backend`, _detect_ask_backend promoted to
     shared use). auto detects from CLAUDE_CODE_SESSION_ID; an explicit
     cc/pi that disagrees with the detected environment is honored but
     warned about -- a forgotten/wrong flag would otherwise silently
-    dispatch against the wrong CLI."""
+    dispatch against the wrong CLI. quiet suppresses that warning for
+    `validate`, which dispatches nothing and would otherwise print it twice on
+    the `run` path (validate-then-execute shares this resolution)."""
     detected = _detect_ask_backend()
     backend = detected if explicit == "auto" else explicit
-    if explicit != "auto" and explicit != detected:
+    if explicit != "auto" and explicit != detected and not quiet:
         print(f"warning: --backend {explicit} given but the environment "
               f"looks like '{detected}' (CLAUDE_CODE_SESSION_ID is "
               f"{'set' if detected == 'cc' else 'unset'}); proceeding with "
@@ -1225,6 +1231,10 @@ def main(argv=None) -> int:
                             "(forbids <replan> and <param>)")
     p_val.add_argument("--defined-vars", metavar="VARS_JSON",
                        help="treat this vars file's keys as already defined")
+    p_val.add_argument("--backend", choices=("auto", "cc", "pi"), default="auto",
+                       help="which facility the workflow targets; only the "
+                            "model-name checks read it (pi verifies names "
+                            "against `pi --list-models`, cc checks none)")
     p_val.set_defaults(func=cmd_validate)
 
     p_run = sub.add_parser("run", help="validate then execute a workflow")

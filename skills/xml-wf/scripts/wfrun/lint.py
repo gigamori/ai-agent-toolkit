@@ -44,12 +44,75 @@ class _VarState:
         self.maybe.discard(name)
 
 
+def _lint_pi_models(wf: model.Workflow, steps, backend: str) -> list[Finding]:
+    """Model names, checked only when `backend == "pi"`.
+
+    Nothing is checked on cc/llm by design: those runs stay inside the canonical
+    difficulty vocabulary, which model_map binds to claude CLI names, so there
+    is no catalog a name could be missing from. pi is the opposite case — its
+    models are not in that vocabulary, `decider-model=` is allowed to name one
+    directly (spec.md, run-pi.md § decider-model), and an unresolvable name is
+    otherwise discovered only when the process launches.
+
+    The vocabulary still governs `model=`, so a non-canonical name there stays a
+    warning even when it resolves. Names are deduplicated: with a workflow-level
+    `decider="llm"` every step would otherwise report the same adjudicator.
+    """
+    if backend != "pi":
+        return []
+    from . import pi_cli  # deferred: needs the pi CLI only for this check
+
+    findings: list[Finding] = []
+    checked: dict[str, str] = {}  # name as pi receives it -> first site
+
+    def note(where: str, name: str | None) -> None:
+        if name and name not in checked:
+            checked[name] = where
+
+    for step in steps:
+        if step.model:
+            if step.model not in modelmap.CANONICAL_MODELS:
+                findings.append(Finding(
+                    "warn", "model-not-canonical",
+                    f"step '{step.id}': model='{step.model}' is not a canonical "
+                    f"difficulty name ({'/'.join(modelmap.CANONICAL_MODELS)}); "
+                    "it bypasses model_map.json"))
+            note(f"step '{step.id}' model=", modelmap.resolve(step.model, "llm"))
+        decider, decider_model = model.resolve_decider(wf, step)
+        if decider == "llm":
+            note(f"step '{step.id}' decider-model=",
+                 modelmap.resolve(decider_model, "llm"))
+
+    if not checked:
+        return findings
+
+    catalog = pi_cli.list_available_models()
+    if catalog is None:
+        findings.append(Finding(
+            "warn", "pi-model-unverified",
+            "pi's model catalog could not be read (`--list-models`), so "
+            f"{len(checked)} model name(s) went unverified — that is not a pass"))
+        return findings
+    for name, where in checked.items():
+        if not pi_cli.model_is_resolvable(name, catalog):
+            findings.append(Finding(
+                "error", "pi-model-unavailable",
+                f"{where} '{name}' matches no model pi currently offers, so the "
+                "call fails when the process launches; `--list-models` shows "
+                "what is available"))
+    return findings
+
+
 def lint(wf: model.Workflow, base_dir: str | Path = ".",
          check_roles: bool = True, as_child: bool = False,
-         defined_vars: set[str] | None = None) -> list[Finding]:
+         defined_vars: set[str] | None = None,
+         backend: str = "cc") -> list[Finding]:
     """as_child: validate a replan-generated continuation — <replan> (recursion)
     and <param> are forbidden. defined_vars: names to treat as already defined
-    (a child inherits the parent's live variable store)."""
+    (a child inherits the parent's live variable store).
+
+    backend: which facility the workflow is headed for ("cc" | "pi"). Only the
+    model-name checks read it — see `_lint_pi_models`."""
     base_dir = Path(base_dir)
     findings: list[Finding] = []
     err = lambda code, msg: findings.append(Finding("error", code, msg))
@@ -155,11 +218,6 @@ def lint(wf: model.Workflow, base_dir: str | Path = ".",
                 and step.output_type == "value" and not step.output):
             warn("value-without-output",
                  f"step '{step.id}': output-type=value without output= has no effect")
-        if step.model and step.model not in modelmap.CANONICAL_MODELS:
-            warn("model-not-canonical",
-                 f"step '{step.id}': model='{step.model}' is not a canonical "
-                 f"difficulty name ({'/'.join(modelmap.CANONICAL_MODELS)}); it "
-                 "bypasses model_map.json and may not run on every runner")
         if (isinstance(step, model.Step) and step.mode in NON_WRITING_MODES
                 and step.tools and model.tools_can_write(step.tools)):
             warn("mode-write-tools",
@@ -167,6 +225,8 @@ def lint(wf: model.Workflow, base_dir: str | Path = ".",
                  f"discipline but tools=\"{step.tools}\" grants write-capable "
                  "tools; the mode text is a probabilistic constraint — restrict "
                  "tools= for a deterministic one")
+
+    findings.extend(_lint_pi_models(wf, steps, backend))
 
     # --- variable flow --------------------------------------------------------
     state = _VarState(defined_vars or ())

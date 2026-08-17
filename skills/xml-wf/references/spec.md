@@ -92,7 +92,7 @@ instruction body; `<role>` (see below) may hold an inline role definition.
 | `id` | ✔ | - | Unique identifier. Key for logs, the steps/ directory, and resume |
 | `role` | - | - | Named role: a `.claude/agents/*.md` definition (project first, then the user agents dir — `$CLAUDE_CONFIG_DIR` or `~/.claude` — `/agents/`) whose **body is injected** as the `<role>` block. At most one of `role=` or an inline `<role>` child; declaring neither runs the step role-less |
 | `mode` | - | - | Execution mode (see "Execution modes" below) |
-| `model` | - | role frontmatter | Canonical difficulty name — `haiku`/`sonnet`/`opus` only (step attribute wins over the named role's frontmatter). Bound to an actual model per runner at dispatch (see "Model resolution"); other strings pass through but warn (`model-not-canonical`) |
+| `model` | - | role frontmatter | Canonical difficulty name — `haiku`/`sonnet`/`opus` only (step attribute wins over the named role's frontmatter). Bound to an actual model per runner at dispatch (see "Model resolution"); other strings pass through, and warn (`model-not-canonical`) under `--backend pi`, where the resolved name is also checked against pi's live catalog |
 | `effort` | - | - | `low`…`max` (forwarded to `--effort`) |
 | `output` | - | - | Variable name that receives the result |
 | `output-type` | - | `file` | See below |
@@ -553,7 +553,7 @@ the definitions of already-succeeded parts).
 ## CLI reference
 
 ```
-wfrun validate <wf.xml> [--json] [--no-role-check]
+wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi]
               [--as-child] [--defined-vars VARS_JSON]   # static validation (error = exit 1)
 wfrun run <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs]
           [--permission-mode acceptEdits]               # validate → execute
@@ -598,9 +598,20 @@ undersized `max`, `tools-not-inherited` — a step with no named `role=` to
 inherit tools from and no `tools=` of its own runs with the CLI's default
 tool permissions — and
 `mode-write-tools` — a non-writing mode (survey/plan/review/review-dev)
-combined with write-capable `tools=` — and `model-not-canonical` — a `model=`
-outside the canonical haiku/sonnet/opus vocabulary; a broken
-`model_map.json` is the error `model-map-invalid`).
+combined with write-capable `tools=`; a broken `model_map.json` is the error
+`model-map-invalid`).
+
+Model names are checked **only under `--backend pi`** (default `auto`, resolved
+from `CLAUDE_CODE_SESSION_ID` exactly as `run` and `ask` resolve it). There,
+every `model=` and every adjudicator model an `llm` decider would actually be
+sent — resolved through the `llm` table first — is matched against
+`pi --list-models`: a name matching nothing is the error
+`pi-model-unavailable`, and a `model=` outside the canonical vocabulary is the
+warning `model-not-canonical`. If the catalog cannot be read the warning is
+`pi-model-unverified`, never a pass. Under `cc` no model name is checked at
+all: those runs stay inside the canonical vocabulary, which `model_map.json`
+binds to claude CLI names, so there is no catalog for a name to be missing
+from.
 
 ## Workflow design guidelines (for builders)
 

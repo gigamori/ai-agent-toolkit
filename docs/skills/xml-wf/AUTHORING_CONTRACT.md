@@ -29,6 +29,10 @@ The implementations are independent (xml-wf enforces the contract in `wfrun` cod
 
 When editing either side's decider vocabulary, defaults, cap semantics, or escalation grounds, the `generate-sibling-handoff` registry (`references/families.md`, **decision-contract** family) owns the propagation trigger and the consumer list — consult it before landing the change, and do not duplicate its content here. Precedent: the cap-scope alignment landed as P3 (`9168a52`).
 
+## Model choice for evals
+
+`scripts/evals/` harnesses call a real CLI and cost money, so a `--model` default there is a maintained choice, not a placeholder. Take it from the **measurement layer** list in `references/build.md` (§ Model selection), which is canonical because `mode-orchestrator` reads the same list — do not restate the names here. When a default moves, say so at the call site: a rate measured under a different variant is not a continuation of the old figure. Precedent: `adjudicator_smoke.py` defaulted to `google/gemini-3.1-flash-lite` until 2026-08-17, and the 40/40 ruling rate `build.md` cites belongs to that variant, not to the current default.
+
 ## Mode prompt fragments
 
 `scripts/wfrun/modes/` is an INDEPENDENT derivation of the `role-mode` plugin's canonical mode bodies (`plugins/role-mode/prompts/modes/`), not a copy: xml-wf's own 4-axis/3-axis framework headers (`Mode / Rules / Task / Role`, `[BLOCKED: rules <id>]` literal, guardrail text) exist because a `<step>` carries `<rules>` and `<task>` that canonical does not model. Only the **mode filename set** (identity — which modes exist) tracks canonical; bodies and headers are maintained here independently and must never be synced by filename match. Propagation obligations and drift detection are owned by the `generate-sibling-handoff` skill's registry (`references/families.md`, `role-mode` family) — see that registry before touching `scripts/wfrun/modes/`, and do not duplicate its content here.

@@ -89,6 +89,19 @@ human.
 `decider-model` resolves through the **`llm`** table of `model_map.json` (steps
 resolve the same way), so it takes any model name your pi install accepts.
 
+Because that name is free-form, `wfrun validate --backend pi` (and the
+validation `wfrun run --backend pi` does first) checks it: every `model=` and
+every adjudicator an `llm` decider would actually be sent is matched against
+`pi --list-models`, and a name matching nothing fails validation
+(`pi-model-unavailable`) instead of failing when the process launches. The
+match mirrors pi's own resolver — exact on `id` or `provider/id`, else
+substring on `id`, which is why the canonical `opus` reaches `opus[1m]`. Two
+things it cannot see: pi also matches a model's display name, which
+`--list-models` does not print, and the catalog does not reflect pi's
+authenticated-only filter. Both make the check narrower than pi, so it never
+rejects a name pi could resolve by id. An unreadable catalog is reported as
+`pi-model-unverified`, not as a pass.
+
 **This is prompt adherence, not an enforced format.** Without a schema to force
 the shape, how often a given model produces a usable ruling is a measured
 property of that model — see the sampling harness at
