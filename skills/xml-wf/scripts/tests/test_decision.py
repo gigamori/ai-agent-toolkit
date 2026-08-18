@@ -1759,6 +1759,24 @@ class TestPreambleAnchoring(DecisionExecutorTestCase):
                           if e.get("kind") == "warning"])
         self.assertFalse(ex.protocol_warnings)
 
+    def test_replacement_char_in_a_success_warns_without_failing(self):
+        """cp932-decode-fix-design.md C2: the launchers decode with
+        errors="replace", so undecodable child bytes become U+FFFD instead of
+        killing the run. That substitution must leave a trace rather than pass
+        silently -- but it must not change the verdict."""
+        self.respond_text("DO-WORK", "caf� au lait")
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w"><task>DO-WORK</task></step>'))
+        ex.run()  # still a success: observability only
+        warnings = [e for e in load_events(self.run_dir)
+                    if e.get("kind") == "warning"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["key"], "s1")
+        self.assertEqual(warnings[0]["surface"], "response")
+        self.assertEqual(warnings[0]["replacement_chars"], 1)
+        self.assertIn("U+FFFD", warnings[0]["warning"])
+        self.assertEqual(len(ex.protocol_warnings), 1)
+
 
 class TestRunLlmPreamble(RunLlmAdjudicationTestCase):
     """D9 on the run-llm path: record files the anchored payload and the

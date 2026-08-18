@@ -182,9 +182,13 @@ def _supports_system_prompt_file(claude_bin: str) -> bool:
                               "__wfrun_probe_nonexistent__.txt")
     supported = False
     try:
+        # encoding/errors: see the comment in _launch. Low risk here (the
+        # verdict wording is ASCII) but the contract holds file-wide -- a
+        # decode crash in a capability probe would be just as unclassified.
         probe = subprocess.run(
             [claude_bin, "-p", "--append-system-prompt-file", probe_path],
-            input="", capture_output=True, text=True, timeout=15)
+            input="", capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15)
         stderr = (probe.stderr or "").lower()
         if "unknown option" in stderr:
             supported = False
@@ -422,8 +426,12 @@ def _run_with_tree_kill(cmd: list[str], prompt: str, timeout: int,
     default pending real verification, same as the Windows path above.
     """
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    # encoding/errors: see the comment at the sibling subprocess.run in _launch.
+    # Reached by `wfrun dispatch` (kill_tree=True) and by every pi step, which
+    # routes here unconditionally, so it carries the same UTF-8 contract.
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, cwd=cwd,
+                            encoding="utf-8", errors="replace",
                             creationflags=creationflags,
                             start_new_session=(os.name != "nt"))
     try:
@@ -529,7 +537,27 @@ def _launch(prompt: str, *, system_prompt: str | None = None,
             if kill_tree:
                 proc = _run_with_tree_kill(cmd, prompt, timeout, cwd)
             else:
+                # UTF-8 both ways, never strict. `encoding=` governs stdin as
+                # well as stdout/stderr, so this fixes two defects at once:
+                #
+                #  - decode: without it, text mode uses the platform default
+                #    (cp932 on JA Windows) and ONE undecodable reply byte kills
+                #    subprocess's reader thread. stdout comes back None and
+                #    classify_result dies on json.loads(None) -- the whole run
+                #    aborts unclassified, so no error_class and no retry/debug/
+                #    decision path. Took down two live measurement runs.
+                #  - encode: `input=prompt` was likewise cp932-encoded, which
+                #    both raises on any character cp932 lacks and mismatches
+                #    the child (node reads stdin as UTF-8).
+                #
+                # errors="replace" over strict: the payload is a JSON envelope
+                # whose structure is pure ASCII, so a replaced byte costs one
+                # U+FFFD in a message body while every field classification
+                # reads survives. Strict would cost the entire run. The
+                # substitution is not silent -- the executor warns on U+FFFD.
+                # Same treatment at every site in this file and in pi_cli.py.
                 proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace",
                                       timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired as e:
             stderr = getattr(e, "stderr", None)

@@ -150,9 +150,13 @@ def ask_llm_pi(question: str, *, model: str = "haiku", cwd: str | None = None,
     reason = "no structured answer"
     for _ in range(2):
         try:
+            # encoding/errors: see the comment at _launch's subprocess.run in
+            # claude_cli.py. This carries an LLM answer, so it is one of the
+            # sites where an undecodable byte was never hypothetical.
             proc = subprocess.run(
                 cmd, stdin=subprocess.DEVNULL, capture_output=True,
-                text=True, timeout=timeout, cwd=cwd)
+                text=True, encoding="utf-8", errors="replace",
+                timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired:
             reason = f"timeout after {timeout}s"
             continue

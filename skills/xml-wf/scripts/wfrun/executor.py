@@ -385,6 +385,9 @@ class Executor:
                 tools=dispatch_tools, schema=step.schema, timeout=step.timeout,
                 cwd=str(self.base_dir), permission_mode=permission)
             self._add_cost(res.cost_usd)
+            # Before any branch: a lossy decode is worth a trace whether the
+            # step passed, failed, or got reclassified below.
+            self._warn_replacement_chars(step.id, res)
             if res.ok:
                 # Mode/rules refusal (_meta protocol). run_claude also flags
                 # this; checking here keeps the pipeline safe with any runner.
@@ -589,6 +592,35 @@ class Executor:
                          lines=[[number, prefix] for number, prefix in strays])
         with self._lock:
             self.protocol_warnings.append(warning)
+
+    def _warn_replacement_chars(self, key: str, res) -> None:
+        """One warning when a response carries U+FFFD (§3.1 observability).
+
+        The launchers decode child output as UTF-8 with errors="replace", so a
+        byte the child emitted outside UTF-8 no longer kills the run -- it
+        becomes a replacement character. That trade turns a loud crash into a
+        quiet substitution, which is exactly the silent-failure shape this
+        runner exists to remove, so the substitution gets a trace.
+
+        Observability only, never reclassification: the JSON envelope is ASCII,
+        so every field the classifier reads survives replacement intact and the
+        step's verdict is unaffected. A model that types U+FFFD on purpose
+        trips this too; a false warning costs a line, a missed corruption costs
+        a wrong answer nobody questions.
+        """
+        for surface, text in (("response", res.text), ("stderr", res.stderr)):
+            if not text or "�" not in text:
+                continue
+            count = text.count("�")
+            warning = (f"step '{key}': {surface} carries {count} replacement "
+                       f"character(s) (U+FFFD) -- the child emitted bytes that "
+                       f"are not valid UTF-8 and they were substituted, not "
+                       f"decoded; classification was unaffected but the text "
+                       f"is lossy at those positions")
+            self.state.event("warning", key=key, warning=warning,
+                             surface=surface, replacement_chars=count)
+            with self._lock:
+                self.protocol_warnings.append(warning)
 
     # ---------------------------------------------------------- decision ---
     def _handle_decision(self, step: model.Step, res, cycle: int) -> str:
@@ -982,6 +1014,7 @@ class Executor:
                 tools="Read,Glob,Grep", schema=None, timeout=node.timeout,
                 cwd=str(self.base_dir), permission_mode=None)  # read-only builder
             self._add_cost(res.cost_usd)
+            self._warn_replacement_chars(node.id, res)
             (attempt_dir / "result.json").write_text(
                 json.dumps(res.raw if res.raw is not None else
                            {"ok": res.ok, "error": res.error, "text": res.text},
