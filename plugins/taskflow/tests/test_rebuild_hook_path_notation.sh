@@ -23,10 +23,10 @@ TMP_RAW="$(mktemp -d)"
 NATIVE_TMP="$(cygpath -m "$TMP_RAW")"   # e.g. C:/Users/.../AppData/Local/Temp/tmp.XXXX
 NATIVE_TMP_BS="${NATIVE_TMP//\//\\}"    # backslash form
 # This sandbox's mktemp -d resolves under /tmp (no drive letter), which is NOT
-# the notation that caused the original bug (Git-Bash's /c/... drive mount —
-# session f5e0e95b used /path/to/tree/pi/...). Re-derive the /c/...-style
-# alias from NATIVE_TMP so Case 1/3 exercise the real regression, not a
-# same-string no-op. Confirmed alias (same underlying dir) via cygpath -m.
+# the notation that caused the original bug (Git-Bash's /c/... drive mount).
+# Re-derive the /c/...-style alias from NATIVE_TMP so Case 1/3 exercise the
+# real regression, not a same-string no-op. Confirmed alias (same underlying
+# dir) via cygpath -m.
 DRIVE_LETTER=$(echo "${NATIVE_TMP:0:1}" | tr 'A-Z' 'a-z')
 TMP="/$DRIVE_LETTER${NATIVE_TMP:2}"
 echo "=== isolated tmpdir: $TMP (native: $NATIVE_TMP) ==="
