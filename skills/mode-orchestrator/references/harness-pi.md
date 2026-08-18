@@ -315,9 +315,11 @@ This single mechanism covers what CC's watchdog splits into `TIMEOUT` and
   turn is blocked on the `bash` call, so it is not polling a transcript in the
   first place. If the child `pi -p` hangs, the timeout above ends it either
   way.
-- There is no `DONE` equivalent, and none is needed: when the `bash` call
-  returns without a timeout error, the turn is already complete — there is no
-  separate wake to wait for.
+- There is no separate completion wake either, and none is needed: when the
+  `bash` call returns without a timeout error, the turn is already complete. On
+  CC the completion notification is what ends the normal path, and the
+  orchestrator must stop the watchdog there; here there is no background process
+  to stop.
 
 **Verified end-to-end, 2026-08-13** (pi v0.84.1, the Pi facet E2E — closing
 what `handoff-phase5-onward.md` §7 listed as "bash timeout の kill がターン分類に

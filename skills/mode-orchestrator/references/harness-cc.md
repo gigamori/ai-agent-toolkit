@@ -60,20 +60,26 @@ the completion of a background command it started itself. Without the watchdog
 a subagent that never returns leaves the run waiting indefinitely, which is the
 failure this whole mechanism exists to prevent.
 
-It exits with one word — `DONE`, `TIMEOUT`, or `STALL` — and that exit is the
-wake. Thresholds live at the top of the script; do not pass the delegation
-call's agent id to it, since it resolves the transcript from `--desc` on its
-own.
+It exits with one word — `TIMEOUT` or `STALL` — and that exit is the wake. Both
+are trouble verdicts: the watchdog wakes you only when the turn is over its
+wall-clock budget or its subagent stopped generating. Thresholds live at the top
+of the script; do not pass the delegation call's agent id to it, since it
+resolves the transcript from `--desc` on its own.
 
-`DONE` means the deliverable was written *during this turn* — the file must
-also be newer than the watchdog's start, not merely present. This matters
-because a re-run reuses the deliverable path, so on any second attempt the file
-is already there from the first.
+**Writing the deliverable is not a wake.** The watchdog watches the file and
+keeps monitoring after it appears: both verdict messages state whether the turn
+had written it, and a fresh write is recorded in the `--log` trace. Exiting there
+instead would wake you *before* the turn's own completion notification, with no
+defined meaning, and would leave the reply-composing tail of the turn — which
+comes after the file is written — with no time bound at all. "Written during
+this turn" still governs what the file check counts: the file must be newer than
+the watchdog's start, not merely present, because a re-run reuses the deliverable
+path, so on any second attempt the file is already there from the first.
 
-Whichever finishes first wins. When the turn's own completion notification
-arrives first, stop the watchdog task: a verdict that lands after the turn
-already has a readable status is stale and must be ignored, never
-re-classified.
+**The normal-path wake is the turn's own completion notification, and at that
+point you stop the watchdog task** — that is now the only way a well-behaved
+turn's watchdog ends. A verdict that lands after the turn already has a readable
+status is stale and must be ignored, never re-classified.
 
 ## `aborted` handling (Execution step 4)
 
@@ -95,8 +101,9 @@ end the run outright.
   `STALL` immediately against a turn that is working fine.
 - The deliverable path, by contrast, stays the same on a re-run, and that is
   fine: the watchdog requires the file to be newer than its own start, so a
-  partial file the aborted attempt managed to write is ignored rather than
-  read as an instant `DONE`. Pass the same `--deliv` you passed the first time.
+  partial file the aborted attempt managed to write is noted once in the trace
+  as stale and never counted as this turn's output. Pass the same `--deliv` you
+  passed the first time.
 
 ## Denial check (after each turn's status line)
 
@@ -180,6 +187,12 @@ holding.
 - The watchdog's own guarantee is bounded: it proves a turn exceeded a budget,
   never that the turn was wrong. Its thresholds are wall-clock guesses, so they
   are calibrated to over-wait rather than cut a slow turn short.
+- Since the watchdog no longer ends itself when the deliverable appears, a turn
+  whose watchdog is not stopped within the stall threshold of the child
+  completing produces a stale `STALL` wake, where the old deliverable-triggered
+  early exit produced none. The stale-verdict rule above discards it, so this is
+  noise rather than a defect — recorded here because an unrecorded new failure
+  shape reads as a real one.
 - `STALL` cannot distinguish a hung subagent from one that is thinking or
   sitting in a long tool call — the transcript looks identical in all three.
   The threshold is therefore set well above the longest tool call a turn is

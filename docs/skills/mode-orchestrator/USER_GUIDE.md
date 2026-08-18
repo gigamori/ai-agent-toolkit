@@ -239,19 +239,27 @@ ever arrives. The orchestrator cannot notice that on its own: it only acts when
 something wakes it, so an answer that never comes is a wait that never ends.
 
 So every turn is started alongside a **watchdog** (`scripts/watchdog.sh`) running
-in the background. It reports whichever of these happens first, then exits — and
-that exit is what wakes the orchestrator:
+in the background. It wakes the orchestrator only when something has gone wrong,
+reporting whichever comes first and then exiting — and that exit is the wake:
 
-- the turn's **deliverable file** is written during the turn and is non-empty — `DONE`;
-- the turn's **wall-clock deadline** passes with no deliverable — `TIMEOUT`;
+- the turn's **wall-clock deadline** passes — `TIMEOUT`;
 - the subagent's transcript **stops growing** for the stall threshold — `STALL`.
 
-"During the turn" is load-bearing: a re-run writes to the same path as the
-attempt it replaces, so the file is often already there when the second attempt
-starts. The watchdog therefore requires the deliverable to be newer than its own
-start. Without that it would report `DONE` immediately against the dead
-attempt's leftovers and the re-run would go unwatched — silently, since a
-premature `DONE` looks exactly like a real one.
+The normal path is not one of them. A turn that finishes sends its own completion
+notification, and the orchestrator stops the watchdog task at that point. The
+watchdog deliberately does *not* exit when the deliverable appears: a subagent
+writes its file and only then composes its reply, so leaving there would wake the
+orchestrator ahead of the turn's own notification, and would leave that
+reply-writing tail with no time limit at all — the undetected wait the watchdog
+exists to prevent. It still watches the file, and both `TIMEOUT` and `STALL` say
+whether the turn had written it. That is what makes a hung tail legible: the
+deliverable is there and the transcript went quiet.
+
+"Written during this turn" is load-bearing in that message: a re-run writes to the
+same path as the attempt it replaces, so the file is often already there when the
+second attempt starts. The watchdog therefore counts only a deliverable newer than
+its own start; an older one is noted once in its trace as stale and never
+reported as this turn's output.
 
 The watchdog only reports; it never stops anything itself. On `TIMEOUT` or
 `STALL` the orchestrator stops the turn and classifies it `aborted`, then re-runs

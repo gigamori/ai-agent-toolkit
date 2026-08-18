@@ -8,9 +8,18 @@
 # `Bash(run_in_background=true)` and its EXIT is the wake signal.
 #
 # Verdict is the single stdout word, and also the exit code:
-#   DONE     0  deliverable file exists and is non-empty
-#   TIMEOUT  1  wall-clock deadline reached with no deliverable
+#   TIMEOUT  1  wall-clock deadline reached
 #   STALL    2  the subagent's transcript stopped growing for STALL seconds
+#
+# Writing the deliverable is NOT an exit condition. A subagent writes its file
+# and only then composes its reply, so exiting on the file would (a) wake the
+# orchestrator before the turn's own completion notification, with no defined
+# meaning, and (b) leave the reply-composing tail of the turn with no time bound
+# at all — the undetected wait this whole mechanism exists to prevent. The
+# normal-path wake is the turn's own completion notification; the orchestrator
+# stops this watchdog at that point. The deliverable is still observed, and both
+# verdict messages state whether it was written, because a hung tail presents
+# exactly as "deliverable written, then transcript idle".
 #
 # On TIMEOUT / STALL the orchestrator classifies the turn `aborted` (see
 # SKILL.md, Execution step 4). This script never kills anything: stopping the
@@ -32,7 +41,8 @@
 #     that call, so STALL must exceed the longest tool call a turn may make.
 #   - A deliverable path is REUSED across attempts: SKILL.md re-runs an aborted
 #     turn onto the same file. So "the file exists" cannot mean "this turn wrote
-#     it", and DONE additionally requires the file to be newer than t0.
+#     it"; the freshness stamp below is what makes the observation answerable
+#     for this turn, and therefore what the verdict messages can rely on.
 
 set -u
 
@@ -78,9 +88,10 @@ usage() {
   cat >&2 <<'EOF'
 usage: watchdog.sh --deliv <path> --desc <delegation description> [options]
 
-  --deliv <path>     Deliverable the turn must write. Use `-` for a turn that
-                     writes no file; the deliverable check is then skipped and
-                     only the deadline and stall checks apply.
+  --deliv <path>     Deliverable the turn must write. Watching it never ends the
+                     run — it only enriches the verdict message and the trace
+                     with whether the turn had written its file. Use `-` for a
+                     turn that writes no file; the check is then skipped.
   --desc <text>      The description string passed on the delegation call, used
                      verbatim to resolve the agent's transcript. Must match
                      exactly. Keep it free of double quotes and backslashes.
@@ -141,11 +152,23 @@ verdict() {
   echo "watchdog: $1 — $2" >&2
   trace "$1 — $2"
   case "$1" in
-    DONE)    exit 0 ;;
     TIMEOUT) exit 1 ;;
     STALL)   exit 2 ;;
   esac
   exit 3
+}
+
+# Both verdicts carry this. A tail-hang — the subagent wrote its file and then
+# stopped generating mid-reply — is only legible if the STALL message says the
+# deliverable was already there.
+deliv_note() {
+  if [ "$DELIV" = "-" ]; then
+    echo "no deliverable expected"
+  elif [ -n "$DELIV_AT" ]; then
+    echo "deliverable written ${DELIV_AT}s in"
+  else
+    echo "no deliverable written this turn"
+  fi
 }
 
 # Locate the transcript of the agent whose meta.json carries our description.
@@ -179,21 +202,28 @@ touch -d "@$((t0 - RESOLVE_BACKDATE))" "$STAMP" 2>/dev/null || true
 # grace window because the delegation call and this script start together and
 # their order is not guaranteed; a deliverable has no such race, since the turn
 # cannot have written its output before it started. Widening this window would
-# re-admit the previous attempt's leftover file, which is the whole failure this
-# check exists to stop — a re-run's deliverable path is the SAME path.
+# re-admit the previous attempt's leftover file — a re-run's deliverable path is
+# the SAME path — and the verdict message would then report someone else's file
+# as this turn's output.
 touch -d "@$t0" "$DELIV_STAMP" 2>/dev/null || true
 
 TRANS=""
 STALE_NOTED=""
+# Elapsed seconds at which this turn's deliverable was first seen. Latched: it
+# records the observation, it does not end the run.
+DELIV_AT=""
 trace "start deliv=$DELIV mode=${MODE:-<unset>} deadline=${DEADLINE}s stall=${STALL}s poll=${POLL}s"
 
 while :; do
   now=$(date +%s)
   elapsed=$((now - t0))
 
-  if [ "$DELIV" != "-" ] && [ -s "$DELIV" ]; then
+  if [ "$DELIV" != "-" ] && [ -z "$DELIV_AT" ] && [ -s "$DELIV" ]; then
     if [ "$DELIV" -nt "$DELIV_STAMP" ]; then
-      verdict DONE "deliverable written after ${elapsed}s"
+      # Not an exit. The turn still has to compose its reply, and that tail is
+      # exactly what stays unbounded if the watchdog leaves here.
+      DELIV_AT=$elapsed
+      trace "deliverable written after ${elapsed}s — continuing to monitor: $DELIV"
     elif [ -z "$STALE_NOTED" ]; then
       # Left by an earlier attempt at this same turn. Say so once: a run that
       # keeps starting against a stale deliverable is worth seeing in the trace,
@@ -216,14 +246,14 @@ while :; do
     idle=$((now - mtime))
     trace "elapsed=${elapsed}s idle=${idle}s size=$(stat -c %s "$TRANS" 2>/dev/null || echo '?')"
     if [ "$idle" -ge "$STALL" ]; then
-      verdict STALL "no transcript activity for ${idle}s (elapsed ${elapsed}s)"
+      verdict STALL "no transcript activity for ${idle}s (elapsed ${elapsed}s) — $(deliv_note)"
     fi
   else
     trace "elapsed=${elapsed}s (no transcript yet)"
   fi
 
   if [ "$elapsed" -ge "$DEADLINE" ]; then
-    verdict TIMEOUT "deadline of ${DEADLINE}s reached with no deliverable"
+    verdict TIMEOUT "deadline of ${DEADLINE}s reached — $(deliv_note)"
   fi
 
   sleep "$POLL"

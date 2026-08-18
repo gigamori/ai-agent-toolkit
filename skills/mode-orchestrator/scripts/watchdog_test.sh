@@ -8,8 +8,10 @@
 # it that way, so these stay runnable on a machine that has never run the skill.
 #
 # Timings are deliberately tiny (deadlines of a few seconds, POLL=1). The whole
-# suite should finish in wall-clock seconds; if a case starts taking minutes,
-# something is hanging rather than passing slowly.
+# suite should finish in well under a minute; if a case starts taking minutes,
+# something is hanging rather than passing slowly. The cases that assert the
+# watchdog is STILL RUNNING have to wait out a real deadline to finish, so they
+# are the slow ones by design.
 
 set -u
 
@@ -27,10 +29,32 @@ N=0
 
 WD_OUT=""
 WD_RC=0
+WD_ERR=""
+WD_STDOUT=""
+WD_PID=""
 
+# Stderr goes to a file so a case can assert on the verdict's reason line, not
+# just on the verdict word.
 run_wd() {
-  WD_OUT="$(bash "$WATCHDOG" "$@" 2>/dev/null)"
+  WD_ERR="${CASE:-$WORK}/wd.err"
+  WD_OUT="$(bash "$WATCHDOG" "$@" 2>"$WD_ERR")"
   WD_RC=$?
+}
+
+# Background variant, for the cases that have to observe the watchdog STILL
+# RUNNING at a moment of the test's choosing. run_wd blocks, so it can only ever
+# see the end of a run.
+start_wd() {
+  WD_ERR="$CASE/wd.err"
+  WD_STDOUT="$CASE/wd.out"
+  bash "$WATCHDOG" "$@" >"$WD_STDOUT" 2>"$WD_ERR" &
+  WD_PID=$!
+}
+
+wait_wd() {
+  wait "$WD_PID"
+  WD_RC=$?
+  WD_OUT="$(cat "$WD_STDOUT")"
 }
 
 # expect <name> <expected-word> <expected-rc>   — compares against last run_wd
@@ -44,6 +68,19 @@ expect() {
     FAIL=$((FAIL + 1))
     printf 'FAIL %2d  %s — expected [%s]/%s, got [%s]/%s\n' \
       "$N" "$name" "$ew" "$erc" "$WD_OUT" "$WD_RC"
+  fi
+}
+
+# expect_alive <name> — the background watchdog is still running right now
+expect_alive() {
+  local name="$1"
+  N=$((N + 1))
+  if kill -0 "$WD_PID" 2>/dev/null; then
+    PASS=$((PASS + 1))
+    printf 'ok   %2d  %s\n' "$N" "$name"
+  else
+    FAIL=$((FAIL + 1))
+    printf 'FAIL %2d  %s — watchdog already exited\n' "$N" "$name"
   fi
 }
 
@@ -89,12 +126,24 @@ echo "watchdog self-tests"
 echo
 
 # --- deliverable detection -------------------------------------------------
+# Writing the deliverable is an observation, not an exit. The subagent composes
+# its reply AFTER writing the file, so a watchdog that left here would leave
+# that tail unbounded; completion is the orchestrator's own wake, and it stops
+# the watchdog then.
 
 newcase deliv-fresh
-( sleep 2; printf 'content\n' > "$DELIV" ) &
-run_wd --deliv "$DELIV" --desc "d1" --deadline 12 --poll 1 --project-root "$PROOT"
-expect "a deliverable written during the turn is DONE" DONE 0
-wait
+start_wd --deliv "$DELIV" --desc "d1" --deadline 12 --poll 1 \
+  --project-root "$PROOT" --log "$CASE/trace.log"
+sleep 2
+printf 'content\n' > "$DELIV"
+sleep 4   # several poll ticks past the write
+expect_alive "the watchdog keeps running after the deliverable appears"
+wait_wd
+expect "a turn whose deliverable was written still ends at its deadline" TIMEOUT 1
+expect_grep "the deliverable observation is traced, not exited on" \
+  "deliverable written after [0-9]+s — continuing to monitor" "$CASE/trace.log"
+expect_grep "TIMEOUT says the deliverable was written" \
+  "TIMEOUT — .*deliverable written [0-9]+s in" "$WD_ERR"
 
 # The regression test for the stale-latch defect: a file left by an earlier
 # attempt at the SAME turn must not be mistaken for this turn's output.
@@ -102,21 +151,31 @@ newcase deliv-stale
 printf 'left over from a previous attempt\n' > "$DELIV"
 touch -d "@$(( $(now) - 300 ))" "$DELIV"
 run_wd --deliv "$DELIV" --desc "d2" --deadline 3 --poll 1 --project-root "$PROOT"
-expect "a deliverable predating t0 is stale, not DONE" TIMEOUT 1
+expect "a deliverable predating t0 does not count as this turn's" TIMEOUT 1
+expect_grep "TIMEOUT says no deliverable was written" \
+  "TIMEOUT — .*no deliverable written this turn" "$WD_ERR"
 
 # The re-run case end to end: stale file present at t0, turn overwrites it later.
 newcase deliv-stale-then-fresh
 printf 'left over\n' > "$DELIV"
 touch -d "@$(( $(now) - 300 ))" "$DELIV"
-( sleep 2; printf 'this attempt\n' > "$DELIV" ) &
-run_wd --deliv "$DELIV" --desc "d3" --deadline 12 --poll 1 --project-root "$PROOT"
-expect "a stale deliverable overwritten during the turn is DONE" DONE 0
-wait
+start_wd --deliv "$DELIV" --desc "d3" --deadline 12 --poll 1 \
+  --project-root "$PROOT" --log "$CASE/trace.log"
+sleep 2
+printf 'this attempt\n' > "$DELIV"
+sleep 4
+expect_alive "an overwritten stale deliverable does not end the run either"
+expect_grep "the overwrite is recognised as this turn's write" \
+  "deliverable written after [0-9]+s — continuing to monitor" "$CASE/trace.log"
+wait_wd
+expect "the re-run case still ends at its deadline" TIMEOUT 1
 
 newcase deliv-empty
 : > "$DELIV"
 run_wd --deliv "$DELIV" --desc "d4" --deadline 3 --poll 1 --project-root "$PROOT"
-expect "a zero-byte deliverable is not DONE" TIMEOUT 1
+expect "a zero-byte deliverable does not count as written" TIMEOUT 1
+expect_grep "a zero-byte deliverable is reported as not written" \
+  "TIMEOUT — .*no deliverable written this turn" "$WD_ERR"
 
 newcase deliv-none
 run_wd --deliv - --desc "d5" --deadline 3 --poll 1 --project-root "$PROOT"
@@ -146,6 +205,20 @@ run_wd --deliv "$DELIV" --desc "turn desc active" --deadline 4 --stall 3 --poll 
 expect "a transcript still being appended does not STALL" TIMEOUT 1
 kill "$APPENDER" 2>/dev/null
 wait "$APPENDER" 2>/dev/null
+
+# The tail-hang shape: the turn wrote its deliverable and then stopped
+# generating mid-reply. This is the case the enriched STALL message exists for —
+# without it, "STALL" alone reads as a turn that produced nothing.
+newcase stall-after-deliv
+fake_agent "turn desc tail hang" 5 0
+start_wd --deliv "$DELIV" --desc "turn desc tail hang" --deadline 60 --stall 6 --poll 1 \
+  --project-root "$PROOT"
+sleep 1
+printf 'content\n' > "$DELIV"
+wait_wd
+expect "a hung tail after the deliverable is STALL, not an early exit" STALL 2
+expect_grep "STALL says the deliverable was already written" \
+  "STALL — .*deliverable written [0-9]+s in" "$WD_ERR"
 
 # --- transcript resolution -------------------------------------------------
 
