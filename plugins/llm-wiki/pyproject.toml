@@ -16,7 +16,14 @@ dependencies = []
 doc = []
 
 [dependency-groups]
+# Test-environment group. Area runtime deps appear here — and ONLY here, never
+# in `[project].dependencies` — when the test suite imports the area module
+# directly and so cannot go through the entrypoint that carries the PEP 723
+# declaration: `duckdb` for `ingest`, `markdown`/`nh3` for `view`
+# (bin/llmwiki-view declares those two inline).
 dev = [
     "duckdb>=1.5.5",
+    "markdown>=3.10.3",
+    "nh3>=0.3.6",
     "pytest>=9.1.1",
 ]

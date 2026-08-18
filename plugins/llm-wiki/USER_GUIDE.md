@@ -318,7 +318,9 @@ Claude reads it when answering, and the `active wiki:` line shows the `(scope: p
 
 **Concurrent sessions are safe.** Each session resolves the project *its own* session is
 in — so two Claude Code sessions in different projects never read each other's wiki, even
-running side by side.
+running side by side. A session with no taskflow project assigned has no pj wiki at all —
+it falls through to the workspace or current-folder wiki (or resolves nothing), rather
+than borrowing another session's.
 
 ### Turn the wiki off (and on) for a session — `wiki:on` / `wiki:off`
 

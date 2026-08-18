@@ -99,8 +99,14 @@ def main() -> None:
 
     cwd = data.get("cwd") or os.getcwd()
     # Session id (Phase 1 P1): taskflow writes `_projects/_state/<session_id>.json`,
-    # so passing it lets the pj scope read THIS session's state file first (no
-    # concurrent-session wiki mix-up). Absent -> resolver falls back to mtime-latest.
+    # so passing it lets the pj scope read THIS session's state file EXCLUSIVELY (no
+    # concurrent-session wiki mix-up). Two distinct absences here, do not conflate:
+    #   - no `session_id` in the hook JSON at all (falsy `""` below) -> the resolver
+    #     never enters the session-aware branch and keeps the legacy mtime-latest
+    #     scan (unchanged back-compat path).
+    #   - `session_id` present but `_projects/_state/<session_id>.json` is absent /
+    #     unreadable / has no usable `project` -> fail-closed (2026-08-19): the pj
+    #     scope is skipped, NOT a fallback to another session's state.
     session_id = data.get("session_id") or ""
     # Resolve the active wiki across pj / workspace / cwd (plan §2-C, W-f). This
     # replaces the old direct `marker.detect(cwd)` gate so a wiki linked via the

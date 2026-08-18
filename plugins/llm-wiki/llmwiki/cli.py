@@ -76,6 +76,13 @@ def _resolve_root(argv: list[str]) -> int:
     # it concurrent sessions on different pj cross-talk via mtime-latest). Both may
     # also use `--flag=value`. A bare positional is still accepted as the root
     # (back-compat). An empty value falls through to existence-based resolution.
+    #
+    # `explain=True`: when a `--sid` WAS given and `_projects/_state/<sid>.json`
+    # carries no usable `project`, the resolver skips pj rather than falling back
+    # to a mtime-latest scan of another session's state, and prints one
+    # `pj-skip: ...` line on stderr. Diagnostic only — stdout (root, then scope)
+    # and the exit code (0 / 2 NO-WIKI) are unchanged, and readers must keep
+    # branching on the exit status, not on stderr text.
     arg = None
     sid = None
     i = 0
@@ -104,7 +111,7 @@ def _resolve_root(argv: list[str]) -> int:
         if arg is None and a:
             arg = a
         i += 1
-    res = wiki_root_resolver.resolve(arg, session_id=sid)
+    res = wiki_root_resolver.resolve(arg, session_id=sid, explain=True)
     if res is None:
         print("NO-WIKI", file=sys.stderr)
         return 2

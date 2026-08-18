@@ -3,9 +3,14 @@
 Covers each scope in isolation and the full precedence chain:
   prompt > pj > workspace > cwd ; None when nothing exists.
 
-pj uses the most-recent `_projects/_state/*.json` `project` field +
-`$TASKFLOW_PROJECT_ROOTS` (or the `_projects/` fallback), and degrades cleanly
-(skips pj) when there is no state file / no project / no matching wiki.
+pj has two postures selected by whether `session_id` is given (fail-closed,
+2026-08-19): with a `session_id`, ONLY that session's own
+`_projects/_state/<session_id>.json` `project` field is read — absent /
+unreadable / no usable `project` skips pj (never falls back to another
+session's state). With no `session_id` (legacy callers), the most-recent
+`_projects/_state/*.json` `project` field + `$TASKFLOW_PROJECT_ROOTS` (or the
+`_projects/` fallback) is used, and degrades cleanly (skips pj) when there is
+no state file / no project / no matching wiki.
 
 These tests AUTHOR the expectations only (T1: execute, no self-run).
 """
@@ -144,29 +149,88 @@ def test_pj_prefers_session_state_over_mtime_latest(tmp_path, monkeypatch):
     assert res.root == my_wiki
 
 
-def test_pj_falls_back_to_mtime_when_session_file_absent(tmp_path, monkeypatch):
-    # session_id given but no `<sid>.json` -> fall back to mtime-latest.
+def test_pj_fails_closed_when_session_file_absent(tmp_path, monkeypatch):
+    # Fail-closed (2026-08-19): session_id given but no `<sid>.json` -> pj is
+    # skipped, NOT a fallback to another session's mtime-latest state. Fixture
+    # check: only `roots/` and `_projects/` exist under tmp_path, neither
+    # carries `.llmwiki`, so workspace/cwd/child all miss too and resolve()
+    # genuinely returns None.
     proot = tmp_path / "roots"
-    wiki = _make_wiki(proot / "onlyproj" / "wiki")
+    _make_wiki(proot / "onlyproj" / "wiki")
     _write_state(tmp_path, "onlyproj", name="bbb.json")
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
-    res = wrr.resolve(cwd=tmp_path, session_id="no-such-sid")
-    assert res.scope == "pj"
-    assert res.root == wiki
+    assert wrr.resolve(cwd=tmp_path, session_id="no-such-sid") is None
 
 
-def test_pj_falls_back_when_session_file_has_no_project(tmp_path, monkeypatch):
-    # `<sid>.json` exists but has no usable `project` -> fall back to mtime-latest.
+def test_pj_fails_closed_when_session_file_has_no_project(tmp_path, monkeypatch):
+    # Fail-closed (2026-08-19): `<sid>.json` exists but has no usable `project`
+    # -> pj is skipped, NOT a fallback to another session's mtime-latest state.
     proot = tmp_path / "roots"
-    wiki = _make_wiki(proot / "fallbackproj" / "wiki")
+    _make_wiki(proot / "fallbackproj" / "wiki")
     state_dir = tmp_path / "_projects" / "_state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "sid-x.json").write_text("{}", encoding="utf-8")  # no project
     _write_state(tmp_path, "fallbackproj", name="other.json")
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
-    res = wrr.resolve(cwd=tmp_path, session_id="sid-x")
+    assert wrr.resolve(cwd=tmp_path, session_id="sid-x") is None
+
+
+def test_pj_fails_closed_when_session_project_is_empty_string(tmp_path, monkeypatch):
+    # Fail-closed (2026-08-19): `<sid>.json` exists with `{"project": ""}` (the
+    # shape taskflow's session_init.py writes for a pj-unassigned session every
+    # turn) -> pj is skipped. A second, newer state file names a project whose
+    # wiki exists, so a passing `is None` proves the fallback did NOT run
+    # (rather than passing by accident because nothing else was seeded).
+    import os
+    proot = tmp_path / "roots"
+    _make_wiki(proot / "otherproj" / "wiki")
+    mine = _write_state(tmp_path, "", name="sid-e.json")
+    other = _write_state(tmp_path, "otherproj", name="zzz-newer.json")
+    os.utime(mine, (1000, 1000))
+    os.utime(other, (2000, 2000))
+    monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
+    assert wrr.resolve(cwd=tmp_path, session_id="sid-e") is None
+
+
+def test_pj_empty_session_id_still_uses_mtime_latest(tmp_path, monkeypatch):
+    # `session_id=""` is falsy at the `if session_id:` gate, so the legacy scan
+    # must still run — pins the degradation a CC build that omits session_id
+    # in the hook JSON produces (`data.get("session_id") or ""`).
+    import os
+    proot = tmp_path / "roots"
+    new_wiki = _make_wiki(proot / "newproj" / "wiki")
+    _make_wiki(proot / "oldproj" / "wiki")
+    old = _write_state(tmp_path, "oldproj", name="aaa.json")
+    new = _write_state(tmp_path, "newproj", name="bbb.json")
+    os.utime(old, (1000, 1000))
+    os.utime(new, (2000, 2000))
+    monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
+    res = wrr.resolve(cwd=tmp_path, session_id="")
     assert res.scope == "pj"
-    assert res.root == wiki
+    assert res.root == new_wiki
+
+
+def test_pj_skip_continues_to_workspace_not_abort(tmp_path, monkeypatch):
+    # F-2 (review-dev): the fail-closed sid-given branch must DEGRADE (resolve()
+    # continues to workspace > cwd > child), not ABORT the whole resolve. A
+    # mis-implementation that returned early on a sid miss would still pass
+    # every `is None`-style assertion above; this test pins the degrade by
+    # asserting a lower scope resolves instead. It simultaneously proves the
+    # mtime-latest fallback did not run: a newer state file names a project
+    # whose own pj wiki exists, and if the fallback had fired, scope would be
+    # "pj" (that other project), not "workspace".
+    import os
+    proot = tmp_path / "roots"
+    proot.mkdir(parents=True, exist_ok=True)  # existing root -> workspace-root = tmp_path
+    ws_wiki = _make_wiki(tmp_path / "_llm-wiki")
+    _make_wiki(proot / "otherproj" / "wiki")
+    other = _write_state(tmp_path, "otherproj", name="zzz-newer.json")
+    os.utime(other, (2000, 2000))
+    monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
+    res = wrr.resolve(cwd=tmp_path, session_id="no-such-sid")
+    assert res is not None
+    assert res.scope == "workspace"
+    assert res.root == ws_wiki
 
 
 def test_pj_session_id_none_preserves_mtime_latest(tmp_path, monkeypatch):

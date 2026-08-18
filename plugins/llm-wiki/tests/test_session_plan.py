@@ -564,6 +564,41 @@ def test_no_args_scope_pj_no_sid_fails_closed(tmp_path, monkeypatch):
     assert "--pj" in str(ei.value)
 
 
+def test_no_args_scope_pj_empty_project_fails_closed(tmp_path, monkeypatch):
+    """Contrast pair (review-dev AC-1): `<sid>.json` exists with
+    `{"project": ""}` (the shape taskflow's session_init.py writes for a
+    pj-unassigned session) -> `_active_project_for_sid` already treats this as
+    no active project, same as the resolver's post-fix sid-given posture. A
+    second state file names a real project, so the assertion proves the driver
+    did not widen to another session's set."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, "sid-e", "")
+    _write_state(state_dir, "sid-other", "some-other-project")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+
+    with pytest.raises(drv.DriverError) as ei:
+        drv.session_plan(str(tmp_path), scope="pj", sid="sid-e")
+    assert "--pj" in str(ei.value)
+
+
+def test_no_args_scope_pj_missing_project_key_fails_closed(tmp_path, monkeypatch):
+    """Contrast pair (review-dev AC-1): `<sid>.json` exists but has no
+    `project` key at all (`_write_state`'s helper always emits the key, so this
+    writes the file directly). A second state file names a real project, so the
+    assertion proves the driver did not widen to another session's set."""
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "sid-k.json").write_text(json.dumps({"origin": "cc"}), encoding="utf-8")
+    _write_state(state_dir, "sid-other", "some-other-project")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+
+    with pytest.raises(drv.DriverError) as ei:
+        drv.session_plan(str(tmp_path), scope="pj", sid="sid-k")
+    assert "--pj" in str(ei.value)
+
+
 def test_explicit_workspace_wins_over_scope_param(tmp_path, monkeypatch):
     """`workspace=True` is an explicit override and wins even if `scope` (the
     caller's resolved WIKI_SCOPE) says something else, e.g. "cwd"."""

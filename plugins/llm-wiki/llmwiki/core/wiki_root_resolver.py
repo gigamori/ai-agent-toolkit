@@ -20,8 +20,10 @@ Scopes (plan §2-A 1..5):
                  With a `session_id` (Phase 1 P1) read the exact per-session
                  `_projects/_state/<session_id>.json` FIRST — the file taskflow
                  writes — so concurrent sessions on different pj resolve their
-                 OWN wiki; absent/unreadable falls back to the most recent
-                 `_projects/_state/*.json` (mtime desc, 1 file). Take its
+                 OWN wiki; absent / unreadable / no usable `project` -> skip pj
+                 (fail-closed, 2026-08-19), NOT a fallback. The most recent
+                 `_projects/_state/*.json` (mtime desc, 1 file) is read ONLY
+                 when no `session_id` is given (legacy callers). Take its
                  `project` field (verified: the state file is
                  `{"project": "llm-wiki", ...}`, plan §1). Resolve project
                  roots via `$TASKFLOW_PROJECT_ROOTS` (`;`-separated; if unset,
@@ -65,6 +67,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -139,19 +142,23 @@ def _read_state_project(state_file: Path) -> "str | None":
     return project.strip()
 
 
-def _latest_state_project(cwd: Path, session_id: "str | None" = None) -> "str | None":
+def _latest_state_project(cwd: Path,
+                          session_id: "str | None" = None,
+                          explain: bool = False) -> "str | None":
     """The `project` field of the session's state file, else the most recent one.
 
-    Session-aware (Phase 1 P1): when `session_id` is given, prefer the exact
+    Session-aware (Phase 1 P1): when `session_id` is given, read ONLY the exact
     `_projects/_state/<session_id>.json` — this is the state file taskflow's
-    `session_init.py` writes (`f'{session_id}.json'`), so concurrent sessions on
-    different pj no longer read each other's wiki. When that file is absent /
-    unreadable / has no project, fall back to the legacy mtime-latest scan.
+    `session_init.py` writes (`f'{session_id}.json'`). When that file is absent /
+    unreadable / has no usable `project`, return None — the pj scope is skipped
+    rather than falling back, because the mtime-latest scan would resolve
+    whichever session wrote last, i.e. a DIFFERENT concurrent session's project.
+    The legacy mtime-latest scan below runs ONLY when `session_id` is falsy.
 
-    Mirrors progress SKILL Step 2 for the fallback: list `_projects/_state/*.json`
-    by mtime descending and read the most recent. Any failure (no dir, no file,
-    unreadable, bad JSON, missing/empty `project`) degrades to None so the pj
-    scope is simply skipped — never an error (W-b).
+    Mirrors progress SKILL Step 2 for the legacy (no-`session_id`) path: list
+    `_projects/_state/*.json` by mtime descending and read the most recent. Any
+    failure (no dir, no file, unreadable, bad JSON, missing/empty `project`)
+    degrades to None so the pj scope is simply skipped — never an error (W-b).
     """
     state_dir = cwd / PROJECTS_DIRNAME / "_state"
     # Session-aware fast path: the exact per-session state file taskflow writes.
@@ -161,7 +168,22 @@ def _latest_state_project(cwd: Path, session_id: "str | None" = None) -> "str | 
             project = _read_state_project(session_file)
             if project is not None:
                 return project
-        # Absent / unreadable / no project -> fall through to mtime-latest.
+        # Fail-closed (2026-08-19): a sid WAS given but its own state file is
+        # absent / unreadable / carries no usable `project`. Falling through to
+        # the mtime-latest scan here would silently resolve a DIFFERENT
+        # concurrent session's project — the exact cross-talk this fast path
+        # exists to close, and the one `ingest_driver._active_project_for_sid`
+        # refuses by design. Skip pj instead: `resolve()` continues to
+        # workspace > cwd > child and finally the NO-WIKI sentinel. The scan
+        # below stays reachable ONLY for a falsy `session_id` (the legacy
+        # no-`--sid` callers), whose behavior is unchanged.
+        if explain:
+            print(
+                f"pj-skip: sid given but {session_file.as_posix()} is "
+                "absent/unreadable/has no project (mtime-latest fallback not used)",
+                file=sys.stderr,
+            )
+        return None
     try:
         candidates = [p for p in state_dir.glob("*.json") if p.is_file()]
     except OSError:
@@ -175,14 +197,17 @@ def _latest_state_project(cwd: Path, session_id: "str | None" = None) -> "str | 
     return _read_state_project(latest)
 
 
-def _resolve_pj(cwd: Path, session_id: "str | None" = None) -> "Resolution | None":
+def _resolve_pj(cwd: Path,
+                session_id: "str | None" = None,
+                explain: bool = False) -> "Resolution | None":
     """pj scope: state-file `project` + project-roots -> `<proot>/<project>/wiki/`.
 
     Returns the first existing match, or None (skip pj) when there is no state
     file / no project / no matching wiki (degrade, W-b/R-5). `session_id` selects
-    the per-session state file first (Phase 1 P1), falling back to mtime-latest.
+    the per-session state file EXCLUSIVELY (Phase 1 P1 + fail-closed 2026-08-19);
+    mtime-latest applies only when no `session_id` is given.
     """
-    project = _latest_state_project(cwd, session_id)
+    project = _latest_state_project(cwd, session_id, explain=explain)
     if project is None:
         return None
     for proot in _project_roots(cwd):
@@ -194,7 +219,8 @@ def _resolve_pj(cwd: Path, session_id: "str | None" = None) -> "Resolution | Non
 
 def resolve(prompt_root: "str | None" = None,
             cwd: "str | Path | None" = None,
-            session_id: "str | None" = None) -> "Resolution | None":
+            session_id: "str | None" = None,
+            explain: bool = False) -> "Resolution | None":
     """Resolve the active wiki-root by existence in precedence order.
 
     Order (plan §2-A + child 2026-08-08): prompt > pj > workspace > cwd >
@@ -207,11 +233,17 @@ def resolve(prompt_root: "str | None" = None,
             fallback, and the workspace-root computation. Defaults to the real
             current working directory. Exposed for deterministic testing.
         session_id: the CC session id (Phase 1 P1). When given, the pj scope
-            reads `_projects/_state/<session_id>.json` first so concurrent
-            sessions on different pj resolve their OWN wiki; absent/unreadable
-            falls back to mtime-latest. The CLI threads this through its
-            `resolve-root --sid S` flag (theme1 i:63); when `--sid` is omitted the
-            session context is None and the legacy mtime-latest behavior applies.
+            reads `_projects/_state/<session_id>.json` EXCLUSIVELY so concurrent
+            sessions on different pj resolve their OWN wiki; absent / unreadable /
+            no usable `project` skips pj instead of falling back. The CLI threads
+            this through its `resolve-root --sid S` flag (theme1 i:63); when
+            `--sid` is omitted the session context is None and the legacy
+            mtime-latest behavior applies.
+        explain: when True, print a one-line reason on stderr if the pj scope
+            is skipped because a GIVEN `session_id` had no usable state file.
+            Set only by the `resolve-root` CLI verb; the hook and the viewer
+            leave it False so no library-level stderr is produced on their
+            per-turn path. Never affects the return value.
     """
     # 1) prompt — explicit override wins. Absolutize so a RELATIVE `--root` is
     #    stable regardless of the process CWD (the hook cwd and a command's shell
@@ -222,7 +254,7 @@ def resolve(prompt_root: "str | None" = None,
     base = Path(cwd) if cwd is not None else Path.cwd()
 
     # 2) pj — taskflow project linkage (optional; degrades cleanly).
-    pj = _resolve_pj(base, session_id)
+    pj = _resolve_pj(base, session_id, explain=explain)
     if pj is not None:
         return pj
 

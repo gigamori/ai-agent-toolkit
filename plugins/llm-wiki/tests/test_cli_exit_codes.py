@@ -173,6 +173,70 @@ def test_resolve_root_sid_selects_per_session_state(tmp_path, monkeypatch):
     )
 
 
+def test_resolve_root_sid_without_state_skips_pj_and_explains(tmp_path, monkeypatch):
+    # Fail-closed (2026-08-19): --sid given but `_projects/_state/sidA.json` is
+    # absent -> pj is skipped (not a fallback to sidB's mtime-latest state), rc
+    # is the existing NO-WIKI sentinel, and the resolver emits a `pj-skip:`
+    # line on stderr BEFORE the sentinel (explain=True is CLI-only).
+    monkeypatch.delenv("TASKFLOW_PROJECT_ROOTS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    projects = tmp_path / "_projects"
+    state = projects / "_state"
+    state.mkdir(parents=True)
+    _make_pj_wiki(projects, "projB")
+    (state / "sidB.json").write_text(json.dumps({"project": "projB"}), encoding="utf-8")
+    # Fixture check: the only immediate child of tmp_path is `_projects/`, which
+    # has no `.llmwiki`, so nothing else resolves and rc is genuinely 2.
+
+    rc, out, err = _run(["resolve-root", "--sid", "sidA"])
+    assert rc == 2
+    assert out.strip() == ""
+    assert "NO-WIKI" in err
+    assert err.splitlines()[0].startswith("pj-skip:")
+
+
+def test_resolve_root_sid_explain_line_absent_on_happy_path(tmp_path, monkeypatch):
+    # The `pj-skip:` line fires only on the fail-closed branch, never on a
+    # successful sid-given resolution.
+    monkeypatch.delenv("TASKFLOW_PROJECT_ROOTS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    projects = tmp_path / "_projects"
+    state = projects / "_state"
+    state.mkdir(parents=True)
+    _make_pj_wiki(projects, "projA")
+    _make_pj_wiki(projects, "projB")
+    (state / "sidA.json").write_text(json.dumps({"project": "projA"}), encoding="utf-8")
+    fileB = state / "sidB.json"
+    fileB.write_text(json.dumps({"project": "projB"}), encoding="utf-8")
+    os.utime(state / "sidA.json", (1_000, 1_000))
+    os.utime(fileB, (2_000, 2_000))
+
+    rc, out, err = _run(["resolve-root", "--sid", "sidA"])
+    assert rc == 0
+    assert "pj-skip:" not in err
+
+
+def test_resolve_root_without_sid_emits_no_explain_line(tmp_path, monkeypatch):
+    # AC-2 back-compat, extended to the new stderr channel: no --sid at all
+    # (legacy mtime-latest path) never emits the explain line either.
+    monkeypatch.delenv("TASKFLOW_PROJECT_ROOTS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    projects = tmp_path / "_projects"
+    state = projects / "_state"
+    state.mkdir(parents=True)
+    _make_pj_wiki(projects, "projA")
+    _make_pj_wiki(projects, "projB")
+    (state / "sidA.json").write_text(json.dumps({"project": "projA"}), encoding="utf-8")
+    fileB = state / "sidB.json"
+    fileB.write_text(json.dumps({"project": "projB"}), encoding="utf-8")
+    os.utime(state / "sidA.json", (1_000, 1_000))
+    os.utime(fileB, (2_000, 2_000))
+
+    rc, out, err = _run(["resolve-root"])
+    assert rc == 0
+    assert "pj-skip:" not in err
+
+
 def test_resolve_root_without_sid_uses_mtime_latest(tmp_path, monkeypatch):
     monkeypatch.delenv("TASKFLOW_PROJECT_ROOTS", raising=False)
     monkeypatch.chdir(tmp_path)
