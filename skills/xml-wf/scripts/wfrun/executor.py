@@ -840,18 +840,25 @@ class Executor:
 
     def _finish_step(self, step: model.Step, res, attempts: int):
         output_value = None
+        # None on the file path and on structured results, where rule 6's line
+        # never applied; a shape token otherwise, so a run's own events can be
+        # counted afterwards for how often the line was actually written
+        # (xml-wf-decision-request.md §11, §18.6).
+        value_line = None
         if step.output:
             if step.output_type == "file":
                 path = self.run_dir / "outputs" / f"{step.id}.md"
                 path.write_text(modes.strip_mode_line(res.text), encoding="utf-8")
                 output_value = str(path)
             else:
-                output_value = stepio.unwrap_value(res.structured, res.text)
+                output_value, value_line = stepio.unwrap_value_marked(
+                    res.structured, res.text)
             with self._lock:
                 self.vars[step.output] = output_value
         self.state.event("step", key=step.id, status="success",
                          attempts=attempts, cost_usd=res.cost_usd,
-                         output_var=step.output, output_value=output_value)
+                         output_var=step.output, output_value=output_value,
+                         value_line=value_line)
         self._snapshot("running")
 
     # --------------------------------------------------------------- set ---

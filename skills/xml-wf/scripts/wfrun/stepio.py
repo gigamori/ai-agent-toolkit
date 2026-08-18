@@ -16,7 +16,8 @@ from pathlib import Path
 from . import model, modes
 from . import decision as decision_mod
 from .agents import AgentDef, discover_agents
-from .guardrails import GUARDRAILS
+from .guardrails import (GUARDRAILS, VALUE_LINE_PLACEHOLDER,
+                         VALUE_LINE_PREFIX, VALUE_LINE_RULE)
 from .interp import InterpError, interpolate
 
 
@@ -258,6 +259,23 @@ def _role_and_mode_parts(node, agents_cache: dict[str, AgentDef]) -> list[str]:
     return parts
 
 
+def value_output_rule_applies(step: model.Step) -> bool:
+    """Whether this step gets guardrails.VALUE_LINE_RULE (rule 6).
+
+    Three conditions, all read off the declaration alone
+    (xml-wf-decision-request.md §18.6): the step sets a variable at all, that
+    variable is value-typed, and no `schema=` is in force. The schema exclusion
+    is not an optimisation -- a schema forces a JSON final response, so a line
+    template would be a second, contradictory shape in the same prompt, and
+    unwrap_value's structured branch already lands a scalar without one.
+
+    Injecting on a declared attribute does not reopen §12's all-steps rule: that
+    rule is about rule 5, and rests on forks being *unforeseeable*, which an
+    attribute already written in the XML is not.
+    """
+    return bool(step.output) and step.output_type != "file" and not step.schema
+
+
 def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dict,
                             base_dir: str | Path, fix: str | None = None,
                             rules_cache: dict[str, str] | None = None,
@@ -270,8 +288,8 @@ def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dic
     system = framework header + role (when declared) + mode/_common + rules —
     the constraint layers, placed in the high-authority channel by run-cc.
     user = the interpolated task (+ fix, + resolved decisions), response
-    protocol, and guardrails. run-llm joins the two (the Agent tool has no
-    system-prompt input).
+    protocol, guardrails, and — only where value_output_rule_applies — rule 6.
+    run-llm joins the two (the Agent tool has no system-prompt input).
 
     `decision` is every settled (request body, answer body) pair of the
     current cycle, for a form-(b) re-run. It rides the USER channel next to
@@ -302,6 +320,8 @@ def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dic
             result_path=result_path, step_id=step.id,
             sentinel=sentinel_line(step.id)))
     user_parts.append(GUARDRAILS)
+    if value_output_rule_applies(step):
+        user_parts.append(VALUE_LINE_RULE)
     return "\n\n".join(sys_parts), "\n\n".join(user_parts)
 
 
@@ -382,15 +402,83 @@ def build_replan_prompt(node, variables: dict,
     return f"{system}\n\n{user}" if system else user
 
 
+# What extract_value_line found, for the caller's report/event. Three values,
+# not two: a transcribed placeholder is neither a value nor a plain absence, and
+# collapsing it into either hides the one failure mode §12 measured twice
+# (a model copying a template's own filler text).
+VALUE_LINE_PRESENT = "present"
+VALUE_LINE_ABSENT = "absent"
+VALUE_LINE_PLACEHOLDER_MARK = "placeholder"
+
+
+def extract_value_line(text: str) -> tuple[str | None, str]:
+    """(value, marker) for guardrails.VALUE_LINE_RULE's line, or (None, ...).
+
+    Syntactic only, which is what keeps it on the right side of §6's ban on
+    value validation in code: the prefix must start a line and match exactly,
+    and nothing here judges whether what follows *looks like* a value.
+
+    The LAST match wins. Rule 6 asks for the line without fixing its position
+    (so the run-llm sentinel can stay the final line), and "the final response
+    is what counts" is the semantics everywhere else in this file -- a step that
+    quotes the template while explaining itself and then writes the real line
+    lands on the real one.
+
+    A verbatim placeholder demotes to (None, "placeholder"). Comparing against
+    the exact string this prompt asked for is self-identity, not a heuristic
+    about the value; storing `<the value>` downstream would reproduce the silent
+    contamination of §18.6 while *claiming* a value was extracted.
+    """
+    found = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(VALUE_LINE_PREFIX):
+            found = stripped[len(VALUE_LINE_PREFIX):].strip()
+    if found is None:
+        return None, VALUE_LINE_ABSENT
+    if found == VALUE_LINE_PLACEHOLDER:
+        return None, VALUE_LINE_PLACEHOLDER_MARK
+    return found, VALUE_LINE_PRESENT
+
+
+def unwrap_value_marked(structured, text: str) -> tuple[object, str | None]:
+    """unwrap_value plus what the value-line extractor saw (None when the
+    structured path was taken and the line never applied)."""
+    if isinstance(structured, dict) and len(structured) == 1:
+        return next(iter(structured.values())), None
+    if structured is not None:
+        return json.dumps(structured, ensure_ascii=False), None
+    body = modes.strip_mode_line(text).strip()
+    value, marker = extract_value_line(body)
+    # fail-open: no usable line means the pre-rule-6 behaviour, never a failure.
+    # Steps written before this rule existed (task bodies saying "return only
+    # the path") keep working unchanged, and the deviation is reported rather
+    # than swallowed (§18.6).
+    return (value if value is not None else body), marker
+
+
+def value_line_suffix(marker: str | None) -> str:
+    """The report suffix naming what the VALUE: line did, or "" when it said
+    nothing worth reporting.
+
+    Content-free by construction: it names the shape the extractor saw and
+    never the value, which is the same line _with_stray_warning walks ("line
+    numbers and prefixes, never content") and is what keeps it compatible with
+    run-llm's no-task-content design.
+    """
+    if marker == VALUE_LINE_ABSENT:
+        return "; no value line"
+    if marker == VALUE_LINE_PLACEHOLDER_MARK:
+        return "; value line is the unreplaced placeholder"
+    return ""
+
+
 def unwrap_value(structured, text: str):
     """output-type=value extraction: single-property objects unwrap to the
-    scalar; other structured results store as JSON text; plain text strips
-    (after dropping the [Mode: ...] protocol line _common.md mandates)."""
-    if isinstance(structured, dict) and len(structured) == 1:
-        return next(iter(structured.values()))
-    if structured is not None:
-        return json.dumps(structured, ensure_ascii=False)
-    return modes.strip_mode_line(text).strip()
+    scalar; other structured results store as JSON text; plain text yields the
+    VALUE: line when the step wrote one, else the whole body (after dropping
+    the [Mode: ...] protocol line _common.md mandates)."""
+    return unwrap_value_marked(structured, text)[0]
 
 
 def _log_status(status: str) -> str:
@@ -588,6 +676,9 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
                 message = "error: expect-file: not produced: " + ", ".join(missing)
 
     if ok and step.output:
+        # None means the VALUE: line never applied (file-typed output); only
+        # the plain-text branch can report a shape.
+        value_marker = None
         if step.output_type == "file":
             value = str(result_path)
             if outputs_dir:
@@ -596,11 +687,12 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
                 out_path.write_text(modes.strip_mode_line(res.text), encoding="utf-8")
                 value = str(out_path)
         else:
-            value = unwrap_value(res.structured, res.text)
+            value, value_marker = unwrap_value_marked(
+                res.structured, res.text)
         variables[step.output] = value
         vars_path.write_text(json.dumps(variables, ensure_ascii=False, indent=2),
                              encoding="utf-8")
-        message = f"ok (set {step.output})"
+        message = f"ok (set {step.output}{value_line_suffix(value_marker)})"
 
     if not ok and message == "ok":
         # Content-hiding parity with record_result: guardrail/refusal carry
@@ -915,6 +1007,7 @@ def record_result(step: model.Step, result_path: str | Path,
                 ok = False
                 message = "error: expect-file: not produced: " + ", ".join(missing)
         if ok and step.output:
+            value_marker = None  # see apply_result
             if step.output_type == "file":
                 value = str(result_path)
             else:
@@ -927,7 +1020,8 @@ def record_result(step: model.Step, result_path: str | Path,
                         message = (f"error: schema specified but result is not "
                                    f"valid JSON (details: {result_path})")
                 if ok:
-                    value = unwrap_value(structured, text)
+                    value, value_marker = unwrap_value_marked(
+                        structured, text)
 
     if ok and claim == "error":
         # The file looks like a clean success, but the reply channel
@@ -940,7 +1034,7 @@ def record_result(step: model.Step, result_path: str | Path,
         variables[step.output] = value
         vars_path.write_text(json.dumps(variables, ensure_ascii=False, indent=2),
                              encoding="utf-8")
-        message = f"ok (set {step.output})"
+        message = f"ok (set {step.output}{value_line_suffix(value_marker)})"
 
     if ok:
         message = _with_stray_warning(message, text, result_path)

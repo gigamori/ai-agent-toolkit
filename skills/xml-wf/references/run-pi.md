@@ -149,9 +149,13 @@ a guarantee — or to a verification step that reads the file and returns
 `ERROR:` when it is malformed, which stops the run as a `guardrail`.
 
 If a branch genuinely needs the value in a variable for `test=`, drop `schema=`
-and use `output-type="value"` with "return only the number" in the task. The
-format is then unenforced and `int()` can fail at run time, so set `on-error`
-on that step so the failure stops the run instead of propagating.
+and use `output-type="value"` with "return only the number" in the task. Such a
+step is also asked by the injected guardrails to emit a `VALUE:` line, which the
+runner reads back (spec.md § Meaning of output-type) — your task sentence
+reinforces that rather than being the only thing carrying it. But the line is
+fail-open, not enforced: when it is missing the whole response body lands in the
+variable and `int()` can fail at run time, so set `on-error` on that step so the
+failure stops the run instead of propagating.
 
 ## Replacing `on-error="debug"`
 

@@ -141,6 +141,28 @@ parse error.
   a top-level single-property object auto-unwraps to its value (e.g.
   `{"line_count": 3}` → `3`); multiple properties store as a JSON string
 
+Without `schema`, a value-typed step is asked — in its own prompt, and only when
+it declares `output=` with `output-type="value"` and no `schema=` — to include
+one line in its report:
+
+```
+VALUE: <the value>
+```
+
+The runner reads that line back syntactically (last match wins; the position is
+free, so the run-llm sentinel can still be the final line) and stores what it
+carries. **This is prompt adherence, not an enforced format, and it is
+fail-open**: a step that writes no line, or that copies the `<the value>`
+placeholder verbatim, has its whole response body stored exactly as before the
+line existed — nothing fails. The deviation is reported rather than swallowed:
+the run's `step` event carries `value_line` (`present` / `absent` /
+`placeholder`, and null where the line never applied), and run-llm's report
+appends `; no value line` or `; value line is the unreplaced placeholder` to
+`ok (set <var>)`.
+
+So a value that must be trustworthy still needs a guarantee the prompt layer
+cannot give — the Deliverable-file principle below is that route.
+
 **Deliverable-file principle**: when the agent itself writes files
 (recommended), name the output path in the task body and use
 `output-type="value"` + "return only the file path as your final response" to

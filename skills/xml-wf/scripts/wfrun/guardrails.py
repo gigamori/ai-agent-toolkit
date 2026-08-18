@@ -33,6 +33,33 @@ longer depends on getting it: a payload that omits it degrades to a (b) re-run
 under B_REASON_NO_OUTPUT instead of failing the run
 (xml-wf-decision-request.md §1, §6, §12).
 
+Rule 6 is injected only on a step that declares `output=` with
+`output-type="value"` and no `schema=` (stepio.value_output_rule_applies). Such
+a step's variable receives the response body verbatim (stepio.unwrap_value's
+plain-text fallback), and prose is what that produced: measured 2026-08-18,
+a bare value came back 0 times in 28 samples across three substrates, and an
+earlier attempt that stated the requirement as an abstract rule ("that report is
+the value the task asks for and no other words") moved the rate not at all and
+was reverted.
+
+What is left is a slot to copy. Everything this prompt has measurably steered --
+the five-field DECISION payload, `work-state:`'s bare word, rule 5's `output:`
+line (0/15 -> 24/24 when its wording changed) -- is a labeled line, and every
+abstract rule tried here has failed. So rule 6 asks for one line and lets code
+read it back syntactically (stepio.extract_value_line), rather than asking the
+step to shape its whole response.
+
+Two details are deliberate. It says "include in rule 4's report" rather than
+restating what the report should be: rule 4 says "no marker, no template", and a
+line that declares itself part of rule 4's report resolves that collision in the
+wording instead of leaving two orders to arbitrate -- the collision class §12
+measured once already, when "Reply with exactly these lines" met layer B's own
+reply contract and the request vanished as an `aborted`. And it demands no
+position ("include", not "end with"), so the run-llm sentinel requirement (the
+LAST non-empty line of the result file, stepio.sentinel_line) stays satisfiable
+without a special case; extraction takes the last match, so a free position
+costs nothing (xml-wf-decision-request.md §18.6, §12, §18.3).
+
 Rule 5 deliberately avoids the word "reply" and pivots on "final response":
 each execution layer defines where the final response goes (run-cc: the
 response itself; run-llm layer B: stepio.RESULT_PROTOCOL's result FILE, with
@@ -74,6 +101,22 @@ if the deliverable is already written and only its reading is open, stopped if \
 you halted at the fork. When work-state is complete the output line is \
 REQUIRED; when it is stopped, omit that line entirely. Refer to data by path; \
 never paste file contents into the request."""
+
+# xml-wf-decision-request.md §18.6. Appended after GUARDRAILS, never merged into
+# it: §18.4a's A/B recipe controls injected wording by restoring this file alone
+# in a worktree, and wording that lived in stepio.py would drop out of that
+# control silently. The prefix and the placeholder are named once and the rule
+# text is built from them, so the extractor can compare against the very string
+# this prompt asked for without a second copy drifting from it.
+VALUE_LINE_PREFIX = "VALUE:"
+
+VALUE_LINE_PLACEHOLDER = "<the value>"
+
+VALUE_LINE_RULE = f"""\
+6. Later steps read this step's result as a single value. Include in rule 4's \
+report exactly one line:
+{VALUE_LINE_PREFIX} {VALUE_LINE_PLACEHOLDER}
+Replace {VALUE_LINE_PLACEHOLDER} with the value alone."""
 
 ASK_PROMPT = """\
 Answer the following question based on facts. If it references file paths, \

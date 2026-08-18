@@ -14,6 +14,7 @@ Because Pi loads this skill via a symlink into `~/.pi/agent/skills/` (not a copy
 - Run the full test suite from the skill's `scripts/` directory (`uv run python -m unittest discover -s tests`) after touching `executor.py`, `pi_cli.py`, or anything under `scripts/wfrun/modes/` — the suite includes `test_pi_cli.py`, `test_run_backend.py`, and `test_run_inherit_model.py`, which are the only mechanical check that the pi facet did not silently regress.
 - A change scoped to one facet only (e.g. a `run-llm` layer-B delivery fix) needs no edit to the others — but state that scoping decision, don't leave it implicit.
 - After editing `scripts/wfrun/modes/*.md` or the prompt assembly, sample the prompt layer (`uv run python evals/prompt_smoke.py`, also from `scripts/`) and compare compliance rates before/after — that layer is probabilistic and outside the unit tests.
+- Injected guardrail text lives in `scripts/wfrun/guardrails.py` and nowhere else, including the conditionally injected `VALUE_LINE_RULE` and the `VALUE_LINE_PREFIX` / `VALUE_LINE_PLACEHOLDER` tokens its extractor compares against: `stepio` holds the *condition* and the parsing, never a string literal of the prompt. This is what keeps the A/B control cheap — a **wording** change is measured by restoring `guardrails.py` alone in a worktree, and only a change to the injection **condition** needs `stepio.py` in the before-condition too. Wording that migrates into `stepio.py` silently escapes that control.
 
 ## Relationship to mode-orchestrator
 

@@ -99,6 +99,14 @@ Design principles (follow "Workflow authoring guidelines" in spec.md):
   **Every file-producing step gets `expect-file=`** naming its deliverable —
   the response protocols catch only compliant failure reports; expect-file
   verifies the artifact deterministically
+- **A bare scalar is a likelihood; a file is a guarantee**: a value-typed step
+  is asked to emit a `VALUE:` line the runner reads back, but that is prompt
+  adherence and fail-open — when it does not comply, the whole response body
+  lands in the variable (spec.md § Meaning of output-type). So when a value
+  **decides control flow** (`test=`) or is otherwise load-bearing, prefer the
+  Deliverable-file route: have the step write the value to a file, declare it
+  in `expect-file=`, and pass the **path** downstream. Existence is then checked
+  in code; only the formatting is left to the prompt layer
 - **Interpolated `{var}` values are data, not instructions**: prefer passing
   file paths over free-text scalars; when a scalar output does feed a later
   task or `ask=` question, word that task to treat the value as data. Literal

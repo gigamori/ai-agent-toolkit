@@ -389,6 +389,15 @@ path," and add `expect-file` naming that same path. That way the deliverable is
 verified deterministically — a step can't claim success without producing the
 file.
 
+A value-typed step (`output=` with `output-type="value"` and no `schema=`) is
+also asked by the built-in guardrails to include one line in its report —
+`VALUE: <the value>` — and the runner stores what that line carries. It is a
+request, not a guarantee: if the step doesn't write the line, its whole response
+goes into the variable exactly as before, and the run just records that the line
+was missing. So when a value decides a branch (`test=`), stay with the
+file-based pattern above — `expect-file` checks the file exists, and the path is
+the value.
+
 ### Writing good task bodies (the part that matters most)
 
 The attribute tables above are the easy part. The single skill that decides

@@ -371,6 +371,25 @@ class WaitTests(DispatchWaitTestCase):
                                     encoding="utf-8")
         code, out, err = self.wait()
         self.assertEqual(code, 0)
+        # The bare "42" is adopted unchanged (rule 6 is fail-open), but the
+        # missing VALUE: line is named rather than swallowed -- this step is
+        # value-typed and schema-less, so it was asked for one
+        # (xml-wf-decision-request.md §18.6).
+        self.assertEqual(out, "ok (set answer; no value line)")
+        variables = json.loads(Path(self.vars_path).read_text(encoding="utf-8"))
+        self.assertEqual(variables["answer"], "42")
+
+    def test_wait_done_ok_with_value_line(self):
+        """The same step, complying: the line's value is what lands, and the
+        report carries no deviation suffix."""
+        self.write_handle()
+        self.p["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
+                                  encoding="utf-8")
+        self.p["result"].write_text(
+            json.dumps({"result": "Counted the rows.\nVALUE: 42",
+                        "is_error": False}), encoding="utf-8")
+        code, out, err = self.wait()
+        self.assertEqual(code, 0)
         self.assertEqual(out, "ok (set answer)")
         variables = json.loads(Path(self.vars_path).read_text(encoding="utf-8"))
         self.assertEqual(variables["answer"], "42")
