@@ -13,6 +13,23 @@ Roles of the handoff:
 - The tester runs it and fills it in.
 - The debugger reads the filled-in handoff and pinpoints where the bug occurs.
 
+## Applicability (check before generating)
+
+**This skill is for a HUMAN tester. If the tester is an LLM — another session
+runs the test — do not use it: use `/session-handoff` instead.** Its whole
+output shape assumes a person at an interactive terminal (session-start rows,
+multi-turn chat rows, "open the file and read it" rows), none of which an LLM
+tester can execute. A `tester:llm` axis was dropped from this skill only
+because that case was rare, not because it misbehaved — so its absence is not
+a reason to bend a human-tester handoff into an LLM one.
+
+An LLM-executed handoff is a different artifact: each step is one
+non-interactive command whose stdout is the observable, and a child session is
+pinned with `claude -p --session-id <uuid>` then continued with
+`claude -p --resume <uuid>`. Writing it here by hand is what scattered such
+handoffs into `project-notes/` — `/session-handoff` exists to land them in the
+transient tree instead.
+
 ## Tester premise and invariants
 
 - **The tester is a non-engineer.** Do not assume CLI / DevTools / code reading.
@@ -142,10 +159,14 @@ Separately from the handoff, generate one setup script that bundles the determin
 
 - Confirm the destination with the human before writing
 - Auto-suggest a slug candidate as `debug-handoff-<target-system>-<YYYY-MM-DD>.md`
-- Default destination is decided by exploring the workspace: if `_projects/` exists (ideally `_projects/*/project-notes/`), suggest `_projects/<project>/project-notes/checks/<slug>.md` as the default (`<project>` is the one clear from the conversation context if the target is clear, otherwise ask the user; do not re-implement project routing). If it does not exist, suggest a neutral destination slug. This is not a dependency on taskflow but an opportunistic default based on detecting a conventional directory
-- This handoff is a **durable** verification document — the tester is a human, and the filled-in result is a record worth keeping — so it belongs in `project-notes/checks/`, not in the transient `llm-handoff/` tree (which is for LLM-to-LLM messages)
+- The candidate destination is decided solely by `current_project` in this turn's `[Progress Session]` context line. Do not scan the workspace, do not infer the project from the conversation, and do not interpret `pj:` tokens yourself:
+  - `current_project=<non-empty>` readable → suggest `_projects/<current_project>/project-notes/checks/<slug>.md`
+  - not readable (no such line, or empty) → suggest `<cwd>/_handoffs/checks/<slug>.md` (`<cwd>` = the session's working directory; do not walk up to a git root or any parent)
+  - the user retargets with `pj:<name>` and forces the second case with `pj:none`; taskflow resolves both before this skill runs, so just read the resulting header
+- Never invent a destination outside these two. An undefined location decided per-invocation is what scattered earlier handoffs across unrelated directories
+- This handoff is a **durable** verification document — the tester is a human, and the filled-in result is a record worth keeping. In the first case that means `project-notes/checks/`, never the transient `llm-handoff/` tree (which is for LLM-to-LLM messages); in the second, `_handoffs/checks/` carries the same durable role
+- Create the chosen destination directory when it is missing (`_handoffs/checks/` normally is). Do not create any OTHER directory in the repository
 - Save the setup script in the same directory as the handoff, and after saving fill its absolute path into the Scenario 0 run command of the handoff
-- Do not create directories in the repository arbitrarily
 
 ## Rules
 
