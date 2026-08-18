@@ -275,6 +275,7 @@ def _file(argv: list[str]) -> int:
     from llmwiki.core import config_resolver as cr
     from llmwiki.core import marker, wiki_index, wiki_log
     from llmwiki.ingest import frontends
+    from llmwiki.ingest import source_ref_log
     from llmwiki.write import transaction
     from llmwiki.write.write_tool import WriteSession, WriteRejected
 
@@ -403,10 +404,22 @@ def _file(argv: list[str]) -> int:
             # 1) raw provenance snapshot (D1/D18): journal the create FIRST so a
             #    failed filing rolls it back — engine-written (like the driver's
             #    begin), NOT through the page allowlist (raw/ is protected there).
-            transaction.journal_before_write(root, [fe.rel_path])
+            transaction.journal_before_write(
+                root, [fe.rel_path, source_ref_log.SOURCE_REF_LOG_NAME])
             raw_path = Path(root) / Path(fe.rel_path)
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_text(fe.body, encoding="utf-8")
+            # 1b) D12 origin record for that raw, journaled with it above so the
+            #     two roll back together. FE-A has no external locator (the
+            #     source is this conversation), so only the local fields are
+            #     recorded. The raw's bytes are untouched -> D18 hash unaffected.
+            source_ref_log.append_entries(root, [source_ref_log.SourceRefEntry(
+                raw_rel_path=fe.rel_path,
+                content_hash=fe.hash,
+                provenance=str(fe.frontmatter.get("provenance", "")),
+                derived_origin=str(fe.frontmatter.get("derived_origin", "")),
+                recorded_at=source_ref_log.today(),
+            )])
             # 2) the PAGE is the REDACTED body (D16), through the allowlist gate
             #    (origin=derived -> wiki/derived/ only, D20).
             sess = WriteSession(root,

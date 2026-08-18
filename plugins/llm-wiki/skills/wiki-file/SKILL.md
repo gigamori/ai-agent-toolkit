@@ -134,7 +134,7 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest project-batch \
 ```
 
 It prints `{"out_dir": <temp dir>, "turns": {<sid>: <path>}, "scanned": 1}`. Capture
-`out_dir` (for cleanup in Step 6) and `turns[$SID]` as `$TURNS_PATH`.
+`out_dir` (for cleanup in Step 7) and `turns[$SID]` as `$TURNS_PATH`.
 
 Now edit `$TURNS_PATH` — under exactly two rules:
 
@@ -182,8 +182,10 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest begin \
 ```
 
 `--turns` is present in FLOW B only. `--cutoff=last-user` is passed in BOTH flows: it
-drops the last user-role turn with non-empty text and everything after it, which is
-this very invocation and the narration that follows it. Note what this does NOT cost
+drops the last user-role turn and everything after it — chosen by ROLE and ORDER only,
+never by the turn's text, so the invocation turn anchors the cut even when D7 has left
+it empty (Step 0b rule (2)) — which is this very invocation and the narration that
+follows it. Note what this does NOT cost
 you: the previous turn's assistant answer is before your invocation, so it IS filed.
 Only this run's own report is never captured — and the next `/wiki-file` picks up
 anything after the cutoff that is still worth keeping.
@@ -283,7 +285,7 @@ Pass each worker: `$STAGE1_BLOB_PATH`, this cluster's `rel_path` list, and
 Collect the ordered list of manifest paths for Step 5. Apply nothing here.
 
 If a worker errors or fails to return a manifest, this run failed before apply: skip
-`apply-finish` and roll back via `finish fail` (Step 5's failure path).
+`apply-finish` and roll back via `finish fail` (Step 6's failure path).
 
 ## Step 5 — Pre-apply confirmation (D5; skip only on `write_mode=implicit`)
 
@@ -356,7 +358,7 @@ The driver prints `{"rolled_back": true}` (journal replayed, lock released, side
 deleted). Report the rollback. (A `begin` error is NOT routed here — `begin` already
 rolled back and released the lock itself.)
 
-## Step 6 — FLOW B only: clean up the temp dir
+## Step 7 — FLOW B only: clean up the temp dir
 
 If Step 0b ran, delete its temp dir with the driver verb — code owns the deletion (C3):
 

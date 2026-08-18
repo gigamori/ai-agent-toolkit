@@ -75,7 +75,7 @@ wiki はプラグインの `templates/` から初期化される：
 
    ```
    /wiki-ingest-docs ./docs/rfc-routing.md       # 3rd-party ドキュメント（FE-B → source tier）
-   /wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc   # citation 用の permalink を付ける
+   /wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc   # citation 用の permalink を付ける（source-ref 台帳に記録される）
    /wiki-file                                    # 今のこの会話（FE-B' → derived tier、doc_type=transcript に pin）
    /wiki-ingest-sessions --workspace             # 他セッションのログを scope 指定で
    ```
@@ -136,6 +136,12 @@ hook は `wiki:on|off` トグルも扱う：プロンプト中の `wiki:on`/`wik
 書込を伴う 3 コマンドは、パイプラインの重さではなく**対象**で命名されている：`/wiki-ingest-docs` はドキュメント、`/wiki-file` は今している会話、`/wiki-ingest-sessions` は他セッションのログを取る。3 つとも同じ 2 段 `extract → apply` core を単一のファイルジャーナル・トランザクション内で回す。
 
 `/wiki-ingest-docs` は 3rd-party ソース（FE-B）を ingest する。引数は単一ファイルのほか、**クォートした glob**（`"./docs/**/*.md"`）や**ディレクトリ**（`./docs/`）も指定できる：driver が（シェルではなく）Python で展開し、wiki 内部パスを強制除外し、ディレクトリの場合はテキスト系 allowlist（`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`）に限定する。glob/ディレクトリは**1 ファイル 1 トランザクション**で ingest し、1 ファイルの失敗はそのファイルだけロールバックして続行、末尾に `N total / M succeeded / K failed / S dedup-skipped` のサマリを報告する（0 件マッチはエラー）。
+
+`external=<url>` は ingest 対象ドキュメントに citation 用の permalink を付ける。これはページ frontmatter には書かれない：driver が wiki root の **source-ref 台帳** `.llmwiki.source-ref.jsonl` に追記する — append-only な JSON Lines で、1 レコード = 1 raw 生成イベント。raw の wiki 相対パス、content hash、`provenance`、`derived_origin`（あれば）、`doc_type`（あれば）、`external_locator`（指定された場合のみ）、記録日を保持する。**絶対パスは決して記録しない。** この台帳は `.cc-turn-ledger.jsonl` と同じ driver-written state file クラス：エンジンが書き、ingest トランザクションの journal に載り（rollback でレコードごと戻る）、Stage 2 の allowlist write ツールは構造的に触れない。
+
+`external=` は **FE-B 専用** — permalink は 3rd-party ドキュメント固有の属性である。projection origin には外部の原典が存在しないため、`--kind=fe_b_prime`（cc-log）や `--kind=fe_pi_log`（pi-log）と併せて `--external` を渡すのは、無音で捨てるのではなく **usage error**（`EX_USAGE=64`、fail-closed）とする — `--cutoff` を `--kind=fe_b` に渡した場合と同型の扱い。よって `/wiki-file` と `/wiki-ingest-sessions` は `external=` 軸を一切受け付けない。
+
+現時点では 2 つの制限がある。**dedup no-op**（wiki が既に保持する内容の再 ingest）では台帳に追記しない。そして**既存 wiki の migration は不要**：raw 本文・content-hash 規則・raw のファイル名規則はいずれも変更していないため、台帳にレコードの無い raw は単に locator 未記録であり、台帳が存在しなかった時点と等価である。この状態を後から **backfill することはできない** — `raw/` の redaction 済みコピーから元 URL は復元できないため。
 
 3 つとも多段 orchestration（`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`）なので、**能力の高いモデル**で実行すること：軽量/最小モデルは Stage 2 apply dispatch を取りこぼしたり 最後の `apply-finish` を省いたりしがちで、トランザクションが **open** のまま残る（`.llmwiki.lock` / `.llmwiki.txn` が残存しページ未生成 — `abort` verb で解消。上記「回復（recovery）」節参照）。
 

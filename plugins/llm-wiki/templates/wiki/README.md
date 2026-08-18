@@ -17,13 +17,19 @@ Page frontmatter exposes the tag axes (design §2):
 ---
 provenance: source            # source | derived (mirrors location, D15)
 doc_type: spec                # transcript|article|paper|spec|runbook|incident|policy|guide | default
-source_ref:                   # source-side origin (D12); present on source pages
-  raw_path: raw/<hash>.<ext>  # ALWAYS relative; absolute paths forbidden
-  external_locator: <url|permalink>   # optional
 derived_origin:               # derived-side origin (D12); present on derived pages
-                              #   conversation | cc-log
+                              #   conversation | cc-log | pi-log
 ---
 ```
+
+`source_ref` (the source-side origin, D12 — the relative `raw_path` plus an
+optional `external_locator` url/permalink) is **not** a required frontmatter
+field. The engine records it in the wiki-root ledger
+`.llmwiki.source-ref.jsonl`: append-only JSON Lines, one record per raw
+generation event, written inside the ingest transaction (a rollback removes it)
+and out of reach of the allowlist write tool. Absolute paths are never recorded.
+A page MAY mirror `source_ref` into its own frontmatter as an optional copy; the
+ledger is authoritative.
 
 `epistemic-status` is per-claim in the body (optional enrichment, D15), with a
 value space defined by the doc_type profile — not a frontmatter field.

@@ -104,9 +104,13 @@ Parse `$ARGUMENTS` into:
   driver's `session-plan` verb owns that resolution (Step 2).
 - `--root <path>` — optional top-override for the wiki root (Q4). It is not a `key=value`
   axis — strip it out first, before the axis parse.
-- axis overrides (`doc_type=...`, `write_mode=...`, `apply_fanout_k=...`, `external=...`)
-  — the same axes `/wiki-ingest-docs` accepts; they apply identically to every session in the
-  loop.
+- axis overrides (`doc_type=...`, `write_mode=...`, `apply_fanout_k=...`) — they apply
+  identically to every session in the loop. **`external=` is NOT an axis of this skill.**
+  A citation permalink is a property of a 3rd-party document (FE-B); Path B is pinned to
+  the projection origin `--kind=fe_b_prime`, which has no external original, and the
+  driver rejects `--external` there with `EX_USAGE=64` (fail-closed, the same shape as
+  `--cutoff` with `--kind=fe_b`). Never parse or forward one — if the invocation carries
+  an `external=` token, say it does not apply here and drop it.
 
 Do not auto-sniff or invent a project name, and do not decide the session set yourself —
 that decision is made in code by the driver (D2: determinism stays in the driver, never
@@ -356,7 +360,6 @@ uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest begin \
   --turns="$TURNS_PATH" \
   --out_dir="$OUT_DIR" \
   ${DOC_TYPE:+--doc_type="$DOC_TYPE"} \
-  ${EXTERNAL:+--external="$EXTERNAL"} \
   ${WRITE_MODE:+--write_mode="$WRITE_MODE"} \
   ${APPLY_FANOUT_K:+--apply_fanout_k="$APPLY_FANOUT_K"}
 ```

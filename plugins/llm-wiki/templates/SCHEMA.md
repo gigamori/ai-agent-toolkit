@@ -117,7 +117,19 @@ Pages and sources are tagged on three orthogonal axes. The trust boundary is
 - **source_ref** (source-side origin, D12) — `{ raw_path: <relative, always>,
   external_locator?: <url|permalink> }`. Carries the citation form and re-fetch
   handle. Medium is derived from the locator (not enumerated). `raw_path` is
-  ALWAYS relative; absolute paths are forbidden (secret).
+  ALWAYS relative; absolute paths are NEVER recorded (secret).
+  **Stored in the wiki-root ledger `.llmwiki.source-ref.jsonl`, NOT in page
+  frontmatter.** The ledger is append-only JSON Lines, one record per raw
+  generation event, written by the engine — the same driver-written state-file
+  class as `.cc-turn-ledger.jsonl`: it is journaled inside the ingest transaction
+  (a rollback removes the record) and the allowlist write tool cannot reach it.
+  A record holds the raw's wiki-relative path, the content hash, `provenance`,
+  `derived_origin` (when present), `doc_type` (when present), the
+  `external_locator` (only when one was supplied), and the record date.
+  An `external_locator` is accepted only for a 3rd-party document (FE-B); a
+  projection origin (cc-log / pi-log) has no external original, so supplying one
+  there is a usage error, not a silently dropped value. Page frontmatter MAY
+  mirror `source_ref` as an optional copy; the ledger is authoritative.
 - **derived origin** (derived-side origin, D12) — closed set, three values:
   `conversation` / `cc-log` / `pi-log`.
 - **doc_type** — one of: transcript, article, paper, spec, runbook, incident,
@@ -128,8 +140,10 @@ Pages and sources are tagged on three orthogonal axes. The trust boundary is
   mechanism — the trust boundary is location; if epistemic-status is absent, safety
   is unaffected.
 
-Page frontmatter therefore exposes (G3): `provenance`, `source_ref`,
-`derived_origin`, `doc_type`; `epistemic-status` lives per-claim in the body.
+Page frontmatter therefore exposes (G3): `provenance`, `derived_origin`,
+`doc_type`. `source_ref` is held in the `.llmwiki.source-ref.jsonl` ledger and is
+only optionally mirrored into frontmatter; `epistemic-status` lives per-claim in
+the body.
 
 ## 3. config resolution (design §3)
 

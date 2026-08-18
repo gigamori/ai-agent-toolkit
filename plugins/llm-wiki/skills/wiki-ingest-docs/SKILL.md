@@ -246,6 +246,19 @@ glob/dir loop (Step 0b). The axis overrides (`write_mode=...`, `apply_fanout_k=.
 `doc_type=...`, `external=...`) were parsed from `$ARGUMENTS` in Step 0 and apply
 identically to every file in the loop.
 
+> **`external=` — where the value goes, and where it does NOT.** It is a citation
+> permalink for the DOCUMENT this skill ingests. You never write it into page
+> frontmatter and never hand it to a stage worker: the driver appends it to the
+> wiki-root source-ref ledger `.llmwiki.source-ref.jsonl` (append-only JSON Lines, one
+> record per raw generation event, carrying the raw's wiki-relative path, content hash,
+> provenance, derived_origin/doc_type when present, the locator, and the record date;
+> absolute paths are never recorded). The ledger is a driver-written state file of the
+> same class as `.cc-turn-ledger.jsonl` — journaled inside this transaction, so a
+> rollback removes the record, and structurally out of reach of the allowlist write
+> tool. It is valid ONLY on the FE-B origin this skill uses; the driver rejects
+> `--external` on a projection origin (`--kind=fe_b_prime`, `--kind=fe_pi_log`) with
+> `EX_USAGE=64`. A dedup no-op appends no record.
+
 ```bash
 uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest begin \
   "$WIKI_ROOT" "$SOURCE" \

@@ -13,7 +13,7 @@ Distributed via the Claude Code plugin marketplace.
 | [taskflow](plugins/taskflow/) | CC | Concurrent task progress and context management across Claude Code sessions |
 | [rule-inject](plugins/rule-inject/) | CC / Cursor | Enforce external rule file reading via `PreToolUse` deny, driven by `CLAUDE.md <rules when="..." src="..."/>` tags |
 | [role-mode](plugins/role-mode/) | CC | Declare a cognitive `mode:` and/or `role:` per turn via prompt slugs; injects the matching NEVER/DO rules and framework meta through `UserPromptSubmit` (nothing injected without a slug) |
-| [llm-wiki](plugins/llm-wiki/) | CC | Maintain an LLM-curated wiki: ingest sources into Markdown pages, answer questions grounded in them, and lint/promote/view the graph — under hard code gates (write allowlist + single git transaction with rollback) |
+| [llm-wiki](plugins/llm-wiki/) | CC | Maintain an LLM-curated wiki: ingest sources into Markdown pages, answer questions grounded in them, and lint/promote/view the graph — under hard code gates (write allowlist + single file-journal transaction with rollback; no git involved) |
 
 ### Installation
 

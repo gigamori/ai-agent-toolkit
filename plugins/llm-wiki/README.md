@@ -75,7 +75,7 @@ A typical session:
 
    ```
    /wiki-ingest-docs ./docs/rfc-routing.md       # a 3rd-party document (FE-B → source tier)
-   /wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc   # attach a permalink for citation
+   /wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc   # attach a citation permalink (recorded in the source-ref ledger)
    /wiki-file                                    # THIS conversation (FE-B' → derived tier, pinned doc_type=transcript)
    /wiki-ingest-sessions --workspace             # other sessions' logs, by scope
    ```
@@ -136,6 +136,12 @@ The hook also honors the `wiki:on|off` toggle: a `wiki:on`/`wiki:off` marker in 
 The three write-bearing commands are named after their **object**, not after how heavy their pipeline is: `/wiki-ingest-docs` takes a document, `/wiki-file` takes the conversation you are having, `/wiki-ingest-sessions` takes other sessions' logs. All three run the same 2-stage `extract → apply` core in one file-journal transaction.
 
 `/wiki-ingest-docs` ingests a 3rd-party source (FE-B). The argument may be a single file, a **quoted glob** (`"./docs/**/*.md"`), or a **directory** (`./docs/`): the driver expands it in Python (never the shell), force-excludes wiki-internal paths, and — for a directory — restricts to the text-type allowlist (`.md` / `.markdown` / `.txt` / `.text` / `.json` / `.jsonl`). A glob/directory is ingested **one file per transaction**; a per-file failure rolls back only that file and the run continues, then a `N total / M succeeded / K failed / S dedup-skipped` summary is reported (zero matches is an error).
+
+`external=<url>` attaches a citation permalink to the document being ingested. It is **not** written into page frontmatter: the driver appends it to the wiki-root **source-ref ledger** `.llmwiki.source-ref.jsonl` — append-only JSON Lines, one record per raw generation event, holding the raw's wiki-relative path, its content hash, `provenance`, `derived_origin` (when present), `doc_type` (when present), the `external_locator` (only when one was supplied), and the record date. **Absolute paths are never recorded.** The ledger is a driver-written state file of the same class as `.cc-turn-ledger.jsonl`: the engine writes it, it is journaled inside the ingest transaction (a rollback removes the record), and the Stage 2 allowlist write tool cannot reach it by construction.
+
+`external=` is **FE-B only** — a permalink is a property of a 3rd-party document. A projection origin has no external original, so passing `--external` alongside `--kind=fe_b_prime` (cc-log) or `--kind=fe_pi_log` (pi-log) is a **usage error** (`EX_USAGE=64`, fail-closed) rather than a silently discarded value — the same shape as passing `--cutoff` with `--kind=fe_b`. Accordingly `/wiki-file` and `/wiki-ingest-sessions` accept no `external=` axis at all.
+
+As of today two limits apply. A **dedup no-op** (re-ingesting content the wiki already holds) appends no ledger record. And **existing wikis need no migration**: raw artifacts, the content-hash rule, and raw filenames are unchanged, so a raw with no ledger record simply has no recorded locator — exactly the situation before the ledger existed. That state cannot be **backfilled**, because the original URL is not recoverable from the redacted copy in `raw/`.
 
 Every one of the three is a multi-stage orchestration (`begin` → Stage 1 subagent → Stage 2 subagent → `apply-finish`), so run them on a **capable model**: a lightweight/minimal model tends to drop the Stage 2 apply dispatch or skip the closing `apply-finish`, which leaves the transaction **open** (a stale `.llmwiki.lock` / `.llmwiki.txn` with no pages written — clear it with the `abort` verb; see *Recovery* above).
 

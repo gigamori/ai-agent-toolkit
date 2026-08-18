@@ -110,6 +110,25 @@ Optionally attach a link so answers can cite the original:
 /wiki-ingest-docs ./docs/rfc.md external=https://example.com/rfc
 ```
 
+Where that link ends up: in the wiki's own **source-ref ledger** — a file named
+`.llmwiki.source-ref.jsonl` at the wiki root. Each ingested source appends one line
+there recording the link alongside the copy's path under `raw/`, its content hash, and
+the date. It is not written into the page itself. Nothing about your machine goes in:
+local absolute paths are never recorded. The ledger is written by the engine, not by
+Claude, and it lives inside the same transaction as everything else — if an ingest
+rolls back, its line goes with it.
+
+The link belongs to **documents only**. `/wiki-file` and `/wiki-ingest-sessions` work
+from a transcript, which has no external original to point at, so they take no
+`external=` at all — asking for one there is refused outright rather than quietly
+ignored.
+
+Two things worth knowing as of today. Re-adding a document the wiki already holds
+changes nothing (it is skipped as a duplicate, so no line is recorded). And a wiki you
+built before this ledger existed keeps working exactly as it did — its older sources
+simply have no recorded link, and there is no way to fill them in afterwards, because
+the original address cannot be recovered from the copy.
+
 What happens: **you are asked to confirm up front**, before anything is read or copied,
 along with a one-line note of the settings in effect. Point it at a folder or a glob and
 you are asked **once** for the whole sweep — never once per file — because the question

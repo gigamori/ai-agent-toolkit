@@ -5,8 +5,12 @@
 """Normalization front-ends (design §4, D9/D12/D16/D18).
 
 Three normalization entrances feed the single ingest core. Every front-end runs
-redaction (D16) BEFORE content-hashing (D18). Each produces a raw artifact with
-the provenance/origin/source_ref frontmatter fields the contract requires.
+redaction (D16) BEFORE content-hashing (D18). Each ASSEMBLES the
+provenance/origin/source_ref fields the contract requires; it does not persist
+them. The caller (`ingest_driver.begin`, `cli.py`'s `file` verb) writes the raw
+body and appends the origin record to the source-ref log (`source_ref_log`,
+which documents why that metadata cannot live inside the raw artifact). The
+`frontmatter` dict below is therefore an in-memory assembly, not a file header.
 
   FE-A  (対話/filing)   -> raw/derived/<hash>.md  provenance:derived origin:conversation
   FE-B  (3rd-party cmd) -> raw/<hash>.<ext>       provenance:source  source_ref{raw_path, external?}
@@ -72,9 +76,13 @@ def fe_a(wiki_root: "str | Path", text: str, *,
     fm = {
         "provenance": "derived",
         "derived_origin": "conversation",
+        # D12: `raw_path` is ALWAYS present and ALWAYS relative. fe_b already did
+        # this; fe_a used to emit a source_ref ONLY when a locator was passed, so
+        # a conversation snapshot carried no source_ref at all on the normal path.
+        "source_ref": {"raw_path": status.rel_path},
     }
     if external_locator:
-        fm["source_ref"] = {"external_locator": external_locator}
+        fm["source_ref"]["external_locator"] = external_locator
     return FEResult(
         hash=h, rel_path=status.rel_path, exists=status.exists,
         redaction_flags=red.flags, frontmatter=fm, body=red.text,

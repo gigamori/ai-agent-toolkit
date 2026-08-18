@@ -13,7 +13,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [taskflow](plugins/taskflow/) | CC | 同時並行するタスクの進捗とコンテキストをセッション横断で管理 |
 | [rule-inject](plugins/rule-inject/) | CC / Cursor | `CLAUDE.md` の `<rules when="..." src="..."/>` で宣言された外部ルールの読了を `PreToolUse` deny で強制 |
 | [role-mode](plugins/role-mode/) | CC | ターンごとに認知 `mode:` および/または `role:` を slug で宣言し、該当する NEVER/DO ルールと framework meta を `UserPromptSubmit` で注入（slug が無ければ何も注入しない） |
-| [llm-wiki](plugins/llm-wiki/) | CC | LLM が維持管理する wiki：ソースを Markdown ページに ingest し、それらに接地して質問に答え、graph を lint/promote/view する。書込先 allowlist と単一 git トランザクション（失敗で rollback）の 2 code ゲートで保護 |
+| [llm-wiki](plugins/llm-wiki/) | CC | LLM が維持管理する wiki：ソースを Markdown ページに ingest し、それらに接地して質問に答え、graph を lint/promote/view する。書込先 allowlist と単一のファイルジャーナル・トランザクション（失敗で rollback、git 非依存）の 2 code ゲートで保護 |
 
 ### インストール
 

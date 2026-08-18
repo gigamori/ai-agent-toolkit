@@ -28,7 +28,10 @@ budget, opening no transaction):
        is the read side of a read-modify-write and must not race a concurrent
        finish), then frontends.fe_b_prime). The FE runs redaction/secret-scan +
        content-hash dedup itself.
-    -> write the raw artifact (unless dedup no-op) + write the sidecar
+    -> write the raw artifact (unless dedup no-op) + append its D12 origin
+       record to the source-ref log (`source_ref_log`, journaled with the raw so
+       the two roll back together; the raw's own bytes are never touched, so the
+       D18 content-hash is unaffected) + write the sidecar
     -> print JSON {declaration[], raw_rel_path, declaration_hash,
        stage1_blob_path, origin, doc_type, max_count, max_bytes, apply_fanout_k,
        dedup_noop, redaction_flags[], ledger_skipped, cutoff_dropped}
@@ -72,6 +75,12 @@ budget, opening no transaction):
     assembled, before the lock; the number of turns it removed is reported as
     `cutoff_dropped`. Passing it with `--kind=fe_b` is a usage error — a
     document has no turn list to cut.
+    D12: `--external=<locator>` (FE-B only) records a url/permalink for the
+    ingested document in the source-ref log. Passing it with a projection origin
+    is a usage error — a session transcript has no external locator, and
+    `frontends.fe_b_prime` / `frontends.fe_pi_log` never accepted one, so the
+    value used to be dropped silently at the `_FE_BY_ORIGIN` dispatch. A local
+    absolute path is refused too (D12 keeps absolute paths out of a wiki).
 
   plan-fanout <root> <stage1_proposal_path_or_json>
     touched <= k -> one cluster; touched > k -> ceil(touched/k) clusters each
@@ -253,6 +262,7 @@ from llmwiki.ingest import cc_log_project
 from llmwiki.ingest import cc_paths
 from llmwiki.ingest import pi_log_project
 from llmwiki.ingest import ledger
+from llmwiki.ingest import source_ref_log
 
 
 SIDECAR_NAME = ".llmwiki.txn"
@@ -587,6 +597,35 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
             f"ingests a document. Drop the flag, or use a projection kind "
             f"(fe_b_prime / fe_pi_log).")
 
+    # 3a-2) `--external` is meaningful only where there IS an external source to
+    #     locate, i.e. FE-B (a 3rd-party document). The projection origins build
+    #     their raw from a local session transcript, and their FEs
+    #     (`frontends.fe_b_prime` / `frontends.fe_pi_log`) take `(wiki_root,
+    #     markdown)` only — so a locator passed here used to be dropped in
+    #     SILENCE at the `_FE_BY_ORIGIN` dispatch, one hop before the FE. Refuse
+    #     instead, symmetric with the `--cutoff` guard directly above: same
+    #     "this flag does nothing for this origin" shape, same fail-closed
+    #     answer. Raised before acquire_lock, so nothing is locked or written.
+    if external and origin != ORIGIN_FE_B:
+        raise DriverUsageError(
+            f"--external is not applicable to --kind={kind} (origin "
+            f"{origin!r}): an external locator names a 3rd-party source, and a "
+            f"projection origin builds its raw from a session transcript that "
+            f"has none. Drop the flag, or ingest the document with "
+            f"--kind=fe_b.")
+
+    # 3a-3) D12 forbids absolute local paths anywhere in the wiki (they are
+    #     secrets, and the source-ref log persists this value). A URL locator is
+    #     the intended input; a drive-letter / leading-slash / `file://` value is
+    #     not. Checked HERE (pre-lock, as a usage error) so the same rejection
+    #     never has to surface mid-transaction as a `SourceRefRejected` traceback
+    #     out of `source_ref_log.SourceRefEntry`.
+    if external and source_ref_log.is_local_abs_path(external):
+        raise DriverUsageError(
+            f"--external must be an external locator (url/permalink), not a "
+            f"local absolute path: {external!r}. Absolute paths are never "
+            f"recorded in a wiki (D12).")
+
     # 3b) read the source as pure input (no side effect). FE-B reads text+ext;
     #     FE-B' extracts the jsonl transcript to markdown. A non-UTF-8 (binary)
     #     source is a clean per-file DriverError (R6) — so a glob loop counts it
@@ -749,10 +788,30 @@ def begin(wiki_root: str, source: str, *, kind: str = "auto",
         #    a failed finish/abort removes the orphan raw (required for D18 dedup
         #    correctness).
         if not fe.exists:
-            transaction.journal_before_write(root, [fe.rel_path])
+            # Journal the raw AND the source-ref log together: the log line
+            # describes this raw, so the two must roll back as one (a line
+            # outliving its raw would claim an artifact that is not there).
+            transaction.journal_before_write(
+                root, [fe.rel_path, source_ref_log.SOURCE_REF_LOG_NAME])
             raw_path = root / Path(fe.rel_path)
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_text(fe.body, encoding="utf-8")
+            # 6b) D12: record WHERE this raw came from. The FE assembles the
+            #     source_ref fields but writes nothing (frontends.py), and the
+            #     raw's own bytes stay untouched so the content-hash (D18) and
+            #     `sha256(file) == filename` are unaffected — see
+            #     source_ref_log's docstring for why the metadata cannot live in
+            #     the artifact itself. Engine-written like index/log/the turn
+            #     ledger, never through the Stage2 allowlist.
+            source_ref_log.append_entries(root, [source_ref_log.SourceRefEntry(
+                raw_rel_path=fe.rel_path,
+                content_hash=fe.hash,
+                provenance=str(fe.frontmatter.get("provenance", "")),
+                derived_origin=str(fe.frontmatter.get("derived_origin", "")),
+                doc_type=resolved_doc_type,
+                external_locator=external or "",
+                recorded_at=source_ref_log.today(),
+            )])
 
         # 7) write the sidecar (on-disk transaction state) ONLY when a raw was
         #    actually written (skip on dedup no-op — C1: begin auto-closes the txn
@@ -1191,6 +1250,10 @@ _EXCLUDED_DIRS = ("raw", "wiki", ".git", ".llmwiki.txn.d", ".llmwiki.toggle.d", 
 _EXCLUDED_FILES = (
     "SCHEMA.md", ".llmwiki", ".llmwiki.lock", ".llmwiki.txn",
     "log.md", "index.md", ".cc-turn-ledger.jsonl",
+    # The source-ref log is a driver state file exactly like the turn ledger
+    # above — referenced by constant (not re-typed) so a rename cannot drift
+    # this exclusion and let `enumerate` self-ingest it.
+    source_ref_log.SOURCE_REF_LOG_NAME,
 )
 
 # Text-type default extension allowlist (G-e). A directory-only argument
