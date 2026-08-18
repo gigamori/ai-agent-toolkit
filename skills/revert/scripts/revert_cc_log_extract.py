@@ -321,6 +321,13 @@ def _git(args: list[str]) -> str | None:
             ["git", *args],
             capture_output=True,
             text=True,
+            # git emits UTF-8, but text mode would decode with the platform
+            # default (cp932 on JA Windows). Branch names may legally be
+            # non-ASCII, and a decode failure here raises past the except
+            # below. replace keeps the failure local: a mangled name simply
+            # will not match downstream.
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):

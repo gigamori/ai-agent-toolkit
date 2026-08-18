@@ -554,14 +554,21 @@ def _launch(prompt: str, *, system_prompt: str | None = None,
                 # whose structure is pure ASCII, so a replaced byte costs one
                 # U+FFFD in a message body while every field classification
                 # reads survives. Strict would cost the entire run. The
-                # substitution is not silent -- the executor warns on U+FFFD.
+                # substitution is not silent -- on the step and replan paths
+                # the executor warns on U+FFFD (ask_llm and the capability
+                # probe carry no such check, by design).
                 # Same treatment at every site in this file and in pi_cli.py.
                 proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
                                       encoding="utf-8", errors="replace",
                                       timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired as e:
             stderr = getattr(e, "stderr", None)
-            stderr = stderr.decode() if isinstance(stderr, bytes) else (stderr or "")
+            # Same UTF-8-never-strict contract as the launch call above: a
+            # bare .decode() is strict, so an undecodable byte would raise
+            # from inside the timeout handler -- reinstating, on the error
+            # path, the unclassified crash this whole fix removes.
+            stderr = (stderr.decode("utf-8", "replace")
+                      if isinstance(stderr, bytes) else (stderr or ""))
             return CliResult(ok=False, exit_code=-1, stderr=stderr,
                              error_class="timeout", error=f"timeout after {timeout}s")
         except FileNotFoundError:

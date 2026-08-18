@@ -60,7 +60,10 @@ def _fake_which(mapping: dict[str, str | None]):
 
 
 def _fake_run(stdout: str):
-    def run(cmd, capture_output=False, text=False, timeout=None):
+    # **kwargs, not a fixed signature: the real call passes decoding kwargs
+    # (encoding=/errors=) that this stub does not care about, and pinning the
+    # signature made the stub fail on a caller change that was not a defect.
+    def run(cmd, capture_output=False, text=False, timeout=None, **kwargs):
         return types.SimpleNamespace(stdout=stdout, stderr="", returncode=0)
     return run
 
@@ -143,7 +146,8 @@ def test_launcher_probes_once() -> None:
     orig_which, orig_run = shutil.which, subprocess.run
     calls = {"n": 0}
 
-    def counting_run(cmd, capture_output=False, text=False, timeout=None):
+    def counting_run(cmd, capture_output=False, text=False, timeout=None,
+                     **kwargs):  # see _fake_run on why the signature is open
         calls["n"] += 1
         return types.SimpleNamespace(stdout="anthropic.claude-code\n", stderr="", returncode=0)
 

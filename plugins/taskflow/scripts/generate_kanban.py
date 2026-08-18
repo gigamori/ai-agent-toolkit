@@ -1398,7 +1398,14 @@ def _resolve_cc_launcher() -> tuple[str | None, bool]:
     try:
         proc = subprocess.run(
             [cmd, "--list-extensions"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True,
+            # Without an explicit codec, text mode decodes with the platform
+            # default (cp932 on JA Windows) and one undecodable byte raises
+            # UnicodeDecodeError -- which the except below does NOT catch, so
+            # it would escape this probe entirely. Extension IDs are ASCII, so
+            # replace never fires in practice; it is here so the failure mode
+            # cannot exist at all.
+            encoding="utf-8", errors="replace", timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
         return cmd, False

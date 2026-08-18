@@ -230,7 +230,11 @@ class EndToEndTest(unittest.TestCase):
             env["PI_CODING_AGENT_SESSION_DIR"] = str(session_dir)
         proc = subprocess.run(
             [sys.executable, str(_SCRIPTS / "query.py"), "--sql", sql],
-            capture_output=True, text=True, env=env,
+            # Strict UTF-8: query.py emits UTF-8 bytes by contract (see the
+            # cp932 regression test below, which checks that at the byte
+            # level). Decoding with this test's own locale instead would
+            # launder the corruption that test exists to catch.
+            capture_output=True, text=True, encoding="utf-8", env=env,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return json.loads(proc.stdout)

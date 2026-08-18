@@ -60,7 +60,9 @@ def _verb_closure(argv, stdin=""):
     )
     r = subprocess.run(
         [sys.executable, "-c", driver, _PKG_ROOT, json.dumps(argv)],
-        input=stdin, capture_output=True, text=True,
+        # Strict UTF-8 both ways: encoding= governs stdin too, so this also
+        # pins how `stdin` reaches the driver.
+        input=stdin, capture_output=True, text=True, encoding="utf-8",
     )
     marker = "__MODS__="
     lines = [l for l in r.stderr.splitlines() if l.startswith(marker)]

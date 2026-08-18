@@ -47,6 +47,10 @@ def run(*args: str) -> subprocess.CompletedProcess:
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
+        # Strict UTF-8, not the platform default: the script's output is what
+        # the assertions read, so a substituting decode would hide a defect
+        # instead of failing on it.
+        encoding="utf-8",
     )
 
 

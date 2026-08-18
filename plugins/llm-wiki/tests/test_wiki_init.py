@@ -89,7 +89,7 @@ def test_init_does_not_mutate_parent_repo(tmp_path):
 
     def g(*a):
         subprocess.run(["git", "-C", str(parent), *a], check=True,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8")
     import shutil
     if shutil.which("git") is None:
         pytest.skip("git not available")

@@ -299,7 +299,11 @@ def _sids_via_subprocess(tmp_path, home, cfg):
         env["CLAUDE_CONFIG_DIR"] = str(cfg)
     proc = subprocess.run(
         [sys.executable, "-c", _VIEWS_PROBE, pkg_root],
-        capture_output=True, text=True, env=env, cwd=str(tmp_path),
+        # Strict UTF-8, not the platform default: the probe's output is the
+        # assertion subject, so a decode that silently substitutes would
+        # launder exactly what this test exists to observe.
+        capture_output=True, text=True, encoding="utf-8",
+        env=env, cwd=str(tmp_path),
     )
     assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
     return set(json.loads(proc.stdout))
@@ -387,7 +391,8 @@ def test_nested_env_universe_does_not_double_session_rows(tmp_path):
     env["CLAUDE_CONFIG_DIR"] = str(nested_cfg)
     proc = subprocess.run(
         [sys.executable, "-c", _ROW_COUNT_PROBE, pkg_root],
-        capture_output=True, text=True, env=env, cwd=str(tmp_path),
+        capture_output=True, text=True, encoding="utf-8",
+        env=env, cwd=str(tmp_path),
     )
     assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
     assert json.loads(proc.stdout) == 1
