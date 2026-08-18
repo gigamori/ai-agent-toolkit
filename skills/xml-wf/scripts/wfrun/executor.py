@@ -142,7 +142,8 @@ class Executor:
                  diagnose=adp.diagnose,
                  adjudicate=adjudicate_mod.adjudicate,
                  model_runner: str = "cc",
-                 inherit_model: str | None = None):
+                 inherit_model: str | None = None,
+                 backend: str = "cc"):
         self.wf = wf
         self.base_dir = Path(base_dir)
         self.run_dir = Path(run_dir)
@@ -156,6 +157,18 @@ class Executor:
         self._adjudicate = adjudicate
         self._model_runner = model_runner
         self._inherit_model = inherit_model
+        # Which execution facility this run is on ("cc" | "pi"), for the
+        # checks a startup validator cannot reach: a replan continuation is
+        # built mid-run, so its backend compatibility is only knowable from
+        # here (design phase6-run-pi-design.md §10.2 point 1).
+        #
+        # NOT derived from `_model_runner`. That field's vocabulary is
+        # "cc"/"llm" (which model_map table to resolve names through) and this
+        # one's is "cc"/"pi" (which CLI runs the steps); they happen to be
+        # correlated today, and folding one into the other would make any
+        # future third combination a silent mis-dispatch rather than a new
+        # argument.
+        self.backend = backend
 
         self.vars: dict = {}
         self.step_count = 0
@@ -436,8 +449,10 @@ class Executor:
                 # must not absorb it — that would silently drop the fork this
                 # whole channel exists to surface. _handle_decision raises in
                 # that case; a malformed payload IS a failure and comes back
-                # as a message that falls through to the ladder below (where
-                # the `decision` class still keeps retry and debug out).
+                # as a message that falls through to the ladder below — where
+                # the `decision` class keeps retry and debug out AND the
+                # `ignore` branch refuses to absorb it (§19.2), so a malformed
+                # fork fails the run whatever `on-error` says.
                 #
                 # An llm decider settles it in-process instead of stopping
                 # (§15.1); both continuation forms leave through an exception
@@ -448,8 +463,14 @@ class Executor:
                     return  # value and synthetic success already recorded
                 except _DecisionRerun as settled:
                     decision_reruns += 1
+                    # Kept in the local too, not just handed to this rebuild:
+                    # every LATER rebuild of this visit (the debug-granted
+                    # attempt below) reads decision_ctx, and a stale one would
+                    # drop the very rulings the step was re-run to apply
+                    # (§13.6, §19.1).
+                    decision_ctx = settled.context
                     system, prompt = self._build_prompt(
-                        step, decision=settled.context)
+                        step, decision=decision_ctx)
                     continue
 
             self.state.event("step", key=step.id, status="attempt-failed",
@@ -482,7 +503,12 @@ class Executor:
                         decision=decision_ctx)
                     continue  # exactly one debug-granted attempt
 
-            if step.on_error == "ignore":
+            # `decision` is the one class `ignore` may not absorb (§19.2): a
+            # malformed payload is a fork nobody could answer, and continuing
+            # past it drops the fork exactly as silently as picking a branch by
+            # hand -- the failure this whole channel exists to prevent. Every
+            # other class is ignored as before.
+            if step.on_error == "ignore" and res.error_class != "decision":
                 self.state.event("step", key=step.id, status="failed-ignored",
                                  error=(res.error or "")[:1000])
                 self._snapshot("running")
@@ -985,7 +1011,17 @@ class Executor:
         replayed = self.replay.take("replan", node.id)
         if replayed is not None:
             self._add_cost(float(replayed.get("cost_usd") or 0.0))
-            child = parser.parse_file(self.run_dir / replayed["xml"])
+            # Read the recorded text and parse it through the live branch's
+            # path, NOT parse_file: the continuation is stored under
+            # `<run dir>/replans/`, so parsing it by path would root the child
+            # there and resolve a step's `schema="@rel/path.json"` against the
+            # run dir instead of the XML dir the original run used -- a parse
+            # error, or silently a different file. A resume must reconstruct
+            # the same execution, so both branches resolve `@` against
+            # self.base_dir (reliability-spec.md §14.1).
+            xml_text = (self.run_dir / replayed["xml"]).read_text(
+                encoding="utf-8")
+            child = parser.parse_string(xml_text, base_dir=self.base_dir)
             self._run_child(node, child)
             return
 
@@ -1002,7 +1038,8 @@ class Executor:
             attempt_dir.mkdir(parents=True, exist_ok=True)
             try:
                 system, prompt = stepio.build_replan_prompt_parts(
-                    node, self.vars, self._agents_cache, fix=fix)
+                    node, self.vars, self._agents_cache, fix=fix,
+                    constraint=self._replan_constraint())
             except stepio.StepIOError as e:
                 raise WorkflowFailure(str(e)) from e
             (attempt_dir / "system.md").write_text(system, encoding="utf-8")
@@ -1044,8 +1081,28 @@ class Executor:
                 return
             raise WorkflowFailure(f"replan '{node.id}' failed: {joined}")
 
+    def _replan_constraint(self) -> str | None:
+        """The extra contract bullet the builder prompt gets on this backend.
+
+        None on cc (and on the run-llm path, which never comes through here),
+        so the prompt those see is byte-identical to the one they saw before
+        this parameter existed (design §10.2 point 3)."""
+        return stepio.REPLAN_PI_CONSTRAINT if self.backend == "pi" else None
+
     def _validate_continuation(self, node: model.Replan, res):
-        """Parse + lint a generated continuation. Returns (errors, child, xml)."""
+        """Parse + lint a generated continuation. Returns (errors, child, xml).
+
+        Linted AS the live backend, and on pi also checked for the two
+        attributes the startup fail-fast refuses (design §10.2 point 2).
+        `pi_cli.pi_compat_errors` only ever sees the statically-declared
+        steps, and `lint()` defaulted to backend="cc" here, so before this a
+        continuation could carry `schema=` / `on-error="debug"` / a model name
+        pi cannot resolve all the way to the point where the step launched and
+        died. Everything found lands in the same `errors` list, which
+        `_exec_replan` feeds back to the builder as `fix=`: the generator that
+        wrote the violation is the one asked to correct it, and the run stops
+        before any of the continuation runs.
+        """
         if not res.ok:
             return [res.error or "claude call failed"], None, ""
         xml_text = stepio.strip_fences(res.text)
@@ -1054,14 +1111,40 @@ class Executor:
         except parser.ParseError as e:
             return [str(e)], None, xml_text
         findings = lint_mod.lint(child, base_dir=self.base_dir, check_roles=True,
-                                 as_child=True, defined_vars=set(self.vars))
+                                 as_child=True, defined_vars=set(self.vars),
+                                 backend=self.backend)
         errors = [str(f) for f in findings if f.level == "error"]
+        if self.backend == "pi":
+            from . import pi_cli  # deferred: needs the pi CLI only on pi
+            errors.extend(pi_cli.pi_continuation_errors(child))
         if child.max > node.max_steps:
             errors.append(f"workflow max={child.max} exceeds the allowed "
                           f"max-steps={node.max_steps}")
         return errors, child, xml_text
 
+    def _warn_continuation_tool_widening(self, node: model.Replan,
+                                         child: model.Workflow) -> None:
+        """One warning per continuation step whose tools= carries an argument
+        specifier pi cannot enforce (design §10.2, disposition (e)).
+
+        `pi_tool_widening_notes` scans only the statically-declared steps and
+        `run_pi` discards `_convert_tools`' per-call warnings on the grounds
+        that the run-start advisory already covered them -- which leaves a
+        continuation's `Bash(git:*)` widened to the whole `bash` tool with no
+        notice anywhere. Same surface as the protocol warnings: an event, and
+        a line in the run report.
+        """
+        if self.backend != "pi":
+            return
+        from . import pi_cli  # deferred: needs the pi CLI only on pi
+        for note in pi_cli.pi_tool_widening_notes(child, self._agents_cache):
+            warning = f"replan '{node.id}' continuation: {note}"
+            self.state.event("warning", key=node.id, warning=warning)
+            with self._lock:
+                self.protocol_warnings.append(warning)
+
     def _run_child(self, node: model.Replan, child: model.Workflow):
+        self._warn_continuation_tool_widening(node, child)
         saved_rules = self._rules_cache
         try:
             child_rules = stepio.load_rules(child, self.base_dir)

@@ -4,10 +4,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wfrun import modes, parser  # noqa: E402
+from wfrun import adjudicate as adjudicate_mod  # noqa: E402
+from wfrun import modes, parser, pi_cli, stepio  # noqa: E402
 from wfrun.adp import Diagnosis  # noqa: E402
 from wfrun.claude_cli import CliResult  # noqa: E402
 from wfrun.executor import Executor, WorkflowFailure  # noqa: E402
@@ -87,7 +89,7 @@ class ExecutorTestCase(unittest.TestCase):
 
     def execute(self, xml, params=None, ask=None, diagnose=None, events=None,
                 permission_mode=None, model_runner="cc", inherit_model=None,
-                adjudicate=None):
+                adjudicate=None, backend="cc"):
         wf = parser.parse_string(xml, base_dir=self.tmp.name)
         executor = Executor(
             wf, params or {}, self.run_dir, base_dir=self.tmp.name,
@@ -101,6 +103,11 @@ class ExecutorTestCase(unittest.TestCase):
             adjudicate=adjudicate or _no_adjudicator,
             model_runner=model_runner,
             inherit_model=inherit_model,
+            # "cc"/"pi" -- which execution facility the run is on, kept apart
+            # from model_runner's "cc"/"llm" on purpose. run_claude= stays the
+            # fake either way: these tests exercise the executor's own
+            # backend-conditional checks, not pi_cli's launcher.
+            backend=backend,
         )
         return executor
 
@@ -818,6 +825,42 @@ class TestErrorsAndResume(ExecutorTestCase):
         self.assertEqual(len(new), 1)
         self.assertIn("TAIL-ME", new[0]["prompt"])
 
+    def test_replan_resume_parses_continuation_against_the_base_dir(self):
+        """Replay resolves `@`-relative paths exactly as the live run did.
+
+        The recorded continuation sits under `<run dir>/replans/`, so parsing
+        it by path would root the child there and a continuation step's
+        `schema="@rel/s.json"` would resolve against the run dir instead of the
+        XML dir -- a parse error, or a different file (reliability-spec.md
+        §14.1).
+        """
+        schema_text = '{"type": "object"}'
+        schema_dir = Path(self.tmp.name) / "rel"
+        schema_dir.mkdir()
+        (schema_dir / "s.json").write_text(schema_text, encoding="utf-8")
+        child = ('<workflow name="c" version="2" max="5">'
+                 '<step id="c1" role="w" schema="@rel/s.json">'
+                 '<task>child work</task></step></workflow>')
+        self.fake.handlers.append(
+            (lambda p: "PLAN-ME" in p, CliResult(ok=True, text=child, cost_usd=0.01)))
+        xml = self.wrap(
+            '<replan id="r1" role="builder"><task>PLAN-ME</task></replan>')
+        ex = self.execute(xml)
+        ex.run()
+        # live: builder call, then the child step carrying the resolved schema
+        self.assertEqual(self.fake.calls[1]["schema"], schema_text)
+        first_calls = len(self.fake.calls)
+
+        # resume with the recorded replan success only: the continuation is
+        # replayed from disk and its child step then runs live again
+        events = [e for e in load_events(self.run_dir) if e["kind"] == "replan"]
+        ex2 = self.execute(xml, events=events)
+        ex2.run()
+        new = self.fake.calls[first_calls:]
+        self.assertEqual(len(new), 1)  # the builder was not re-run
+        self.assertIn("child work", new[0]["prompt"])
+        self.assertEqual(new[0]["schema"], schema_text)
+
     def test_budget_exhaustion(self):
         ex = self.execute(self.wrap(
             '<step id="s1" role="w"><task>a</task></step>'
@@ -825,6 +868,276 @@ class TestErrorsAndResume(ExecutorTestCase):
             extra='budget-usd="0.005"'))
         with self.assertRaises(WorkflowFailure):
             ex.run()  # first step costs 0.01 > budget before second
+
+
+class TestReplanContinuationUnderPiBackend(ExecutorTestCase):
+    """The pi backend's fail-fast, extended to replan continuations
+    (phase6-run-pi-design.md §10).
+
+    `pi_cli.pi_compat_errors` runs once at startup over the statically
+    declared steps, so a continuation built mid-run never reached it: its
+    `schema=` was refused only when `run_pi` was already launching the step,
+    half-way through the run. These tests pin the three places §10.2 closes
+    that -- the executor knowing its backend, the continuation validated as
+    that backend, and the builder prompt told about it up front -- plus the
+    tools-widening warning of disposition (e).
+
+    `run_claude=` stays the fake in all of them: what is under test is the
+    executor's backend-conditional logic, not pi_cli's launcher.
+    """
+
+    CHILD_OK = ('<workflow name="c" version="2" max="5">'
+                '<step id="c1" role="w"><task>child work</task></step>'
+                '</workflow>')
+    REPLAN = '<replan id="r1" role="builder"><task>PLAN-ME</task></replan>'
+    REPLAN_RETRY = ('<replan id="r1" role="builder" retry="1">'
+                    '<task>PLAN-ME</task></replan>')
+
+    def _builder_returns(self, first, second=None):
+        """Script the builder call by attempt: `first` for attempt 1, then
+        `second` for every later one (same shape as
+        test_replan_retry_with_lint_feedback's handler pair)."""
+        state = {"n": 0}
+
+        def once(prompt):
+            if "PLAN-ME" not in prompt:
+                return False
+            state["n"] += 1
+            return state["n"] == 1
+
+        self.fake.handlers.append(
+            (once, CliResult(ok=True, text=first, cost_usd=0.01)))
+        if second is not None:
+            self.fake.handlers.append(
+                (lambda p: "PLAN-ME" in p,
+                 CliResult(ok=True, text=second, cost_usd=0.01)))
+
+    def _replan_errors(self):
+        return [e["error"] for e in load_events(self.run_dir)
+                if e["kind"] == "replan" and e["status"] == "attempt-failed"]
+
+    # --- (a) the violation is caught, and the builder is told in its own terms
+    def test_schema_in_continuation_is_refused_and_fed_back_to_the_builder(self):
+        bad = ('<workflow name="c" version="2" max="5">'
+               '<step id="c1" role="w" schema=\'{"type":"object"}\'>'
+               '<task>bad</task></step></workflow>')
+        self._builder_returns(bad, self.CHILD_OK)
+        ex = self.execute(self.wrap(self.REPLAN_RETRY), backend="pi")
+        ex.run()
+
+        errors = self._replan_errors()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("schema= is not allowed on this backend", errors[0])
+        # and it reached the next attempt as fix= feedback -- the point of
+        # merging it into the same list the lint findings ride (§10.2 point 2)
+        retry_prompt = self.fake.calls[1]["prompt"]
+        self.assertIn("schema= is not allowed on this backend", retry_prompt)
+        self.assertIn("expect-file instead", retry_prompt)
+        # disposition (d): the startup text addresses a human and points at
+        # build mode, which is the wrong audience for a regeneration hint
+        self.assertNotIn("run the skill in build mode", retry_prompt)
+
+    def test_on_error_debug_in_continuation_is_refused_the_same_way(self):
+        bad = ('<workflow name="c" version="2" max="5">'
+               '<step id="c1" role="w" on-error="debug"><task>bad</task>'
+               '</step></workflow>')
+        self._builder_returns(bad, self.CHILD_OK)
+        ex = self.execute(self.wrap(self.REPLAN_RETRY), backend="pi")
+        ex.run()
+
+        errors = self._replan_errors()
+        self.assertEqual(len(errors), 1)
+        self.assertIn('on-error="debug" is not allowed on this backend',
+                      errors[0])
+        self.assertIn('on-error="debug" is not allowed on this backend',
+                      self.fake.calls[1]["prompt"])
+
+    def test_neither_attribute_is_refused_under_cc(self):
+        """The same continuation is valid on cc: claude enforces schema= and
+        adp.diagnose exists there."""
+        child = ('<workflow name="c" version="2" max="5">'
+                 '<step id="c1" role="w" on-error="debug" '
+                 'schema=\'{"type":"object"}\'><task>fine here</task>'
+                 '</step></workflow>')
+        self._builder_returns(child)
+        ex = self.execute(self.wrap(self.REPLAN), backend="cc")
+        ex.run()
+        self.assertEqual(self._replan_errors(), [])
+
+    def test_pi_model_check_reaches_the_continuation(self):
+        """The other half of passing the live backend to lint(): an
+        unresolvable model name on a continuation step is an error on pi,
+        where before it was linted as cc and never checked at all."""
+        child = ('<workflow name="c" version="2" max="5">'
+                 '<step id="c1" role="w" model="nowhere-9000">'
+                 '<task>child work</task></step></workflow>')
+        self._builder_returns(child)
+        ex = self.execute(self.wrap(self.REPLAN), backend="pi")
+        with mock.patch.object(pi_cli, "list_available_models",
+                               return_value=[("anthropic", "claude-sonnet-4")]):
+            with self.assertRaises(WorkflowFailure) as ctx:
+                ex.run()
+        self.assertIn("pi-model-unavailable", str(ctx.exception))
+
+    # --- (b) the builder is told before it writes anything ------------------
+    def test_builder_prompt_carries_the_constraint_under_pi(self):
+        self._builder_returns(self.CHILD_OK)
+        ex = self.execute(self.wrap(self.REPLAN), backend="pi")
+        ex.run()
+        self.assertIn(stepio.REPLAN_PI_CONSTRAINT, self.fake.calls[0]["prompt"])
+
+    def test_builder_prompt_has_no_constraint_line_under_cc(self):
+        self._builder_returns(self.CHILD_OK)
+        ex = self.execute(self.wrap(self.REPLAN), backend="cc")
+        ex.run()
+        self.assertNotIn(stepio.REPLAN_PI_CONSTRAINT,
+                         self.fake.calls[0]["prompt"])
+        self.assertNotIn("MUST NOT use `schema=`", self.fake.calls[0]["prompt"])
+
+    # --- (e) the widening a continuation step gets is not silent ------------
+    def test_continuation_tool_specifier_warns_under_pi(self):
+        child = ('<workflow name="c" version="2" max="5">'
+                 '<step id="c1" role="w" tools="Bash(git:*)">'
+                 '<task>child work</task></step></workflow>')
+        self._builder_returns(child)
+        ex = self.execute(self.wrap(self.REPLAN), backend="pi")
+        ex.run()
+        self.assertEqual(len(ex.protocol_warnings), 1)
+        warning = ex.protocol_warnings[0]
+        self.assertIn("r1", warning)
+        self.assertIn("c1", warning)
+        self.assertIn("Bash(git:*)", warning)
+        events = [e for e in load_events(self.run_dir) if e["kind"] == "warning"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["key"], "r1")
+
+    def test_continuation_tool_specifier_is_silent_under_cc(self):
+        """cc honors the specifier, so there is nothing to warn about."""
+        child = ('<workflow name="c" version="2" max="5">'
+                 '<step id="c1" role="w" tools="Bash(git:*)">'
+                 '<task>child work</task></step></workflow>')
+        self._builder_returns(child)
+        ex = self.execute(self.wrap(self.REPLAN), backend="cc")
+        ex.run()
+        self.assertEqual(ex.protocol_warnings, [])
+
+
+class TestDecisionContextSurvivesDebugRetry(ExecutorTestCase):
+    """A ruling settled in-process stays in front of every later rebuild of
+    the same visit (xml-wf-decision-request.md §13.6, defect §19.1).
+
+    The form-(b) re-run is the step's second chance to apply a ruling. When
+    that re-run fails for an unrelated reason and `on-error="debug"` grants
+    one more attempt, the debug rebuild has to carry the same rulings: a
+    prompt without them lets the fresh subagent walk back into a fork that
+    was already settled -- the exact accident §13.6 exists to prevent.
+    """
+
+    # work-state: stopped forces continuation form (b) on its own, so the
+    # step needs no expect-file or output= for the ruling to re-run it (§6).
+    STOPPED_PAYLOAD = ("DECISION: which join\n"
+                       "fork: two readings of 'merge'\n"
+                       "options:\n"
+                       "  1. A -- loses rows\n"
+                       "  2. B -- loses columns\n"
+                       "recommendation: 1\n"
+                       "work-state: stopped")
+
+    def respond_in_order(self, needle, *results):
+        """Answer prompts containing `needle` with `results`, one per call."""
+        state = {"n": 0}
+        for index, result in enumerate(results):
+            def predicate(prompt, index=index):
+                if needle not in prompt or state["n"] != index:
+                    return False
+                state["n"] += 1
+                return True
+            self.fake.handlers.append((predicate, result))
+
+    def test_debug_retry_after_a_form_b_re_run_still_carries_the_ruling(self):
+        self.respond_in_order(
+            "DO-WORK",
+            CliResult(ok=True, text=self.STOPPED_PAYLOAD, cost_usd=0.02),
+            CliResult(ok=False, error="the file never appeared",
+                      error_class="behavioral", cost_usd=0.01),
+            CliResult(ok=True, text="done", cost_usd=0.01))
+
+        def fake_diag(step, prompt, failure, **kwargs):
+            return Diagnosis("RETRY", "transient", fix_instruction="add --force")
+
+        ruling = adjudicate_mod.Adjudication(
+            verdict="settled",
+            answer_text=adjudicate_mod.render_answer(1, "go with A"),
+            reason="go with A", cost_usd=0.5)
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" retry="0" on-error="debug">'
+            '<task>DO-WORK</task></step>', extra='decider="llm"'),
+            diagnose=fake_diag,
+            adjudicate=lambda *a, **k: ruling)
+        ex.run()
+
+        self.assertEqual(len(self.fake.calls), 3)  # request, (b) re-run, debug
+        debug_prompt = self.fake.calls[2]["prompt"]
+        self.assertIn("## Fix instructions for the previous failure",
+                      debug_prompt)
+        self.assertIn("add --force", debug_prompt)
+        self.assertIn("## Decisions resolved", debug_prompt)
+        self.assertIn("option: 1", debug_prompt)
+        self.assertIn("two readings of 'merge'", debug_prompt)
+
+
+class TestIgnoreDoesNotAbsorbAMalformedDecision(ExecutorTestCase):
+    """`on-error="ignore"` may not swallow a malformed `DECISION:` payload
+    (xml-wf-decision-request.md §19.2; §1 and §15.4-1 state the fail-closed
+    rule this restores).
+
+    A well-formed request already stops the run through DecisionRequested no
+    matter what `on-error` says, so the malformed side was the only hole: the
+    ladder's `ignore` branch recorded `failed-ignored` for every class,
+    including `decision`, and the fork the channel exists to surface was
+    dropped as silently as picking a branch by hand.
+    """
+
+    # Opens with the prefix, so the channel is claimed and the class is
+    # `decision` (§1) -- but `options:`, `recommendation:` and `work-state:`
+    # are missing, so it can never be answered.
+    MALFORMED_PAYLOAD = ("DECISION: which join\n"
+                         "fork: two readings of 'merge'\n")
+
+    def test_malformed_decision_fails_an_ignore_step(self):
+        self.fake.handlers.append(
+            (lambda p: "DO-WORK" in p,
+             CliResult(ok=True, text=self.MALFORMED_PAYLOAD, cost_usd=0.02)))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" on-error="ignore"><task>DO-WORK</task></step>'
+            '<step id="s2" role="w"><task>AFTER-ME</task></step>'))
+        with self.assertRaises(WorkflowFailure) as ctx:
+            ex.run()
+        # The report has to point at the payload a human must read (§1).
+        message = str(ctx.exception)
+        self.assertIn("s1", message)
+        request = self.run_dir / "decisions" / "s1_c01_d01_request.md"
+        self.assertTrue(request.is_file())
+        self.assertIn(str(request), message)
+        # The run stopped there: no retry, no debug, and no later step.
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_ordinary_failure_on_the_same_step_is_still_ignored(self):
+        """Control arm: the guard is narrow -- only the `decision` class."""
+        self.fake.handlers.append(
+            (lambda p: "DO-WORK" in p,
+             CliResult(ok=False, error="the file never appeared",
+                       error_class="behavioral", cost_usd=0.01)))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w" on-error="ignore"><task>DO-WORK</task></step>'
+            '<step id="s2" role="w"><task>AFTER-ME</task></step>'))
+        ex.run()
+        self.assertEqual(len(self.fake.calls), 2)
+        self.assertIn("AFTER-ME", self.fake.calls[1]["prompt"])
+        ignored = [e for e in load_events(self.run_dir)
+                   if e.get("kind") == "step"
+                   and e.get("status") == "failed-ignored"]
+        self.assertEqual([e["key"] for e in ignored], ["s1"])
 
 
 if __name__ == "__main__":

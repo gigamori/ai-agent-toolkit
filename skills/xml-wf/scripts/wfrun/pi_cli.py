@@ -714,3 +714,45 @@ def pi_compat_errors(wf: model.Workflow) -> list[str]:
         if node.on_error == "debug":
             errors.append(_ON_ERROR_DEBUG_FAIL_FAST.format(id=node.id))
     return errors
+
+
+# The same two violations, worded for the OTHER audience (design §10.2,
+# disposition (d)). The fail-fast text above addresses a human and points at
+# build mode ("Rebuild this workflow as pi-compatible: run the skill in build
+# mode..."); a replan continuation's violation is fed back to the builder
+# agent as `fix=` feedback, where that instruction is addressed to nobody who
+# can act on it. These say what to write instead, in one line.
+_CONTINUATION_SCHEMA_ERROR = (
+    "step '{id}': schema= is not allowed on this backend; write the value to "
+    "a file and declare it in expect-file instead")
+
+_CONTINUATION_DEBUG_ERROR = (
+    "step '{id}': on-error=\"debug\" is not allowed on this backend; use "
+    "on-error=\"fail\" (the default), retry=N, or on-error=\"ignore\" plus a "
+    "follow-up verification step")
+
+
+def pi_continuation_errors(wf: model.Workflow) -> list[str]:
+    """`pi_compat_errors` for a replan-generated continuation (design §10.2).
+
+    Same two violations, checked at generation time instead of startup:
+    `pi_compat_errors` only ever sees the statically-declared steps, so a
+    continuation built mid-run reached `run_pi`'s schema rejection (or
+    `diagnose_stub_pi`) half-way through the run instead of being refused
+    before any pi process started. Executor._validate_continuation merges
+    these into the same error list lint findings go into, so the builder gets
+    them as `fix=` feedback and can correct itself.
+
+    The wording differs from `pi_compat_errors` on purpose (disposition (d)):
+    the reader here is the builder agent regenerating the XML, not a person
+    deciding whether to re-run build mode.
+    """
+    errors = []
+    for node in wf.iter_steps():
+        if not isinstance(node, model.Step):
+            continue
+        if node.schema:
+            errors.append(_CONTINUATION_SCHEMA_ERROR.format(id=node.id))
+        if node.on_error == "debug":
+            errors.append(_CONTINUATION_DEBUG_ERROR.format(id=node.id))
+    return errors

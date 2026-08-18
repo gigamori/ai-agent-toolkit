@@ -59,6 +59,20 @@ feature.
 Both rejections point at build mode for a compatible rewrite — see the two
 sections below for what the rewrite looks like.
 
+A `<replan>` continuation is not covered by that startup refusal: it does not
+exist yet when the run starts. It is caught at generation time instead — the
+generated XML is linted as this backend, and a step carrying `schema=` or
+`on-error="debug"` becomes a validation error alongside the ordinary ones,
+which `<replan>` already feeds back to the builder as its regeneration
+instruction. So the correction is made by the builder's own retry loop rather
+than by you, and the wording is aimed at it: it names the replacement (write
+the value to a file and declare it in `expect-file`; use `on-error="fail"`,
+`retry=N`, or `on-error="ignore"`) instead of pointing at build mode. The
+builder prompt also carries a line stating up front that neither attribute is
+available here. Nothing runs on a rejected continuation; only when the
+regeneration attempts (`retry=` on the `<replan>`) are exhausted does the run
+fail, still before any continuation step launches.
+
 ## `decider="llm"` works here
 
 An llm decider settles a step's `DECISION:` fork in-process, so the run
@@ -201,8 +215,11 @@ so know them before relying on them.
   honored as written. Rather than refusing the step (which would take away a
   tool it genuinely needs — git, in that example), the leading name is
   granted with no argument restriction at all — `Bash(git:*)` becomes the
-  bare `bash` tool. This is silent nowhere: a `note:` line at run start names
-  every step where this widening happened.
+  bare `bash` tool. This is silent nowhere, by two routes. A `note:` line at
+  run start names every declared step where the widening happens. A
+  `<replan>` continuation's steps do not exist yet at that point, so theirs
+  are named when the continuation is accepted — as a `warning` event and a
+  line in the run report, the same surface the protocol warnings use.
 - **Steps start slower.** A cold `pi -p` call takes on the order of fifteen
   seconds before the model does any work. Size each step's `timeout=` with
   that startup included; a step that would finish in a minute under run-cc

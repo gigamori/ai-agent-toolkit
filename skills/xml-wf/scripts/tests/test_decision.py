@@ -224,13 +224,15 @@ class TestBatchStop(DecisionExecutorTestCase):
         self.assertFalse(self.decision_events(valid_only=True))
         self.assertTrue(self.decision_events(valid_only=False))
 
-    def test_on_error_ignore_absorbs_a_malformed_payload(self):
+    def test_on_error_ignore_does_not_absorb_a_malformed_payload(self):
         self.fake.handlers.append(
             (lambda p: "bad" in p,
              CliResult(ok=True, text="DECISION: no fields", cost_usd=0.02)))
         ex = self.execute(self.wrap(
             '<step id="bad" role="w" on-error="ignore"><task>bad</task></step>'))
-        ex.run()  # malformed IS a failure, so ignore may swallow it
+        with self.assertRaises(WorkflowFailure):
+            ex.run()  # a malformed payload is a fork nobody can answer, so
+            # `ignore` may not swallow it either (§19.2)
 
     def test_on_error_ignore_does_not_absorb_a_real_request(self):
         self.respond_decision("good", work_state="stopped", output=None)

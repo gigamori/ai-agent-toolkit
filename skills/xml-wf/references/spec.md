@@ -210,6 +210,11 @@ Semantics:
   (recursion) and no `<param>` allowed**; named roles must exist (inline
   `<role>` bodies are always allowed); variables already defined count as
   defined. Its `max` must be ≤ `max-steps`
+- Under `--backend pi` that validation also enforces the two attributes that
+  backend does not support (`schema=`, `on-error="debug"`): a continuation
+  using either is rejected at generation time and fed back to the builder for
+  regeneration, not refused at startup as a declared step would be (see
+  `references/run-pi.md`)
 - On success the XML is saved to `runs/<ts>/replans/<id>_<nn>.xml` and executed
   inline: **variables are shared** with the parent, its rules are merged for
   the duration, and its step executions count toward the workflow's `max`
@@ -531,7 +536,8 @@ value-typed step re-runs and produces the value itself. Anything else re-runs th
 once with every settled ruling of that visit injected into its prompt — form
 (b) — and the report says why (`b_reason`). A malformed payload is the one
 genuine failure: the run stops FAILED with the payload path for a human to
-read, and no retry or debug fires.
+read, and no retry or debug fires. `on-error="ignore"` does not absorb it
+either — a fork nobody can answer stops the run whatever `on-error` says.
 
 Procedures live per backend: `run-cc.md` ("On decision"), `run-pi.md`
 (`decider="llm"` works here), `run-llm.md` ("On decision" — the orchestrator
@@ -578,12 +584,18 @@ the definitions of already-succeeded parts).
 wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi]
               [--as-child] [--defined-vars VARS_JSON]   # static validation (error = exit 1)
 wfrun run <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs]
-          [--permission-mode acceptEdits]               # validate → execute
+          [--permission-mode acceptEdits] [--no-role-check]
+          [--backend auto|cc|pi] [--inherit-model MODEL]  # validate → execute
 wfrun resume <run_dir> [--base-dir D] [--permission-mode ...]
+             [--answer STEP_ID=PATH ...]                 # skips recorded successes
 wfrun plan <wf.xml>                                     # print the step tree (no execution)
 wfrun viz <wf.xml> [--out FILE]                         # mermaid flowchart of the control flow
 ```
 
+- `resume` takes neither `--backend` nor `--inherit-model`: both are inherited
+  from the run directory (`backend.json` / `inherit_model.json`), so a resumed
+  run never switches execution facility or model mid-run — there is no
+  override flag for either on `resume`
 - `--permission-mode` is forwarded only to steps whose resolved tools can
   write (Write/Edit/Bash/… — or when tools are unrestricted); read-only steps,
   ask judgments, and replan builders run without it. Workflows that write

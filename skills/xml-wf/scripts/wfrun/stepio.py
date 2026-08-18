@@ -170,7 +170,7 @@ not execute any of the work yourself.
 - The XML format specification: read {spec_path} before writing.
 - The document MUST NOT contain `<replan>` or `<param>` elements
   (this is a one-level continuation; variables are inherited).
-- You may reference the existing variables below as {{name}} placeholders.{outputs_clause}
+- You may reference the existing variables below as {{name}} placeholders.{outputs_clause}{constraint_clause}
 
 ## Current variables (name: value)
 {variables}
@@ -180,6 +180,18 @@ not execute any of the work yourself.
 
 ## Output contract
 {output_contract}"""
+
+# The backend constraint the pi Executor adds to the contract list above
+# (design phase6-run-pi-design.md §10.2 point 3). Kept here, next to the
+# prompt it is spliced into, rather than in executor.py: it is prompt text.
+# It is passed in rather than derived here because REPLAN_PROMPT has no
+# backend of its own -- `wfrun prompt` builds it for run-llm, where neither
+# attribute is refused, and that path must stay byte-identical.
+REPLAN_PI_CONSTRAINT = ('The document MUST NOT use `schema=` or '
+                        '`on-error="debug"` on any step (this execution '
+                        'backend supports neither; write a value to a file '
+                        'and declare it in expect-file, and handle failures '
+                        'with on-error="fail" / retry=N / on-error="ignore").')
 
 REPLAN_OUTPUT_INLINE = ("Reply with ONLY the workflow XML. "
                         "No code fences, no commentary, no explanation.")
@@ -357,13 +369,20 @@ def strip_fences(text: str) -> str:
 def build_replan_prompt_parts(node, variables: dict,
                               agents_cache: dict[str, AgentDef],
                               fix: str | None = None,
-                              result_path: str | None = None) -> tuple[str, str]:
+                              result_path: str | None = None,
+                              constraint: str | None = None) -> tuple[str, str]:
     """(system_text, user_text) for a replan builder call: role in the system
     part, the planning contract + variables + task in the user part.
 
     A replan carries no mode, so it gets no framework header and no _common —
     only the role. Role is optional: without one the system part is empty, and
-    both backends then omit the append-system-prompt flag entirely."""
+    both backends then omit the append-system-prompt flag entirely.
+
+    `constraint` is one extra contract bullet the caller knows about and this
+    builder does not — today only the pi Executor's REPLAN_PI_CONSTRAINT
+    (design §10.2 point 3). Omitted, the prompt is byte-identical to what it
+    was before the parameter existed, which is what keeps the cc path and
+    `wfrun prompt` (run-llm) unchanged."""
     try:
         task = interpolate(node.task, variables)
     except InterpError as e:
@@ -384,6 +403,7 @@ def build_replan_prompt_parts(node, variables: dict,
                         if m not in modes.MODE_ALIASES),
         spec_path=str(spec) if spec else "(spec file unavailable — follow the examples in the task)",
         outputs_clause=outputs_clause,
+        constraint_clause=f"\n- {constraint}" if constraint else "",
         variables=json.dumps(variables, ensure_ascii=False, indent=2),
         task=task,
         output_contract=(REPLAN_OUTPUT_FILE.format(result_path=result_path)

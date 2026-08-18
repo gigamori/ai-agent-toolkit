@@ -155,22 +155,31 @@ def _report_decisions(records: list[dict], run_dir: Path, *, on_hold: bool = Fal
 
 def _backend_executor_kwargs(backend: str) -> dict:
     """The Executor constructor kwargs (run_claude=/ask_llm=/diagnose=/
-    adjudicate=/model_runner=) for a resolved backend ("cc" or "pi" -- never
-    "auto"). Shared by cmd_run and cmd_resume so a resumed run always
+    adjudicate=/model_runner=/backend=) for a resolved backend ("cc" or "pi"
+    -- never "auto"). Shared by cmd_run and cmd_resume so a resumed run always
     reconstructs the same execution facility it started with (design §1, §3.3).
 
     `adjudicate=` splits by backend for the same reason `run_claude=` does: the
     cc adjudicator forces structured output, which pi has no equivalent for, so
     the pi one takes the ruling as §13.3 text instead. Both land in the same
-    parser (xml-wf-decision-request.md §17.1)."""
+    parser (xml-wf-decision-request.md §17.1).
+
+    `backend=` is passed as the plain name on top of the injected callables:
+    the checks a replan continuation needs (design §10.2) are about which
+    facility the run is on, not about which function object executes a step,
+    and `model_runner=` cannot stand in for it -- that one's vocabulary is
+    "cc"/"llm". Resume goes through here too, so it inherits the backend
+    recorded in backend.json like everything else in this dict."""
     if backend == "cc":
         return dict(run_claude=claude_cli.run_claude, ask_llm=claude_cli.ask_llm,
                     diagnose=adp.diagnose,
-                    adjudicate=adjudicate_mod.adjudicate, model_runner="cc")
+                    adjudicate=adjudicate_mod.adjudicate, model_runner="cc",
+                    backend="cc")
     from . import pi_cli  # deferred: needs the pi CLI only when backend=="pi"
     return dict(run_claude=pi_cli.run_pi, ask_llm=pi_cli.ask_llm_pi,
                 diagnose=pi_cli.diagnose_stub_pi,
-                adjudicate=adjudicate_mod.adjudicate_pi, model_runner="llm")
+                adjudicate=adjudicate_mod.adjudicate_pi, model_runner="llm",
+                backend="pi")
 
 
 def cmd_run(args) -> int:
