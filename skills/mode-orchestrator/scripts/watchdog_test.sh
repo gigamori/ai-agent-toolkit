@@ -259,6 +259,7 @@ expect "--deadline overrides the mode's budget" TIMEOUT 1
 # not as a surprise mid-run.
 
 expect_grep "STALL is configured at the top of the script" '^STALL=600$' "$WATCHDOG"
+expect_grep "DEADLINE_SURVEY is 3600" '^DEADLINE_SURVEY=3600$' "$WATCHDOG"
 expect_grep "DEADLINE_PLAN is 2400" '^DEADLINE_PLAN=2400$' "$WATCHDOG"
 expect_grep "DEADLINE_EXECUTE is 1500" '^DEADLINE_EXECUTE=1500$' "$WATCHDOG"
 expect_grep "DEADLINE_REVIEW is 900" '^DEADLINE_REVIEW=900$' "$WATCHDOG"

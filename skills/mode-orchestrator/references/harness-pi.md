@@ -272,7 +272,7 @@ pass one explicitly, taken from this table. The upper bound is
 
 | turn mode | `timeout` (seconds) |
 |---|---|
-| `survey` | 600 |
+| `survey` | 3600 |
 | `plan` | 2400 |
 | `execute` | 1500 |
 | `debug` | 900 |
