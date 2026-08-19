@@ -22,12 +22,17 @@ degenerate implementation passes every other case in the list and fails T8.
 
 Sandbox (review F-2): §8's claim that `e2e_state_dir_sandbox` is non-applicable
 "because this hook resolves no `_projects` path and writes nothing" is FALSE —
-touched_capture.py defines PROGRESS_ROOT/STATE_DIR from `os.getcwd()` at module
-scope and `main()` appends to `<STATE_DIR>/<session_id>.touched`. The
-conclusion survives only for this test's exact shape: every case below calls
-`extract_bash_paths` directly and NEVER `main()`, so no `_projects` path is
-resolved and nothing is written. Do not exercise these cases end-to-end through
-the hook, and do not extend test_touched_capture.sh's `[main]` sections.
+touched_capture.py resolves STATE_ROOT / PROGRESS_ROOT / STATE_DIR at module
+scope and `main()` appends to `<STATE_DIR>/<session_id>.touched`. Since
+2026-08-19 that module-scope resolution is `_find_state_root(os.getcwd()) or
+os.getcwd()`, so merely IMPORTING this module walks the cwd's ancestors (the
+cwd itself included) looking for a `_projects/_state` directory — read-only
+`isdir` probes, but they do reach outside the cwd, and run from inside the repo
+they resolve to the real `_projects/_state`. The conclusion survives only for
+this test's exact shape: every case below calls `extract_bash_paths` directly
+and NEVER `main()`, so nothing is written wherever STATE_DIR landed. Do not
+exercise these cases end-to-end through the hook, and do not extend
+test_touched_capture.sh's `[main]` sections.
 
 stdlib only. Run with:
     uv run --no-project python plugins/taskflow/tests/test_touched_capture_quoted_redirect.py

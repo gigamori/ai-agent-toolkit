@@ -31,7 +31,10 @@ Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
     unbalanced quote (the scan resets at each newline), so it cannot swallow
     the rest of a multi-line command — see `extract_redirect_targets`. A quoted
     string that genuinely spans a newline is mis-handled by the same reset;
-    the regex this replaced mis-handled it too.
+    the regex this replaced mis-handled it too. That residual false positive
+    is NOT harmless: a bogus path spelling an existing task md resolves and
+    gets an uncorrectable `@log` line appended (measured 2026-08-20 — see
+    `extract_redirect_targets` for the evidence and the accepted trade).
   - `>|` (noclobber override) is not recognized as a redirection.
   - The `/.capture/` pollutant once observed in a `.touched` ledger is NOT
     produced by redirection parsing and remains unattributed; the most
@@ -48,7 +51,40 @@ import re
 import shlex
 import sys
 
-PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
+
+def _find_state_root(start: str) -> str:
+    """Nearest ancestor of `start` (inclusive) that holds `_projects/_state`.
+
+    This hook's cwd is the cwd the SESSION was launched in, not necessarily the
+    repo root: a session started inside a subdirectory keeps that subdirectory
+    as its hook cwd for its whole life (measured on Claude Code 2.1.233 — a `cd`
+    inside a Bash tool call does NOT move it, and `CLAUDE_PROJECT_DIR` and the
+    payload `cwd` both carry the same launch cwd, so neither is a better
+    anchor). Anchoring on `os.getcwd()` alone then resolves STATE_DIR to a
+    directory that does not exist, and every write of that session is dropped
+    from the ledger with no diagnostic — `.touched` is the sole input to task
+    and note resolution, so the whole round's membership set silently loses
+    those paths. Walking up re-anchors the ledger location AND the
+    relative-path base on the tree that actually holds the state.
+
+    Returns '' when no ancestor qualifies; the caller then falls back to
+    `os.getcwd()`, which reproduces the pre-fix early return byte-for-byte. A
+    cwd inside an UNRELATED tree that happens to hold `_projects/_state`
+    resolves there, but the orphan guard in `main()` (no `<session_id>.json` in
+    that state dir) still returns 0, so no foreign ledger is written.
+    """
+    d = os.path.abspath(start)
+    while True:
+        if os.path.isdir(os.path.join(d, '_projects', '_state')):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return ''
+        d = parent
+
+
+STATE_ROOT = _find_state_root(os.getcwd()) or os.getcwd()
+PROGRESS_ROOT = os.path.join(STATE_ROOT, '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
 
 WRITE_PATH_KEYS = ('file_path', 'notebook_path')
@@ -102,6 +138,24 @@ def extract_redirect_targets(cmd: str) -> list[str]:
     replaced also mis-handled, so nothing regresses. `#` comments are not lexed:
     `#` only introduces a comment at a word boundary, and a strip rule would
     still mis-fire on `file#1`, URL fragments and `$#`.
+
+    What that false positive actually costs (measured 2026-08-20; do NOT
+    describe it as harmless). A bogus target is NOT simply filtered out
+    downstream. If it happens to spell `_projects/<project>/tasks/<status>/
+    <name>.md` and `<name>.md` is an existing task basename, then
+    `session_progress_capture.resolve_touched_tasks` RESOLVES it and the Stop
+    hook's deterministic backstop appends an `@log` line to a task the command
+    never touched — and `@log` is append-only, so that line cannot be taken
+    back. Verified by feeding a crafted command through the real
+    `extract_bash_paths` into the real `resolve_touched_tasks`. The Pi
+    counterpart found the same class independently and enumerated further
+    consequences on its side (a phantom path can advance a capture round on an
+    otherwise empty turn, reach the capture subagent as judgment material, and
+    make a genesis-task proposal fire).
+
+    The trade is still taken — a lost write erases a whole turn's record, which
+    is worse than a spurious line — but it is a trade between two real costs,
+    not between a cost and nothing.
 
     Deliberately NOT modelled (see the module docstring's known-gap list):
     command substitution, heredoc bodies, `>|`, and a quoted string spanning
@@ -228,7 +282,12 @@ def main() -> int:
     if not raw_paths:
         return 0
 
-    cwd = os.getcwd()
+    # Repo-relative form must be taken against the tree that holds the state,
+    # not against wherever the session was launched (see _find_state_root): an
+    # absolute line fails `_PROJECT_RE` in session_progress_capture.py, so
+    # `extract_project` returns '' and the line is dropped from BOTH the task
+    # and the note resolution. That is why the two hunks are inseparable.
+    cwd = STATE_ROOT
     lines: list[str] = []
     seen: set[str] = set()
     for p in raw_paths:
