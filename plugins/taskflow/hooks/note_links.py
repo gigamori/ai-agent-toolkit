@@ -27,6 +27,7 @@ stripping the `_projects/<project>/` prefix before calling resolve_note_owner().
 
 Public API:
   - normalize_note_rel(rel)            → forward-slashed, trimmed path string
+  - is_contained_note_rel(rel)         → containment predicate (no `..`/root/drive escape)
   - is_note_deliverable(rel)           → §5 exclusion predicate (index.md/_archive)
   - parse_note_links(content)          → list[str] note rels in a task md
   - append_note_link(task_path, rel)   → idempotent union establish (§3.1/§4.1)
@@ -58,6 +59,11 @@ _NOTES_BLOCK_RE = re.compile(
 _NOTES_END_RE = re.compile(r'<!--\s*@notes:end\s*-->')
 _LOG_END_RE = re.compile(r'<!--\s*@log:end\s*-->')
 
+# A drive-qualified rel (`C:/x`, `C:x`). Matched as text, not via os.path.isabs:
+# isabs is platform-dependent and does not see `C:/x` as absolute on POSIX, so
+# the same rel would be contained on one host and not on another.
+_DRIVE_RE = re.compile(r'^[A-Za-z]:')
+
 
 def normalize_note_rel(rel: str) -> str:
     """Normalize a note path to a forward-slashed, trimmed string. Strips a
@@ -70,14 +76,43 @@ def normalize_note_rel(rel: str) -> str:
     return rel
 
 
+def is_contained_note_rel(rel: str) -> bool:
+    """True if `rel` still resolves INSIDE the project root it is joined onto.
+
+    Every consumer joins a note rel onto a project root — the reverse index's
+    stale check, and the capture subagent's grounding Read. A rel that walks out
+    of that root therefore names a DIFFERENT file than the link claims to name,
+    and §3.1 makes that permanent: the `@notes` block is union-append and is
+    never edited, so a wrong rel written once is wrong deterministically forever.
+
+    Prefix and containment are not the same property: `project-notes/../x.md`
+    starts with `project-notes/` and leaves the project anyway, which is why a
+    startswith test is not a bound. Root- and drive-anchored rels are rejected by
+    the same predicate so containment holds on its own, without depending on
+    which caller happened to test the prefix first.
+    """
+    rel = normalize_note_rel(rel)
+    if not rel:
+        return False
+    # Leading '/' covers a POSIX-absolute rel and, after backslash folding, UNC.
+    if rel.startswith('/') or _DRIVE_RE.match(rel):
+        return False
+    return '..' not in rel.split('/')
+
+
 def is_note_deliverable(rel: str) -> bool:
     """True if `rel` is a project-notes deliverable eligible for linking (§5).
 
     Includes handoff (lives under `project-notes/checks/`, §5). Excludes the
-    `project-notes/index.md` registry and anything under an `_archive/` segment.
+    `project-notes/index.md` registry, anything under an `_archive/` segment,
+    and anything that does not stay inside the project root.
     `rel` is project-relative (see module path convention).
     """
     rel = normalize_note_rel(rel)
+    # Containment before category: a rel that leaves the project root is not a
+    # deliverable OF this project at all, whatever its suffix or segments say.
+    if not is_contained_note_rel(rel):
+        return False
     if not rel.lower().endswith('.md'):
         return False
     parts = rel.split('/')
@@ -126,11 +161,17 @@ def append_note_link(task_path: str, note_rel: str) -> bool:
 
     Returns True if `note_rel` is present in the block after the call (whether
     pre-existing or newly written), False if the link could NOT be established
-    (read failure, malformed block, or no `@log:end` anchor to attach to). The
+    (read failure, malformed block, no `@log:end` anchor to attach to, or a
+    `note_rel` that does not resolve inside the project root). The
     read-modify-write is serialized through `log_lock` (INV-2).
     """
     note_rel = normalize_note_rel(note_rel)
     if not note_rel:
+        return False
+    # Last line of defense (§3.1). This block is union-append and never edited,
+    # so whatever is written here is permanent — refuse a rel this function
+    # cannot vouch for rather than burn in a link to a file outside the project.
+    if not is_contained_note_rel(note_rel):
         return False
     with log_lock(task_path):
         try:

@@ -49,7 +49,8 @@ or read, whether new task-worthy work appeared). Context block shape:
 {
   "sid8": "<8-char session id>",
   "iso_ts": "<ISO8601 T-separated timestamp>",
-  "sidecar_path": "<absolute path to the .capture sidecar, forward-slashed>",
+  "round": <the round number you are summarizing>,
+  "sidecar_path": "<absolute path to THIS round's .capture sidecar, forward-slashed>",
   "project_root": "<absolute path to the PRIMARY project's _projects/<project> dir, forward-slashed>",
   "project_roots": {"<project>": "<absolute path to that project's dir, forward-slashed>"},
   "touched_tasks": ["<project>/<task-basename>.md", ...],
@@ -58,11 +59,20 @@ or read, whether new task-worthy work appeared). Context block shape:
 ```
 
 `sidecar_path` / `project_root` / every value in `project_roots` are
-**absolute** (e.g. `/path/to/workspace/_projects/_state/<session_id>.capture`)
+**absolute** (e.g.
+`/path/to/workspace/_projects/_state/<session_id>.r<round>.capture`)
 — they are the same values the taskflow Stop hook itself reads/resolves, handed
 to you verbatim so your write/read basis can never drift from the hook's
 regardless of your own cwd (project-notes/specs/capture-context-abs-path.md).
 **Never re-derive these from your own cwd** — use them exactly as given.
+
+`round` is the round `sidecar_path` belongs to. The hook stamps that round into
+the file name itself and matches your sidecar against THAT round's task/note
+set, so a judgment that arrives late is still applied instead of being
+discarded. Nothing is asked of you here: write to `sidecar_path` exactly as
+given (never rename it, never construct a path from `round`) and do not copy
+`round` into your output — it is context for your own reading, and the file
+name is what the hook trusts.
 
 A session can touch more than one project of the same repository. That is why
 `touched_tasks` entries are **qualified** `"<project>/<basename>.md"` and why

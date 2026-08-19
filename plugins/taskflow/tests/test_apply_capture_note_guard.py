@@ -25,6 +25,21 @@ whether `items`/`note_set` is present. This file pins:
   - T-5c: a normal project-relative note (unchanged shape) still applies
     correctly (no regression to the AC-4 output contract's happy path).
 
+F-2 (review-2026-08-19-fixes.md §2) adds a SECOND reject branch after the
+prefix one: the prefix is not the bound it was taken for, because
+`project-notes/../../../secrets/x.md` satisfies it and still leaves the project
+root. Containment is now a named predicate (`note_links.is_contained_note_rel`)
+enforced at three sites; this file pins the D-7 site:
+  - T-6a: a `..` traversal is REJECTED under `items=None`.
+  - T-6b: it is REJECTED even when admitted into `items['notes']`, and the skip
+    is NOT attributed to the membership check.
+  - T-6c: the reject is logged with its own distinct reason string, so the two
+    invariants are distinguishable on stderr.
+  - T-6d: the backslash spelling of the same payload (folded to `/` by
+    `normalize_note_rel`, which is what makes it satisfy the prefix) is rejected.
+  - T-6e: the minimal single-`..` escape is rejected — the rule is "no `..`",
+    not "no deep escape".
+
 D2 (capture-detection-gaps.md §3.3): `_apply_capture` now takes the resolved
 `project_roots` map instead of a single `project_root`, its `current_index` is
 the QUALIFIED `{"<project>/<basename>": path}` union, and the values it returns
@@ -167,6 +182,132 @@ def test_reject_is_logged_to_stderr(root: Path) -> None:
     check("[s:abcd1234]" in out, f"logged line carries the session tag: {ascii(out)}")
 
 
+# A rel that satisfies the D-7 prefix and STILL leaves the project root: the
+# `..` segments sit AFTER `project-notes/`, so `startswith('project-notes/')`
+# is True and the traversal survives every other gate (review F-2, §2.1).
+TRAVERSAL_NOTE = "project-notes/../../../secrets/x.md"
+
+
+def test_traversal_note_rejected_under_legacy_fail_open(root: Path) -> None:
+    print("--- T-6a: `..` traversal rejected, items=None (legacy fail-open path) ---")
+    task_path = make_task(root, "task5.md")
+    current_index = {"harness-taskflow/task5.md": str(task_path)}
+    sidecar = {
+        "confirmed": [],
+        "note_links": [{"note": TRAVERSAL_NOTE, "task": "task5.md"}],
+        "proposals": [],
+    }
+    summaries, links, proposals, link_skipped, membership_skipped = spc._apply_capture(
+        sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+        "abcd1234", "2026-08-19T01:00:00+09:00",
+        items=None,
+    )
+    check(links == [], f"no note_link applied for a traversal rel (got {links})")
+    content = task_path.read_text(encoding="utf-8")
+    check(nl.NOTES_BEGIN not in content, "@notes block was NOT created on the task file")
+    check("secrets" not in content, "the escaping note path never appears in the task file")
+
+
+def test_traversal_note_rejected_even_when_in_membership_set(root: Path) -> None:
+    print("--- T-6b: `..` traversal rejected even if present in items['notes'] ---")
+    task_path = make_task(root, "task6.md")
+    current_index = {"harness-taskflow/task6.md": str(task_path)}
+    sidecar = {
+        "confirmed": [],
+        "note_links": [{"note": TRAVERSAL_NOTE, "task": "task6.md"}],
+        "proposals": [],
+    }
+    # The containment reject must fire BEFORE the membership check, exactly as
+    # the prefix reject does: admitting the value into the round's closed set
+    # must not buy it a pass, and the skip must not be attributed to membership.
+    items = {"tasks": ["harness-taskflow/task6.md"], "notes": [TRAVERSAL_NOTE]}
+    summaries, links, proposals, link_skipped, membership_skipped = spc._apply_capture(
+        sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+        "abcd1234", "2026-08-19T01:00:00+09:00",
+        items=items,
+    )
+    check(links == [],
+          f"no note_link applied even though the traversal is in items['notes'] (got {links})")
+    check(membership_skipped == [],
+          f"containment reject fires before membership check, not via it (got {membership_skipped})")
+    content = task_path.read_text(encoding="utf-8")
+    check(nl.NOTES_BEGIN not in content, "@notes block was NOT created on the task file")
+
+
+def test_traversal_reject_is_logged_to_stderr(root: Path) -> None:
+    print("--- T-6c: the containment reject is reported to stderr with its own reason ---")
+    # The second reject branch must be exactly as loud as the first one, and it
+    # must name WHICH invariant failed — an operator seeing `note-path-reject`
+    # has to be able to tell a wrong-prefix path from an escaping one.
+    task_path = make_task(root, "task7.md")
+    current_index = {"harness-taskflow/task7.md": str(task_path)}
+    sidecar = {
+        "confirmed": [],
+        "note_links": [{"note": TRAVERSAL_NOTE, "task": "task7.md"}],
+        "proposals": [],
+    }
+    stderr_buf = io.StringIO()
+    with contextlib.redirect_stderr(stderr_buf):
+        spc._apply_capture(
+            sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+            "abcd1234", "2026-08-19T01:00:00+09:00",
+            items=None,
+        )
+    out = stderr_buf.getvalue()
+    check("note-path-reject" in out, f"reject is logged to stderr: {ascii(out)}")
+    check("escapes the project root" in out,
+          f"logged line names the containment invariant, not the prefix one: {ascii(out)}")
+    check(TRAVERSAL_NOTE in out, f"logged line names the offending note path: {ascii(out)}")
+    check("[s:abcd1234]" in out, f"logged line carries the session tag: {ascii(out)}")
+
+
+def test_traversal_backslash_spelling_rejected(root: Path) -> None:
+    print("--- T-6d: the backslash spelling of the same payload is rejected ---")
+    # `normalize_note_rel` folds `\` to `/`, which TURNS this into a rel that
+    # satisfies the `project-notes/` prefix. It is therefore a second real
+    # spelling of the same reachable payload, not a variant that dies earlier.
+    task_path = make_task(root, "task8.md")
+    current_index = {"harness-taskflow/task8.md": str(task_path)}
+    backslash_note = "project-notes\\..\\..\\secrets\\x.md"
+    sidecar = {
+        "confirmed": [],
+        "note_links": [{"note": backslash_note, "task": "task8.md"}],
+        "proposals": [],
+    }
+    summaries, links, proposals, link_skipped, membership_skipped = spc._apply_capture(
+        sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+        "abcd1234", "2026-08-19T01:00:00+09:00",
+        items=None,
+    )
+    check(links == [], f"no note_link applied for the backslash spelling (got {links})")
+    content = task_path.read_text(encoding="utf-8")
+    check(nl.NOTES_BEGIN not in content, "@notes block was NOT created on the task file")
+    check("secrets" not in content, "the escaping note path never appears in the task file")
+
+
+def test_minimal_single_dotdot_escape_rejected(root: Path) -> None:
+    print("--- T-6e: the minimal single-`..` escape is rejected too ---")
+    # Still inside `_projects/<project>/` after resolution — it only leaves
+    # `project-notes/`. The rule is "no `..`", not "no DEEP escape"; pinning
+    # this prevents a later weakening into a depth heuristic.
+    task_path = make_task(root, "task9.md")
+    current_index = {"harness-taskflow/task9.md": str(task_path)}
+    shallow_note = "project-notes/../tasks/1_in_progress/task9.md"
+    sidecar = {
+        "confirmed": [],
+        "note_links": [{"note": shallow_note, "task": "task9.md"}],
+        "proposals": [],
+    }
+    summaries, links, proposals, link_skipped, membership_skipped = spc._apply_capture(
+        sidecar, current_index, "harness-taskflow", {"harness-taskflow": str(root)},
+        "abcd1234", "2026-08-19T01:00:00+09:00",
+        items=None,
+    )
+    check(links == [], f"no note_link applied for a single-segment escape (got {links})")
+    content = task_path.read_text(encoding="utf-8")
+    check(nl.NOTES_BEGIN not in content, "@notes block was NOT created on the task file")
+
+
 def test_normal_project_relative_note_still_applies(root: Path) -> None:
     print("--- T-5c: regression - normal project-relative note still applies ---")
     task_path = make_task(root, "task3.md")
@@ -195,6 +336,11 @@ def main() -> int:
         test_absolute_note_rejected_under_legacy_fail_open(root)
         test_absolute_note_rejected_even_when_in_membership_set(root)
         test_reject_is_logged_to_stderr(root)
+        test_traversal_note_rejected_under_legacy_fail_open(root)
+        test_traversal_note_rejected_even_when_in_membership_set(root)
+        test_traversal_reject_is_logged_to_stderr(root)
+        test_traversal_backslash_spelling_rejected(root)
+        test_minimal_single_dotdot_escape_rejected(root)
         test_normal_project_relative_note_still_applies(root)
 
     print()

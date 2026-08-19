@@ -63,13 +63,15 @@ def check(cond: bool, msg: str) -> None:
 
 def test_single_entry_is_valid_json_and_absolute() -> None:
     print("--- single task/note entry: valid JSON, absolute paths ---")
-    sidecar_path = os.path.join(os.getcwd(), "_projects", "_state", "abc123.capture")
+    sidecar_path = spc.capture_sidecar_path(
+        os.path.join(os.getcwd(), "_projects", "_state"), "abc123", 7)
     project_root = os.path.join(os.getcwd(), "_projects", "harness-taskflow")
     ctx = spc.build_capture_context(
         "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
         {"harness-taskflow": project_root},
         ["harness-taskflow/2026-07-28_capture-sidecar-abs-path.md"],
         ["project-notes/specs/capture-context-abs-path.md"],
+        7,
     )
     try:
         obj = json.loads(ctx)
@@ -82,6 +84,12 @@ def test_single_entry_is_valid_json_and_absolute() -> None:
     check("\\" not in obj["sidecar_path"], "sidecar_path has no backslash")
     check("\\" not in obj["project_root"], "project_root has no backslash")
     check(obj["sid8"] == "abc12345", "sid8 round-trips")
+    # R-1 (capture-detection-gaps.md §4.4.1 D1/D6): the block carries the round
+    # it belongs to, and the path it hands out is the PER-ROUND sidecar name —
+    # that name is what the hook matches a late sidecar against.
+    check(obj["round"] == 7, f"round is emitted in the context block: {obj.get('round')}")
+    check(obj["sidecar_path"].endswith("/abc123.r7.capture"),
+          f"sidecar_path is the per-round name: {obj['sidecar_path']}")
     check(obj["touched_tasks"] == ["harness-taskflow/2026-07-28_capture-sidecar-abs-path.md"],
           "touched_tasks round-trips as a qualified <project>/<basename> key")
     check(obj["note_writes"] == ["project-notes/specs/capture-context-abs-path.md"], "note_writes round-trips")
@@ -103,7 +111,7 @@ def test_multi_entry_is_valid_json_d6_regression() -> None:
     notes = ["project-notes/specs/x.md", "project-notes/checks/y.md"]
     ctx = spc.build_capture_context(
         "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
-        roots, tasks, notes,
+        roots, tasks, notes, 2,
     )
     try:
         obj = json.loads(ctx)
@@ -124,7 +132,7 @@ def test_empty_arrays_are_valid_json() -> None:
     project_root = os.path.join(os.getcwd(), "_projects", "harness-taskflow")
     ctx = spc.build_capture_context(
         "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
-        {"harness-taskflow": project_root}, [], [],
+        {"harness-taskflow": project_root}, [], [], 1,
     )
     try:
         obj = json.loads(ctx)

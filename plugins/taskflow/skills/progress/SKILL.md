@@ -2,7 +2,7 @@
 name: progress
 description: Manage taskflow project task progress via natural-language commands. Invoke as `/progress <intent> [-y]`. The intent is routed by the progress-router subagent into (action, targets); the main agent confirms with the user (unless `-y`) and executes. Runs in the main session.
 disable-model-invocation: true
-allowed-tools: Bash(uv run python *) Bash(mv *) Bash(mkdir *) Bash(ls *) Bash(cat *) Bash(stat *) Read Write Edit Agent AskUserQuestion
+allowed-tools: Bash(uv run *) Bash(mv *) Bash(mkdir *) Bash(ls *) Bash(cat *) Bash(stat *) Read Write Edit Agent AskUserQuestion
 ---
 
 # /progress

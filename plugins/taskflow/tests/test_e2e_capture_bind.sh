@@ -11,6 +11,8 @@
 #   Stage 3  Stop Round2 → `[s:<sid8>]` appended end-to-end
 #   Stage 4  exec-binding: a task NOT in `.touched` is bound via a `[tasks:]` carry
 #   Stage 5  F7a membership containment: an out-of-request sidecar entry is skipped
+#            (through the LEGACY un-suffixed `{sid}.capture` name, which the
+#            apply path still honours after R-1 — see §4.4.1 D3's compat row)
 #
 # State-dir sandbox (plugins/taskflow/CLAUDE.md, project-notes/specs/
 # capture-hook-sweep-sandbox.md): the Stop hook runs an unconditional stale-marker
@@ -132,7 +134,10 @@ echo "$O1" | grep -q '"decision": *"block"' && pass "Round1 block reminder" || f
 # the same value. Expected values are derived at runtime via the existing
 # to_win() helper (cygpath -m), never hardcoded (repo rule: no absolute local
 # paths in tracked files).
-EXP_SIDECAR="$(to_win "$STATE/$SID.capture")"
+# R-1 (capture-detection-gaps.md §4.4.1 D1): the sidecar name carries the round
+# it belongs to (`{sid}.r{N}.capture`), so the path handed out here is round 1's
+# — this Stop is the first request of the session.
+EXP_SIDECAR="$(to_win "$STATE/$SID.r1.capture")"
 EXP_PROJECT_ROOT="$(to_win "$PDIR")"
 # NOTE: $O1 is itself JSON-encoded (`{"decision":"block","reason":"..."}`), so
 # the embedded context-block quotes appear in $O1's literal text as

@@ -12,6 +12,14 @@ project-notes/specs/note-task-link.md:
 Plus structural guards: the `@notes` block is created after `@log:end` and the
 `@log` block stays intact (the §4.1 placement gate).
 
+F-2 (review-2026-08-19-fixes.md §2) adds containment to §5 and to the write
+path, because a prefix test is not a containment test:
+  - T-7a  `is_note_deliverable` rejects `..`/root/drive/UNC rels — with the
+          negative control that `..` inside a FILENAME stays a deliverable
+  - T-7b  `append_note_link` refuses an escaping rel outright (last line of
+          defense: `@notes` is append-only and cannot take a link back, §3.1)
+  - T-7c  `is_contained_note_rel` truth table
+
 stdlib only. Run with:  uv run python plugins/taskflow/tests/test_note_links.py
 Exits 0 when all checks pass, 1 otherwise.
 """
@@ -189,6 +197,74 @@ def test_exclusions_ac5() -> None:
           "task md is not a note deliverable")
     check(nl.is_note_deliverable("project-notes/specs/foo.txt") is False,
           "non-.md excluded")
+    # T-7a (F-2): containment is part of the §5 exclusion predicate. A rel that
+    # leaves the project root is not a deliverable OF this project, whatever its
+    # prefix says — `project-notes/../x.md` satisfies the prefix and escapes.
+    check(nl.is_note_deliverable("project-notes/../../secrets/x.md") is False,
+          "`..` traversal past the project root excluded")
+    check(nl.is_note_deliverable("project-notes/../x.md") is False,
+          "single-segment `..` escape excluded")
+    check(nl.is_note_deliverable("/etc/project-notes/x.md") is False,
+          "root-anchored rel excluded")
+    check(nl.is_note_deliverable("C:/repo/project-notes/specs/x.md") is False,
+          "drive-anchored rel excluded")
+    check(nl.is_note_deliverable("//server/share/project-notes/x.md") is False,
+          "UNC rel excluded")
+    # NEGATIVE CONTROL. `..` inside a FILENAME is not a path segment. Without
+    # this case a naive substring test (`'..' in rel`) would pass every other
+    # assertion above and still be the wrong rule.
+    check(nl.is_note_deliverable("project-notes/specs/re..name.md") is True,
+          "`..` inside a filename is not a segment — still a deliverable")
+
+
+def test_traversal_not_established_t7b(root: Path) -> None:
+    """T-7b (F-2): `append_note_link` is the last line of defense.
+
+    The `@notes` block is union-append and never edited (§3.1), so a rel this
+    function cannot vouch for must be refused before it becomes permanent —
+    independent of whichever caller did or did not test the prefix first.
+    """
+    print("--- T-7b append_note_link refuses an escaping rel ---")
+    task_path, _ = make_project(root)
+    res = nl.append_note_link(str(task_path), "project-notes/../../secrets/x.md")
+    check(res is False, "append_note_link returns False for a `..` traversal")
+    content = task_path.read_text(encoding="utf-8")
+    check(nl.NOTES_BEGIN not in content, "no @notes block created for a traversal rel")
+    check("secrets" not in content, "the escaping rel never reaches the task file")
+
+    res_abs = nl.append_note_link(str(task_path), "C:/other/project-notes/specs/x.md")
+    check(res_abs is False, "append_note_link returns False for a drive-anchored rel")
+    check(nl.NOTES_BEGIN not in task_path.read_text(encoding="utf-8"),
+          "no @notes block created for a drive-anchored rel")
+
+
+def test_is_contained_note_rel_t7c() -> None:
+    """T-7c (F-2): the containment predicate's own truth table."""
+    print("--- T-7c is_contained_note_rel table ---")
+    for rel in (
+        "project-notes/specs/foo.md",
+        "project-notes/checks/handoff-x.md",
+        "tasks/1_in_progress/task1.md",
+        "project-notes/specs/re..name.md",
+        "project-notes/./specs/foo.md",
+    ):
+        check(nl.is_contained_note_rel(rel) is True, f"contained: {rel!r}")
+    for rel in (
+        "",
+        "   ",
+        "..",
+        "../x.md",
+        "project-notes/../x.md",
+        "project-notes/../../secrets/x.md",
+        "project-notes\\..\\..\\secrets\\x.md",
+        "/etc/passwd",
+        "/project-notes/specs/foo.md",
+        "//server/share/project-notes/x.md",
+        "C:/repo/project-notes/specs/x.md",
+        "C:project-notes/specs/x.md",
+        "c:/repo/project-notes/specs/x.md",
+    ):
+        check(nl.is_contained_note_rel(rel) is False, f"not contained: {rel!r}")
 
 
 def test_no_anchor_fails(root: Path) -> None:
@@ -265,11 +341,13 @@ def main() -> int:
             test_stale_skip_ac7,
             test_no_anchor_fails,
             test_spec41_entry_literal_pin,
+            test_traversal_not_established_t7b,
         ):
             sub = Path(d) / fn.__name__
             sub.mkdir()
             fn(sub)
         test_exclusions_ac5()
+        test_is_contained_note_rel_t7c()
 
     print()
     if FAIL == 0:

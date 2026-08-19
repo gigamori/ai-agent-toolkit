@@ -18,6 +18,8 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
                            tasks/<status>/*.md.lock (report-only; clear with
                            scripts/clean_locks.py)
   10. duplicate basename — same task-md basename in >=2 locations under tasks/ (whole-tree walk)
+  11. notes index arity  — project-notes/index.md data rows must have exactly 4
+                           columns (File | Description | Tags | Updated)
 
 Note: progress.md's Completed table lists every task in tasks/2_done/ — the
 file is never truncated (context-side truncation is view_progress.py's job and
@@ -189,7 +191,12 @@ def parse_notes_index_rows(index_md: str) -> list[dict]:
         if not line.startswith("|"):
             continue
         stripped = line.strip("|")
-        cells = [c.strip() for c in stripped.split("|")]
+        # Same rule as parse_progress_table_rows above: a literal "|" in cell
+        # content is written "\|" so it isn't mistaken for a column separator.
+        # Split on unescaped "|" only, then unescape each cell, or a cell
+        # containing "|" (e.g. a Description mentioning "wiki:on|off") splits
+        # into extra spurious cells and the pipe itself is lost.
+        cells = [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", stripped)]
         if not cells or not cells[0]:
             continue
         first = cells[0].lower()
@@ -234,8 +241,32 @@ def check_progress_task_links(project_dir: Path, result: Result) -> None:
             )
 
 
+def notes_index_row_arity(cells: list[str]) -> int:
+    """Effective column count of a row returned by parse_notes_index_rows.
+
+    parse_notes_index_rows splits what is left after `line.strip("|")`, and
+    str.strip("|") is a CHARACTER strip: it cannot remove the closing "|" when
+    any whitespace follows it. So '| a | b | c | d | ' (one trailing space,
+    invisible in the rendered table) yields a 5th, empty cell. Drop at most one
+    such trailing empty cell before counting.
+
+    Deliberately NOT fixed inside parse_notes_index_rows: that function is a
+    byte-faithful sibling of parse_progress_table_rows and a LOCKSTEP public API
+    for view_progress.py::build_notes_summary, so changing its output would
+    silently change a second consumer's.
+    """
+    if len(cells) > 1 and cells[-1] == "":
+        return len(cells) - 1
+    return len(cells)
+
+
 def check_notes_index_consistency(project_dir: Path, result: Result) -> None:
-    """#2"""
+    """#2 (index rows vs actual files) + #11 (row arity).
+
+    Header and separator rows need no special handling here:
+    parse_notes_index_rows already drops them (a leading cell of "File", or one
+    made only of "-"/" "), so every row it returns is a data row.
+    """
     notes_dir = project_dir / "project-notes"
     if not notes_dir.is_dir():
         return
@@ -243,7 +274,18 @@ def check_notes_index_consistency(project_dir: Path, result: Result) -> None:
     content = read_text(index_md)
     if content is None:
         return
-    indexed = {r["file"] for r in parse_notes_index_rows(content)}
+    rows = parse_notes_index_rows(content)
+    for row in rows:
+        arity = notes_index_row_arity(row["cells"])
+        if arity != 4:
+            result.add(
+                "notes_index_arity",
+                "violation",
+                str(index_md),
+                f"row '{row['file']}' has {arity} columns, expected 4 "
+                f"(File | Description | Tags | Updated)",
+            )
+    indexed = {r["file"] for r in rows}
     actual = {p.relative_to(notes_dir).as_posix() for p in walk_note_files(notes_dir)}
     for f in sorted(indexed - actual):
         result.add(

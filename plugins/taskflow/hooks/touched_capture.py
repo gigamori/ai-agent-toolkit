@@ -18,8 +18,29 @@ the parent's `.touched` without git/jsonl.
 
 Append is best-effort and lock-free; the Stop reader tolerates a torn trailing
 line (exec-binding.md §3.2). `session_id` comes from this hook's own stdin
-payload. Known parser gaps accepted as best-effort: `sed -i`, heredoc body,
-`python -c open()` (exec-binding.md §3.3 / R2).
+payload.
+
+Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
+  - `sed -i`, heredoc body, `python -c open()` — writes these perform are not
+    recognized at all.
+  - Redirection detection IS quote-aware (`extract_redirect_targets`), but it
+    models neither command substitution (`$(…)`, backticks) nor heredoc
+    bodies. An unbalanced quote inside one leaves the scan in a quoted state,
+    which silently DROPS later real redirections rather than inventing
+    spurious ones. That drop is now bounded to the LINE containing the
+    unbalanced quote (the scan resets at each newline), so it cannot swallow
+    the rest of a multi-line command — see `extract_redirect_targets`. A quoted
+    string that genuinely spans a newline is mis-handled by the same reset;
+    the regex this replaced mis-handled it too.
+  - `>|` (noclobber override) is not recognized as a redirection.
+  - The `/.capture/` pollutant once observed in a `.touched` ledger is NOT
+    produced by redirection parsing and remains unattributed; the most
+    plausible producer is the `mv|cp|rm`/`tee` token loop
+    (review-2026-08-19-fixes.md §8 A-6, design review F-12).
+
+Closed 2026-08-19 (review-2026-08-19-fixes.md §8 A-6): a `>` inside a quoted
+string was parsed as a redirection, so `echo "real _state: $BEFORE -> $AFTER"`
+recorded `$AFTER`; `/dev/null` and `NUL` are now excluded as null sinks.
 """
 import json
 import os
@@ -36,10 +57,92 @@ BASH_TEE = 'tee'
 # Split a bash command at chain operators so verb/redirect extraction in one
 # segment does not bleed into another.
 _BASH_CHAIN_SPLIT = re.compile(r'\s*(?:&&|\|\||;)\s*')
-# Shell redirection to a file: `>` / `>>`, optionally fd-prefixed (`1>`,
-# `2>>`), capturing the target token. `>&N` / `&>` (fd duplication) are skipped
-# (the token after `>` must not start with `&`).
-_REDIRECT_RE = re.compile(r'\d?>>?\s*(?!&)("[^"]*"|\'[^\']*\'|[^\s|&;<>()]+)')
+# Target token of a shell redirection, matched at the position just after an
+# UNQUOTED `>` / `>>` and its trailing whitespace. Same alternation the old
+# single-regex form used: a double-quoted, single-quoted, or bare token. (`>|`
+# is not recognized — `|` is excluded from the bare-token class, so the match
+# simply fails, exactly as before.)
+_REDIRECT_TARGET_RE = re.compile(r'"[^"]*"|\'[^\']*\'|[^\s|&;<>()]+')
+
+
+def _is_null_sink(target: str) -> bool:
+    """True for a redirection target that names a null device, not a file.
+    `/dev/null` is an exact POSIX path; `NUL` is a Windows device name and is
+    case-insensitive by platform convention, so it is matched case-folded."""
+    return target == '/dev/null' or target.casefold() == 'nul'
+
+
+def extract_redirect_targets(cmd: str) -> list[str]:
+    """Return the `>` / `>>` redirection targets of a bash command.
+
+    A single regex cannot do this: it matches a `>` inside a quoted string as
+    readily as a real operator, so `echo "a -> b"` recorded `b` as a written
+    path (observed live in a `.touched` ledger). This is a three-state
+    character scan instead — `outside` / `single` / `double` — with a backslash
+    escaping the next character in `outside` and `double` only (POSIX: nothing
+    escapes inside single quotes, and each quote character is literal inside
+    the other kind of quote).
+
+    Only a `>` seen in `outside` state opens a redirection. It is skipped when
+    the next non-space character is `&` (fd duplication `>&N`, `2>&1`); `&>`
+    still captures, byte-identically to the old regex. The target token is then
+    consumed with _REDIRECT_TARGET_RE and the scan RESUMES AFTER it, so a
+    quoted target (`2>> "log f.txt"`) is captured with its quotes stripped and
+    does not desynchronize the quote state. Null sinks are dropped.
+
+    Quote state is reset at every newline. Without that, one unpaired `'` —
+    an English contraction in a `#` comment (`# don't do this`) is the ordinary
+    case, not an exotic one — puts the scan in `single` for the whole rest of a
+    multi-line command and silently drops every later redirect target. That is
+    a LOSS of capture, and `.touched` is the sole input to task resolution, so
+    it is the worse failure direction than the false positive this scan exists
+    to remove. Resetting bounds an unbalanced quote to its own line, which
+    closes the comment case completely (a `#` comment cannot span a line). The
+    cost is a quoted string that genuinely spans lines — which the regex this
+    replaced also mis-handled, so nothing regresses. `#` comments are not lexed:
+    `#` only introduces a comment at a word boundary, and a strip rule would
+    still mis-fire on `file#1`, URL fragments and `$#`.
+
+    Deliberately NOT modelled (see the module docstring's known-gap list):
+    command substitution, heredoc bodies, `>|`, and a quoted string spanning
+    a newline.
+    """
+    targets: list[str] = []
+    state = 'outside'
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if ch == '\n':
+            state = 'outside'  # an unbalanced quote cannot outlive its line
+            i += 1
+            continue
+        if ch == '\\' and state != 'single':
+            i += 2  # escaped character, whatever it is, is not an operator
+            continue
+        if state == 'outside':
+            if ch == '"':
+                state = 'double'
+            elif ch == "'":
+                state = 'single'
+            elif ch == '>':
+                j = i + 2 if cmd[i + 1:i + 2] == '>' else i + 1
+                while j < n and cmd[j].isspace():
+                    j += 1
+                if j < n and cmd[j] != '&':
+                    m = _REDIRECT_TARGET_RE.match(cmd, j)
+                    if m:
+                        t = m.group(0).strip().strip('"\'')
+                        if t and not _is_null_sink(t):
+                            targets.append(t)
+                        i = m.end()
+                        continue
+        elif state == 'double':
+            if ch == '"':
+                state = 'outside'
+        elif ch == "'":  # state == 'single'
+            state = 'outside'
+        i += 1
+    return targets
 
 
 def normalize_path(p: str, cwd: str) -> str:
@@ -59,11 +162,8 @@ def extract_bash_paths(cmd: str) -> list[str]:
     if not cmd or not isinstance(cmd, str):
         return []
     paths: list[str] = []
-    # Redirection targets anywhere in the command.
-    for m in _REDIRECT_RE.finditer(cmd):
-        t = m.group(1).strip().strip('"\'')
-        if t:
-            paths.append(t)
+    # Redirection targets anywhere in the command (quote-aware).
+    paths.extend(extract_redirect_targets(cmd))
     # Verb-based targets, parsed per chain segment then per pipe stage (so
     # `... | tee f` is reached and other commands' piped args are not pulled in).
     for segment in _BASH_CHAIN_SPLIT.split(cmd):

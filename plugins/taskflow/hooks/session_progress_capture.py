@@ -72,9 +72,17 @@ OUTSIDE `tasks/` via a `[tasks: a.md b.md]` leading line. This hook regex-reads
 it from `last_assistant_message`, union-merges into `state['exec_bind']`, and
 deterministically binds each owning task (skip+log + `.bind` record on failure,
 to stop retrying — INV-1). Under fork it skips (W2 delegation).
+A carry that names NO task md in the primary project
+resolves to nothing and reaches no other detector (execution-by-reference leaves
+no `.touched` line by construction), so it is reported ONCE as
+`exec-skip(unresolved)` and 打止め'd by a bare-basename entry in `exec_tried`.
 
 Round / lifecycle state lives in a sidecar `{session_id}.bind` (`reminded`,
-`exec_tried`, and the `capture` lifecycle `{status, items, requested_ts,
+`exec_tried` — the exec-carry 打止め set, holding BOTH `_rel()` repo-relative
+paths of resolved-but-unbindable tasks AND bare basenames of carries that
+resolved to no task at all; the two shapes are disjoint because a `_rel()` value
+always starts `_projects/` —
+and the `capture` lifecycle `{status, items, requested_ts,
 tried_notes, tried_tasks, touch_cursor, round, log_seen, round_base}` — writer =
 this hook only, §10.1), kept separate from the state
 JSON so concurrent rewrites by other hooks cannot clobber it. A 7-day cleanup
@@ -100,6 +108,7 @@ from note_links import (  # noqa: E402
     NOTES_END,
     append_note_link,
     build_reverse_index,
+    is_contained_note_rel,
     is_note_deliverable,
     normalize_note_rel,
     resolve_note_owner,
@@ -121,6 +130,18 @@ try:
     _CAPTURE_EXPIRY_S = float(os.environ.get('TASKFLOW_CAPTURE_EXPIRY_S', '30.0'))
 except ValueError:
     _CAPTURE_EXPIRY_S = 30.0
+
+# Round-history depth (capture-detection-gaps.md §4.4.1 D4). The `.bind`
+# `capture['history']` dict retains the CLOSED item set of the last K rounds so
+# a sidecar that lands after its own round already closed is still membership-
+# checked against ITS round instead of whatever `items` happens to hold now
+# (R-1: the whole judgment layer of a round was discarded as `membership-skip`
+# whenever the subagent outran the 30s expiry and the next round committed
+# first). The observed delay is one round (round N's sidecar arriving during
+# N+1), which K=2 already covers; K=3 buys one more round of slack for a few
+# hundred bytes — an entry is just two lists of task/note keys. Deliberately a
+# fixed CONSTANT, not an env knob: the value has no per-environment meaning.
+_ROUND_HISTORY_K = 3
 
 # Sweep blast-cap (project-notes/specs/capture-hook-sweep-sandbox.md): the
 # combined (json + sidecar) per-Stop delete budget for _cleanup_stale_markers.
@@ -473,14 +494,37 @@ def resolve_touched_tasks(touched, project_roots):
     return resolved
 
 
+def _exec_base(b) -> str:
+    """The lookup key of ONE `[tasks:]` carry entry — single source of truth.
+
+    `merge_exec_bind` already stores bare basenames, but a `state.json` written
+    by an older version may hold a path-shaped entry, so the normalization is
+    re-applied on read. Both the resolver below and the unresolved-report in
+    `main()` derive their key from HERE: a second expression for "the same key"
+    could drift, and a report keyed differently from the lookup would flag a name
+    the resolver actually found."""
+    return os.path.basename(str(b).replace('\\', '/'))
+
+
 def resolve_exec_tasks(basenames, project_root):
-    """Resolve exec-bind owning-task basenames to CURRENT on-disk paths (P8)."""
+    """Resolve exec-bind owning-task basenames to CURRENT on-disk paths (P8).
+
+    PRIMARY-project-only by design (capture-detection-gaps.md §3.6): unlike a
+    `.touched` line, whose project is derived from the path it carries, a
+    `[tasks:]` carry is a bare NAME with no path evidence, so D2's per-line
+    project derivation has nothing to derive from.
+
+    A basename that resolves to nothing is simply ABSENT from the result. The
+    CALLER must report that miss once (F5 / INV-1) — only the caller knows the
+    fork guard and holds the `exec_tried` 打止め set — and the retry itself is
+    deliberately NOT suppressed: a task claimed before it is created binds on a
+    later Stop."""
     if not basenames:
         return {}
     current = _task_basename_index(project_root)
     resolved = {}
     for b in basenames:
-        base = os.path.basename(str(b).replace('\\', '/'))
+        base = _exec_base(b)
         cur = current.get(base)
         if cur:
             resolved[base] = cur
@@ -698,7 +742,11 @@ def _scan_note_writes(touched, project, project_root, reverse_index):
         if not prel or prel in seen:
             continue
         # Boundary guard (F-L3): reject paths from other projects (not under
-        # project-notes/ after project-relative conversion).
+        # project-notes/ after project-relative conversion). Containment (`..`,
+        # root/drive anchors) is NOT tested here — `is_note_deliverable` below
+        # owns it, so the rule lives in one place. `touched` is not pre-resolved
+        # (touched_capture.py::normalize_path folds separators only), so a
+        # traversal really can arrive on this path too.
         if not prel.startswith('project-notes/'):
             continue
         if not is_note_deliverable(prel):
@@ -798,6 +846,41 @@ def compute_round_active(new_slice, project_roots, reverse_indexes, sid8,
             active.pop(key, None)
     # 打止め (INV-1): a task with no bindable anchor is never re-requested.
     return {k: p for k, p in active.items() if k not in tried_tasks}
+
+
+def capture_sidecar_path(state_dir, session_id, round_n):
+    """The per-round capture sidecar path `{session_id}.r{N}.capture` (§4.4.1 D1).
+
+    Round identity travels in the FILE NAME, not in a JSON field the subagent
+    would have to copy: the hook decides it, so the agent contract gains no new
+    output obligation (it still just writes the `sidecar_path` it was handed)
+    and a forgotten/altered field cannot desynchronize the identity.
+
+    D5 (verified against the sweep code): `.r{N}.capture` still ends with
+    `.capture`, so an orphan is collected by the existing 7-day
+    `_CLEANUP_SUFFIXES` sweep unchanged, and `os.path.splitext` still yields
+    `.capture`, so the sweep's 36-char-stem json branch is not entered."""
+    return os.path.join(state_dir, f'{session_id}.r{round_n}.capture')
+
+
+def scan_round_sidecars(state_dir, session_id):
+    """Return `[(round:int, path)]` for every `{session_id}.r{N}.capture` on
+    disk, ASCENDING by round (§4.4.1 D3: rounds N and N+1 can land together and
+    must be applied oldest-first). The name is parsed with an anchored regex, so
+    an off-contract name (`r999`, `rX`, a trailing suffix) either parses to a
+    round the history bound rejects or is not seen as a sidecar at all."""
+    pat = re.compile(rf'^{re.escape(session_id)}\.r(\d+)\.capture$')
+    found: list[tuple] = []
+    try:
+        names = os.listdir(state_dir)
+    except OSError:
+        return found
+    for name in names:
+        m = pat.match(name)
+        if m:
+            found.append((int(m.group(1)), os.path.join(state_dir, name)))
+    found.sort(key=lambda t: t[0])
+    return found
 
 
 def _load_capture_sidecar(path):
@@ -966,9 +1049,18 @@ def _apply_capture(sidecar, current_index, project, project_roots, sid8, iso_ts,
             # membership check, so it would otherwise be a silent drop with
             # no F5 observability at all — the exact failure class this task
             # exists to eliminate.
+            # The prefix alone is not the bound: `project-notes/../x.md`
+            # satisfies it and still leaves the project, which is a wrong link
+            # `@notes` can never take back (§3.1). Containment is therefore
+            # checked as a second, separately reported invariant (F-2).
             if not note_rel.startswith('project-notes/'):
                 print(f'[progress capture] note-path-reject: {note!r} '
                       f'(not project-relative under project-notes/) [s:{sid8}]',
+                      file=sys.stderr)
+                continue
+            if not is_contained_note_rel(note_rel):
+                print(f'[progress capture] note-path-reject: {note!r} '
+                      f'(escapes the project root) [s:{sid8}]',
                       file=sys.stderr)
                 continue
             if not is_note_deliverable(note_rel):
@@ -1045,7 +1137,7 @@ def _to_forward_slash(path):
 
 
 def build_capture_context(sid8, iso_ts, capture_path, project_root,
-                           project_roots, task_keys, note_writes):
+                           project_roots, task_keys, note_writes, round_n):
     """Build the JSON context block handed to the capture subagent (§10.5).
 
     `sidecar_path` / `project_root` are forward-slashed absolute paths (same
@@ -1061,11 +1153,18 @@ def build_capture_context(sid8, iso_ts, capture_path, project_root,
     are now qualified `"<project>/<basename>"` and a task in a non-primary
     project has to be resolvable to a root. Every root is forward-slashed
     through the same single source of truth as `project_root`.
+
+    R-1 (§4.4.1 D1/D6): `capture_path` MUST be the per-round path produced by
+    `capture_sidecar_path()` — the round is carried by the file name, and the
+    emitted `round` field is an ECHO for the subagent's own reasoning only. The
+    hook treats the FILE NAME as authoritative and never reads a `round` back
+    out of the sidecar, so this adds no output obligation to the agent contract.
     """
     return json.dumps(
         {
             'sid8': sid8,
             'iso_ts': iso_ts,
+            'round': round_n,
             'sidecar_path': _to_forward_slash(capture_path),
             'project_root': _to_forward_slash(project_root),
             'project_roots': {name: _to_forward_slash(root)
@@ -1182,6 +1281,21 @@ def main() -> int:
     round_base = capture.get('round_base')
     round_base = dict(round_base) if isinstance(round_base, dict) else {}
     round_base = {qualify_legacy(k, project): v for k, v in round_base.items()}
+    # `history` (§4.4.1 D2): {"<round>": {"tasks": [...], "notes": [...]}} — the
+    # frozen `items` of the last `_ROUND_HISTORY_K` rounds, including the CURRENT
+    # one, so the apply path has a single lookup for "that round's closed set".
+    # Written ONLY at the (E) request commit. `round_base` is deliberately NOT
+    # kept here: the membership gate reads `items` alone, and the only consumer
+    # of `round_base` is the (D) backstop, which is current-round-only.
+    # No `qualify_legacy` pass (§4.4.4): `history` is a NEW key whose entries are
+    # written from `active.keys()`, which `compute_round_active` already returns
+    # qualified — a bare F-4 key cannot structurally get in. Non-conforming
+    # entries from a hand-edited/corrupt `.bind` are dropped here so the prune's
+    # `int(k)` below can never raise.
+    history = capture.get('history')
+    history = dict(history) if isinstance(history, dict) else {}
+    history = {str(k): v for k, v in history.items()
+               if str(k).isdigit() and isinstance(v, dict)}
     # M-1 bootstrap (§1.8) + F-7 clamp, shared with `precompact_flush.py`.
     touch_cursor = resolve_touch_cursor(
         capture, bind_existed, raw_lines, resolved, sid8, log_seen)
@@ -1198,6 +1312,14 @@ def main() -> int:
     # Surfaced once via the injection (F5 / AC-7) then suppressed by exec_tried,
     # so a given task is reported at most once — bounded (INV-1 c).
     exec_skipped: list[str] = []
+    # `exec_unresolved`: NEW `[tasks:]` carries from THIS TURN naming no task md
+    # in the primary project. The carry is the ONLY detector for
+    # execution-by-reference work — nothing lands in `.touched` by construction —
+    # so an unresolvable name is a silent LOSS, not a harmless no-op. Entries are
+    # `(basename, hint)`; surfaced once on stderr AND in the block reason, then
+    # suppressed by the BARE-BASENAME entry appended to `exec_tried`: the same
+    # 打止め shape as `exec_skipped` (INV-1 c).
+    exec_unresolved: list[tuple] = []
     # `bind_skipped`: NEW touched-task bind failures this Stop (§4.3) — a task
     # whose `@log` damage is too ambiguous even for D3 block generation. Same
     # shape as `exec_skipped`: surfaced once via the injection, then suppressed
@@ -1230,6 +1352,10 @@ def main() -> int:
     # the hook. Fork → skip (W2 delegation; guard inert per U3 but kept). On
     # bind failure (no @log:end / write fail) → skip+log + record in exec_tried
     # so we do not retry every Stop (打止め). INV-1: never blocks on missing.
+    # NOTE: `exec_tried` carries TWO disjoint key shapes — `_rel()` paths here
+    # (resolved-but-unbindable) and bare basenames from the unresolved-carry
+    # report below. A `_rel()` value always starts `_projects/`, so the `in`
+    # checks on either side can never cross-match.
     if not is_fork:
         for base, path in exec_resolved.items():
             rel = _rel(path, cwd)
@@ -1260,6 +1386,9 @@ def main() -> int:
     # are delegated to an async `taskflow:progress-capture` subagent; the Stop
     # hook deterministically applies the sidecar it writes and keeps a
     # deterministic G backstop (placeholder + referenced over-bind) as fallback.
+    # The LEGACY un-suffixed sidecar name. Current rounds hand out the per-round
+    # `{sid}.r{N}.capture` (§4.4.1 D1, `capture_sidecar_path`); this path is only
+    # still READ, for a sidecar written from a pre-R-1 context block.
     capture_path = os.path.join(STATE_DIR, f'{session_id}.capture')
     current_index = qualified_task_index(project_roots)
     status = capture.get('status') or ''
@@ -1293,27 +1422,114 @@ def main() -> int:
             if n not in tried_notes:
                 tried_notes.append(n)
 
-    # --- (A) apply a delivered sidecar (only when one was requested) --------
+    # --- (A) apply delivered sidecars, per ROUND (§4.4.1 D1/D3) -------------
+    # Round identity is carried by the sidecar's FILE NAME (`{sid}.r{N}.capture`)
+    # so a sidecar that lands after its own round closed is still gated on ITS
+    # round's frozen set. Before this, the gate read whatever `items` held at
+    # apply time, so the common orchestration pattern (long verification between
+    # Stops → the subagent outruns the 30s expiry → the next round commits
+    # first) discarded the entire judgment layer of a round as `membership-skip`
+    # — three times observed live in one session (R-1).
+    #
+    # The branches are evaluated TOP-DOWN, FIRST MATCH ONLY (F-B): the current
+    # round is ALSO in `history`, so a non-exclusive form would match two rows.
     applied_this_stop = False
-    if status in ('requested', 'pending', 'expired'):
+    round_mismatched: list[str] = []
+    # The status as it stood at Stop ENTRY. The legacy branch below must keep
+    # its CURRENT condition, so an r-file applied in the loop (which may set
+    # `status='done'`) cannot change whether it runs.
+    _status_at_entry = status
+
+    def _apply_one(sidecar, items):
+        """Apply ONE sidecar against `items` and merge its result into this
+        Stop's report (several sidecars can land on the same Stop, so the
+        result lists are extended, never rebound)."""
+        _s, _l, _p, _ls, _ms = _apply_capture(
+            sidecar, current_index, project, project_roots, sid8, iso_ts, items)
+        applied_summaries.extend(_s)
+        applied_links.extend(_l)
+        proposals.extend(_p)
+        applied_link_skipped.extend(_ls)
+        applied_membership_skipped.extend(_ms)
+        for _k in _s:
+            _pk = current_index.get(_k)
+            if _pk:
+                _record_append(_pk, _k)  # F-1: hook write, not a self-log
+
+    for _round_of, _rpath in scan_round_sidecars(STATE_DIR, session_id):
+        _sidecar = _load_capture_sidecar(_rpath)
+        if _sidecar is None:
+            continue  # absent / torn — never partially applied (§10.1)
+        if _round_of == round_n:
+            # Row 1 — this round's own sidecar. `history` is the single lookup
+            # (the open round is stored there too); `items_open` is the fallback
+            # for a `.bind` written before `history` existed.
+            _items = history.get(str(round_n)) or items_open
+            _apply_one(_sidecar, _items)
+            # F-A: ONLY a CURRENT-round apply may suppress (B). Letting an old
+            # round's late arrival set this would push this round's expiry clock
+            # out by one Stop per late sidecar.
+            applied_this_stop = True
+            # Consume: unlink so a later request cannot re-match a stale
+            # sidecar. On unlink failure do NOT mark done — the next Stop
+            # re-applies (text-key idempotent), keeping the apply eventual
+            # (§10.2 / AC-11).
+            try:
+                os.remove(_rpath)
+            except OSError:
+                pass  # leave status; re-apply next Stop
+            else:
+                _fold_tried(_items)
+                # A redelivery while the round is already `done` applies but
+                # does NOT transition (D3 row 1) — the existing eventual
+                # semantics are preserved, not extended.
+                if _status_at_entry in ('requested', 'pending', 'expired'):
+                    status = 'done'
+        elif str(_round_of) in history:
+            # Row 2 — an EARLIER round's sidecar, gated on THAT round's frozen
+            # set. `status` is deliberately untouched: moving it here would let
+            # round N's late arrival mark round N+1's open request `done`.
+            _apply_one(_sidecar, history[str(_round_of)])
+            try:
+                os.remove(_rpath)
+            except OSError:
+                pass  # re-apply next Stop (idempotent)
+        else:
+            # Row 3 — outside the retained window (K exceeded, a non-conforming
+            # name such as `r999`, or a `.bind` that lost its history: F-D, an
+            # accepted degradation, identical in loss to the pre-R-1 behaviour).
+            # Consumed WITHOUT applying, reported once.
+            # F-C consume-then-report: the report is bound by a successful
+            # unlink, so a failed unlink stays silent and retries next Stop
+            # instead of re-reporting on every Stop (INV-1).
+            try:
+                os.remove(_rpath)
+            except OSError:
+                pass
+            else:
+                _rounds = sorted(int(k) for k in history)
+                _span = f'r{_rounds[0]}..r{_rounds[-1]}' if _rounds else 'empty'
+                _msg = (f'round-mismatch: sidecar r{_round_of} outside history '
+                        f'({_span}); discarded')
+                round_mismatched.append(_msg)
+                print(f'[progress capture] {_msg} [s:{sid8}]', file=sys.stderr)
+
+    # Legacy `{sid}.capture` (no round suffix): unchanged condition, unchanged
+    # behaviour — gated on the CURRENT round's `items`. Retirement date TBD
+    # (§4.4.4). A same-session sidecar can only carry this name if it was
+    # written from a context block generated by a pre-R-1 hook version.
+    if _status_at_entry in ('requested', 'pending', 'expired'):
         sidecar = _load_capture_sidecar(capture_path)
         if sidecar is not None:
             applied_this_stop = True
-            applied_summaries, applied_links, proposals, applied_link_skipped, applied_membership_skipped = _apply_capture(
-                sidecar, current_index, project, project_roots, sid8, iso_ts, items_open)
-            for _k in applied_summaries:
-                _p = current_index.get(_k)
-                if _p:
-                    _record_append(_p, _k)  # F-1: hook write, not a self-log
-            # Consume: unlink so a later request cannot re-match a stale sidecar.
-            # On unlink failure, do NOT mark done — the next Stop re-applies
-            # (idempotent), keeping the apply eventual (§10.2 / AC-11).
+            _apply_one(sidecar, items_open)
             try:
                 os.remove(capture_path)
-                _fold_tried(items_open)
-                status = 'done'
             except OSError:
                 pass  # leave status; re-apply next Stop
+            else:
+                _fold_tried(items_open)
+                status = 'done'
 
     # --- (B) lifecycle transition for an un-delivered request --------------
     if status in ('requested', 'pending') and not applied_this_stop:
@@ -1328,9 +1544,14 @@ def main() -> int:
     # §1.3: A_r = task writes in this round's ledger slice ∪ owners of the
     # notes written in it (the via-a-note loss path) ∪ this Stop's `[tasks:]`
     # exec carry − self-logged − tried_tasks. The note SCAN stays whole-session
-    # (`touched`): `novel_notes` and the `referenced` over-bind below are bounded
-    # by `tried_notes`, and the over-bind fires on the expiry Stop, by which
-    # time the round that requested it has already consumed its slice.
+    # (`touched`) because the over-bind fires on the expiry Stop, by which time
+    # the round that requested it has already consumed its slice. The two
+    # consumers of the scan are bounded by DIFFERENT sets: `novel_notes` by
+    # `tried_notes`, and the `referenced` over-bind by the round's closed
+    # `items['tasks']` (W6, §1.10). `tried_notes` can never bound the over-bind
+    # — it is fed only from `items['notes']`, i.e. UNLINKED notes, and the
+    # over-bind acts only on notes that HAVE an owner, so the two sets are
+    # disjoint by construction.
     # D2 (§3.2): one reverse index per resolved project. `_scan_note_writes` is
     # self-filtering per project — a line from another project keeps its
     # `_projects/<other>/` prefix after `_to_project_rel` and fails the
@@ -1366,12 +1587,49 @@ def main() -> int:
 
     exec_carry: dict = {}
     if not is_fork:
-        for base, path in resolve_exec_tasks(exec_this_turn, project_root).items():
+        turn_resolved = resolve_exec_tasks(exec_this_turn, project_root)
+        for base, path in turn_resolved.items():
             if path in exec_bound_now:
                 continue  # the deterministic exec-bind already recorded it
             if _rel(path, cwd) in exec_tried:
                 continue  # unbindable; already 打止め on the exec-bind side
             exec_carry[qualify(project, base)] = path
+        # F5 (§4.3 generalized to the exec side): a carry naming NO task md in
+        # the primary project resolves to nothing, so it never reaches the
+        # exec-bind loop above, never enters A_r, and — execution-by-reference
+        # leaving no `.touched` line by construction — is picked up by NOTHING
+        # else. Report it exactly once; before this it vanished with zero trace.
+        #
+        # Scoped to THIS TURN's carry, not the cumulative `exec_bind`: a task
+        # bound on an earlier Stop and then deleted/renamed would otherwise be
+        # re-reported as a miss on a turn that never claimed it.
+        #
+        # 打止め = a BARE BASENAME in `exec_tried` (INV-1): that list already
+        # round-trips through the CLOSED `_load_bind`/`_save_bind` whitelist, so
+        # no schema change and no new evaporation trap; its existing entries are
+        # `_rel(path, cwd)` values, which always start `_projects/`
+        # (PROGRESS_ROOT is `getcwd() + '/_projects'` and `main` returns early
+        # without it), so the two shapes cannot collide. Only the REPORT is
+        # bounded — resolution keeps retrying every Stop, which is what lets a
+        # name claimed before its task file exists still bind later.
+        for b in exec_this_turn:
+            base = _exec_base(b)
+            if not base or base in turn_resolved or base in exec_tried:
+                continue
+            exec_tried.append(base)
+            # Best-effort hint only. `current_index` covers the primary project
+            # plus the projects THIS session's ledger named, so a project never
+            # written into is not searched (scanning all of `_projects/` would be
+            # an unbounded new walk). Resolution stays primary-only (§3.6) — this
+            # only tells the agent where to look.
+            elsewhere = sorted({k.rsplit('/', 1)[0] for k in current_index
+                                if k.rsplit('/', 1)[-1] == base})
+            hint = f' (exists in: {", ".join(elsewhere)})' if elsewhere else ''
+            exec_unresolved.append((base, hint))
+            print(f'[progress capture] exec-skip(unresolved): {base} '
+                  f'[s:{sid8}] — [tasks:] carry names no task md under '
+                  f'_projects/{project}/tasks/; nothing bound.{hint}',
+                  file=sys.stderr)
     active = compute_round_active(
         new_slice, project_roots, reverse_indexes, sid8,
         log_seen, tried_tasks, extra=exec_carry, hook_appended=hook_appended)
@@ -1398,11 +1656,31 @@ def main() -> int:
         return log_seen_at_entry.get(key, 0)
 
     if status == 'expired':
+        # Round bound (W6, §1.10). The note SCAN stays whole-session — slicing
+        # it kills the over-bind outright, because the requesting round's slice
+        # was consumed at its own request commit (§1.9) — but the OWNER set is
+        # this round's frozen closed set. `items['tasks']` is that set with its
+        # note owners already in it (`compute_round_active` unions them before
+        # the freeze), and W5 keeps it un-retired, so it is the only
+        # round-scoped fact the whole-session scan cannot supply. Without it
+        # neither existing guard bounds a CARRIED owner across rounds: the text
+        # key carries `(r{N})` so it differs every round, and `_round_base`
+        # falls back to a `log_seen` the F-1 resync already advanced to the
+        # current count — so every later expiry appended one more false
+        # `(referenced)` line to a task whose note that round never touched,
+        # forever, `@log` being append-only (measured r1..r5 -> 5 lines).
+        # `None` = legacy `.bind` predating `items`: fail open, the same shape
+        # as the placeholder backstop's legacy branch below.
+        round_task_set = (set(items_open['tasks'])
+                          if isinstance(items_open, dict)
+                          and isinstance(items_open.get('tasks'), list) else None)
         for _name, _root in project_roots.items():
             _ridx = reverse_indexes[_name]
             for prel in note_writes_by_project[_name]:
                 for owner_path in resolve_note_owner(prel, _root, _ridx):
                     okey = qualify(_name, os.path.basename(owner_path))
+                    if round_task_set is not None and okey not in round_task_set:
+                        continue  # not this round's work (see above)
                     ref_note = (f'(referenced) owner of {prel} via '
                                 f'reverse-index; capture expired (r{round_n})')
                     # Text-key bound (W5, INV-1/§1.5). `append_auto_binding` is
@@ -1410,10 +1688,11 @@ def main() -> int:
                     # without this pre-check a repeat is recorded in
                     # `auto_bound` and the gate BLOCKS AND RE-REPORTS the same
                     # line on every Stop for as long as `status` stays
-                    # `expired`. The note scan is whole-session by design
-                    # (§1.9), so this loop is re-entered every Stop; presence of
-                    # the exact key is the monotone stop condition (a text key,
-                    # once written, is never removed).
+                    # `expired`. This loop is re-entered on every such Stop;
+                    # presence of the exact key is the monotone stop condition
+                    # WITHIN the round (a text key, once written, is never
+                    # removed). Across rounds the tag changes — that is the
+                    # round bound's job, not this guard's.
                     if log_block_has_note(owner_path, sid8, ref_note):
                         continue
                     if count_sid_lines(owner_path, sid8) > _round_base(okey):
@@ -1485,6 +1764,14 @@ def main() -> int:
             n = count_sid_lines(path, sid8)
             log_seen[key] = n
             round_base[key] = n
+        # §4.4.1 D2: this round's closed set also goes into `history`, keyed by
+        # round, and the window is pruned to the last `_ROUND_HISTORY_K` rounds.
+        # This is the ONLY write point — a round's set is frozen exactly when it
+        # is requested, which is what makes a late sidecar checkable against it.
+        history[str(round_n)] = {'tasks': sorted(active.keys()),
+                                 'notes': list(novel_notes)}
+        history = {k: v for k, v in history.items()
+                   if int(k) > round_n - _ROUND_HISTORY_K}
         capture = {
             'status': 'requested',
             'items': {'tasks': sorted(active.keys()), 'notes': novel_notes},
@@ -1495,6 +1782,11 @@ def main() -> int:
             'round': round_n,
             'log_seen': log_seen,
             'round_base': round_base,
+            # Evaporation trap (§1.7 / §4.4.1 D2): `_load_bind`/`_save_bind`
+            # round-trip `capture` opaquely, but BOTH dict literals here rebuild
+            # it from scratch — a key missing from either one is silently gone
+            # every Stop.
+            'history': history,
         }
         spawn = True
     else:
@@ -1537,6 +1829,10 @@ def main() -> int:
             'round': round_n,
             'log_seen': log_seen,
             'round_base': round_base,
+            # SECOND of the two dict literals (§4.4.1 D2). Carried unchanged —
+            # `history` is written only at the request commit above — but it
+            # MUST be re-emitted here or every non-requesting Stop drops it.
+            'history': history,
         }
 
     # --- Gate (INV-1): block only to (b) report binds, (c) report exec-skip,
@@ -1544,8 +1840,9 @@ def main() -> int:
     # the block, so the next Stop re-enters via the requested/pending branch
     # (no re-block loop). An in-flight `pending` with nothing to report → no
     # block (AC-9).
-    report_binds = auto_bound or applied_summaries or applied_links or applied_link_skipped or applied_membership_skipped or bind_skipped
-    if not spawn and not report_binds and not exec_skipped and not proposals:
+    report_binds = auto_bound or applied_summaries or applied_links or applied_link_skipped or applied_membership_skipped or bind_skipped or round_mismatched
+    if (not spawn and not report_binds and not exec_skipped
+            and not exec_unresolved and not proposals):
         _save_bind(bind_path, reminded, exec_tried, capture)
         return 0
     _save_bind(bind_path, reminded, exec_tried, capture)
@@ -1566,6 +1863,10 @@ def main() -> int:
         f'[progress capture] auto-skip(ambiguous): {rel}\n' for rel in exec_skipped
     )
     auto_lines += ''.join(
+        f'[progress capture] exec-skip(unresolved): {base}{hint}\n'
+        for base, hint in exec_unresolved
+    )
+    auto_lines += ''.join(
         f'[progress capture] bind-skip(no-anchor): {rel}\n' for rel in bind_skipped
     )
     auto_lines += ''.join(
@@ -1575,6 +1876,9 @@ def main() -> int:
     auto_lines += ''.join(
         f'[progress capture] membership-skip: {name}\n' for name in applied_membership_skipped
     )
+    auto_lines += ''.join(
+        f'[progress capture] {m}\n' for m in round_mismatched
+    )
 
     if spawn:
         # Round-scoped display (§1.3): the subagent summarizes THIS round's
@@ -1582,10 +1886,14 @@ def main() -> int:
         shown = slice_display[:MAX_TOUCHED_IN_INJECTION]
         tail = '' if len(slice_display) <= MAX_TOUCHED_IN_INJECTION else \
             f' ...({len(slice_display) - MAX_TOUCHED_IN_INJECTION} more)'
-        sidecar_path_display = _to_forward_slash(capture_path)
+        # Per-round sidecar path (§4.4.1 D1): the round the (E) commit above
+        # just opened. Both the context block and the step-3 prose below take it
+        # from this single value (review F-I3).
+        round_capture_path = capture_sidecar_path(STATE_DIR, session_id, round_n)
+        sidecar_path_display = _to_forward_slash(round_capture_path)
         context = build_capture_context(
-            sid8, iso_ts, capture_path, project_root, project_roots,
-            sorted(active.keys()), novel_notes,
+            sid8, iso_ts, round_capture_path, project_root, project_roots,
+            sorted(active.keys()), novel_notes, round_n,
         )
         reason = (
             f'{auto_lines}'
@@ -1614,6 +1922,13 @@ def main() -> int:
             note += ('auto-skip = the [tasks:] target has no writable '
                      '<!-- @log:begin/end --> block; add one to it if that task '
                      'should carry a session log. ')
+        if exec_unresolved:
+            note += ('exec-skip(unresolved) = the [tasks:] carry named a file '
+                     f'that is not a task md in project `{project}` — nothing '
+                     'was bound and no other mechanism records this work. Check '
+                     'the basename spelling; the carry resolves in the PRIMARY '
+                     'project only, so a task in another project must be bound '
+                     'by editing that task file directly. ')
         if bind_skipped:
             note += ('bind-skip(no-anchor) = the touched task has no writable '
                      '<!-- @log:begin/end --> block (damage too ambiguous to '
@@ -1623,6 +1938,10 @@ def main() -> int:
                      'referenced); a richer summary is no longer needed. ')
         if applied_summaries or applied_links:
             note += 'applied entries came from the capture subagent. '
+        if round_mismatched:
+            note += ('round-mismatch = a capture sidecar named a round no '
+                     'longer retained in the .bind round history; it was '
+                     'discarded unapplied. ')
         note = note.rstrip() + ')'
         prop_lines = ''
         if proposals:

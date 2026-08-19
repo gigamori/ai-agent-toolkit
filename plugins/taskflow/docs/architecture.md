@@ -97,7 +97,7 @@ The router does NOT walk `project-notes/**/*.md` as a fallback — neither for `
 
 | Sub-action | Effect |
 |---|---|
-| `check` | Run drift / stale / approval-pending detection across 10 checks (`check_progress.py`). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
+| `check` | Run drift / stale / approval-pending detection across 11 checks (`check_progress.py`). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
 | `audit` | Classify each task by `## Next Steps` state: pending / completion_candidate / untracked / clean (`audit_progress.py`). Read-only. |
 | `rebuild` (alias `sync`) | Regenerate the `<!-- @table -->` block from task files (`rebuild_progress.py`). |
 | `start <id>` | Move a task `0_todo/ → 1_in_progress/` (also reopens `2_done/ → 1_in_progress/`). |
@@ -236,14 +236,34 @@ session end
         written before those keys existed bootstraps to the END of the ledger (§1.8 M-1), so
         upgrading never replays history
      3. exec-binding: union-merge any `[tasks: a.md b.md]` carry from the assistant's last
-        message into state `exec_bind`, then code-bind those owning tasks' `@log`
-     4. async capture apply-path (§10): if a `{session_id}.capture` sidecar is present, APPLY it
-        deterministically first (`confirmed` → `@log` summaries, `note_links` → task `@notes`),
-        then consume it. Applying before the placeholder backstop is what lets a real summary
-        win over a placeholder (`@log` is append-only, so a placeholder cannot be overwritten).
-        Entries outside the request-time closed set `capture.items` are skipped (F7a), and a
-        `note_links[].note` that is not project-relative under `project-notes/` is rejected
-        outright — independent of that membership set. A sidecar that arrives AFTER its round
+        message into state `exec_bind`, then code-bind those owning tasks' `@log`. Resolution
+        is PRIMARY-project-only by design (`capture-detection-gaps.md` §3.6): a `.touched` line
+        derives its project from the path it carries, but a `[tasks:]` carry is a bare NAME
+        with no path evidence. A carry naming no task md in the primary project is therefore
+        reported ONCE as `exec-skip(unresolved)` (stderr + block reason, with a best-effort
+        "exists in: <project>" hint when the basename is found in another already-resolved
+        project) instead of vanishing without a trace. Only the REPORT is bounded — by a bare
+        basename in `exec_tried` — while resolution keeps retrying every Stop, which is what
+        lets a task claimed before it is created still bind later
+     4. async capture apply-path (§10): scan for `{session_id}.r{N}.capture` sidecars and APPLY
+        them deterministically first, oldest round first (`confirmed` → `@log` summaries,
+        `note_links` → task `@notes`), then consume each one. Applying before the placeholder
+        backstop is what lets a real summary win over a placeholder (`@log` is append-only, so
+        a placeholder cannot be overwritten). The round `N` in the NAME is the sidecar's
+        identity (`capture-detection-gaps.md` §4.4, R-1): a sidecar is membership-checked
+        against the closed set of ITS OWN round, read from `capture.history` (the last
+        `_ROUND_HISTORY_K` = 3 rounds' frozen `items`), not against whatever `capture.items`
+        holds at apply time. Only the CURRENT round's sidecar moves the lifecycle to `done`
+        and only it suppresses that Stop's expiry check — an earlier round's late arrival
+        applies silently beside the open round instead of deferring it. A sidecar naming a
+        round outside the retained window is consumed unapplied and reported once as
+        `round-mismatch`. The legacy un-suffixed `{session_id}.capture` name is still applied
+        under the current round's items (compatibility; retirement TBD).
+        Entries outside that closed set are skipped (F7a), and a
+        `note_links[].note` is rejected outright — independent of that membership set — unless
+        it is project-relative under `project-notes/` AND resolves inside the project root (a
+        `..` segment satisfies the prefix and still escapes, so both are checked, and each
+        reject names its reason on stderr). A sidecar that arrives AFTER its round
         expired still applies: the resolved round's `items` / `round_base` are retained (they
         are replaced only when the next round is requested), so a subagent slower than the
         expiry keeps its summary and its note links instead of having every entry
@@ -260,12 +280,19 @@ session end
         The context block handed to it carries ABSOLUTE, forward-slashed `sidecar_path` /
         `project_root` (the same values this hook reads), so the subagent's write/read basis
         cannot drift from the hook's regardless of its cwd
-        (project-notes/specs/capture-context-abs-path.md).
+        (project-notes/specs/capture-context-abs-path.md). `sidecar_path` is the PER-ROUND
+        `{session_id}.r{N}.capture` and the block also carries `round` as an echo; the round
+        identity is decided by the hook's file name, so the subagent's contract gains no new
+        output field (§4.4.1 D1/D6).
      6. expiry (30 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
         backstop takes over for THAT ROUND's closed `items` set — `referenced` over-bind of the
         note-write owners resolvable via the reverse index first (so an owner keeps the more
         specific provenance), then a placeholder for every item the round has not produced a
-        line for yet. Placeholder / `referenced` notes carry an `(r{N})` round tag, which is
+        line for yet. The note scan behind that over-bind is whole-session by necessity — the
+        requesting round consumed its own ledger slice when it committed — so the owner set,
+        not the scan, is what `items` bounds: an owner the scan reaches for a note this round
+        never touched gets no line.
+        Placeholder / `referenced` notes carry an `(r{N})` round tag, which is
         also their idempotency key: binding is now keyed on the text `[s:<sid8>]: <note>`
         rather than on the bare presence of a `[s:<sid8>]` line, so one session binds one task
         once per ROUND instead of once per session (§1.5). A round already satisfied by a real
@@ -284,9 +311,12 @@ session end
         two `@log:begin` — is still unbindable, and it is now REPORTED once on stderr and in
         the block reason as `bind-skip(no-anchor)` rather than dropped silently (§4.3).
      7. gate (INV-1, no-loop): return {"decision":"block", ...} ONLY to (b) report a code
-        auto-bind / applied capture entry, (c) report a NEW exec-bind skip, (d) spawn capture,
-        or to surface `proposals` — each bounded by the `{session_id}.bind` sidecar
-        (`exec_tried` / `tried_notes` / `tried_tasks` 打止め sets). `requested` is committed
+        auto-bind / applied capture entry, (c) report a NEW exec-bind skip — either
+        `auto-skip(ambiguous)` (resolved, but no writable `@log` block) or
+        `exec-skip(unresolved)` (no task md of that name in the primary project) — (d) spawn
+        capture, or to surface `proposals` — each bounded by the `{session_id}.bind` sidecar
+        (`exec_tried` / `tried_notes` / `tried_tasks` 打止め sets; `exec_tried` holds a
+        repo-relative path for the former and a bare basename for the latter). `requested` is committed
         BEFORE the block, so the next Stop re-enters via the requested/pending branch and never
         re-blocks. A task that can never be bound (ambiguous `@log` damage) is surfaced
         ONCE as `bind-skip(no-anchor)` and then suppressed by `tried_tasks` — it does NOT
@@ -357,7 +387,7 @@ protection, none.
 
 Path: `_projects/_state/{session_id}.json`
 
-The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` plus the round state `{touch_cursor, round, log_seen, round_base}` and `exec_tried` skip records; writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.capture` (the async judgment sidecar; writer = the `taskflow:progress-capture` subagent only, consumed and unlinked by the hook after a successful apply). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
+The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` plus the round state `{touch_cursor, round, log_seen, round_base, history}` — `history` being the frozen `items` of the last 3 rounds, keyed by round number, which is what lets a sidecar delivered after its round closed still be membership-checked against its own round (R-1) — and `exec_tried` skip records — the exec-carry 打止め set, holding BOTH `_rel()` repo-relative paths of resolved-but-unbindable tasks AND bare basenames of carries that resolved to no task at all, two shapes that are disjoint because a `_rel()` value always starts `_projects/`; writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.r{N}.capture` (the async judgment sidecar for round `N`; writer = the `taskflow:progress-capture` subagent only, at the absolute path the hook handed it, consumed and unlinked by the hook after a successful apply — the un-suffixed `{session_id}.capture` is the pre-R-1 name, still applied when found but no longer handed out). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
 
 ```json
 {
@@ -436,7 +466,7 @@ If `session_progress_capture.py` finds an empty `project` in state at session en
 
 ### exec-binding (`[tasks:]` carry)
 
-When a session does task work whose result lands OUTSIDE the task's own `tasks/<status>/*.md` file (execution-by-reference), the LLM lists the owning task filename(s) in a `[tasks: a.md b.md]` leading line. `session_progress_capture.py` union-merges these into the state `exec_bind` array and code-binds each owning task's `@log` (provenance note `(auto) executed via [tasks:] carry`), so the work is recorded even though `tasks/` was never edited. Bind failure (no `@log:end`) is surfaced once as `auto-skip(ambiguous)` and recorded in `exec_tried` to stop retrying (INV-1 c). The `[tasks:]` instruction is wired into the injected prompts (`project_routing.md` "Response leading lines" + `guidelines_reminder.md`), parallel to `[pj:]`; direct task-file edits need no `[tasks:]` (the PostToolUse `.touched` capture records them). See `project-notes/specs/exec-binding.md`.
+When a session does task work whose result lands OUTSIDE the task's own `tasks/<status>/*.md` file (execution-by-reference), the LLM lists the owning task filename(s) in a `[tasks: a.md b.md]` leading line. `session_progress_capture.py` union-merges these into the state `exec_bind` array and code-binds each owning task's `@log` (provenance note `(auto) executed via [tasks:] carry`), so the work is recorded even though `tasks/` was never edited. Bind failure (no `@log:end`) is surfaced once as `auto-skip(ambiguous)` and recorded in `exec_tried` to stop retrying (INV-1 c). A carry that resolves to NO task md in the project is surfaced once as `exec-skip(unresolved)` — with a best-effort `(exists in: <project>)` hint when the basename is found in another project this session already resolved — and 打止め'd by a bare basename in `exec_tried`; before that it was lost with zero trace on every channel, since execution-by-reference leaves no `.touched` line by construction. Resolution itself is never suppressed: a task claimed before it exists still binds on a later Stop. The `[tasks:]` instruction is wired into the injected prompts (`project_routing.md` "Response leading lines" + `guidelines_reminder.md`), parallel to `[pj:]`; direct task-file edits need no `[tasks:]` (the PostToolUse `.touched` capture records them). See `project-notes/specs/exec-binding.md`.
 
 ### ACTION_REQUIRED preflight banner
 
