@@ -84,6 +84,8 @@ When the LLM spawns a new session via the Agent tool (subagent) or a CLI launch 
 ## Adding, changing, and removing projects
 
 - Creating a new project: add a row to `_projects/index.md` and create `_projects/<project>/index.md`.
+  - The Project cell of that row MUST resolve to the project's directory name under `_projects/`. A bare name is the norm (`| my-project | ... |`); a markdown link is accepted only when its label is exactly the directory name (`| [my-project](my-project/index.md) | ... |`), because the kanban board looks the directory up by that value and drops any project whose cell does not name an existing directory.
+  - Do NOT put a literal `|` inside any cell of the row. `_projects/index.md` rows are written by hand and no writer escapes them, so a literal `|` is read as a column separator.
 - Changing the project overview (scope, target repo, etc.): update BOTH `_projects/<project>/index.md` and `_projects/index.md`.
 - Retiring a project: remove its row from `_projects/index.md`.
 

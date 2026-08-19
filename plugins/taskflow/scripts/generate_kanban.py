@@ -65,6 +65,18 @@ LOG_ENTRY_RE = re.compile(
     r"-\s+(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})?)?)\s+\[s:([0-9a-f]{6,})\]:\s*(.+)"
 )
 
+# `_projects/index.md` row grammar. LOCKSTEP: pi-studio
+# `src/kanban/kanban-data-provider.ts::parseProjectIndex` reimplements these three
+# rules verbatim; changing one here without the other breaks board parity.
+#   1. separator row: the WHOLE line matches INDEX_SEPARATOR_RE (a data row whose
+#      Description merely contains `---` is NOT a separator).
+#   2. cell split: strip exactly ONE leading and ONE trailing `|` (GFM outer
+#      delimiters), then split on `|`. `||name|` therefore means an empty cell 0.
+#   3. project name: a cell 0 that is entirely one `[label](href)` yields `label`;
+#      any other cell 0 is taken verbatim. Description is never unwrapped.
+INDEX_SEPARATOR_RE = re.compile(r"^\|[-\s|:]+\|\s*$")
+INDEX_LINK_RE = re.compile(r"^\[([^\]]+)\]\([^)]*\)$")
+
 TASK_STATUSES = ("0_todo", "1_in_progress", "2_done")
 STATUS_LABELS = {"0_todo": "TODO", "1_in_progress": "In Progress", "2_done": "Done"}
 
@@ -173,6 +185,21 @@ def extract_sessions(content: str) -> list[SessionRef]:
     return refs
 
 
+def split_index_row(line: str) -> list[str]:
+    """Split one `_projects/index.md` table row into stripped cells (rule 2)."""
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|"):
+        line = line[:-1]
+    return [p.strip() for p in line.split("|")]
+
+
+def unwrap_index_name(cell: str) -> str:
+    """`[label](href)` → `label` when the cell is entirely one link (rule 3)."""
+    m = INDEX_LINK_RE.match(cell)
+    return m.group(1).strip() if m else cell
+
+
 def parse_index(path: Path) -> list[tuple[str, str]]:
     """Parse _projects/index.md → [(name, description), ...]."""
     content = read_text(path)
@@ -181,12 +208,14 @@ def parse_index(path: Path) -> list[tuple[str, str]]:
     result = []
     for line in content.splitlines():
         line = line.strip()
-        if not line.startswith("|") or "---" in line:
+        if not line.startswith("|") or INDEX_SEPARATOR_RE.match(line):
             continue
-        parts = [p.strip() for p in line.strip("|").split("|")]
-        if not parts or parts[0] in ("Project", ""):
+        parts = split_index_row(line)
+        if not parts:
             continue
-        name = parts[0]
+        name = unwrap_index_name(parts[0])
+        if name in ("Project", ""):
+            continue
         desc = parts[1] if len(parts) > 1 else ""
         result.append((name, desc))
     return result
