@@ -252,7 +252,8 @@ session end
         a placeholder cannot be overwritten). The round `N` in the NAME is the sidecar's
         identity (`capture-detection-gaps.md` §4.4, R-1): a sidecar is membership-checked
         against the closed set of ITS OWN round, read from `capture.history` (the last
-        `_ROUND_HISTORY_K` = 3 rounds' frozen `items`), not against whatever `capture.items`
+        `_ROUND_HISTORY_K` = 3 rounds' frozen `items`, each entry carrying that round's
+        `tasks` / `notes` / `allow_tasks`), not against whatever `capture.items`
         holds at apply time. Only the CURRENT round's sidecar moves the lifecycle to `done`
         and only it suppresses that Stop's expiry check — an earlier round's late arrival
         applies silently beside the open round instead of deferring it. A sidecar naming a
@@ -274,9 +275,20 @@ session end
         the agent already logged itself this round (`count_sid_lines` > `log_seen` — the reason
         a guidelines-following turn spawns nothing) and MINUS the `tried_tasks` 打止め set.
         When A_r is non-empty, or a freshly written `project-notes/` deliverable has no owning
-        task, commit `capture.status=requested` (freezing A_r as the round's closed `items` set,
-        advancing `touch_cursor` and `round`) and block once with an instruction to spawn the
-        `taskflow:progress-capture` subagent.
+        task, commit `capture.status=requested` (freezing A_r as the round's closed
+        `items.tasks` set, advancing `touch_cursor` and `round`) and block once with an
+        instruction to spawn the `taskflow:progress-capture` subagent.
+        The same commit also freezes `items.allow_tasks`: A_r as it stands BEFORE the self-log
+        subtraction (exec carry included), hence a superset of `items.tasks`. It is a membership
+        allow-set ONLY — `_apply_capture` gates `confirmed` on the UNION of `items.tasks` and
+        `items.allow_tasks`, so a summary naming a task the agent had already logged itself this
+        round is applied instead of being skipped as out-of-membership, while `items.tasks` stays
+        the sole driver of the expiry backstop, of the `referenced` over-bind boundary
+        (`round_task_set`) and of the `log_seen` / `round_base` baselines — which is what keeps a
+        self-logged task free of placeholders. The `note_links` membership set (`items.notes`) is
+        unaffected. A `.bind` or `history` entry written before this key existed carries no
+        `allow_tasks`, so the union degenerates to `items.tasks` and the pre-existing behaviour
+        holds (fail-open).
         The context block handed to it carries ABSOLUTE, forward-slashed `sidecar_path` /
         `project_root` (the same values this hook reads), so the subagent's write/read basis
         cannot drift from the hook's regardless of its cwd
@@ -387,7 +399,7 @@ protection, none.
 
 Path: `_projects/_state/{session_id}.json`
 
-The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` plus the round state `{touch_cursor, round, log_seen, round_base, history}` — `history` being the frozen `items` of the last 3 rounds, keyed by round number, which is what lets a sidecar delivered after its round closed still be membership-checked against its own round (R-1) — and `exec_tried` skip records — the exec-carry 打止め set, holding BOTH `_rel()` repo-relative paths of resolved-but-unbindable tasks AND bare basenames of carries that resolved to no task at all, two shapes that are disjoint because a `_rel()` value always starts `_projects/`; writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.r{N}.capture` (the async judgment sidecar for round `N`; writer = the `taskflow:progress-capture` subagent only, at the absolute path the hook handed it, consumed and unlinked by the hook after a successful apply — the un-suffixed `{session_id}.capture` is the pre-R-1 name, still applied when found but no longer handed out). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
+The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` — `items` being that round's frozen closed set `{tasks, notes, allow_tasks}`, where `allow_tasks` is the pre-self-log-subtraction task set that widens the `confirmed` membership gate only, and is absent from a `.bind` written before the key existed (the gate then falls back to `tasks` alone) — plus the round state `{touch_cursor, round, log_seen, round_base, history}` — `history` being the frozen `items` (`tasks` / `notes` / `allow_tasks`) of the last 3 rounds, keyed by round number, which is what lets a sidecar delivered after its round closed still be membership-checked against its own round (R-1) — and `exec_tried` skip records — the exec-carry 打止め set, holding BOTH `_rel()` repo-relative paths of resolved-but-unbindable tasks AND bare basenames of carries that resolved to no task at all, two shapes that are disjoint because a `_rel()` value always starts `_projects/`; writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.r{N}.capture` (the async judgment sidecar for round `N`; writer = the `taskflow:progress-capture` subagent only, at the absolute path the hook handed it, consumed and unlinked by the hook after a successful apply — the un-suffixed `{session_id}.capture` is the pre-R-1 name, still applied when found but no longer handed out). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
 
 ```json
 {
@@ -496,7 +508,7 @@ The session's project (`_state/<session_id>.json` → `project`) selects **one**
 | Extract | `_projects/<name>/...` → `<name>`; a line that does not start with `_projects/` (an absolute path from another repository, a cwd-external write) is out of scope — cross-**repo** binding is not attempted. |
 | Validate | `<name>` counts as a project only if `_projects/<name>/tasks/` is a directory. This is what rejects `_projects/_state/...` lines, which match the pattern but name the sidecar directory. |
 | Resolve | Each accepted project gets its own basename index, its own note reverse index, and its own boundary guard, so a basename that exists in two projects binds the copy the ledger actually named. |
-| Key | Every internal task key — `capture.items.tasks`, `tried_tasks`, `log_seen`, `round_base` — is the qualified `"<project>/<basename>"`, as are the capture-context `touched_tasks`, the `@log`-related stderr/block report lines, and the PreCompact stdout list. A `.bind` predating this change holds bare basenames; they are read as the primary project's keys and rewritten qualified on the next Stop. |
+| Key | Every internal task key — `capture.items.tasks`, `capture.items.allow_tasks`, `tried_tasks`, `log_seen`, `round_base` — is the qualified `"<project>/<basename>"`, as are the capture-context `touched_tasks`, the `@log`-related stderr/block report lines, and the PreCompact stdout list. A `.bind` predating this change holds bare basenames; they are read as the primary project's keys and rewritten qualified on the next Stop. |
 
 The capture subagent's context block carries `project_roots` (`{name: absolute root}`) alongside the primary `project_root` so it can resolve a qualified task, and its sidecar entries may carry an optional `project` field (absent = primary). Note paths in that sidecar stay project-relative under `project-notes/`, read against the entry's own project root. Design: `project-notes/specs/capture-detection-gaps.md` §3.
 

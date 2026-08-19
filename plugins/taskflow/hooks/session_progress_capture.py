@@ -794,7 +794,8 @@ def resolve_touch_cursor(capture, bind_existed, raw_lines, resolved, sid8,
 
 
 def compute_round_active(new_slice, project_roots, reverse_indexes, sid8,
-                         log_seen, tried_tasks, extra=None, hook_appended=None):
+                         log_seen, tried_tasks, extra=None, hook_appended=None,
+                         pre_selflog_out=None):
     """Round-active set A_r (§1.3) as {"<project>/<basename>": absolute_path}.
 
         A_r = tasks written in this round's ledger slice
@@ -823,7 +824,18 @@ def compute_round_active(new_slice, project_roots, reverse_indexes, sid8,
     `reverse_indexes` is `{project: note reverse index}`. Both the task
     resolution and the note-owner resolution run PER project, so a round is
     computed across every project the ledger slice touched, and every key in the
-    returned dict (and in `extra` / `log_seen` / `tried_tasks`) is qualified."""
+    returned dict (and in `extra` / `log_seen` / `tried_tasks`) is qualified.
+
+    B-m1 (04-plan §2.2): `pre_selflog_out`, when a dict is passed, is FILLED IN
+    PLACE with the set as it stands immediately BEFORE the self-log pass —
+    slice tasks ∪ note owners ∪ `extra` (the exec carry), nothing subtracted.
+    That is the membership allow-set: the round's `items['tasks']` (this
+    function's RETURN value) stays the post-subtraction set so the backstop,
+    `round_task_set`, `log_seen` and `round_base` keep driving off exactly what
+    they drove off before, while the apply-path gate stops discarding the
+    judgment layer for a task the agent happened to log itself (03-debug §4.3
+    OBS1-DEFECT). The out-parameter form is deliberate: `hooks/precompact_flush.py`
+    is the other caller and must keep the unchanged single return value."""
     active = dict(resolve_touched_tasks(new_slice, project_roots))
     for name, root in project_roots.items():
         ridx = reverse_indexes.get(name) or {}
@@ -836,6 +848,12 @@ def compute_round_active(new_slice, project_roots, reverse_indexes, sid8,
         for key, path in extra.items():
             active[key] = path
     hook_appended = hook_appended or {}
+    # B-m1: snapshot BEFORE the subtraction below — this exact point is the
+    # allow-set's definition (04-plan §2.2). Taken after the `extra` union so
+    # the exec carry (F-7) is included, and before the 打止め filter in the
+    # return statement, which is a different filter from the self-log pass.
+    if isinstance(pre_selflog_out, dict):
+        pre_selflog_out.update(active)
     # self-log detection (§1.4): a `[s:sid8]` count that grew beyond the round's
     # opening baseline by something OTHER than this hook's own writes means the
     # agent logged the work itself (guidelines followed) — no capture needed.
@@ -953,7 +971,10 @@ def _apply_capture(sidecar, current_index, project, project_roots, sid8, iso_ts,
     request-time closed set `{'tasks': [qualified keys], 'notes': [note_rel]}`
     that gated this capture request, or `None` for a legacy sidecar/.bind
     predating `items` — in which case the membership check is bypassed and both
-    loops apply exactly as before (fail-open fallback).
+    loops apply exactly as before (fail-open fallback). `items` may additionally
+    carry `'allow_tasks'`: the same round's PRE-self-log-subtraction task set,
+    which widens the `confirmed` gate only (B-m1, 04-plan §2.2). `note_links`
+    membership is unaffected.
 
     Sidecar contract (§3.3/§3.4): `confirmed[]` / `note_links[]` may carry an
     OPTIONAL `project` field; absent means the primary project. `note_links[]`
@@ -974,6 +995,18 @@ def _apply_capture(sidecar, current_index, project, project_roots, sid8, iso_ts,
     membership_skipped: list[str] = []
     task_set = (set(items['tasks']) if isinstance(items, dict)
                 and isinstance(items.get('tasks'), list) else None)
+    # B-m1 (04-plan §2.2): the `confirmed` gate is the UNION of the round's
+    # frozen `items['tasks']` (post-self-log-subtraction, which also drives the
+    # backstop) and `items['allow_tasks']` (pre-subtraction, membership only).
+    # Union rather than the allow-set alone: today the former is a subset of the
+    # latter, but if either construction later changes the gate must not narrow.
+    # A `.bind`/history entry written before this key existed has no
+    # `allow_tasks`, so the union degenerates to `items['tasks']` and the old
+    # behaviour holds with no legacy branch (fail-open, B-AC4).
+    if task_set is not None:
+        allow_tasks = items.get('allow_tasks')
+        if isinstance(allow_tasks, list):
+            task_set = task_set | set(allow_tasks)
     note_set = (set(items['notes']) if isinstance(items, dict)
                 and isinstance(items.get('notes'), list) else None)
 
@@ -1410,6 +1443,15 @@ def main() -> int:
         items_open = dict(items_open)
         items_open['tasks'] = [qualify_legacy(t, project)
                                for t in items_open['tasks']]
+        # B-m1: the membership allow-set rides INSIDE `items` (so a late
+        # sidecar gated on `history[r]` sees its own round's allow-set), and is
+        # F-4-normalized on the same terms as `tasks`. Like `tasks`, this
+        # qualification covers `items_open` ONLY — `history[...]` entries are
+        # not re-qualified on read, because history is only ever written by the
+        # post-F-4 freeze with already-qualified keys. Absent = legacy `.bind`.
+        if isinstance(items_open.get('allow_tasks'), list):
+            items_open['allow_tasks'] = [qualify_legacy(t, project)
+                                         for t in items_open['allow_tasks']]
 
     applied_summaries: list[str] = []
     applied_links: list[tuple] = []
@@ -1630,9 +1672,15 @@ def main() -> int:
                   f'[s:{sid8}] — [tasks:] carry names no task md under '
                   f'_projects/{project}/tasks/; nothing bound.{hint}',
                   file=sys.stderr)
+    # B-m1: `pre_selflog` is filled in place with A_r as it stands before the
+    # self-log subtraction (exec carry included). It feeds the request commit's
+    # `allow_tasks` ONLY — `active` remains the sole driver of the backstop,
+    # `round_task_set`, `log_seen` and `round_base` (04-plan §0.2 U-1 / U-2).
+    pre_selflog: dict = {}
     active = compute_round_active(
         new_slice, project_roots, reverse_indexes, sid8,
-        log_seen, tried_tasks, extra=exec_carry, hook_appended=hook_appended)
+        log_seen, tried_tasks, extra=exec_carry, hook_appended=hook_appended,
+        pre_selflog_out=pre_selflog)
 
     # --- (D) deterministic G backstop once capture has resolved ------------
     # §10.4 / §1.6: the backstop guarantees a line for the round's CLOSED item
@@ -1768,13 +1816,20 @@ def main() -> int:
         # round, and the window is pruned to the last `_ROUND_HISTORY_K` rounds.
         # This is the ONLY write point — a round's set is frozen exactly when it
         # is requested, which is what makes a late sidecar checkable against it.
+        # B-m1 (04-plan §2.2): `allow_tasks` is frozen HERE, alongside `tasks`,
+        # in BOTH the history entry and the `capture['items']` literal below —
+        # they are separate literals and a key added to only one of them is
+        # silently absent from the other's gate (the §1.7 evaporation trap
+        # applied to the round-history schema).
         history[str(round_n)] = {'tasks': sorted(active.keys()),
-                                 'notes': list(novel_notes)}
+                                 'notes': list(novel_notes),
+                                 'allow_tasks': sorted(pre_selflog.keys())}
         history = {k: v for k, v in history.items()
                    if int(k) > round_n - _ROUND_HISTORY_K}
         capture = {
             'status': 'requested',
-            'items': {'tasks': sorted(active.keys()), 'notes': novel_notes},
+            'items': {'tasks': sorted(active.keys()), 'notes': novel_notes,
+                      'allow_tasks': sorted(pre_selflog.keys())},
             'requested_ts': requested_ts,
             'tried_notes': tried_notes,
             'tried_tasks': tried_tasks,
@@ -1821,6 +1876,10 @@ def main() -> int:
         # move, so activity during the round is carried into the next one.
         capture = {
             'status': status,
+            # B-m1: `items` is carried WHOLE, so its `allow_tasks` survives
+            # every non-requesting Stop with it. Re-emitting only `tasks` /
+            # `notes` here would drop the allow-set on the first such Stop and
+            # leave the gate silently back at the old set (§1.7).
             'items': items,
             'requested_ts': requested_ts,
             'tried_notes': tried_notes,
