@@ -404,7 +404,7 @@ hook の書込と競合した場合は依然として無防備である。
 
 #### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
 
-すべての `Write` / `Edit` / `NotebookEdit` と、ファイルを触る `Bash`（`mv`/`cp`/`rm`、`>`/`>>` リダイレクト、`tee`）の直後に発火。書込先の正規化 repo-relative パスを per-session の `_projects/_state/{session_id}.touched` ledger（append-only、lock-free）に追記する。この ledger が、Stop の capture hook が「このセッションが実際に触った task」を判定する入力になる。jsonl スキャンや git diff ではなく **このセッションの tool 書込** を観測するため、無関係な task の誤 stamp を避けられる。サブエージェント / fork の内部書込は親の `session_id` で発火するため、自動的に親の ledger に入る — ただしその帰結として 1 つ除外がある：`_projects/_state/` 配下への書込は落とすため、capture サブエージェント自身の判定 sidecar が、それが供給する ledger に現れることはない。heredoc の body はコマンド解析の前に除去されるため、body 内のテキストがリダイレクトと誤認されることはない（body 自身が行う書込も記録されない。これは `sed -i` / `python -c open()` と同じく従来から明示受容している捕捉ギャップ）。未終端の heredoc は、コマンドを記述どおり解析する従来動作にフォールバックする。
+すべての `Write` / `Edit` / `NotebookEdit` と、ファイルを触る `Bash`（`mv`/`cp`/`rm`、`>`/`>>` リダイレクト、`tee`、および in-place `sed -i`/`--in-place`）の直後に発火。書込先の正規化 repo-relative パスを per-session の `_projects/_state/{session_id}.touched` ledger（append-only、lock-free）に追記する。この ledger が、Stop の capture hook が「このセッションが実際に触った task」を判定する入力になる。jsonl スキャンや git diff ではなく **このセッションの tool 書込** を観測するため、無関係な task の誤 stamp を避けられる。サブエージェント / fork の内部書込は親の `session_id` で発火するため、自動的に親の ledger に入る — ただしその帰結として 1 つ除外がある：`_projects/_state/` 配下への書込は落とすため、capture サブエージェント自身の判定 sidecar が、それが供給する ledger に現れることはない。heredoc の body はコマンド解析の前に除去されるため、body 内のテキストがリダイレクトと誤認されることはない（body 自身が行う書込も記録されない。これは `python -c open()` と同じく従来から明示受容している捕捉ギャップ。`sed -i`/`--in-place`（heredoc body 内を除く）は 2026-08-20 時点で認識対象であり、`$f` のような未展開のシェルメタ文字を含む operand はスキップされる）。未終端の heredoc は、コマンドを記述どおり解析する従来動作にフォールバックする。
 
 #### PreCompact: precompact_flush.py
 

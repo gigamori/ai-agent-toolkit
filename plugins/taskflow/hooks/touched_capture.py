@@ -7,7 +7,7 @@ per line, append-only, lock-free).
 Replaces the old Stop-hook jsonl-scan + git-diff detection
 (project-notes/specs/exec-binding.md §3.1/§3.2). Fires for
 Write / Edit / NotebookEdit and file-touching Bash (`mv|cp|rm`, shell
-redirection `>`/`>>`, and `tee`).
+redirection `>`/`>>`, `tee`, and `sed -i`/`--in-place`).
 
 Provenance (exec-binding.md §3.3): capture is limited to *this session's tool
 writes* — action observation, NOT filesystem result observation (git/mtime/
@@ -21,8 +21,47 @@ line (exec-binding.md §3.2). `session_id` comes from this hook's own stdin
 payload.
 
 Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
-  - `sed -i`, heredoc body, `python -c open()` — writes these perform are not
-    recognized at all.
+  - heredoc body, `python -c open()` — writes these perform are not
+    recognized at all. `sed -i`/`--in-place` IS recognized as of 2026-08-20
+    (see `_sed_is_inplace` / `_sed_operands`), with an unexpanded-shell-
+    metacharacter guard (`$`, backtick, `*`, `?`) so a variable-shaped operand
+    like `"$f"` is skipped rather than recorded as a garbage literal — a
+    `sed -i` invocation whose only file operand is such a variable still
+    contributes nothing (mode-orchestrator-runs/
+    2026-08-19_touched-capture-bash-parse-gap-cd-target/03-review-dev.md F4).
+  - A relative bash write target that resolves only against a directory the
+    command `cd`-ed into (never against `STATE_ROOT`) is recorded VERBATIM
+    and is, by specification, NOT bindable: this hook holds only `command`,
+    and the Bash tool's cwd persists across calls but is not part of this
+    hook's payload, so there is no base to join a bare relative token
+    against. `normalize_path` only ever STRIPS a prefix, never joins one, so
+    no change to `STATE_ROOT`/cwd can fix this (see `normalize_path`). Pinned
+    in both directions by `test_touched_capture_bash_scope.py` U7/U7c.
+  - Bash verb-loop staging (`mv|cp|rm|tee|sed`) treats an UNQUOTED newline as
+    a stage boundary, the same as `&&`/`||`/`;`/a single `|` (2026-08-20,
+    `_split_stages`) — a second line of a multi-line command is no longer
+    read as an argument of the first line's verb. `extract_redirect_targets`
+    is unaffected: it already scans the whole command and already resets
+    quote state at every newline (below).
+  - That same newline split (`cmd.split('\n')` in `extract_bash_paths`, ABOVE
+    `_split_stages`) is NOT quote-aware, so a physical line that is the
+    INTERIOR of a multi-line quoted string is promoted to a command of its
+    own — a false positive in ANY class, `_projects/…` (the one bindable
+    class) included, e.g. a commit message whose body reads as a `mv`:
+    `git commit -m "refactor: move notes\nmv _projects/p/project-notes/a.md
+    b.md"` now records `_projects/p/project-notes/a.md` and `b.md` though
+    nothing was written. `_ShellScan`'s per-newline quote reset does not
+    prevent this: the reset only stops a quote from outliving its line; it
+    does not stop the newline split from treating that line as its own
+    command — the two are different rules. Measured 0 occurrences across
+    11,937 commands / 2,755 multi-line commands, 2026-08-20
+    (06-review-dev.md §B.2), against a detector whose base rate is
+    demonstrated non-zero, so the 0 is discriminating, not an instrument
+    that never observes anything. Accepted rather than making the newline
+    split quote-aware, because that reintroduces the WORSE failure
+    direction the split's own quote reset exists to bound — one unbalanced
+    quote swallowing the rest of a multi-line command (see
+    `extract_redirect_targets`, below, for that trade already decided).
   - A heredoc body is REMOVED before either scan runs
     (`_strip_heredoc_bodies`), so nothing it contains is captured — including a
     body fed to an interpreter (`bash <<'EOF'`), whose writes are real but
@@ -60,6 +99,17 @@ bodies were parsed as shell, so prose `19 -> 31 -> 34` recorded `31` and `34,`
 (`_strip_heredoc_bodies`); and the capture subagent's own sidecar write landed
 in the ledger it feeds, since PostToolUse fires for subagent calls with the
 parent session_id (`_is_state_ledger_path`).
+
+Closed 2026-08-20 (mode-orchestrator-runs/
+2026-08-19_touched-capture-bash-parse-gap-cd-target/02-plan.md D1/P1/P2):
+`sed -i`/`--in-place` operands are now recognized, subject to the
+metacharacter guard above (`_sed_is_inplace`/`_sed_operands`); an unquoted
+newline is now a verb-loop stage boundary (`_split_stages`), closing a
+measured 196/1,039 (18.9%) false-positive bleed where a second line of a
+multi-line command (e.g. a following `echo`) was read as the first line's
+verb's argument; and the chain/pipe split is now quote-aware
+(`_split_stages`), so a quoted `|`/`;`/`&` inside a `sed` script no longer
+shatters a stage that is really one command.
 """
 import json
 import os
@@ -106,9 +156,23 @@ STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
 WRITE_PATH_KEYS = ('file_path', 'notebook_path')
 BASH_FILE_VERBS = {'mv', 'cp', 'rm'}
 BASH_TEE = 'tee'
-# Split a bash command at chain operators so verb/redirect extraction in one
-# segment does not bleed into another.
-_BASH_CHAIN_SPLIT = re.compile(r'\s*(?:&&|\|\||;)\s*')
+# `sed` is a CONDITIONAL write verb (only when an in-place flag is present,
+# see `_sed_is_inplace`), not a member of BASH_FILE_VERBS -- unlike mv/cp/rm
+# it has read-only invocations (`sed -n`, a piped `sed`) that must record
+# nothing (D1, 02-plan.md §1.1).
+_SED_EXPR_FLAGS = ('-e', '--expression', '-f', '--file')
+# `$`, a backtick, `*`, `?` all mean the shell was going to expand this sed
+# operand before `sed` ever saw it; recording the literal token would record
+# shell syntax as a resolved path (e.g. `sed -i '...' "$f"` -> `$f`), which is
+# never a real write target (F4, 03-review-dev.md). Scoped to `sed` only --
+# mv/cp/rm/tee operand selection is unchanged.
+_SED_UNSAFE_CHARS = ('$', '`', '*', '?')
+# A shlex-failing stage's diagnostic is only useful when the stage COULD have
+# named a write target -- gating it here, rather than printing unconditionally,
+# is what makes the line actionable (§2.3). Extending BASH_FILE_VERBS/BASH_TEE
+# extends this set automatically; a future new write verb must still be added
+# to the literal `{'sed'}` here in the same edit (R7, 03-review-dev.md).
+_SHLEX_DIAGNOSTIC_VERBS = BASH_FILE_VERBS | {BASH_TEE, 'sed'}
 # Target token of a shell redirection, matched at the position just after an
 # UNQUOTED `>` / `>>` and its trailing whitespace. Same alternation the old
 # single-regex form used: a double-quoted, single-quoted, or bare token. (`>|`
@@ -193,6 +257,52 @@ class _ShellScan:
 
     def jump(self, i: int) -> None:
         self.pos = i
+
+
+def _split_stages(cmd: str) -> list[str]:
+    """Quote-aware replacement for `_BASH_CHAIN_SPLIT.split(cmd)` followed by
+    a naive `segment.split('|')` (P2, 02-plan.md §S1). Splits `cmd` at an
+    UNQUOTED `&&`, `||`, `;`, or a single unquoted `|`. Never splits at a bare
+    `&` -- parity with the regex this replaces, which only ever recognized
+    `&&`, not a lone `&`, so fd-duplication (`>&N`, `2>&1`) and a
+    backgrounding `&` both stay inside their stage exactly as before.
+
+    Reuses `_ShellScan` (the one quote-state scanner in this module) instead
+    of a second copy of the quoting rules, so `sed -i 's|a|b|' f` -- shattered
+    mid-script by the naive `'|'.split` this replaces -- is now read as one
+    stage. That is the prerequisite D1 (`sed -i` recognition) depends on.
+    """
+    stages: list[str] = []
+    scan = _ShellScan(cmd)
+    start = 0
+    while True:
+        i = scan.next_outside('&|;')
+        if i < 0:
+            break
+        ch = cmd[i]
+        nxt = cmd[i + 1:i + 2]
+        if ch == '&':
+            if nxt == '&':
+                stages.append(cmd[start:i])
+                scan.jump(i + 2)
+                start = i + 2
+            # A bare `&` is not a stage separator; leave it in the stage and
+            # keep scanning from `scan.pos` (already just past it).
+            continue
+        if ch == '|':
+            if nxt == '|':
+                stages.append(cmd[start:i])
+                scan.jump(i + 2)
+                start = i + 2
+            else:
+                stages.append(cmd[start:i])
+                start = i + 1
+            continue
+        # ch == ';'
+        stages.append(cmd[start:i])
+        start = i + 1
+    stages.append(cmd[start:])
+    return stages
 
 
 def _strip_heredoc_bodies(cmd: str) -> str:
@@ -409,9 +519,77 @@ def normalize_path(p: str, cwd: str) -> str:
     return p
 
 
+def _sed_is_inplace(args: list[str]) -> bool:
+    """True when `args` (a `sed` invocation's tokens, `sed` itself excluded)
+    contain an in-place flag: an exact `-i`, a `-i<suffix>` token (GNU
+    `-i.bak`), a combined short cluster containing `i` (`-ri`, `-Ei`), or
+    `--in-place[=SUFFIX]` (D1 recognition rule, 02-plan.md §1.1). `sed -n`,
+    `sed -e ... file` (read-only) and a piped `sed` all return False here --
+    that control is the whole reason `sed` is a CONDITIONAL write verb rather
+    than an unconditional member of BASH_FILE_VERBS."""
+    for tok in args:
+        t = tok.strip('"\'')
+        if t == '--in-place' or t.startswith('--in-place='):
+            return True
+        if t.startswith('-') and not t.startswith('--') and len(t) > 1 \
+                and 'i' in t[1:]:
+            return True
+    return False
+
+
+def _sed_operands(args: list[str]) -> list[str]:
+    """File operands of a `sed` invocation, given `args` (its tokens with
+    `sed` itself excluded). `BASH_FILE_VERBS`'s "every non-flag argument is a
+    path" rule is wrong for `sed`, because the *script* is a non-flag
+    argument too (02-plan.md §1.1):
+
+    1. `-e`/`--expression`/`-f`/`--file` consume the NEXT token as the script
+       and set `script_supplied`; neither the flag nor its value is ever a
+       file operand.
+    2. Every other `-`-prefixed token is skipped (a flag).
+    3. A `>>`/`>`-shaped token ends operand collection -- that is the
+       redirection this hook's own `extract_redirect_targets` already
+       captures separately; nothing after it belongs to `sed`.
+    4. Of what remains: if a script was supplied via (1), every remaining
+       token is a file; otherwise the FIRST remaining token is the script
+       itself and is dropped -- `sed -i 's/a/b/'` has no file operand at all,
+       and must never record its own script as one (rejected simplification
+       in 02-plan.md §1.1: "record the last argument").
+    """
+    script_supplied = False
+    rest: list[str] = []
+    i = 0
+    n = len(args)
+    while i < n:
+        t = args[i].strip('"\'')
+        if t in _SED_EXPR_FLAGS:
+            script_supplied = True
+            i += 2
+            continue
+        if t == '>>' or t.startswith('>'):
+            break  # redirection handled separately by extract_redirect_targets
+        if t.startswith('-'):
+            i += 1
+            continue
+        if not t:
+            # An empty token after quote-stripping (`''`/`""`) is BSD/macOS
+            # sed's in-place SUFFIX argument, never a file operand -- without
+            # this it reached `rest` and step 4's `rest[1:]` dropped the
+            # empty string instead of the real script, so the script itself
+            # survived into the operand list (F-A, 06-review-dev.md).
+            i += 1
+            continue
+        rest.append(t)
+        i += 1
+    if not rest:
+        return []
+    return rest if script_supplied else rest[1:]
+
+
 def extract_bash_paths(cmd: str) -> list[str]:
     """Return file paths a bash command writes: `>`/`>>` redirection targets,
-    `tee` targets, and `mv|cp|rm` non-flag args. Best-effort."""
+    `tee` targets, `mv|cp|rm` non-flag args, and a `sed -i`/`--in-place`
+    invocation's file operand(s) (`_sed_operands`). Best-effort."""
     if not cmd or not isinstance(cmd, str):
         return []
     # Heredoc bodies are data; strip them BEFORE either scan below so the
@@ -419,27 +597,58 @@ def extract_bash_paths(cmd: str) -> list[str]:
     # mistakes body prose for shell (see `_strip_heredoc_bodies`).
     cmd = _strip_heredoc_bodies(cmd)
     paths: list[str] = []
-    # Redirection targets anywhere in the command (quote-aware).
+    # Redirection targets anywhere in the command (quote-aware). Scans the
+    # WHOLE command, not per line/stage -- untouched by P1/P2 below.
     paths.extend(extract_redirect_targets(cmd))
-    # Verb-based targets, parsed per chain segment then per pipe stage (so
-    # `... | tee f` is reached and other commands' piped args are not pulled in).
-    for segment in _BASH_CHAIN_SPLIT.split(cmd):
-        for stage in segment.split('|'):
+    # Verb-based targets. An unquoted newline is a stage boundary (P1) first,
+    # then each line is split at an unquoted `&&`/`||`/`;`/single `|` (P2,
+    # `_split_stages`) -- so `... | tee f` is still reached, other commands'
+    # piped args are not pulled in, and neither split shatters a quoted
+    # operator (e.g. the `|` inside a `sed` script). Splitting on `\n` FIRST
+    # is a SEPARATE rule from `_ShellScan`'s per-newline quote reset, not a
+    # consequence of it: the reset only stops a quote from outliving its
+    # line, while this split promotes that line to a command of its own --
+    # so a physical line that is the INTERIOR of a multi-line quoted string
+    # is read as its own command (a known, measured-rare false positive; see
+    # the module docstring's known-gap list).
+    for line in cmd.split('\n'):
+        for stage in _split_stages(line):
             stage = stage.strip()
             if not stage:
                 continue
             try:
                 tokens = shlex.split(stage, posix=(os.name != 'nt'))
             except ValueError:
-                print(f'[touched_capture] shlex parse error: {stage[:80]}',
-                      file=sys.stderr)
+                # Gated (§2.3): a stage that could never have named a write
+                # target is not worth a diagnostic line -- of 4,455 measured
+                # failures, ~4,452 are grep/echo/uv stages (02-plan.md §0.5).
+                first_word = stage.split(None, 1)[0]
+                if first_word in _SHLEX_DIAGNOSTIC_VERBS:
+                    print(f'[touched_capture] shlex parse error: {stage[:80]}',
+                          file=sys.stderr)
                 continue
             if not tokens:
                 continue
             verb = tokens[0]
+            if verb == 'sed':
+                if _sed_is_inplace(tokens[1:]):
+                    for t in _sed_operands(tokens[1:]):
+                        if any(ch in t for ch in _SED_UNSAFE_CHARS):
+                            continue  # unexpanded shell metacharacter (F4)
+                        paths.append(t)
+                continue
             if verb not in BASH_FILE_VERBS and verb != BASH_TEE:
                 continue
-            for t in tokens[1:]:
+            for raw in tokens[1:]:
+                # Strip quotes: this module lexes with posix=False on this
+                # platform (`os.name == 'nt'`), which RETAINS quotes in the
+                # token (`shlex.split("mv 'a;b.md' c.md", posix=False)` ->
+                # `["mv", "'a;b.md'", "c.md"]`) -- matching the redirect
+                # path's existing rule (`extract_redirect_targets`) so a
+                # quoted operand is recorded as the literal path, not as a
+                # quote-wrapped string that can never match `_PROJECT_RE`
+                # downstream (F3, 03-review-dev.md).
+                t = raw.strip('"\'')
                 if t.startswith('-'):
                     continue
                 if t == '>>' or t.startswith('>'):
