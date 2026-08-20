@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_capture_late_sidecar.sh — T-W5-1..T-W5-3 / T-W6-1..T-W6-2 / T-R1-1..T-R1-7b:
+# test_capture_late_sidecar.sh — T-W5-1..T-W5-3 / T-W6-1..T-W6-2 / T-R1-1..T-R1-10:
 # a capture sidecar that arrives AFTER its round expired must still apply
 # (project-notes/specs/capture-detection-gaps.md §1.9 / W5, §4.4 / R-1).
 #
@@ -66,7 +66,17 @@
 #   T-R1-7b the other direction of the same rule: that re-baseline absorbs the
 #           DELTA the foreign apply appended, never the absolute count — a
 #           shared task the agent self-logged this round is already satisfied
-#           and must still get NO placeholder
+#           and must still get NO placeholder (also pins F-9: the late apply's
+#           report line carries its round tag `(r1)`)
+#   T-R1-8  F-3 gate exclusivity: an r1 sidecar naming a task only round 2
+#           froze is membership-skipped and never reaches that task's @log —
+#           the one NEGATIVE arm; a regression widening row 2's gate passes
+#           every positive arm green
+#   T-R1-9  F-5: an r0 sidecar (round_n defaults to 0 with no capture state)
+#           is row-3 discarded, not fail-open applied through items=None
+#   T-R1-10 F-4: a torn/non-JSON sidecar is silently retried while its round
+#           is in the K=3 window, and consume-then-reported once
+#           (`unreadable and outside history`) after it ages out
 #
 # State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
 # Stop hook runs an unconditional stale-marker sweep on every invocation and
@@ -126,7 +136,10 @@ printf '# index\n' > "$PDIR/project-notes/index.md"
 
 reset_state() { rm -f "$TF" "$BF" "$CF" "$STATE/$SID".r*.capture; }
 
-rcap() { echo "$STATE/$SID.r$1.capture"; }  # the per-round sidecar path (R-1 D1)
+# rcap(): the per-round sidecar path (R-1 D1). Absolute path on purpose — the
+# suite has already cd'd into $TMP, so a `dirname "$0"` re-resolution here
+# would break under a relative invocation.
+. "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
 bind_get() {  # $1 = status | round | history_keys → read it out of `.bind`
   uv run --no-project python - "$BF" "$1" << 'PY'
@@ -243,8 +256,10 @@ stop 0 >/dev/null            # Stop#2: expiry -> r1 placeholder, round resolved
 [ "$(sidlines "$T1")" = "1" ] \
   && pass "the expiry Stop placeholder-bound the task (backstop intact)" \
   || fail "expiry placeholder count: $(sidlines "$T1")"
-# The subagent finally finishes and writes its judgment.
-cat > "$CF" << EOF
+# The subagent finally finishes and writes its judgment — to the per-round
+# name production actually hands out (F-2; the legacy un-suffixed name is
+# pinned by T-R1-4 alone).
+cat > "$(rcap 1)" << EOF
 {"confirmed":[{"task":"2026-08-09_late.md","summary":"LATESUMMARY the round's real work"}],
  "note_links":[{"note":"$N1REL","task":"2026-08-09_late.md"},
                {"note":"$N2REL","task":"2026-08-09_late.md"}],
@@ -269,7 +284,7 @@ grep -qF -- "- $N1REL" "$T1" && grep -qF -- "- $N2REL" "$T1" \
 [ "$(sidlines "$T1")" = "2" ] \
   && pass "placeholder + late summary = exactly 2 [s:$SID8] lines" \
   || fail "line count after late apply: $(sidlines "$T1")"
-[ ! -e "$CF" ] \
+[ ! -e "$(rcap 1)" ] \
   && pass "the late sidecar was consumed (unlinked)" || fail "sidecar not consumed"
 
 # =====================================================================
@@ -661,6 +676,110 @@ grep -qF "SELFSUM round 1's judgement" "$TS7B" \
 grep -qF "(auto) touched; summary pending (r2)" "$TS7B" \
   && fail "spurious r2 placeholder despite the self-log: $(grep -F "[s:$SID8]" "$TS7B")" \
   || pass "the self-logged round got NO placeholder (delta re-baseline)"
+# F-9: the late apply's report line is attributable to ITS round.
+echo "$OR17B" | grep -q "applied summary: $PROJ/2026-08-19_r1-fa-selflog.md (r1)" \
+  && pass "the late apply's report line carries its own round tag (r1)" \
+  || fail "no (r1) tag on the applied-summary report: $OR17B"
+
+# =====================================================================
+# T-R1-8 (F-3): gate EXCLUSIVITY. Every arm above is positive — nothing
+# pinned that the wrong thing is REJECTED, so a regression widening row 2
+# to `history[N] | items_open` (or falling back to `items_open`) passed
+# the whole suite green. Pin the property: an r1 sidecar naming a task
+# that only round 2 froze is membership-skipped, and nothing lands in
+# that task's @log.
+# =====================================================================
+echo ""
+echo "[T-R1-8] an old round's sidecar cannot reach a task only the CURRENT round froze"
+reset_state
+TA8="$PDIR/tasks/1_in_progress/2026-08-19_r1-excl-a.md"; mk "$TA8"
+TB8="$PDIR/tasks/1_in_progress/2026-08-19_r1-excl-b.md"; mk "$TB8"
+write_touched "$TA8"
+stop 999 >/dev/null          # r1 requested: items = {A}
+stop 0   >/dev/null          # r1 expires
+write_touched "$TB8"
+stop 999 >/dev/null          # r2 requested: items = {B}, in flight
+cat > "$(rcap 1)" << EOF
+{"confirmed":[{"task":"2026-08-19_r1-excl-b.md","summary":"EXCLSUM must never land"}],
+ "note_links":[],"proposals":[]}
+EOF
+OR18=$(stop 0)               # r1 sidecar names B: gated on r1's set = {A}
+echo "$OR18" | grep -q "membership-skip: $PROJ/2026-08-19_r1-excl-b.md" \
+  && pass "the wrong-round entry was membership-skipped by name" \
+  || fail "no membership-skip for B: $OR18"
+grep -qF "EXCLSUM must never land" "$TB8" \
+  && fail "the r1 sidecar reached a task only r2 froze: $(grep -F "[s:$SID8]" "$TB8")" \
+  || pass "nothing from the r1 sidecar landed in B's @log"
+
+# =====================================================================
+# T-R1-9 (F-5): an `r0` sidecar must not enter row 1. `round_n` defaults
+# to 0 when `.bind` has no capture state, so an r0 name used to match
+# row 1 and fall through `history.get('0') or items_open` to items=None —
+# a fail-open that bypassed the membership gate entirely. Rounds start at
+# 1, so r0 is always a stray write: row 3 (consume + one report).
+# =====================================================================
+echo ""
+echo "[T-R1-9] an r0 sidecar is discarded, not fail-open applied"
+reset_state
+TA9="$PDIR/tasks/1_in_progress/2026-08-19_r1-zero.md"; mk "$TA9"
+cat > "$(rcap 0)" << EOF
+{"confirmed":[{"task":"2026-08-19_r1-zero.md","summary":"ZEROSUM must never land"}],
+ "note_links":[],"proposals":[]}
+EOF
+OR19=$(stop 999)             # no round ever requested: round_n = 0
+grep -qF "ZEROSUM must never land" "$TA9" \
+  && fail "the r0 sidecar bypassed the gate: $(grep -F "[s:$SID8]" "$TA9")" \
+  || pass "nothing from the r0 sidecar landed in the task @log"
+echo "$OR19" | grep -q "round-mismatch: sidecar r0" \
+  && pass "the r0 sidecar was reported as round-mismatch" \
+  || fail "no round-mismatch report for r0: $OR19"
+[ -e "$(rcap 0)" ] \
+  && fail "the r0 sidecar was left on disk" \
+  || pass "the r0 sidecar was consumed"
+
+# =====================================================================
+# T-R1-10 (F-4): a torn/non-JSON sidecar has a terminal state. Inside the
+# retained window it is a SILENT retry (may still be mid-write). Once its
+# round ages OUT of the K=3 window it can never become applicable, and it
+# used to linger until the 7-day sweep with no consume and no report.
+# =====================================================================
+echo ""
+echo "[T-R1-10] a torn sidecar is retried in-window, disposed once out of window"
+reset_state
+TA10="$PDIR/tasks/1_in_progress/2026-08-19_r1-torn.md"; mk "$TA10"
+write_touched "$TA10"
+stop 999 >/dev/null          # r1 requested
+printf '{"confirmed": [ {"task": TRUNCATED' > "$(rcap 1)"   # torn write
+O110=$(stop 0)               # r1 in window: silent retry
+[ -e "$(rcap 1)" ] \
+  && pass "in-window torn sidecar was left for retry (not consumed)" \
+  || fail "in-window torn sidecar was consumed"
+echo "$O110" | grep -q "round-mismatch: sidecar r1" \
+  && fail "in-window torn sidecar was reported: $O110" \
+  || pass "in-window torn sidecar stayed silent"
+# Age r1 out of the K=3 window: request rounds 2,3,4 (history keeps 2..4).
+# The disposal fires on the FIRST Stop after round 4's request commit prunes
+# r1 out of history — so that Stop's output must be the captured one, not a
+# discarded loop iteration (mis-sequencing this put the report in a
+# `>/dev/null` Stop and the assert read an empty string).
+for _i in 2 3; do
+  write_touched "$TA10"
+  stop 999 >/dev/null
+  stop 0   >/dev/null
+done
+write_touched "$TA10"
+stop 999 >/dev/null          # round 4 request commits -> history prunes to {2,3,4}
+O111=$(stop 0)               # first Stop with r1 outside the window
+[ -e "$(rcap 1)" ] \
+  && fail "out-of-window torn sidecar still on disk" \
+  || pass "out-of-window torn sidecar was consumed"
+echo "$O111" | grep -q "round-mismatch: sidecar r1 unreadable and outside history" \
+  && pass "the disposal was reported once as unreadable+outside" \
+  || fail "no unreadable round-mismatch report: $O111"
+O112=$(stop 0)
+echo "$O112" | grep -q "round-mismatch: sidecar r1 unreadable" \
+  && fail "the torn-sidecar report repeated (INV-1): $O112" \
+  || pass "no re-report on the following Stop (INV-1)"
 
 echo ""
 echo "=== Done ==="

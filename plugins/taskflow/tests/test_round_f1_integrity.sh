@@ -49,6 +49,8 @@ PDIR="$PROJECTS/$PROJ"
 SID="f1integ$$-0000-0000-0000-000000000000"
 SID8="${SID:0:8}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
+# rcap(): per-round sidecar path (F-2 migration; absolute — suite has cd'd to $TMP)
+. "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
 to_win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 PASS=0; FAIL=0
@@ -77,7 +79,7 @@ trap cleanup EXIT
 mkdir -p "$PDIR/tasks/1_in_progress" "$STATE"
 printf '{"session_id":"%s","project":"%s"}\n' "$SID" "$PROJ" > "$SF"
 
-reset_state() { rm -f "$TF" "$BF" "$CF"; }
+reset_state() { rm -f "$TF" "$BF" "$CF" "$STATE/$SID".r*.capture; }
 
 mk() {  # $1 = task md path
   cat > "$1" << 'T'
@@ -201,7 +203,8 @@ reset_state
 TB="$PDIR/tasks/1_in_progress/2026-08-09_f1-apply.md"; mk "$TB"
 write_touched "$TB"
 stop 999 >/dev/null                  # round 1 requested (no expiry)
-cat > "$CF" << 'EOF'
+# F-2: per-round name (round 1 — written right after the r1 request commit)
+cat > "$(rcap 1)" << 'EOF'
 {"confirmed":[{"task":"2026-08-09_f1-apply.md","summary":"F1APPLYSUMMARY"}],"note_links":[],"proposals":[]}
 EOF
 stop 999 >/dev/null                  # apply (hook append)

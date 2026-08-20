@@ -46,6 +46,8 @@ PDIR="$PROJECTS/$PROJ"
 SID="rndbind$$-0000-0000-0000-000000000000"
 SID8="${SID:0:8}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
+# rcap(): per-round sidecar path (F-2 migration; absolute — suite has cd'd to $TMP)
+. "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
 to_win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 PASS=0; FAIL=0
@@ -75,7 +77,7 @@ mkdir -p "$PDIR/tasks/1_in_progress" "$PDIR/project-notes/specs" "$STATE"
 printf '{"session_id":"%s","project":"%s"}\n' "$SID" "$PROJ" > "$SF"
 printf '# index\n' > "$PDIR/project-notes/index.md"
 
-reset_state() { rm -f "$TF" "$BF" "$CF"; }
+reset_state() { rm -f "$TF" "$BF" "$CF" "$STATE/$SID".r*.capture; }
 
 mk() {  # $1 = task md path (with an @log block, no @notes)
   cat > "$1" << 'T'
@@ -279,7 +281,7 @@ reset_state
 T4="$PDIR/tasks/1_in_progress/2026-08-09_reapply.md"; mk "$T4"
 write_touched "$T4"
 stop 999 >/dev/null          # request round 1 (no expiry: backstop must not fire)
-cat > "$CF" << 'EOF'
+cat > "$(rcap 1)" << 'EOF'
 {"confirmed":[{"task":"2026-08-09_reapply.md","summary":"REAPPLYSUMMARY"}],"note_links":[],"proposals":[]}
 EOF
 O41=$(stop 999)
@@ -292,7 +294,7 @@ echo "$O41" | grep -q "applied summary: $PROJ/2026-08-09_reapply.md" \
 # The `items` / `round_base` keys written below are deliberately left BARE
 # (pre-D2 shape): the F-4 migration path (§3.4) must read them as the primary
 # project's qualified keys, so this fixture doubles as a legacy-key check.
-cat > "$CF" << 'EOF'
+cat > "$(rcap 1)" << 'EOF'
 {"confirmed":[{"task":"2026-08-09_reapply.md","summary":"REAPPLYSUMMARY"}],"note_links":[],"proposals":[]}
 EOF
 uv run --no-project python - "$BF" << 'PY'
@@ -304,6 +306,10 @@ c["status"] = "requested"          # unlink failed -> lifecycle never advanced
 c["requested_ts"] = time.time()
 c["items"] = {"tasks": ["2026-08-09_reapply.md"], "notes": []}
 c["round_base"] = {"2026-08-09_reapply.md": 0}
+# F-2: drop `history` so the r1 apply is gated on the items_open FALLBACK —
+# the bare keys above are the point of this fixture (§3.4 legacy-key read),
+# and history (written qualified by the real request commit) would mask them.
+c.pop("history", None)
 json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False)
 PY
 O42=$(stop 999)

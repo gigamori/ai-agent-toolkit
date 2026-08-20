@@ -3,8 +3,9 @@
 # in session_progress_capture.py (note-task-link.md Phase B).
 #
 # The capture subagent's agent def is NOT hot-reloaded and a live `claude` is not
-# available here, so this test SIMULATES the subagent by writing the `<sid>.capture`
-# sidecar directly (the subagent's only artifact, §10.5) and drives the REAL Stop
+# available here, so this test SIMULATES the subagent by writing the per-round
+# `<sid>.r{N}.capture` sidecar directly (F-2; the legacy un-suffixed name is
+# pinned only by test_capture_late_sidecar.sh T-R1-4) (the subagent's only artifact, §10.5) and drives the REAL Stop
 # hook to apply it. It exercises the deterministic apply / lifecycle / expiry:
 #
 #   AC-9   in-flight: a requested capture does NOT re-spawn while pending (<expiry)
@@ -44,6 +45,8 @@ PDIR="$PROJECTS/$PROJ"
 SID="e2eaply$$-0000-0000-0000-000000000000"
 SID8="${SID:0:8}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
+# rcap(): per-round sidecar path (F-2 migration; absolute — suite has cd'd to $TMP)
+. "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
 to_win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 PASS=0; FAIL=0
@@ -66,7 +69,7 @@ mkdir -p "$PDIR/tasks/1_in_progress" "$PDIR/project-notes/specs" "$STATE"
 printf '{"session_id":"%s","project":"%s"}\n' "$SID" "$PROJ" > "$SF"
 printf '# index\n' > "$PDIR/project-notes/index.md"
 
-reset_state() { rm -f "$TF" "$BF" "$CF"; }
+reset_state() { rm -f "$TF" "$BF" "$CF" "$STATE/$SID".r*.capture; }
 
 mk() {  # $1 = task md path (with @log, no @notes)
   cat > "$1" << 'T'
@@ -116,7 +119,9 @@ write_touched() {  # $1 = absolute path under $PROJECTS → append repo-relative
 
 # Simulate the capture subagent's sole artifact: write <sid>.capture JSON.
 write_capture() {  # $1=task base (summary) $2=summary $3=note projrel $4=note-link task base
-  uv run --no-project python - "$CF" "${1:-}" "${2:-}" "${3:-}" "${4:-}" << 'PY'
+  # F-2: write to the per-round name production hands out (round 1 here —
+  # every writer sits right after its scenario's first `stop 999` request).
+  uv run --no-project python - "$(rcap 1)" "${1:-}" "${2:-}" "${3:-}" "${4:-}" << 'PY'
 import json, sys
 cf, task, summary, note, ntask = (sys.argv + ["", "", "", "", ""])[1:6]
 obj = {"confirmed": [], "note_links": [], "proposals": []}
@@ -219,7 +224,7 @@ grep -q "\[s:$SID8\]: REALSUMMARYAC1" "$T1" \
 ! grep -q "(auto) touched; summary pending" "$T1" \
   && pass "AC-11: no placeholder pre-empted the real summary (apply-order)" || fail "placeholder leaked before apply"
 [ "$(notecount "$T1" "$N1REL")" = "1" ] && pass "AC-1: note link established in task @notes" || fail "note link not established"
-[ ! -f "$CF" ] && pass "AC-11: sidecar consumed (unlinked) after apply" || fail "sidecar not consumed"
+[ ! -f "$(rcap 1)" ] && pass "AC-11: sidecar consumed (unlinked) after apply" || fail "sidecar not consumed"
 # D2 (§3.3): the task side of an F5 line is the QUALIFIED `<project>/<basename>`
 # (the note stays project-relative — it is addressed through its owning task).
 echo "$O1B" | grep -q "linked note: $N1REL -> $PROJ/$T1BASE" \

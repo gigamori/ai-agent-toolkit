@@ -256,10 +256,22 @@ session end
         `tasks` / `notes` / `allow_tasks`), not against whatever `capture.items`
         holds at apply time. Only the CURRENT round's sidecar moves the lifecycle to `done`
         and only it suppresses that Stop's expiry check — an earlier round's late arrival
-        applies silently beside the open round instead of deferring it. A sidecar naming a
-        round outside the retained window is consumed unapplied and reported once as
-        `round-mismatch`. The legacy un-suffixed `{session_id}.capture` name is still applied
-        under the current round's items (compatibility; retirement TBD).
+        applies silently beside the open round instead of deferring it. The current-round row
+        additionally requires `round > 0`: an `r0` name collides with the default a `.bind`
+        without capture state reports, and used to fall through to a fail-open apply with no
+        membership gate at all (F-5) — rounds start at 1, so `r0` is always a stray write and
+        is discarded. A sidecar naming a round outside the retained window is consumed
+        unapplied and reported once as `round-mismatch`. A TORN (unreadable / non-JSON)
+        sidecar is silently retried while its round is inside the window — it may still be
+        mid-write — and gets the same consume-then-report disposal (`... unreadable and
+        outside history`) once its round ages out, instead of lingering until the 7-day sweep
+        with no terminal state (F-4). The `applied summary:` report line carries the round
+        the summary was gated on (`{key} (r{N})`), so a late apply is attributable from the
+        stderr/block report; the `@log` body stays round-free — its text is the idempotency
+        key and part of the agent contract (F-9). The legacy un-suffixed
+        `{session_id}.capture` name is still applied under the current round's items and its
+        report line is untagged — it names no round to attribute (compatibility;
+        retirement TBD).
         Entries outside that closed set are skipped (F7a), and a
         `note_links[].note` is rejected outright — independent of that membership set — unless
         it is project-relative under `project-notes/` AND resolves inside the project root (a

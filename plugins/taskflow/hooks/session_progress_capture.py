@@ -1482,7 +1482,15 @@ def main() -> int:
     # `status='done'`) cannot change whether it runs.
     _status_at_entry = status
 
-    def _apply_one(sidecar, items, foreign_round=False):
+    # F-9: the `applied summary:` report line carries the round the summary was
+    # gated on (`{key} (r{N})`), so a late apply is attributable to its round
+    # from the stderr/block report. The `@log` BODY stays round-free — its text
+    # is the idempotency key and part of the agent contract, so tagging it
+    # would break both. This list exists only to feed the report; membership
+    # logic keeps reading `applied_summaries`.
+    applied_summary_labels: list[str] = []
+
+    def _apply_one(sidecar, items, foreign_round=False, round_of=None):
         """Apply ONE sidecar against `items` and merge its result into this
         Stop's report (several sidecars can land on the same Stop, so the
         result lists are extended, never rebound).
@@ -1490,7 +1498,8 @@ def main() -> int:
         `foreign_round` marks row 2 — an EARLIER round's sidecar. The lines it
         appends belong to that round, not to the open one, so they must not be
         read by the (D) backstop as the open round's entry (F-A, second
-        channel)."""
+        channel). `round_of` is the round the sidecar was gated on, used only
+        to label the report line (F-9)."""
         # Pre-apply counts for the open round's frozen keys. Only a foreign
         # apply needs them, and only to measure ITS OWN appends (see below).
         _before = {}
@@ -1502,6 +1511,8 @@ def main() -> int:
         _s, _l, _p, _ls, _ms = _apply_capture(
             sidecar, current_index, project, project_roots, sid8, iso_ts, items)
         applied_summaries.extend(_s)
+        applied_summary_labels.extend(
+            f'{_k} (r{round_of})' if round_of else _k for _k in _s)
         applied_links.extend(_l)
         proposals.extend(_p)
         applied_link_skipped.extend(_ls)
@@ -1536,13 +1547,46 @@ def main() -> int:
     for _round_of, _rpath in scan_round_sidecars(STATE_DIR, session_id):
         _sidecar = _load_capture_sidecar(_rpath)
         if _sidecar is None:
-            continue  # absent / torn — never partially applied (§10.1)
-        if _round_of == round_n:
+            # Torn / non-JSON — never partially applied (§10.1). Inside the
+            # retained window this stays a SILENT retry: the file may still be
+            # mid-write, and the next Stop re-reads it. F-4: once its round is
+            # OUTSIDE the window it can never become applicable, and before
+            # this branch it had no terminal state at all — the single-path
+            # era self-healed by the next round's Write overwriting the same
+            # file, which per-round naming removed — so it lingered until the
+            # 7-day sweep. Dispose of it with row 3's consume-then-report
+            # (report bound to a successful unlink, INV-1).
+            _in_window = (_round_of == round_n and round_n > 0) \
+                or str(_round_of) in history
+            if not _in_window:
+                try:
+                    os.remove(_rpath)
+                except OSError:
+                    pass  # retry next Stop
+                else:
+                    _rounds = sorted(int(k) for k in history)
+                    _span = (f'r{_rounds[0]}..r{_rounds[-1]}'
+                             if _rounds else 'empty')
+                    _msg = (f'round-mismatch: sidecar r{_round_of} unreadable '
+                            f'and outside history ({_span}); discarded')
+                    round_mismatched.append(_msg)
+                    print(f'[progress capture] {_msg} [s:{sid8}]',
+                          file=sys.stderr)
+            continue
+        # F-5: `round_n > 0` keeps an `r0` sidecar out of row 1. A `.bind`
+        # with no capture state defaults `round_n` to 0, and `history.get('0')
+        # or items_open` then falls through to `items_open=None` — the
+        # fail-open that let a sidecar NAMING round 0 bypass the membership
+        # gate entirely. No hook ever hands out an r0 path (rounds start at
+        # 1), so r0 is always a stray write and belongs in row 3. The
+        # legitimate legacy fallback (a pre-history `.bind` with round >= 1)
+        # is untouched.
+        if _round_of == round_n and round_n > 0:
             # Row 1 — this round's own sidecar. `history` is the single lookup
             # (the open round is stored there too); `items_open` is the fallback
             # for a `.bind` written before `history` existed.
             _items = history.get(str(round_n)) or items_open
-            _apply_one(_sidecar, _items)
+            _apply_one(_sidecar, _items, round_of=round_n)
             # F-A: ONLY a CURRENT-round apply may suppress (B). Letting an old
             # round's late arrival set this would push this round's expiry clock
             # out by one Stop per late sidecar.
@@ -1566,7 +1610,8 @@ def main() -> int:
             # Row 2 — an EARLIER round's sidecar, gated on THAT round's frozen
             # set. `status` is deliberately untouched: moving it here would let
             # round N's late arrival mark round N+1's open request `done`.
-            _apply_one(_sidecar, history[str(_round_of)], foreign_round=True)
+            _apply_one(_sidecar, history[str(_round_of)], foreign_round=True,
+                       round_of=_round_of)
             try:
                 os.remove(_rpath)
             except OSError:
@@ -1946,8 +1991,10 @@ def main() -> int:
         f'[progress capture] auto-bound: {rel} [s:{sid8}]\n' for rel in auto_bound
     )
     auto_lines += ''.join(
+        # F-9: `b` carries the ` (r{N})` round tag for round-named sidecars
+        # (report line only — the `@log` body stays round-free).
         f'[progress capture] applied summary: {b} [s:{sid8}]\n'
-        for b in applied_summaries
+        for b in applied_summary_labels
     )
     auto_lines += ''.join(
         f'[progress capture] linked note: {note} -> {b}\n'
