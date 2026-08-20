@@ -11,8 +11,8 @@
 #   Stage 3  Stop Round2 → `[s:<sid8>]` appended end-to-end
 #   Stage 4  exec-binding: a task NOT in `.touched` is bound via a `[tasks:]` carry
 #   Stage 5  F7a membership containment: an out-of-request sidecar entry is skipped
-#            (through the LEGACY un-suffixed `{sid}.capture` name, which the
-#            apply path still honours after R-1 — see §4.4.1 D3's compat row)
+#            (through the per-round `{sid}.r2.capture` name — round 2, since
+#            round 1 already closed via Stage 3's backstop)
 #
 # State-dir sandbox (plugins/taskflow/CLAUDE.md, project-notes/specs/
 # capture-hook-sweep-sandbox.md): the Stop hook runs an unconditional stale-marker
@@ -45,6 +45,9 @@ PDIR="$PROJECTS/$PROJ"
 SID="e2ecap$$-0000-0000-0000-000000000000"
 SID8="${SID:0:8}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"
+
+# rcap(): the per-round sidecar path (R-1 D1). $STATE/$SID are already set above.
+. "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
 to_win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 PASS=0; FAIL=0
@@ -196,14 +199,20 @@ echo "$O3" | grep -q "auto-bound: .*2026-06-29_exec.md \[s:$SID8\]" \
   && pass "exec F5 auto-bound reported" || fail "no exec F5: $O3"
 
 # Stage 5 — F7a membership containment: out-of-request sidecar entry is skipped.
+# Round 1 already closed via Stage 3's backstop (BF's capture.round == 1 with
+# status "expired" at this point — verified: probing $BF right before this
+# overwrite shows `"round": 1, ... "status": "expired"`, and no `[tasks:]`
+# carry since has opened a new one). This synthetic request therefore opens
+# round 2, and its judgment sidecar is delivered under the per-round name the
+# hook actually reads (`{sid}.r2.capture`), not the legacy un-suffixed name.
 echo "[Stage 5] capture membership containment (F7a)"
 IN="$PDIR/tasks/1_in_progress/2026-06-29_inset.md";  mk "$IN"
 OUT="$PDIR/tasks/1_in_progress/2026-06-29_outset.md"; mk "$OUT"   # exists, never touched
 NOW=$(uv run --no-project python -c "import time;print(time.time())")
 cat > "$BF" << EOF
-{"reminded":{},"exec_tried":[],"capture":{"status":"requested","items":{"tasks":["2026-06-29_inset.md"],"notes":[]},"requested_ts":$NOW,"tried_notes":[],"tried_tasks":[]}}
+{"reminded":{},"exec_tried":[],"capture":{"status":"requested","items":{"tasks":["2026-06-29_inset.md"],"notes":[]},"requested_ts":$NOW,"tried_notes":[],"tried_tasks":[],"round":2}}
 EOF
-cat > "$STATE/$SID.capture" << 'EOF'
+cat > "$(rcap 2)" << 'EOF'
 {"confirmed":[{"task":"2026-06-29_inset.md","summary":"in-set change"},{"task":"2026-06-29_outset.md","summary":"OUT-OF-REQUEST change"}],"note_links":[],"proposals":[]}
 EOF
 O5=$(stop)

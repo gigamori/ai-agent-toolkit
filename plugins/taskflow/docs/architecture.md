@@ -268,10 +268,16 @@ session end
         with no terminal state (F-4). The `applied summary:` report line carries the round
         the summary was gated on (`{key} (r{N})`), so a late apply is attributable from the
         stderr/block report; the `@log` body stays round-free — its text is the idempotency
-        key and part of the agent contract (F-9). The legacy un-suffixed
-        `{session_id}.capture` name is still applied under the current round's items and its
-        report line is untagged — it names no round to attribute (compatibility;
-        retirement TBD).
+        key and part of the agent contract (F-9). The pre-R-1 un-suffixed
+        `{session_id}.capture` name is **no longer read at all** — its compatibility branch was
+        retired once nothing could produce it (the hook only ever hands out the per-round name
+        and the agent contract forbids constructing another), so the apply path scans
+        `{session_id}.r{N}.capture` and nothing else. A stray file under the old name is
+        therefore inert; it is not applied, not reported, and ages out through the same 7-day
+        `_CLEANUP_SUFFIXES` sweep that collects every other marker. Retirement by plain removal
+        rather than by a "discard and report" branch was deliberate: reporting would mean
+        carrying a scan and a report-wording branch permanently for an event no code path can
+        cause.
         Entries outside that closed set are skipped (F7a), and a
         `note_links[].note` is rejected outright — independent of that membership set — unless
         it is project-relative under `project-notes/` AND resolves inside the project root (a
@@ -418,7 +424,7 @@ protection, none.
 
 Path: `_projects/_state/{session_id}.json`
 
-The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` — `items` being that round's frozen closed set `{tasks, notes, allow_tasks}`, where `allow_tasks` is the pre-self-log-subtraction task set that widens the `confirmed` membership gate only, and is absent from a `.bind` written before the key existed (the gate then falls back to `tasks` alone) — plus the round state `{touch_cursor, round, log_seen, round_base, history}` — `history` being the frozen `items` (`tasks` / `notes` / `allow_tasks`) of the last 3 rounds, keyed by round number, which is what lets a sidecar delivered after its round closed still be membership-checked against its own round (R-1) — and `exec_tried` skip records — the exec-carry 打止め set, holding BOTH `_rel()` repo-relative paths of resolved-but-unbindable tasks AND bare basenames of carries that resolved to no task at all, two shapes that are disjoint because a `_rel()` value always starts `_projects/`; writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.r{N}.capture` (the async judgment sidecar for round `N`; writer = the `taskflow:progress-capture` subagent only, at the absolute path the hook handed it, consumed and unlinked by the hook after a successful apply — the un-suffixed `{session_id}.capture` is the pre-R-1 name, still applied when found but no longer handed out). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
+The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` — `items` being that round's frozen closed set `{tasks, notes, allow_tasks}`, where `allow_tasks` is the pre-self-log-subtraction task set that widens the `confirmed` membership gate only, and is absent from a `.bind` written before the key existed (the gate then falls back to `tasks` alone) — plus the round state `{touch_cursor, round, log_seen, round_base, history}` — `history` being the frozen `items` (`tasks` / `notes` / `allow_tasks`) of the last 3 rounds, keyed by round number, which is what lets a sidecar delivered after its round closed still be membership-checked against its own round (R-1) — and `exec_tried` skip records — the exec-carry 打止め set, holding BOTH `_rel()` repo-relative paths of resolved-but-unbindable tasks AND bare basenames of carries that resolved to no task at all, two shapes that are disjoint because a `_rel()` value always starts `_projects/`; writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.r{N}.capture` (the async judgment sidecar for round `N`; writer = the `taskflow:progress-capture` subagent only, at the absolute path the hook handed it, consumed and unlinked by the hook after a successful apply — the un-suffixed `{session_id}.capture` is the pre-R-1 name; its compat branch has been retired, so such a file is never read and only the 7-day sweep collects it). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
 
 ```json
 {

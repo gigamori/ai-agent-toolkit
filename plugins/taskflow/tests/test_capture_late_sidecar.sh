@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_capture_late_sidecar.sh — T-W5-1..T-W5-3 / T-W6-1..T-W6-2 / T-R1-1..T-R1-10:
+# test_capture_late_sidecar.sh — T-W5-1..T-W5-3 / T-W6-1..T-W6-2 / T-R1-1..T-R1-3,T-R1-5..T-R1-10:
 # a capture sidecar that arrives AFTER its round expired must still apply
 # (project-notes/specs/capture-detection-gaps.md §1.9 / W5, §4.4 / R-1).
 #
@@ -52,8 +52,6 @@
 #           (no re-report on later Stops)
 #   T-R1-3  r{N} and r{N+1} landing on the SAME Stop: both apply (ascending),
 #           and only the current round transitions to `done`
-#   T-R1-4  backward compatibility: a legacy un-suffixed `{sid}.capture` still
-#           applies under the current round's items, exactly as before
 #   T-R1-5  the history window is pruned to K=3 entries (`.bind` parsed directly)
 #   T-R1-6  F-A: applying an OLD round's sidecar must not suppress the current
 #           round's lifecycle — the in-flight round still expires on schedule
@@ -257,8 +255,8 @@ stop 0 >/dev/null            # Stop#2: expiry -> r1 placeholder, round resolved
   && pass "the expiry Stop placeholder-bound the task (backstop intact)" \
   || fail "expiry placeholder count: $(sidlines "$T1")"
 # The subagent finally finishes and writes its judgment — to the per-round
-# name production actually hands out (F-2; the legacy un-suffixed name is
-# pinned by T-R1-4 alone).
+# name production actually hands out (F-2; the legacy un-suffixed name is no
+# longer read by the hook at all).
 cat > "$(rcap 1)" << EOF
 {"confirmed":[{"task":"2026-08-09_late.md","summary":"LATESUMMARY the round's real work"}],
  "note_links":[{"note":"$N1REL","task":"2026-08-09_late.md"},
@@ -531,32 +529,6 @@ grep -qF "BOTHSUMB round two" "$TB3" \
   && pass "the CURRENT round transitioned to done" || fail "status: $(bind_get status)"
 [ ! -e "$(rcap 1)" ] && [ ! -e "$(rcap 2)" ] \
   && pass "both sidecars were consumed" || fail "a sidecar survived the apply"
-
-# =====================================================================
-# T-R1-4: backward compatibility — a legacy un-suffixed `{sid}.capture`
-# still applies under the current round's items, unchanged.
-# =====================================================================
-echo ""
-echo "[T-R1-4] a legacy un-suffixed sidecar still applies (compat branch)"
-reset_state
-TL4="$PDIR/tasks/1_in_progress/2026-08-19_r1-legacy.md"; mk "$TL4"
-write_touched "$TL4"
-stop 999 >/dev/null          # r1 requested: items = {TL4}
-cat > "$CF" << EOF
-{"confirmed":[{"task":"2026-08-19_r1-legacy.md","summary":"LEGACYSUM old-style sidecar"}],
- "note_links":[],"proposals":[]}
-EOF
-OR14=$(stop 999)
-echo "$OR14" | grep -q "membership-skip" \
-  && fail "the legacy sidecar was membership-skipped: $OR14" \
-  || pass "the legacy sidecar passed the membership gate"
-grep -qF "LEGACYSUM old-style sidecar" "$TL4" \
-  && pass "the legacy sidecar's summary landed in the task @log" \
-  || fail "legacy summary missing: $(grep -F "[s:$SID8]" "$TL4")"
-[ "$(bind_get status)" = "done" ] \
-  && pass "the legacy apply still transitions the round to done" \
-  || fail "status: $(bind_get status)"
-[ ! -e "$CF" ] && pass "the legacy sidecar was consumed" || fail "legacy sidecar not consumed"
 
 # =====================================================================
 # T-R1-5: the retained window is K=3 rounds. Five rounds must leave the
