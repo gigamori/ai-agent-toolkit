@@ -29,6 +29,17 @@ Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
     `sed -i` invocation whose only file operand is such a variable still
     contributes nothing (mode-orchestrator-runs/
     2026-08-19_touched-capture-bash-parse-gap-cd-target/03-review-dev.md F4).
+  - `sed`'s `=`-attached script flags (`--expression=EXPR`, `--file=F`) are
+    not recognized: `_SED_EXPR_FLAGS` lists only the space-separated
+    spellings, so an `=` form falls through the `-`-prefixed skip WITHOUT
+    setting `script_supplied`, and `_sed_operands` step 4 then drops the first
+    remaining token — the real file — as the script. Measured 2026-08-21:
+    `sed -i --expression=s/a/b/ f.md` and `sed -i --file=script.sed f.md` both
+    return `[]`, while the space-separated controls return `['f.md']`. This is
+    UNDER-capture (a write is missed), the safe direction, and it is accepted
+    rather than fixed — recorded here so the parity with the pi-extensions
+    sibling, which mirrors this behaviour deliberately (2026-08-20 handoff,
+    discovery 4), is an intentional trade and not an oversight on either side.
   - A relative bash write target that resolves only against a directory the
     command `cd`-ed into (never against `STATE_ROOT`) is recorded VERBATIM
     and is, by specification, NOT bindable: this hook holds only `command`,
@@ -481,9 +492,13 @@ def extract_redirect_targets(cmd: str) -> list[str]:
     the sibling's scanner serves ONE caller (its stage splitter) while this one
     serves TWO (`_strip_heredoc_bodies` and `extract_redirect_targets`); and
     the two tokenizers differ in when quote mode is entered, so "the same"
-    ablation is not the same experiment. Do not re-apply the removal on the
-    sibling's numbers alone — a corpus ablation run on THIS side is what would
-    settle it, and it has not been run.
+    ablation is not the same experiment.
+
+    **Disposition: REJECTED, closed 2026-08-21.** The removal is not deferred
+    pending a local corpus ablation — no such ablation is planned, and the
+    divergence from the sibling is accepted as permanent. Re-opening needs a
+    NEW reason (a measured loss attributable to the reset on this side), not
+    the sibling's numbers, which have already been shown not to transfer.
 
     What that false positive actually costs (measured 2026-08-20; do NOT
     describe it as harmless). A bogus target is NOT simply filtered out
