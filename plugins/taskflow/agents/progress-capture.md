@@ -151,7 +151,11 @@ markdown fences, no second write.
 - `confirmed` — one entry per active task you can summarize. `task` is the
   qualified reference from `touched_tasks` (a bare basename = the primary
   project). `summary` is a single line (no newlines), concrete (what changed in
-  this round, not "updated files").
+  this round, not "updated files"), and **at most 200 characters**. The hook
+  clips anything longer at a word boundary and marks the cut with `…`, so an
+  over-long summary does not break the append — it just loses its own tail,
+  and `@log` is append-only so nothing can be added back afterwards. Spend the
+  budget on what changed rather than on restating the task.
 - `note_links` — one entry per `note_writes` deliverable. `task` is the owning
   task, qualified the same way, or the literal `"none"` if you cannot determine
   an owner with confidence (the hook then leaves it unlinked for a later

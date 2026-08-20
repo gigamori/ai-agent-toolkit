@@ -620,6 +620,41 @@ def repair_log_markers(content):
     return head + '<!-- @log:end -->\n' + sep + tail
 
 
+NOTE_CAP = 200
+# How far back from `cap` a word boundary is looked for. Wide enough that an
+# ordinary English/Japanese-with-spaces summary lands on one, narrow enough that
+# the clip never loses a visible fraction of the text when it does.
+_CLIP_WINDOW = 60
+
+
+def _clip_note(s, cap=NOTE_CAP):
+    """Whitespace-normalize `s` and clip it to `cap` characters, MARKING the cut.
+
+    The bare `[:cap]` this replaces cut mid-word and left no trace, so a reader
+    of the `@log` could not tell a truncated summary from a short one — and
+    `@log` is append-only, so the line cannot be corrected afterwards (measured
+    2026-08-20: two applied lines, both exactly 242 chars = the 42-char
+    `- <iso_ts> [s:<sid8>]: ` prefix + 200, both cut mid-word).
+
+    Rules: normalize whitespace; return as-is when it fits; otherwise cut at the
+    last space within `[cap - _CLIP_WINDOW, cap)` — falling back to a hard cut at
+    `cap - 1` when that window holds no space, which is the ordinary case for
+    Japanese — and append U+2026. The result is ALWAYS <= `cap`, so the
+    ellipsis costs one character of text rather than widening the line.
+
+    Idempotent: a string this already clipped fits `cap` and comes back
+    unchanged, which is what keeps `log_block_has_note`'s text-key idempotency
+    intact across a re-apply.
+    """
+    s = ' '.join(s.split())
+    if len(s) <= cap:
+        return s
+    cut = s.rfind(' ', cap - _CLIP_WINDOW, cap)
+    if cut <= 0:
+        cut = cap - 1
+    return s[:cut].rstrip() + '…'
+
+
 def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pending'):
     """Code-append a `- <iso_ts> [s:<sid8>]: <note>` line immediately before the
     `<!-- @log:end -->` marker. Append-only; never edits existing lines.
@@ -1033,7 +1068,7 @@ def _apply_capture(sidecar, current_index, project, project_roots, sid8, iso_ts,
             path = current_index.get(key)
             if not path:
                 continue  # task gone
-            note = ' '.join(summ.split())[:200] or '(captured) summary pending'
+            note = _clip_note(summ) or '(captured) summary pending'
             # Text-key idempotency (§1.5), replacing the old `log_block_has_sid`
             # skip: a task may legitimately carry one line per round, so only
             # THIS summary's re-application (sidecar unlink failed → re-apply on

@@ -23,9 +23,17 @@ payload.
 Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
   - `sed -i`, heredoc body, `python -c open()` — writes these perform are not
     recognized at all.
+  - A heredoc body is REMOVED before either scan runs
+    (`_strip_heredoc_bodies`), so nothing it contains is captured — including a
+    body fed to an interpreter (`bash <<'EOF'`), whose writes are real but
+    unrecognized. That is this list's first entry restated, not a new trade:
+    scanning bodies at all was the deviation from §3.3, and it cost a measured
+    false positive (below). Only a TERMINATED body is removed; an unterminated
+    delimiter falls back to the pre-2026-08-20 behaviour so the failure
+    direction can never become a lost redirection.
   - Redirection detection IS quote-aware (`extract_redirect_targets`), but it
-    models neither command substitution (`$(…)`, backticks) nor heredoc
-    bodies. An unbalanced quote inside one leaves the scan in a quoted state,
+    does not model command substitution (`$(…)`, backticks). An unbalanced
+    quote inside one leaves the scan in a quoted state,
     which silently DROPS later real redirections rather than inventing
     spurious ones. That drop is now bounded to the LINE containing the
     unbalanced quote (the scan resets at each newline), so it cannot swallow
@@ -39,11 +47,19 @@ Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
   - The `/.capture/` pollutant once observed in a `.touched` ledger is NOT
     produced by redirection parsing and remains unattributed; the most
     plausible producer is the `mv|cp|rm`/`tee` token loop
-    (review-2026-08-19-fixes.md §8 A-6, design review F-12).
+    (review-2026-08-19-fixes.md §8 A-6, design review F-12). Its recurrence is
+    now suppressed regardless of producer by the `_state` exclusion below,
+    which drops any recorded path under `_projects/_state/`.
 
 Closed 2026-08-19 (review-2026-08-19-fixes.md §8 A-6): a `>` inside a quoted
 string was parsed as a redirection, so `echo "real _state: $BEFORE -> $AFTER"`
 recorded `$AFTER`; `/dev/null` and `NUL` are now excluded as null sinks.
+
+Closed 2026-08-20 (project-notes/specs/capture-noise-and-log-clip.md): heredoc
+bodies were parsed as shell, so prose `19 -> 31 -> 34` recorded `31` and `34,`
+(`_strip_heredoc_bodies`); and the capture subagent's own sidecar write landed
+in the ledger it feeds, since PostToolUse fires for subagent calls with the
+parent session_id (`_is_state_ledger_path`).
 """
 import json
 import os
@@ -99,6 +115,15 @@ _BASH_CHAIN_SPLIT = re.compile(r'\s*(?:&&|\|\||;)\s*')
 # is not recognized — `|` is excluded from the bare-token class, so the match
 # simply fails, exactly as before.)
 _REDIRECT_TARGET_RE = re.compile(r'"[^"]*"|\'[^\']*\'|[^\s|&;<>()]+')
+# Tail of a heredoc operator, matched just after an UNQUOTED `<<`: the optional
+# `-` (tab-stripping form, which must be adjacent to the operator), optional
+# blanks, then the delimiter word. Same token alternation as the redirect
+# target, so `<<EOF`, `<< EOF`, `<<-EOF`, `<<'EOF'` and `<<"EOF"` all parse.
+_HEREDOC_TAIL_RE = re.compile(r'(-?)[ \t]*("[^"]*"|\'[^\']*\'|[^\s|&;<>()]+)')
+# A `.touched` line under the state sidecar directory. The capture subagent's
+# own sidecar write fires PostToolUse with the PARENT session_id, so without
+# this the ledger records its own bookkeeping.
+_STATE_LEDGER_PREFIX = '_projects/_state/'
 
 
 def _is_null_sink(target: str) -> bool:
@@ -106,6 +131,177 @@ def _is_null_sink(target: str) -> bool:
     `/dev/null` is an exact POSIX path; `NUL` is a Windows device name and is
     case-insensitive by platform convention, so it is matched case-folded."""
     return target == '/dev/null' or target.casefold() == 'nul'
+
+
+class _ShellScan:
+    """The ONE quote-state scanner in this module (`outside`/`single`/`double`).
+
+    Both `_strip_heredoc_bodies` and `extract_redirect_targets` need "is this
+    operator character quoted?", and a second copy of these rules is how the two
+    silently drift apart — the newline reset and the backslash rule below were
+    each added to fix a measured defect, and only a shared implementation makes
+    a later fix reach both callers.
+
+    Rules, unchanged from the inline scan this replaces: quote state resets at
+    every newline (an unbalanced quote — an apostrophe in a `#` comment is the
+    ordinary case — must not swallow the rest of a multi-line command); a
+    backslash escapes the next character everywhere except inside single quotes;
+    each quote character is literal inside the other kind.
+
+    `next_outside` reports the next unquoted occurrence of any character in
+    `chars` and leaves `pos` just after it. `jump` moves `pos` WITHOUT running
+    the state machine over the skipped span — that is what lets a caller step
+    over a quoted redirection target without desynchronizing.
+    """
+
+    __slots__ = ('cmd', 'pos', 'state')
+
+    def __init__(self, cmd: str) -> None:
+        self.cmd = cmd
+        self.pos = 0
+        self.state = 'outside'
+
+    def next_outside(self, chars: str) -> int:
+        cmd = self.cmd
+        n = len(cmd)
+        i = self.pos
+        while i < n:
+            ch = cmd[i]
+            if ch == '\n':
+                self.state = 'outside'  # an unbalanced quote cannot outlive its line
+                i += 1
+                continue
+            if ch == '\\' and self.state != 'single':
+                i += 2  # escaped character, whatever it is, is not an operator
+                continue
+            if self.state == 'outside':
+                if ch == '"':
+                    self.state = 'double'
+                elif ch == "'":
+                    self.state = 'single'
+                elif ch in chars:
+                    self.pos = i + 1
+                    return i
+            elif self.state == 'double':
+                if ch == '"':
+                    self.state = 'outside'
+            elif ch == "'":  # state == 'single'
+                self.state = 'outside'
+            i += 1
+        self.pos = n
+        return -1
+
+    def jump(self, i: int) -> None:
+        self.pos = i
+
+
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """Remove terminated heredoc BODIES so their text is never parsed as shell.
+
+    A heredoc body is data, but every scan in this module reads it as command
+    text. Measured 2026-08-20: `cat >> index.md <<'EOF'` whose body contained
+    the prose `19 -> 31 -> 34` recorded `31` and `34,` as written paths, because
+    the two `->` arrows are unquoted `>` characters. That is not cosmetic — a
+    phantom target spelling an existing task md resolves in
+    `session_progress_capture.resolve_touched_tasks` and gets an UNCORRECTABLE
+    `@log` line appended (`@log` is append-only).
+
+    Not capturing writes performed by a heredoc body is already the documented
+    contract, not a new trade: `project-notes/specs/exec-binding.md` lists
+    `heredoc body` beside `sed -i` and `python -c open()` as an explicitly
+    accepted capture gap. Scanning bodies at all was the deviation; this brings
+    the code back to the spec. A body fed to an interpreter (`bash <<'EOF'`)
+    therefore contributes nothing either — deliberate, and pinned by a test.
+
+    LOSS-AVOIDANCE GUARD, and it is the whole reason this is safe: a body is
+    dropped ONLY when its terminator line actually exists. An unterminated
+    delimiter falls back to the current behaviour, so the failure direction
+    stays "the same false positive we have today" and never becomes "a real
+    redirection disappears" — a lost write erases a whole turn's record, which
+    this module's docstring records as the worse of the two costs.
+
+    The guard doubles as the safety net for a FALSE `<<` detection: in
+    `echo $((1<<2)) > out.txt` the arithmetic shift yields the pseudo-delimiter
+    `2`, no line equals it, so nothing is stripped and the real `> out.txt` is
+    still captured.
+
+    Stripping is PER DELIMITER. In `cmd <<A <<B` with only `A` terminated,
+    `A`'s body is removed and everything from the first unterminated delimiter
+    onward is left verbatim, so the guard's promise holds delimiter by delimiter
+    rather than collapsing the whole command to the fallback.
+
+    Deliberately NOT modelled (same known-gap list as the rest of the module):
+    command substitution, and a quoted string that genuinely spans a newline.
+    """
+    ops: list[tuple] = []  # (source index, tab-strip?, delimiter)
+    scan = _ShellScan(cmd)
+    while True:
+        i = scan.next_outside('<')
+        if i < 0:
+            break
+        if cmd[i + 1:i + 2] != '<':
+            continue  # a plain `<` input redirection
+        if cmd[i + 2:i + 3] == '<':
+            scan.jump(i + 3)  # `<<<` herestring: no body follows
+            continue
+        m = _HEREDOC_TAIL_RE.match(cmd, i + 2)
+        if not m:
+            scan.jump(i + 2)
+            continue
+        delim = m.group(2).strip('"\'')
+        scan.jump(m.end())
+        if delim:
+            ops.append((i, m.group(1) == '-', delim))
+    if not ops:
+        return cmd
+
+    lines = cmd.split('\n')
+    # Line number each operator sits on; its body starts on the NEXT line.
+    ops_by_line: dict = {}
+    offset = 0
+    bounds = []
+    for ln in lines:
+        bounds.append(offset)
+        offset += len(ln) + 1
+    for idx, dash, delim in ops:
+        lineno = 0
+        for k, start in enumerate(bounds):
+            if start > idx:
+                break
+            lineno = k
+        ops_by_line.setdefault(lineno, []).append((dash, delim))
+
+    out: list[str] = []
+    queue: list[tuple] = []
+    total = len(lines)
+    i = 0
+    fallback = False
+    while i < total:
+        if fallback:
+            out.append(lines[i])
+            i += 1
+            continue
+        queue.extend(ops_by_line.get(i, ()))
+        out.append(lines[i])
+        i += 1
+        while queue:
+            dash, delim = queue[0]
+            end = -1
+            for k in range(i, total):
+                cand = lines[k].rstrip('\r')
+                if dash:
+                    cand = cand.lstrip('\t')
+                if cand == delim:
+                    end = k
+                    break
+            if end < 0:
+                # Unterminated: leave this delimiter and everything after it
+                # exactly as written (guard above).
+                fallback = True
+                break
+            queue.pop(0)
+            i = end + 1  # drop the body AND its terminator line
+    return '\n'.join(out)
 
 
 def extract_redirect_targets(cmd: str) -> list[str]:
@@ -162,41 +358,44 @@ def extract_redirect_targets(cmd: str) -> list[str]:
     a newline.
     """
     targets: list[str] = []
-    state = 'outside'
-    i, n = 0, len(cmd)
-    while i < n:
-        ch = cmd[i]
-        if ch == '\n':
-            state = 'outside'  # an unbalanced quote cannot outlive its line
-            i += 1
-            continue
-        if ch == '\\' and state != 'single':
-            i += 2  # escaped character, whatever it is, is not an operator
-            continue
-        if state == 'outside':
-            if ch == '"':
-                state = 'double'
-            elif ch == "'":
-                state = 'single'
-            elif ch == '>':
-                j = i + 2 if cmd[i + 1:i + 2] == '>' else i + 1
-                while j < n and cmd[j].isspace():
-                    j += 1
-                if j < n and cmd[j] != '&':
-                    m = _REDIRECT_TARGET_RE.match(cmd, j)
-                    if m:
-                        t = m.group(0).strip().strip('"\'')
-                        if t and not _is_null_sink(t):
-                            targets.append(t)
-                        i = m.end()
-                        continue
-        elif state == 'double':
-            if ch == '"':
-                state = 'outside'
-        elif ch == "'":  # state == 'single'
-            state = 'outside'
-        i += 1
+    scan = _ShellScan(cmd)
+    n = len(cmd)
+    while True:
+        i = scan.next_outside('>')
+        if i < 0:
+            break
+        j = i + 2 if cmd[i + 1:i + 2] == '>' else i + 1
+        while j < n and cmd[j].isspace():
+            j += 1
+        if j < n and cmd[j] == '&':
+            continue  # fd duplication (`>&N`, `2>&1`) names no file
+        m = _REDIRECT_TARGET_RE.match(cmd, j)
+        if m:
+            t = m.group(0).strip().strip('"\'')
+            if t and not _is_null_sink(t):
+                targets.append(t)
+            scan.jump(m.end())
     return targets
+
+
+def _is_state_ledger_path(rel: str) -> bool:
+    """True for a normalized path under `_projects/_state/` — hook bookkeeping,
+    never task or note material.
+
+    The capture subagent writes its judgment sidecar with the Write tool, and
+    PostToolUse fires for subagent tool calls with the PARENT session_id, so the
+    sidecar lands in the very ledger the round is built from (observed live).
+    Nothing downstream mis-resolves it — `resolve_project_roots` refuses
+    `_state` as a project because `_projects/_state/tasks/` does not exist — but
+    the raw line count IS the round cursor, and the line is shown verbatim in
+    the Stop report, so it costs display clarity and shifts the slice. Excluded
+    at capture time rather than at read time so the ledger stays a record of
+    work, not of the machinery observing it.
+
+    Scoped to the state directory ONLY: `_projects/<project>/tasks|project-notes`
+    writes are exactly what the ledger exists to record.
+    """
+    return rel.replace('\\', '/').casefold().startswith(_STATE_LEDGER_PREFIX)
 
 
 def normalize_path(p: str, cwd: str) -> str:
@@ -215,6 +414,10 @@ def extract_bash_paths(cmd: str) -> list[str]:
     `tee` targets, and `mv|cp|rm` non-flag args. Best-effort."""
     if not cmd or not isinstance(cmd, str):
         return []
+    # Heredoc bodies are data; strip them BEFORE either scan below so the
+    # redirect scan and the verb loop see the same command text and neither
+    # mistakes body prose for shell (see `_strip_heredoc_bodies`).
+    cmd = _strip_heredoc_bodies(cmd)
     paths: list[str] = []
     # Redirection targets anywhere in the command (quote-aware).
     paths.extend(extract_redirect_targets(cmd))
@@ -292,7 +495,9 @@ def main() -> int:
     seen: set[str] = set()
     for p in raw_paths:
         n = normalize_path(p, cwd)
-        if n and n not in seen:
+        if not n or _is_state_ledger_path(n):
+            continue
+        if n not in seen:
             seen.add(n)
             lines.append(n)
     if not lines:

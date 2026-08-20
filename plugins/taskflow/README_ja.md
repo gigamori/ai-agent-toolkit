@@ -191,7 +191,7 @@ kanban ボードの特性:
 
 各ワークスペースのサーバーは、その `_projects` roots から導出したポート（base `17329`・span 64、プロセスを跨いでも `hashlib` により決定論的 — 同一ワークスペースからの後続の `--stop` が同じサーバーを発見できる）で待受する。複数の VSCode ワークスペースで同時に `/kanban` を実行してもポートが衝突しなくなった：各ワークスペースが個別のポートを持ち、`/health` にワークスペース識別キーを含めることで、ポートのハッシュ衝突が起きても別ワークスペースのサーバーを「既に稼働中」と誤認しない。
 
-> **Claude Code を開くリンク**（**▶ CC** ボタンおよびセッション・プロンプト起動）は、Claude Code の VS Code / VSCodium 拡張（`anthropic.claude-code`）を必要とする。serve モードでは起動用 CLI と拡張をサーバーごとに 1 回だけプローブし、`code`・`codium` のいずれも `PATH` に無い、または拡張が未インストールの場合、リンクは無音で失敗したりリクエストを落としたりせず、手動で開けるようセッション UUID / プロンプトを載せた簡易ページを返す。
+> **Claude Code を開くリンク**（**▶ CC** ボタンおよびセッション・プロンプト起動）は、Claude Code の VS Code / VSCodium 拡張（`anthropic.claude-code`）を**前提**とする。起動経路はこの拡張のみで、端末（CUI）での Claude Code 起動は**非対応**——フォールバックとしても行わない。serve モードでは起動用 CLI（`codium` → `code` の順）を解決し、`--list-extensions` でプローブする。確定的な結果——拡張あり／拡張なし／CLI が `PATH` に無い——はサーバーのプロセス寿命の間キャッシュされるため、プローブは実質 1 回で済む。プローブの失敗（例外・15 秒タイムアウト・非ゼロ終了）は**キャッシュしない**：stderr に 1 行ログを出し、次のクリックで再試行する。プローブの失敗は拡張が無いことの証拠にはならないため、リンクはそのまま楽観的に起動し、ページには「未インストール」と断定せず拡張の実在を**検証できなかった**旨を表示する。リンクを起動しなかった場合（CLI が無い／拡張の不在が確定した場合）、および検証できないまま起動した場合、ページは独立したブロックにコピー可能なフォールバックを載せる：セッションリンクなら `claude --resume <uuid>`（`claude` CLI が `PATH` に無ければ UUID のみ）、▶ CC・`/progress` のプロンプトリンクなら貼り付け用のプロンプト本文（CLI には未送信プリフィルに相当する入口が無いため）。
 
 > **`CLAUDE_CONFIG_DIR`** — Claude Code の config ディレクトリを移設する場合は、**マシン全体で 1 つの値**を、**絶対パス**で、Claude Code セッション・`kanban serve` プロセス・VS Code 拡張ホストのすべてで同一に設定すること。ワークスペース別に異なる値を持つ運用は**非サポート**：拡張ホストの環境変数は taskflow の制御外であり、taskflow のデータモデルはセッション UUID しか記録せず、どの config ディレクトリ由来かの情報を持たないため、値が分岐した構成は無音で失敗する（▶ CC リンクやセッションリンクが解決不能になる）。kanban のリーダーは `$CLAUDE_CONFIG_DIR` と `~/.claude` の両方を走査し、UUID が衝突した場合は env 側を優先する。session-sync フックは env の値のみを使う。なお Claude Code はこの値を**リテラル**として解釈する — `~` は展開されず、相対値はカレントディレクトリ基準で解決されるため、`~/foo` を指定すると CWD 配下に `~` という名前のディレクトリが作られる。
 
@@ -404,7 +404,7 @@ hook の書込と競合した場合は依然として無防備である。
 
 #### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
 
-すべての `Write` / `Edit` / `NotebookEdit` と、ファイルを触る `Bash`（`mv`/`cp`/`rm`、`>`/`>>` リダイレクト、`tee`）の直後に発火。書込先の正規化 repo-relative パスを per-session の `_projects/_state/{session_id}.touched` ledger（append-only、lock-free）に追記する。この ledger が、Stop の capture hook が「このセッションが実際に触った task」を判定する入力になる。jsonl スキャンや git diff ではなく **このセッションの tool 書込** を観測するため、無関係な task の誤 stamp を避けられる。サブエージェント / fork の内部書込は親の `session_id` で発火するため、自動的に親の ledger に入る。
+すべての `Write` / `Edit` / `NotebookEdit` と、ファイルを触る `Bash`（`mv`/`cp`/`rm`、`>`/`>>` リダイレクト、`tee`）の直後に発火。書込先の正規化 repo-relative パスを per-session の `_projects/_state/{session_id}.touched` ledger（append-only、lock-free）に追記する。この ledger が、Stop の capture hook が「このセッションが実際に触った task」を判定する入力になる。jsonl スキャンや git diff ではなく **このセッションの tool 書込** を観測するため、無関係な task の誤 stamp を避けられる。サブエージェント / fork の内部書込は親の `session_id` で発火するため、自動的に親の ledger に入る — ただしその帰結として 1 つ除外がある：`_projects/_state/` 配下への書込は落とすため、capture サブエージェント自身の判定 sidecar が、それが供給する ledger に現れることはない。heredoc の body はコマンド解析の前に除去されるため、body 内のテキストがリダイレクトと誤認されることはない（body 自身が行う書込も記録されない。これは `sed -i` / `python -c open()` と同じく従来から明示受容している捕捉ギャップ）。未終端の heredoc は、コマンドを記述どおり解析する従来動作にフォールバックする。
 
 #### PreCompact: precompact_flush.py
 

@@ -20,7 +20,6 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import functools
 import hashlib
 import hmac
 import json
@@ -35,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import parse_qs, urlparse
 
 import yaml
@@ -66,7 +66,7 @@ LOG_ENTRY_RE = re.compile(
 )
 
 # `_projects/index.md` row grammar. LOCKSTEP: pi-studio
-# `src/kanban/kanban-data-provider.ts::parseProjectIndex` reimplements these three
+# `src/project-index.ts::parseProjectIndex` reimplements these three
 # rules verbatim; changing one here without the other breaks board parity.
 #   1. separator row: the WHOLE line matches INDEX_SEPARATOR_RE (a data row whose
 #      Description merely contains `---` is NOT a separator).
@@ -1453,23 +1453,79 @@ def detect_scheme() -> str:
 
 CLAUDE_CODE_EXT_ID = "anthropic.claude-code"
 
+# Probe outcomes for _resolve_cc_launcher().  Three-valued on purpose: a
+# transient probe failure must NOT be reported as "the extension is not
+# installed" (that claim would be false, and the old two-valued probe cached
+# it for the server's lifetime).
+EXT_OK = "ok"            # <cmd> --list-extensions listed CLAUDE_CODE_EXT_ID
+EXT_MISSING = "missing"  # probe succeeded and the id was absent, or no CLI on PATH
+EXT_UNKNOWN = "unknown"  # exception / timeout / non-zero exit: nothing was learned
 
-@functools.lru_cache(maxsize=1)
-def _resolve_cc_launcher() -> tuple[str | None, bool]:
+# Memoized determinate probe result, or None when nothing determinate is known
+# yet.  Replaces the former functools.lru_cache so that EXT_UNKNOWN can be
+# returned WITHOUT being remembered.
+_CC_LAUNCHER_CACHE: tuple[str | None, str] | None = None
+
+
+def _reset_cc_launcher_cache() -> None:
+    """Drop the memoized probe result (test seam; replaces ``cache_clear()``)."""
+    global _CC_LAUNCHER_CACHE
+    _CC_LAUNCHER_CACHE = None
+
+
+def _log_probe_failure(cmd: str, detail: str) -> None:
+    """Emit the one stderr line every EXT_UNKNOWN outcome owes (AC-C2).
+
+    Sanitized, not "ASCII only": neither operand is under this module's
+    control -- ``cmd`` is a shutil.which result (a path that can live under a
+    non-ASCII user profile) and ``detail`` carries an OS-localized strerror.
+    sys.stderr is cp932-encoded on a JA Windows console and defaults to
+    errors='strict', so an unencodable character would raise
+    UnicodeEncodeError inside the probe's except block and escape into the
+    /open handler, which has no enclosing try.  Re-encoding with
+    errors="replace" keeps the diagnostic (lossy at worst) instead of turning
+    instrumentation into a failure source; newlines are folded to spaces so
+    the "one line" property survives a multi-line strerror.
+    """
+    msg = (
+        f"[kanban] {CLAUDE_CODE_EXT_ID} probe failed for {cmd}: "
+        f"{detail}; not cached, will retry on the next /open"
+    )
+    msg = msg.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    # `encoding` is None under some redirects and absent entirely on the
+    # StringIO that contextlib.redirect_stderr installs.
+    enc = getattr(sys.stderr, "encoding", None) or "utf-8"
+    print(msg.encode(enc, "replace").decode(enc, "replace"), file=sys.stderr)
+
+
+def _resolve_cc_launcher() -> tuple[str | None, str]:
     """Resolve the VS Code / VSCodium CLI and whether the Claude Code extension
     is installed in it.
 
-    Returns ``(cmd, has_ext)`` where ``cmd`` is the launcher path (or ``None``
-    if neither ``codium`` nor ``code`` is on PATH) and ``has_ext`` is whether
-    ``anthropic.claude-code`` appears in ``<cmd> --list-extensions``.
+    Returns ``(cmd, status)`` where ``cmd`` is the launcher path (or ``None``
+    if neither ``codium`` nor ``code`` is on PATH) and ``status`` is one of
+    ``EXT_OK`` / ``EXT_MISSING`` / ``EXT_UNKNOWN``.
 
-    ``lru_cache`` makes this probe run at most once per process — the
-    ``--list-extensions`` call (~0.36s) happens on the first ``/open`` and is
-    cached for the server's lifetime.
+    Determinate outcomes (``EXT_OK`` / ``EXT_MISSING``, including "no CLI on
+    PATH") are cached for the process lifetime, so the ``--list-extensions``
+    call (~0.36s) stops running once the first determinate result is stored.
+    Not "at most once": the server is a ThreadingHTTPServer and the
+    check-then-assign around the cache is unguarded, so two concurrent first
+    requests may each probe.  That is harmless (the probe is idempotent and
+    both threads store the same tuple) and a lock is deliberately NOT used --
+    under the accepted persistent-timeout scenario it would serialize every
+    ``/open`` behind a 15s hold instead of letting each click fail fast.
+    ``EXT_UNKNOWN`` is logged to stderr and deliberately NOT cached: the next
+    ``/open`` probes again.
     """
+    global _CC_LAUNCHER_CACHE
+    if _CC_LAUNCHER_CACHE is not None:
+        return _CC_LAUNCHER_CACHE
     cmd = shutil.which("codium") or shutil.which("code")
     if not cmd:
-        return None, False
+        # Determinate: shutil.which returning None is an answer, not a failure.
+        _CC_LAUNCHER_CACHE = (None, EXT_MISSING)
+        return _CC_LAUNCHER_CACHE
     try:
         proc = subprocess.run(
             [cmd, "--list-extensions"],
@@ -1482,23 +1538,101 @@ def _resolve_cc_launcher() -> tuple[str | None, bool]:
             # cannot exist at all.
             encoding="utf-8", errors="replace", timeout=15,
         )
-    except (OSError, subprocess.SubprocessError):
-        return cmd, False
+    except (OSError, subprocess.SubprocessError) as e:
+        _log_probe_failure(cmd, f"{type(e).__name__}: {e}")
+        return cmd, EXT_UNKNOWN
+    if proc.returncode != 0:
+        _log_probe_failure(cmd, f"--list-extensions exited {proc.returncode}")
+        return cmd, EXT_UNKNOWN
     exts = {line.strip().lower() for line in proc.stdout.splitlines()}
-    return cmd, CLAUDE_CODE_EXT_ID in exts
+    _CC_LAUNCHER_CACHE = (cmd, EXT_OK if CLAUDE_CODE_EXT_ID in exts else EXT_MISSING)
+    return _CC_LAUNCHER_CACHE
 
 
-def _launch_error_html(message: str, manual_hint: str) -> bytes:
-    """Small HTML page shown when a CC link cannot be launched, carrying the
-    session UUID / prompt so the user can open it manually."""
+class ManualHint(NamedTuple):
+    """Fallback instructions shown when a CC link may not have opened.
+
+    Split in two on purpose: ``lead`` is prose, ``payload`` is the literal text
+    the user has to run or paste.  The payload is rendered in its own <pre>
+    block so that selecting it yields exactly the command / prompt and nothing
+    else -- the previous single-string hint was embedded mid-sentence and could
+    not be copied cleanly.
+    """
+
+    lead: str
+    payload: str
+
+
+def _session_manual_hint(session: str) -> ManualHint:
+    """Hint for a ``?session=`` link.
+
+    ``claude --resume <uuid>`` resolves the session independently of the cwd
+    (measured), so no directory needs to be shown alongside it.  Presence is
+    decided by ``shutil.which`` alone -- no extra subprocess is spawned here.
+    """
+    if shutil.which("claude"):
+        return ManualHint(
+            "Resume this session from a terminal:",
+            f"claude --resume {session}",
+        )
+    return ManualHint(
+        "The claude CLI is not on PATH. The session id is:",
+        session,
+    )
+
+
+def _prompt_manual_hint(prompt: str) -> ManualHint:
+    """Hint for a ``?prompt=`` link.
+
+    The CLI has no equivalent of the extension's pre-filled-but-unsent prompt
+    box (every CLI entry point sends immediately), so the fallback can only be
+    "paste this".  That is a limitation of the CLI, not a missing feature here.
+    """
+    return ManualHint(
+        "Start Claude Code and paste this prompt:",
+        prompt,
+    )
+
+
+def _hint_page(title: str, heading: str, message: str, hint: ManualHint) -> bytes:
+    """Small HTML page carrying a message plus a copyable manual-launch hint."""
     return (
         "<!DOCTYPE html><html><head><meta charset=UTF-8>"
-        "<title>Claude Code launch failed</title></head><body>"
-        "<h3>Could not open in Claude Code</h3>"
+        f"<title>{esc(title)}</title></head><body>"
+        f"<h3>{esc(heading)}</h3>"
         f"<p>{esc(message)}</p>"
-        f"<p>Open it manually — {esc(manual_hint)}</p>"
+        f"<p>{esc(hint.lead)}</p>"
+        f"<pre>{esc(hint.payload)}</pre>"
         "</body></html>"
     ).encode("utf-8")
+
+
+def _launch_error_html(message: str, hint: ManualHint) -> bytes:
+    """Page shown when a CC link was NOT launched (no CLI, or EXT_MISSING)."""
+    return _hint_page(
+        "Claude Code launch failed",
+        "Could not open in Claude Code",
+        message,
+        hint,
+    )
+
+
+def _launch_unverified_html(hint: ManualHint) -> bytes:
+    """Page shown after an EXT_UNKNOWN optimistic launch.
+
+    The editor WAS launched: a failed probe is not evidence that the extension
+    is absent, and refusing to launch would break a working setup.  Unlike the
+    success page this one deliberately omits ``window.close()`` -- if the
+    launch silently did nothing, the hint has to stay on screen.
+    """
+    return _hint_page(
+        "Claude Code launch attempted",
+        "Tried to open in Claude Code",
+        f"Could not verify that the Claude Code extension ({CLAUDE_CODE_EXT_ID}) "
+        "is installed: the --list-extensions probe failed, so the editor was "
+        "launched anyway. If nothing opened, use the fallback below.",
+        hint,
+    )
 
 
 def open_browser(url: str) -> None:
@@ -1754,32 +1888,35 @@ def make_handler(
                         self._respond(400, b"bad session")
                         return
                     uri = f"{scheme}://anthropic.claude-code/open?session={session}"
-                    manual_hint = f"session {session}"
+                    hint = _session_manual_hint(session)
                 elif "prompt" in qs:
                     prompt = qs["prompt"][0][:500]
                     uri = f"{scheme}://anthropic.claude-code/open?prompt={quote(prompt)}"
-                    manual_hint = prompt
+                    hint = _prompt_manual_hint(prompt)
                 else:
                     self._respond(400, b"missing param")
                     return
-                cmd, has_ext = _resolve_cc_launcher()
+                cmd, ext_status = _resolve_cc_launcher()
                 if cmd is None:
                     self._respond(
                         200,
                         _launch_error_html(
                             "No VS Code / VSCodium CLI (code / codium) found on PATH.",
-                            manual_hint,
+                            hint,
                         ),
                         content_type="text/html; charset=utf-8",
                     )
                     return
-                if not has_ext:
+                if ext_status == EXT_MISSING:
+                    # Determinate absence only. EXT_UNKNOWN falls through to
+                    # the optimistic launch below and must never be reported
+                    # as "not installed".
                     self._respond(
                         200,
                         _launch_error_html(
                             f"The Claude Code extension ({CLAUDE_CODE_EXT_ID}) is not "
                             "installed in the detected editor.",
-                            manual_hint,
+                            hint,
                         ),
                         content_type="text/html; charset=utf-8",
                     )
@@ -1793,7 +1930,14 @@ def make_handler(
                 except OSError as e:
                     self._respond(
                         200,
-                        _launch_error_html(f"Failed to launch editor: {e}", manual_hint),
+                        _launch_error_html(f"Failed to launch editor: {e}", hint),
+                        content_type="text/html; charset=utf-8",
+                    )
+                    return
+                if ext_status == EXT_UNKNOWN:
+                    self._respond(
+                        200,
+                        _launch_unverified_html(hint),
                         content_type="text/html; charset=utf-8",
                     )
                     return
