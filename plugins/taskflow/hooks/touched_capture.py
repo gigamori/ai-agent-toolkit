@@ -61,7 +61,9 @@ Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
     split quote-aware, because that reintroduces the WORSE failure
     direction the split's own quote reset exists to bound — one unbalanced
     quote swallowing the rest of a multi-line command (see
-    `extract_redirect_targets`, below, for that trade already decided).
+    `extract_redirect_targets`, below, for that trade already decided, and for
+    the 2026-08-21 measurement that re-confirmed it against a sibling repo's
+    contrary result).
   - A heredoc body is REMOVED before either scan runs
     (`_strip_heredoc_bodies`), so nothing it contains is captured — including a
     body fed to an interpreter (`bash <<'EOF'`), whose writes are real but
@@ -74,11 +76,14 @@ Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
     does not model command substitution (`$(…)`, backticks). An unbalanced
     quote inside one leaves the scan in a quoted state,
     which silently DROPS later real redirections rather than inventing
-    spurious ones. That drop is now bounded to the LINE containing the
+    spurious ones. That drop is bounded to the LINE containing the
     unbalanced quote (the scan resets at each newline), so it cannot swallow
-    the rest of a multi-line command — see `extract_redirect_targets`. A quoted
-    string that genuinely spans a newline is mis-handled by the same reset;
-    the regex this replaced mis-handled it too. That residual false positive
+    the rest of a multi-line command — see `extract_redirect_targets`, which
+    also records the 2026-08-21 attempt to remove that reset on a sibling
+    repo's contrary measurement, and the three committed pins that falsified it
+    here. A quoted string that genuinely spans a newline is mis-handled by the
+    same reset; the regex this replaced mis-handled it too. That residual
+    false positive
     is NOT harmless: a bogus path spelling an existing task md resolves and
     gets an uncorrectable `@log` line appended (measured 2026-08-20 — see
     `extract_redirect_targets` for the evidence and the accepted trade).
@@ -167,6 +172,21 @@ _SED_EXPR_FLAGS = ('-e', '--expression', '-f', '--file')
 # never a real write target (F4, 03-review-dev.md). Scoped to `sed` only --
 # mv/cp/rm/tee operand selection is unchanged.
 _SED_UNSAFE_CHARS = ('$', '`', '*', '?')
+# A redirection-shaped OPERAND token, used to stop operand collection in both
+# `_sed_operands` and the verb loop. An optional fd number may precede the `>`
+# (`2>err.txt`, `2>&1`), which is why a bare `t.startswith('>')` test is not
+# enough: `sed -i 's/a/b/' f.md 2>err.txt` recorded the literal `2>err.txt` as
+# a written path, and `... 2>&1` recorded `2>&1`, neither of which is a file
+# this command wrote -- a false positive in ANY class, and the mechanism behind
+# the `2>&1` fragments seen in Stop-hook `touched:` lines. The same token shape
+# reached the mv/cp/rm/tee loop, so this is NOT sed-specific. Reported by the
+# pi-extensions sibling (2026-08-20 handoff, discovery 3), reproduced here on
+# both paths before the fix. `extract_redirect_targets` captures the real
+# target (`err.txt`) separately, so stopping here loses nothing.
+# Trade accepted: a file literally named e.g. `2>x.md` is no longer recorded
+# from an operand position. `>` is an illegal filename character on Windows and
+# needs quoting on POSIX; the sibling took the same trade.
+_FD_REDIRECT_RE = re.compile(r'^\d*>')
 # A shlex-failing stage's diagnostic is only useful when the stage COULD have
 # named a write target -- gating it here, rather than printing unconditionally,
 # is what makes the line actionable (§2.3). Extending BASH_FILE_VERBS/BASH_TEE
@@ -445,6 +465,26 @@ def extract_redirect_targets(cmd: str) -> list[str]:
     `#` only introduces a comment at a word boundary, and a strip rule would
     still mis-fire on `file#1`, URL fragments and `$#`.
 
+    The pi-extensions sibling removed its equivalent reset and asked us to
+    reconsider (2026-08-20 handoff, discovery 1): ablating it over a
+    37,673-command corpus of that machine's session logs, it reported the reset
+    kept NO pin alive that does not survive without it, while spuriously
+    destroying 3 real-path captures, and that carry-across lost 0 real paths
+    across 9,837 multi-line commands. **That result does not transfer here, and
+    was measured not to.** Removing this reset on 2026-08-21 broke three
+    pre-existing committed pins that encode exactly the comment-apostrophe
+    case — `test_touched_capture_quoted_redirect.py` T23 (`# don't do
+    this\\nls > out.txt`), T24 (`git commit -m x # it's fine\\nls > o.txt`) and
+    T25 (`echo don't\\nfoo > b.txt`), each of which returned `[]` instead of
+    its redirect target. The reset was restored the same session. Two
+    structural reasons the corpora disagree, both known before the attempt:
+    the sibling's scanner serves ONE caller (its stage splitter) while this one
+    serves TWO (`_strip_heredoc_bodies` and `extract_redirect_targets`); and
+    the two tokenizers differ in when quote mode is entered, so "the same"
+    ablation is not the same experiment. Do not re-apply the removal on the
+    sibling's numbers alone — a corpus ablation run on THIS side is what would
+    settle it, and it has not been run.
+
     What that false positive actually costs (measured 2026-08-20; do NOT
     describe it as harmless). A bogus target is NOT simply filtered out
     downstream. If it happens to spell `_projects/<project>/tasks/<status>/
@@ -547,9 +587,10 @@ def _sed_operands(args: list[str]) -> list[str]:
        and set `script_supplied`; neither the flag nor its value is ever a
        file operand.
     2. Every other `-`-prefixed token is skipped (a flag).
-    3. A `>>`/`>`-shaped token ends operand collection -- that is the
-       redirection this hook's own `extract_redirect_targets` already
-       captures separately; nothing after it belongs to `sed`.
+    3. A redirection-shaped token ends operand collection (`_FD_REDIRECT_RE`,
+       which allows an optional fd number: `>`, `>>`, `2>err.txt`, `2>&1`) --
+       that is the redirection this hook's own `extract_redirect_targets`
+       already captures separately; nothing after it belongs to `sed`.
     4. Of what remains: if a script was supplied via (1), every remaining
        token is a file; otherwise the FIRST remaining token is the script
        itself and is dropped -- `sed -i 's/a/b/'` has no file operand at all,
@@ -566,7 +607,7 @@ def _sed_operands(args: list[str]) -> list[str]:
             script_supplied = True
             i += 2
             continue
-        if t == '>>' or t.startswith('>'):
+        if _FD_REDIRECT_RE.match(t):
             break  # redirection handled separately by extract_redirect_targets
         if t.startswith('-'):
             i += 1
@@ -651,7 +692,7 @@ def extract_bash_paths(cmd: str) -> list[str]:
                 t = raw.strip('"\'')
                 if t.startswith('-'):
                     continue
-                if t == '>>' or t.startswith('>'):
+                if _FD_REDIRECT_RE.match(t):
                     break  # redirection handled separately above
                 paths.append(t)
     return paths

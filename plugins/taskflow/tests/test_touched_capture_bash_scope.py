@@ -119,6 +119,24 @@ CASES = [
     ("U8c",
      "cat >> _projects/p/project-notes/x.md <<'EOF'\n19 -> 31 -> 34\nEOF",
      ["_projects/p/project-notes/x.md"]),
+    # --- fd-prefixed redirection is NOT an operand (`_FD_REDIRECT_RE`) ------
+    # Reported by the pi-extensions sibling (2026-08-20 handoff, discovery 3)
+    # and reproduced on BOTH paths before the fix: a bare `t.startswith('>')`
+    # stop let `2>err.txt` / `2>&1` through as file operands. `err.txt` is
+    # still captured -- by `extract_redirect_targets`, which owns redirections
+    # -- so the fix loses nothing. Each row below is paired with a control that
+    # must keep recording, so a passing row cannot mean "the parser stopped
+    # seeing this shape at all".
+    ("U9", "sed -i 's/a/b/' f.md 2>err.txt", ["err.txt", "f.md"]),
+    ("U9b", "sed -i 's/a/b/' f.md 2>&1", ["f.md"]),
+    ("U9c", "sed -i 's/a/b/' f.md >out.txt", ["out.txt", "f.md"]),
+    # control for U9/U9b/U9c: same invocation, no redirection at all
+    ("U9d", "sed -i 's/a/b/' f.md", ["f.md"]),
+    # the same token shape reached the mv/cp/rm/tee loop -- not sed-specific
+    ("U10", "mv a.md b.md 2>err.txt", ["err.txt", "a.md", "b.md"]),
+    ("U10b", "cp a.md b.md 2>&1", ["a.md", "b.md"]),
+    # control for U10/U10b: the verb loop still records every non-flag operand
+    ("U10c", "mv a.md b.md", ["a.md", "b.md"]),
 ]
 
 
