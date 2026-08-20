@@ -1482,10 +1482,23 @@ def main() -> int:
     # `status='done'`) cannot change whether it runs.
     _status_at_entry = status
 
-    def _apply_one(sidecar, items):
+    def _apply_one(sidecar, items, foreign_round=False):
         """Apply ONE sidecar against `items` and merge its result into this
         Stop's report (several sidecars can land on the same Stop, so the
-        result lists are extended, never rebound)."""
+        result lists are extended, never rebound).
+
+        `foreign_round` marks row 2 — an EARLIER round's sidecar. The lines it
+        appends belong to that round, not to the open one, so they must not be
+        read by the (D) backstop as the open round's entry (F-A, second
+        channel)."""
+        # Pre-apply counts for the open round's frozen keys. Only a foreign
+        # apply needs them, and only to measure ITS OWN appends (see below).
+        _before = {}
+        if foreign_round:
+            for _bk in round_base:
+                _bp = current_index.get(_bk)
+                if _bp:
+                    _before[_bk] = count_sid_lines(_bp, sid8)
         _s, _l, _p, _ls, _ms = _apply_capture(
             sidecar, current_index, project, project_roots, sid8, iso_ts, items)
         applied_summaries.extend(_s)
@@ -1497,6 +1510,28 @@ def main() -> int:
             _pk = current_index.get(_k)
             if _pk:
                 _record_append(_pk, _k)  # F-1: hook write, not a self-log
+                # F-A, second channel: an EARLIER round's judgement must not
+                # read to the (D) backstop as THIS round's line. `round_base`
+                # is the count frozen when the OPEN round committed, so a task
+                # active in BOTH rounds would lose its `(r{N+1})` placeholder
+                # the moment round N's late sidecar landed. Advance that key's
+                # baseline by exactly what THIS apply appended: a CURRENT-round
+                # line still pre-empts the placeholder (which is what the guard
+                # is for), an older round's no longer does.
+                # The DELTA, not the absolute count, is what may be absorbed —
+                # rebasing to the post-append count would also swallow the
+                # open round's own lines (an agent self-log written this round
+                # before the late sidecar landed), and then the placeholder
+                # would fire on a round that was already satisfied. A no-op
+                # re-apply (text-key idempotent, so nothing is appended) yields
+                # delta 0 and leaves the baseline alone. Only keys the open
+                # round actually froze are touched — a key absent from
+                # `round_base` falls back to `log_seen_at_entry` and is not
+                # this round's to adjust.
+                if foreign_round and _k in _before:
+                    _delta = count_sid_lines(_pk, sid8) - _before[_k]
+                    if _delta > 0:
+                        round_base[_k] += _delta
 
     for _round_of, _rpath in scan_round_sidecars(STATE_DIR, session_id):
         _sidecar = _load_capture_sidecar(_rpath)
@@ -1531,7 +1566,7 @@ def main() -> int:
             # Row 2 — an EARLIER round's sidecar, gated on THAT round's frozen
             # set. `status` is deliberately untouched: moving it here would let
             # round N's late arrival mark round N+1's open request `done`.
-            _apply_one(_sidecar, history[str(_round_of)])
+            _apply_one(_sidecar, history[str(_round_of)], foreign_round=True)
             try:
                 os.remove(_rpath)
             except OSError:

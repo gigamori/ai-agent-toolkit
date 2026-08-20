@@ -69,10 +69,11 @@ regardless of your own cwd (project-notes/specs/capture-context-abs-path.md).
 `round` is the round `sidecar_path` belongs to. The hook stamps that round into
 the file name itself and matches your sidecar against THAT round's task/note
 set, so a judgment that arrives late is still applied instead of being
-discarded. Nothing is asked of you here: write to `sidecar_path` exactly as
-given (never rename it, never construct a path from `round`) and do not copy
-`round` into your output — it is context for your own reading, and the file
-name is what the hook trusts.
+discarded — as long as it lands within the next few rounds; a sidecar whose
+round has aged out beyond that is discarded unapplied. Nothing is asked of you
+here: write to `sidecar_path` exactly as given (never rename it, never construct
+a path from `round`) and do not copy `round` into your output — it is context
+for your own reading, and the file name is what the hook trusts.
 
 A session can touch more than one project of the same repository. That is why
 `touched_tasks` entries are **qualified** `"<project>/<basename>.md"` and why

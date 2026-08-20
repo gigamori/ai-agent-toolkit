@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_capture_late_sidecar.sh — T-W5-1..T-W5-3 / T-W6-1..T-W6-2 / T-R1-1..T-R1-6:
+# test_capture_late_sidecar.sh — T-W5-1..T-W5-3 / T-W6-1..T-W6-2 / T-R1-1..T-R1-7b:
 # a capture sidecar that arrives AFTER its round expired must still apply
 # (project-notes/specs/capture-detection-gaps.md §1.9 / W5, §4.4 / R-1).
 #
@@ -58,6 +58,15 @@
 #   T-R1-6  F-A: applying an OLD round's sidecar must not suppress the current
 #           round's lifecycle — the in-flight round still expires on schedule
 #           and its backstop still runs on that same Stop
+#   T-R1-7  F-A second channel: the same must hold PER TASK. A task active in
+#           round N and in round N+1 keeps its `(r{N+1})` placeholder when
+#           round N's late sidecar lands, because a foreign-round apply
+#           re-baselines `round_base` for the keys it wrote to. T-R1-6's two
+#           tasks are disjoint, so only this arm can see it
+#   T-R1-7b the other direction of the same rule: that re-baseline absorbs the
+#           DELTA the foreign apply appended, never the absolute count — a
+#           shared task the agent self-logged this round is already satisfied
+#           and must still get NO placeholder
 #
 # State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
 # Stop hook runs an unconditional stale-marker sweep on every invocation and
@@ -587,6 +596,71 @@ grep -qF "(auto) touched; summary pending (r2)" "$TB6" \
 echo "$OR16" | grep -q "membership-skip" \
   && fail "the old-round apply was membership-skipped: $OR16" \
   || pass "no membership-skip on the old-round apply"
+
+# =====================================================================
+# T-R1-7 (F-A, second channel): an OLD round's late apply must not suppress
+# the CURRENT round's placeholder for a task that is active in BOTH rounds.
+# `round_base` is the `[s:sid8]` count frozen when the open round committed,
+# so round N's summary line raised the count past round N+1's baseline and
+# the `(r{N+1})` placeholder never fired — the same loss F-A closes on the
+# expiry channel, on the channel F-A did not look at. T-R1-6 cannot observe
+# this: its two tasks are disjoint, so no key is in both rounds' sets.
+# =====================================================================
+echo ""
+echo "[T-R1-7] an old round's apply does not suppress a SHARED task's placeholder"
+reset_state
+TS7="$PDIR/tasks/1_in_progress/2026-08-19_r1-fa-shared.md"; mk "$TS7"
+write_touched "$TS7"
+stop 999 >/dev/null          # r1 requested: items = {TS7}
+stop 0   >/dev/null          # r1 expires -> (r1) placeholder on TS7
+grep -qF "(auto) touched; summary pending (r1)" "$TS7" \
+  && pass "setup: the shared task carries r1's placeholder" \
+  || fail "setup broken, no r1 placeholder: $(grep -F "[s:$SID8]" "$TS7")"
+write_touched "$TS7"
+stop 999 >/dev/null          # r2 requested: items = {TS7} AGAIN, in flight
+cat > "$(rcap 1)" << EOF
+{"confirmed":[{"task":"2026-08-19_r1-fa-shared.md","summary":"SHAREDSUM round 1's judgement"}],
+ "note_links":[],"proposals":[]}
+EOF
+OR17=$(stop 0)               # r1 applies AND r2 expires on this same Stop
+grep -qF "SHAREDSUM round 1's judgement" "$TS7" \
+  && pass "the old round's summary was applied to the shared task" \
+  || fail "old-round summary missing: $(grep -F "[s:$SID8]" "$TS7")"
+grep -qF "(auto) touched; summary pending (r2)" "$TS7" \
+  && pass "the shared task still got the CURRENT round's placeholder" \
+  || fail "no r2 placeholder on the shared task: $(grep -F "[s:$SID8]" "$TS7")"
+echo "$OR17" | grep -q "membership-skip" \
+  && fail "the old-round apply was membership-skipped: $OR17" \
+  || pass "no membership-skip on the shared-task old-round apply"
+
+# =====================================================================
+# T-R1-7b (F-A second channel, the OTHER direction): the foreign-round
+# re-baseline must absorb only what THAT apply appended. A shared task the
+# AGENT self-logged during the current round is already satisfied, so it
+# must still get NO placeholder — rebasing to the post-append count would
+# swallow the self-log too and hand the round a spurious `(r2)` line.
+# =====================================================================
+echo ""
+echo "[T-R1-7b] the re-baseline absorbs the foreign apply only, not this round's self-log"
+reset_state
+TS7B="$PDIR/tasks/1_in_progress/2026-08-19_r1-fa-selflog.md"; mk "$TS7B"
+write_touched "$TS7B"
+stop 999 >/dev/null          # r1 requested: items = {TS7B}
+stop 0   >/dev/null          # r1 expires -> (r1) placeholder
+write_touched "$TS7B"
+stop 999 >/dev/null          # r2 requested: items = {TS7B}, baseline frozen
+agent_log_line "$TS7B" "SELFLOG the agent's own round-2 line"
+cat > "$(rcap 1)" << EOF
+{"confirmed":[{"task":"2026-08-19_r1-fa-selflog.md","summary":"SELFSUM round 1's judgement"}],
+ "note_links":[],"proposals":[]}
+EOF
+OR17B=$(stop 0)              # r1 applies AND r2 expires on this same Stop
+grep -qF "SELFSUM round 1's judgement" "$TS7B" \
+  && pass "the old round's summary was applied alongside the self-log" \
+  || fail "old-round summary missing: $(grep -F "[s:$SID8]" "$TS7B")"
+grep -qF "(auto) touched; summary pending (r2)" "$TS7B" \
+  && fail "spurious r2 placeholder despite the self-log: $(grep -F "[s:$SID8]" "$TS7B")" \
+  || pass "the self-logged round got NO placeholder (delta re-baseline)"
 
 echo ""
 echo "=== Done ==="

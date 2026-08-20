@@ -312,7 +312,14 @@ session end
         judged against `round_base`, the count FROZEN when the round was requested, falling
         back for an unfrozen key to the `log_seen` snapshot taken at the START of this Stop
         (the live dict is useless there: the self-log pass has already raised it to the current
-        count). Both backstops are re-entered on every later Stop while the round stays
+        count). "Satisfied" means satisfied BY THIS ROUND: applying an earlier round's late
+        sidecar advances `round_base` for the keys it wrote to, by exactly the number of lines
+        THAT apply appended, so a task active in round `N` and in round `N+1` still gets its
+        `(r{N+1})` placeholder when round `N`'s judgement finally lands. The delta and not the
+        absolute count is what moves, so a line the open round did produce — an agent self-log
+        written before the late sidecar arrived — still counts as satisfying it, and an
+        idempotent re-apply (which appends nothing) moves nothing.
+        Both backstops are re-entered on every later Stop while the round stays
         resolved, so each also refuses to re-append its own text key — that presence, being
         monotone, is what keeps the gate silent instead of re-reporting a no-op write (§1.9,
         W5).
