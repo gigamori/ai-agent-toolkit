@@ -21,7 +21,22 @@ session.
 """
 import json, sys, os
 
-PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
+# Sibling import: hook scripts run standalone (no package context), so this
+# file's own directory goes on sys.path before importing the shared helper.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from touched_capture import _find_state_root  # noqa: E402
+
+# `_find_state_root` (touched_capture.py — IMPORTED, never copied) walks up from
+# the cwd to the nearest ancestor holding `_projects/_state`. A session launched
+# in a repo subdirectory keeps that subdirectory as its hook cwd for its whole
+# life, so a cwd-direct root resolves to a tree that does not exist and the
+# `os.path.exists(state_path)` gate below never finds the state json to reset.
+# `or os.getcwd()` reproduces the pre-change value byte-for-byte when no
+# ancestor qualifies. Decision record: mode-orchestrator-runs/
+# 2026-08-20_remaining-hooks-cwd-dependence/02a-decision.md (option (b));
+# scope: that run's 02-plan.md §3.
+STATE_ROOT = _find_state_root(os.getcwd()) or os.getcwd()
+PROGRESS_ROOT = os.path.join(STATE_ROOT, '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
 
 try:

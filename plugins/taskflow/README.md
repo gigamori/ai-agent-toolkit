@@ -366,6 +366,8 @@ session start
 
 Eight hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (two hooks), `Stop` (two hooks), `SessionStart:compact`, and `PreCompact`. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (the bounded advisory write lock, protocol v2) — are shared modules, not wired hooks themselves: `note_links.py` is imported by the Stop hook, and `log_lock.py` by the Stop hook and by `scripts/rebuild_progress.py`, which takes the same lock around its `progress.md` read→write window.
 
+**Where `_projects/` is resolved.** Every hook that needs the state tree walks up from the session's launch directory to the nearest ancestor that holds `_projects/_state` — the launch directory itself counts — and falls back to the launch directory when no ancestor qualifies. This matters because a hook process keeps the directory the session was **launched** in for the session's whole life (a `cd` in a Bash tool call does not move it): starting Claude Code inside a subdirectory of your workspace previously made the plugin no-op for that entire session, and now joins the workspace's existing tree instead. The one deliberate exception is the Stop hook's 7-day stale-marker cleanup, whose target stays pinned to the launch directory — a subdirectory-launched session simply skips that housekeeping, and the next session started at the workspace root performs it.
+
 #### UserPromptSubmit: session_init.py
 
 Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Progress Session]` into the LLM context. Creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` if missing.

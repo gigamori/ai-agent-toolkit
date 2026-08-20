@@ -113,10 +113,42 @@ from note_links import (  # noqa: E402
     normalize_note_rel,
     resolve_note_owner,
 )
+from touched_capture import _find_state_root  # noqa: E402
 from tstamp import now_iso  # noqa: E402
 
-PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')
+# --- TWO ROOTS, DELIBERATELY DIFFERENT (02-plan.md §2 option (b) / §4.2) -----
+# `_find_state_root` (touched_capture.py — IMPORTED, never copied) walks up from
+# the cwd to the nearest ancestor holding `_projects/_state`. A session launched
+# in a repo subdirectory keeps that subdirectory as its hook cwd for its whole
+# life, so a cwd-direct root makes this whole hook a no-op: no round opens and
+# the session's `.touched` ledger is never consumed. `or os.getcwd()` reproduces
+# the pre-change value byte-for-byte when no ancestor qualifies. Decision
+# record: mode-orchestrator-runs/
+# 2026-08-20_remaining-hooks-cwd-dependence/02a-decision.md (option (b)).
+STATE_ROOT = _find_state_root(os.getcwd()) or os.getcwd()
+PROGRESS_ROOT = os.path.join(STATE_ROOT, '_projects')
 STATE_DIR = os.path.join(PROGRESS_ROOT, '_state')
+
+# The bulk-sweep target is PINNED to the cwd and does NOT follow the ancestor
+# search above. `_cleanup_stale_markers` is a predicate-driven bulk `os.remove`
+# that runs before stdin is read, i.e. before any session identity is known.
+# Letting it follow the search would grow its reachable-cwd set from "a dir that
+# contains `_projects`" to "every descendant of a dir that holds
+# `_projects/_state`" — including the tmp dirs E2E fixtures are built in — which
+# re-arms the 2026-07-17 incident (250 files deleted from the real
+# `_projects/_state/` in one sweep; `_projects/` is gitignored, so the loss was
+# unrecoverable) from every subdirectory of the repo. Pinning keeps the bulk
+# sweep's blast radius byte-for-byte today's: in a subdir-launched session this
+# path does not exist, `os.listdir` raises, and the sweep is the same silent
+# no-op it is today — that session performs no GC, and the next repo-root
+# session collects what it left. This is NOT the stronger claim that no deletion
+# follows the search: the SID-scoped round-sidecar `os.remove` calls in `main()`
+# operate on this session's own `<sid>.r<N>.capture` files under the resolved
+# STATE_DIR and MUST follow it, or the fix breaks.
+# Keep the two constants DIFFERENT — a unit test asserts they differ under a
+# nested cwd (02-plan.md §5.2 AC-7); unifying them is the refactor that undoes
+# the isolation this pinning buys.
+SWEEP_STATE_DIR = os.path.join(os.getcwd(), '_projects', '_state')
 
 # Async capture subagent (spec §10.5). The Stop gate emits a block instruction
 # to spawn this agent type; the subagent writes a `<sid>.capture` sidecar that a
@@ -269,7 +301,9 @@ def read_touched_raw(touched_path: str, cwd: str) -> list[str]:
 
 
 def _cleanup_stale_markers(state_dir: str) -> None:
-    """Remove stale files under STATE_DIR older than _MARKER_MAX_AGE_DAYS:
+    """Remove stale files under `state_dir` older than _MARKER_MAX_AGE_DAYS
+    (the only call site passes SWEEP_STATE_DIR, the cwd-pinned root — NOT the
+    search-derived STATE_DIR; see the two-roots comment at module scope):
       - sidecar markers (`.bind` / `.touched` / `.capture`, plus legacy
         `.captured`) — unconditional mtime sweep (unchanged predicate).
       - session-state `.json` (36-char-UUID stem) whose `project` is EMPTY
@@ -1247,7 +1281,8 @@ def build_capture_context(sid8, iso_ts, capture_path, project_root,
 def main() -> int:
     if not os.path.isdir(PROGRESS_ROOT):
         return 0
-    _cleanup_stale_markers(STATE_DIR)
+    # SWEEP_STATE_DIR, not STATE_DIR — see the two-roots comment at module scope.
+    _cleanup_stale_markers(SWEEP_STATE_DIR)
     try:
         data = json.loads(sys.stdin.buffer.read().decode('utf-8'))
     except Exception:
@@ -1299,7 +1334,7 @@ def main() -> int:
         return 0
 
     project_root = os.path.join(PROGRESS_ROOT, project)
-    cwd = os.getcwd()
+    cwd = STATE_ROOT
     sid8 = session_id[:8]
     # Offset-aware ISO8601 with `T` separator (second resolution). Shared
     # generation point with session_init.py's `iso_ts=` header field (tstamp.py)
@@ -1748,12 +1783,19 @@ def main() -> int:
         #
         # 打止め = a BARE BASENAME in `exec_tried` (INV-1): that list already
         # round-trips through the CLOSED `_load_bind`/`_save_bind` whitelist, so
-        # no schema change and no new evaporation trap; its existing entries are
-        # `_rel(path, cwd)` values, which always start `_projects/`
-        # (PROGRESS_ROOT is `getcwd() + '/_projects'` and `main` returns early
-        # without it), so the two shapes cannot collide. Only the REPORT is
-        # bounded — resolution keeps retrying every Stop, which is what lets a
-        # name claimed before its task file exists still bind later.
+        # no schema change and no new evaporation trap; the entries it computes
+        # are `_rel(path, cwd)` values, which always start `_projects/` (`cwd`
+        # is STATE_ROOT, every `path` reaching `_rel` here is absolute under
+        # `PROGRESS_ROOT = os.path.join(STATE_ROOT, '_projects')`, and `main`
+        # returns early without that dir), so the two shapes cannot collide.
+        # A `.bind` carried over from the window in which PROGRESS_ROOT already
+        # followed the ancestor search while `cwd` was still `os.getcwd()` can
+        # hold `../_projects/...` entries; those are equally disjoint from a
+        # bare basename, they just never match the probe again (see the
+        # `.bind` `exec_tried` migration note in docs/architecture.md). Only
+        # the REPORT is bounded — resolution keeps retrying every Stop, which
+        # is what lets a name claimed before its task file exists still bind
+        # later.
         for b in exec_this_turn:
             base = _exec_base(b)
             if not base or base in turn_resolved or base in exec_tried:

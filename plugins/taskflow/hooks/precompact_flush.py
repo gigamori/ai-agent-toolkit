@@ -10,9 +10,13 @@ computed by `session_progress_capture.py`'s own helpers, imported here;
 nothing about the pending set is re-implemented.
 
 What it does (§2.2), deterministically, with no subprocess and no LLM:
-  1. Resolve `_projects` / STATE_DIR from getcwd() exactly like every other
-     taskflow hook (no env override — plugins/taskflow/CLAUDE.md
-     `e2e_state_dir_sandbox`), and exit 0 on anything missing.
+  1. Inherit `_projects` / STATE_DIR / STATE_ROOT by importing them from
+     `session_progress_capture` (below) rather than resolving a second root
+     here; they come from `_find_state_root(os.getcwd()) or os.getcwd()` —
+     the walk up to the nearest ancestor (the cwd itself included) holding
+     `_projects/_state` — which every root-resolving taskflow hook now shares
+     (no env override — plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`).
+     Exit 0 on anything missing.
   2. Compute the pending set = D1's round-active set A_r over the ledger slice
      `raw[touch_cursor:]` (`resolve_touch_cursor` + `compute_round_active`).
      DETECTION LIMIT (F-5): the PreCompact payload carries no
@@ -62,6 +66,7 @@ from note_links import build_reverse_index  # noqa: E402
 from session_progress_capture import (  # noqa: E402
     PROGRESS_ROOT,
     STATE_DIR,
+    STATE_ROOT,
     _PRECOMPACT_NOTE_PREFIX,
     _load_bind,
     append_auto_binding,
@@ -108,7 +113,14 @@ def main() -> int:
     if not os.path.isdir(project_root):
         return 0
 
-    cwd = os.getcwd()
+    # STATE_ROOT, not `os.getcwd()`: this is the base the `.touched` ledger is
+    # READ against, and `touched_capture.py` WRITES it against its own
+    # STATE_ROOT (`cwd = STATE_ROOT` in its `main()`). The two were identical
+    # while every hook anchored on the cwd; once the root follows the ancestor
+    # search they differ in exactly the newly-reachable configuration (a
+    # subdir-launched session), and every ledger line would silently fail to
+    # match. 02-plan.md §6.2.
+    cwd = STATE_ROOT
     sid8 = session_id[:8]
     touched_path = os.path.join(STATE_DIR, f'{session_id}.touched')
     raw_lines = read_touched_raw(touched_path, cwd)

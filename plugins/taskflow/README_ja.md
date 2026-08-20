@@ -364,6 +364,8 @@ hook の書込と競合した場合は依然として無防備である。
 
 8 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（2 つ）/ `Stop`（2 つ）/ `SessionStart:compact` / `PreCompact` に wire されている。加えて `note_links.py`（note↔task link のデータ層）と `log_lock.py`（bounded advisory write lock、protocol v2）の 2 ファイルは共有モジュールであり、単体で wire された hook ではない：`note_links.py` は Stop hook が import し、`log_lock.py` は Stop hook に加えて `scripts/rebuild_progress.py` も import する（後者は `progress.md` の read→write 区間を同じロックで保護する）。
 
+**`_projects/` の解決先。** state ツリーを必要とする hook はいずれも、セッションの起動ディレクトリから祖先方向へ辿り、`_projects/_state` を持つ最も近いディレクトリを root とする（起動ディレクトリ自身も候補に含む）。該当する祖先が無ければ起動ディレクトリにフォールバックする。hook プロセスはセッションが**起動された**ディレクトリをセッションの生涯にわたって保持する（Bash ツール呼び出し中の `cd` では動かない）ため、ワークスペースのサブディレクトリで Claude Code を起動すると、従来はそのセッション全体でプラグインが no-op になっていた。現在はワークスペース既存のツリーに合流する。意図的な例外は Stop hook の 7 日 stale-marker クリーンアップだけで、その対象は起動ディレクトリに固定されたままである — サブディレクトリで起動したセッションはこの掃除を単にスキップし、次にワークスペース root で起動したセッションが実行する。
+
 #### UserPromptSubmit: session_init.py
 
 毎ターン実行。`_projects/_state/{session_id}.json` を管理し、`[Progress Session]` を LLM コンテキストに注入する。`_projects/` が存在しない場合は自動生成する（`_state/` とテンプレート `index.md` も同時作成）。
