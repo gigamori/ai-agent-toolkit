@@ -463,6 +463,33 @@ def dedup_sessions(sessions: list[SessionRef]) -> list[SessionRef]:
     return [seen[k] for k in order]
 
 
+def group_sessions(sessions: list[SessionRef]) -> list[list[SessionRef]]:
+    """Group log entries by session, keeping EVERY entry (no text is dropped).
+
+    Returns one list per distinct session — keyed like `dedup_sessions` on
+    `full_uuid` (or `short_id` when the uuid is unresolved) — in first-occurrence
+    order, each group ordered newest-first so its head is the entry the collapsed
+    row shows.
+
+    This is the display counterpart of `dedup_sessions`, which keeps only the
+    latest entry per session and is what the card used to render. The card now
+    nests a `<details>` per group instead, so a session that wrote many rounds
+    keeps all of its lines. The collapsed card's "N sessions" label counts
+    GROUPS, not entries: `len(group_sessions(...))` equals
+    `len(dedup_sessions(...))` by construction, which is what stops the label
+    from silently changing meaning to an entry count.
+    """
+    groups: dict[str, list[SessionRef]] = {}
+    order: list[str] = []
+    for s in sessions:
+        key = s.full_uuid if s.full_uuid else s.short_id
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(s)
+    return [sorted(groups[k], key=lambda s: s.date, reverse=True) for k in order]
+
+
 STATUS_BADGE_LABEL = {"0_todo": "TODO", "1_in_progress": "WIP", "2_done": "✓"}
 
 
@@ -529,29 +556,40 @@ def render_card(
 ) -> str:
     pri_color = PRIORITY_COLORS.get(task.priority, "#718096")
     pri_label = task.priority or "—"
-    unique_sessions = dedup_sessions(task.sessions)
+    groups = group_sessions(task.sessions)
 
-    if unique_sessions:
+    def _row(s: SessionRef, extra: str = "") -> str:
+        """One entry, as the anchor form when its uuid resolved, else plain."""
+        summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
+        inner = (
+            f'<span class="s-date">{esc(s.date)}</span>'
+            f'<span class="s-id">[{esc(s.short_id)}]</span>'
+            f'<span class="s-summary">{esc(summary_short)}</span>{extra}'
+        )
+        if s.full_uuid:
+            url = session_url(s, scheme, serve, open_token)
+            return f'<a href="{esc(url)}" target="_blank">{inner}</a>'
+        return f'<span class="no-uuid">{inner}</span>'
+
+    if groups:
         items = ""
-        for s in unique_sessions:
-            summary_short = s.summary[:72] + ("…" if len(s.summary) > 72 else "")
-            if s.full_uuid:
-                url = session_url(s, scheme, serve, open_token)
-                items += (
-                    f'<li><a href="{esc(url)}" target="_blank">'
-                    f'<span class="s-date">{esc(s.date)}</span>'
-                    f'<span class="s-id">[{esc(s.short_id)}]</span>'
-                    f'<span class="s-summary">{esc(summary_short)}</span>'
-                    f"</a></li>\n"
-                )
-            else:
-                items += (
-                    f'<li class="no-uuid">'
-                    f'<span class="s-date">{esc(s.date)}</span>'
-                    f'<span class="s-id">[{esc(s.short_id)}]</span>'
-                    f'<span class="s-summary">{esc(summary_short)}</span>'
-                    f"</li>\n"
-                )
+        for g in groups:
+            head, rest = g[0], g[1:]
+            if not rest:
+                cls = "" if head.full_uuid else ' class="no-uuid"'
+                items += f"<li{cls}>{_row(head)}</li>\n"
+                continue
+            # More than one entry from this session: nest a <details> so the
+            # collapsed row stays a single line while every entry is reachable.
+            # `+N` counts the entries BEHIND the head (len(g) - 1), not len(g).
+            more = f'<span class="more-badge">+{len(rest)}</span>'
+            sub = "".join(f"<li>{_row(s)}</li>\n" for s in rest)
+            items += (
+                f'<li class="sgroup-li"><details class="sgroup">'
+                f"<summary>{_row(head, more)}</summary>"
+                f'<ul class="sessions sub">{sub}</ul>'
+                f"</details></li>\n"
+            )
         body = f'<ul class="sessions">{items}</ul>'
     else:
         body = '<p class="no-sessions">No sessions</p>'
@@ -577,7 +615,8 @@ def render_card(
             )
         body += f'<div class="start-btns">{btns}</div>'
 
-    n = len(unique_sessions)
+    # Distinct SESSIONS, never entries — see group_sessions' docstring.
+    n = len(groups)
     status_badge = (
         f'<span class="badge st" style="background:{STATUS_HEADER_COLOR[task.status]}">'
         f'{STATUS_BADGE_LABEL[task.status]}</span>'
@@ -858,6 +897,13 @@ ul.sessions li:last-child{border-bottom:none}
 ul.sessions a{color:var(--link);text-decoration:none;display:flex;flex-wrap:wrap;gap:4px}
 ul.sessions a:hover{text-decoration:underline}
 li.no-uuid{display:flex;flex-wrap:wrap;gap:4px;color:var(--muted)}
+.no-uuid{color:var(--muted)}
+li.sgroup-li{display:block}
+.sgroup>summary{cursor:pointer;list-style:none;display:flex;flex-wrap:wrap;gap:4px}
+.sgroup>summary::-webkit-details-marker{display:none}
+.sgroup[open]>summary{font-weight:600}
+.more-badge{margin-left:4px;padding:0 4px;border-radius:6px;background:var(--border);color:var(--muted);font-size:9px;flex-shrink:0}
+ul.sessions.sub{margin:2px 0 2px 10px;border-left:1px solid var(--border);padding-left:6px}
 .s-date{color:var(--muted);flex-shrink:0}
 .s-id{color:var(--id-fg);flex-shrink:0;font-family:monospace}
 .s-summary{color:inherit}
