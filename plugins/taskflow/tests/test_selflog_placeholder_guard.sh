@@ -51,16 +51,26 @@
 # 2026-08-20_test-touched-capture-sh-state-hazard/). That venue is now closed by
 # non-existence, so the placement conclusion above is unchanged.
 #
-# State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
-# Stop hook runs an unconditional stale-marker sweep and resolves `_projects` via
-# getcwd() (no env override). This test `cd`s into an isolated tempdir and builds
-# `_projects/` there — it NEVER cd's into $REPO_ROOT while invoking the hook, so
-# the sweep can never reach the real _projects/_state/ (2026-07-17 incident: a
-# wrong-cwd run deleted 250 real session-state files). The real dir's file count
-# is bracketed below.
+# State-dir sandbox (`e2e_state_dir_sandbox` -- cited by rule id: the rule file
+# has moved once already and every candidate path is gitignored, so no path
+# citation survives a clone): since the 2026-08-20 ancestor-walk rollout EVERY
+# taskflow hook resolves its roots via `_find_state_root`, walking UP from the
+# cwd (cwd included), so "cd into a tempdir" alone isolates nothing — with no
+# nearer `_projects/_state` on the walk, a temp dir inside the repo tree
+# resolves to the real one (2026-07-17 incident: a wrong-cwd run deleted 250
+# real session-state files). What isolates this script is (a) the step-4 guards
+# right after mktemp below — the temp dir exists, is outside the repo tree, and
+# no ancestor of it holds `_projects/_state` — and (b) the fixture's own
+# $TMP/_projects/_state, created before any hook runs, which stops the walk at
+# the cwd itself. (b) is ordering-fragile: it holds only while every hook
+# invocation happens after the fixture mkdir, so (a) is the load-bearing half —
+# do NOT remove the guards on the argument that (b) suffices. The bulk sweep
+# additionally targets a cwd-pinned SWEEP_STATE_DIR, but that pin covers the
+# sweep alone, not the state-json / .bind / placeholder writes, so it is never
+# the isolation argument. The real dir's file count is bracketed below.
 #
 # Usage:  bash plugins/taskflow/tests/test_selflog_placeholder_guard.sh
-# Exit:   0 = all pass, 1 = failure
+# Exit:   0 = all pass, 1 = failure, 2 = sandbox-guard abort (nothing ran)
 # Requires: bash (Git-Bash on win32 — primary), uv.
 
 set -uo pipefail
@@ -70,8 +80,36 @@ HOOK="$REPO_ROOT/plugins/taskflow/hooks/session_progress_capture.py"
 REAL_STATE_DIR="$REPO_ROOT/_projects/_state"
 REAL_STATE_BEFORE=$(ls -1 "$REAL_STATE_DIR" 2>/dev/null | wc -l)
 
-TMP="$(mktemp -d)"
-cd "$TMP"
+TMP="$(mktemp -d)" || { echo "ABORT: mktemp -d failed" >&2; exit 2; }
+# A failed mktemp would leave TMP empty, `cd ""` would fail silently under
+# `set -uo pipefail` (no -e), the cwd would stay at $REPO_ROOT, and the guards
+# below would pass an empty string — the exact shape they exist to stop. Check
+# before guarding, not after.
+[ -n "$TMP" ] && [ -d "$TMP" ] \
+  || { echo "ABORT: mktemp -d yielded no usable dir ('$TMP')" >&2; exit 2; }
+cd "$TMP" || { echo "ABORT: cd '$TMP' failed" >&2; rm -rf "$TMP"; exit 2; }
+
+# --- e2e_state_dir_sandbox step 4: abort BEFORE any fixture exists ----------
+# Exit 2, not 1: these are not test failures — nothing ran. Placed before the
+# EXIT trap so an abort never enters the pass/fail tally. The ancestor walk
+# below includes $TMP itself, which is correct here precisely because the
+# fixture's own _projects/_state does not exist yet.
+case "$TMP" in
+  "$REPO_ROOT"|"$REPO_ROOT"/*)
+    echo "ABORT: temp workspace $TMP is INSIDE the repo tree ($REPO_ROOT);" \
+         "the hooks' ancestor walk would resolve into the real _projects/_state." >&2
+    cd /; rm -rf "$TMP"; exit 2 ;;
+esac
+d="$TMP"
+while :; do
+  if [ -d "$d/_projects/_state" ]; then
+    echo "ABORT: ancestor $d of temp workspace holds _projects/_state;" \
+         "the hooks' ancestor walk would reach it." >&2
+    cd /; rm -rf "$TMP"; exit 2
+  fi
+  p="$(dirname "$d")"; [ "$p" = "$d" ] && break; d="$p"
+done
+
 PROJECTS="$TMP/_projects"
 STATE="$PROJECTS/_state"
 PROJ="_test-selflog-$$"
