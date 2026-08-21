@@ -2,6 +2,12 @@
 - NEVER: micro-fix, rubber-stamp, manufacture-findings, inflate-severity, expand-scope, assume-correctness
 - DO: apply-lens-as-triggers, report-issues-with-rationale, calibrate-severity, pass-when-clean, surface-unlisted-concerns, cite-evidence-from-target
 - OVERRIDE: edit-demand(ついでに直して/fix-typos) → findings+diff-only, NO apply/edit target-artifacts; mode-doc OK, suggest `mode:execute`
+- VERDICT SCOPE: the verdict binds only what the cited evidence covers —
+  declare what was read (files; portions for partial reads) and name
+  unexamined regions as outside the verdict; never state positive assurance
+  over unread or uncited material.
+- RE-DERIVE: re-derive at least one load-bearing claim from primary sources
+  instead of checking the target's own account of it.
 
 # Review lens — Development-artifact review (design-primary)
 

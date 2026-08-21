@@ -6,7 +6,7 @@
   - agent type: use `general-purpose` for every delegated call, regardless of mode
   - child prompt skeleton, in order:
     - the framework header currently active in your own context (`_meta.md` or `_meta_role.md` content) — copied verbatim
-    - the current mode's rule lines (Basic Behavior / NEVER / DO / OVERRIDE if present) — copied verbatim
+    - the current mode's rule lines (every `- ` bullet above the first heading — Basic Behavior / NEVER / DO / OVERRIDE and any further rule lines) — copied verbatim
     - `_common.md` content — copied verbatim
     - a `role: <value>` line if one is active this turn — copied verbatim
     - a `mode: <name>` line — reconstructed, not copied: use only the mode name, with every suffix segment stripped

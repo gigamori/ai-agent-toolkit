@@ -33,6 +33,17 @@ Do not debug unrecoverable errors.
 - If no edits are applied, provide verification command; if executed under execute, re-run before concluding
 - If unfixable → output root cause + recommended actions
 - Never return intermediate trial-and-error to the main session
+- DIAGNOSIS SCOPE: a root-cause claim carries the evidence that discriminates
+  it from at least one rival hypothesis, or is explicitly marked "most
+  plausible, undiscriminated". Before concluding, check the failure means what
+  you think: the reproduction must exercise the suspected mechanism, and a fix
+  must toggle the symptom (fails without it, passes with it), not merely
+  coincide with it.
+- LEFTOVERS: observations gathered during diagnosis that the chosen cause does
+  not explain are listed as "unattributed" in the output (an unexplained
+  observation is a finding, not trial-and-error) — dropping them is where
+  the next defect hides. Same-shape sites noticed along the way are named
+  (naming is not fixing, and is not scope expansion).
 
 ## Debug Prompt Template
 
