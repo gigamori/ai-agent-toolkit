@@ -31,8 +31,13 @@ cwd itself included) looking for a `_projects/_state` directory — read-only
 they resolve to the real `_projects/_state`. The conclusion survives only for
 this test's exact shape: every case below calls `extract_bash_paths` directly
 and NEVER `main()`, so nothing is written wherever STATE_DIR landed. Do not
-exercise these cases end-to-end through the hook, and do not extend
-test_touched_capture.sh's `[main]` sections.
+exercise these cases end-to-end through the hook -- the end-to-end halves are
+`test_touched_capture_bash_scope_e2e.py`, `test_touched_capture_state_root.py`
+and `test_touched_capture_ledger_append.py`, each of which drives `main()` as a
+subprocess inside a temp workspace outside the repo tree. (The other venue that
+sentence used to name, `test_touched_capture.sh`, was retired by the 2026-08-20
+consolidation: mode-orchestrator-runs/
+2026-08-20_test-touched-capture-sh-state-hazard/.)
 
 stdlib only. Run with:
     uv run --no-project python plugins/taskflow/tests/test_touched_capture_quoted_redirect.py
@@ -117,6 +122,16 @@ CASES = [
     ("T21", "echo x && mv c.md d.md", ["c.md", "d.md"]),
     # A quoted `>` must not break the verb path either.
     ("T22", 'echo "a > b" && rm z.md', ["z.md"]),
+    # T29/T30 are ports of the `cp` and `tee -a` checks from the retired
+    # test_touched_capture.sh `[extract]` block (its A4/A10; consolidation
+    # 2026-08-20), kept here for the same reason T19-T22 are: they pin the verb
+    # path, which is outside A-6's own scope. `cp` is the direct sibling of T19
+    # (`rm`) and T21 (`mv`); `tee -a` is T20 (`tee`) with the flag-skip branch
+    # exercised. Both are strengthened from the .sh's membership assertion to
+    # this table's full-list form, so T29 also pins `y.md` -- the second `cp`
+    # operand the .sh silently omitted.
+    ("T29", "cp x.md y.md", ["x.md", "y.md"]),
+    ("T30", "echo x | tee -a t2.md", ["t2.md"]),
     # --- R-1 regression: an unpaired apostrophe must not outlive its line ---
     # The quote-aware scan (A-6) introduced a LOSS of capture the old regex did
     # not have: one contraction in a comment left the scan in `single` for the

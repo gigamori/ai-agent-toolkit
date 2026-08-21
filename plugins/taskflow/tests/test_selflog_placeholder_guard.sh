@@ -44,8 +44,12 @@
 # than an arm inside `test_round_binding.sh`. That file's header enumerates a
 # closed spec contract (T-D1-1..T-D1-5 of capture-detection-gaps.md §1 / D1) and
 # every arm is keyed to one of those IDs; B-AC2 belongs to a different design
-# (04-plan (B)) and needs the rationale above in its own header. The
-# `test_touched_capture.sh` `[main]` section is off limits either way (§5.1).
+# (04-plan (B)) and needs the rationale above in its own header. The other
+# candidate venue — `test_touched_capture.sh`'s `[main]` section — was off
+# limits under §5.1 and no longer exists at all: it was retired by the
+# 2026-08-20 consolidation (mode-orchestrator-runs/
+# 2026-08-20_test-touched-capture-sh-state-hazard/). That venue is now closed by
+# non-existence, so the placement conclusion above is unchanged.
 #
 # State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
 # Stop hook runs an unconditional stale-marker sweep and resolves `_projects` via
