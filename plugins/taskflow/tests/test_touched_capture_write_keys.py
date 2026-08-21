@@ -24,8 +24,10 @@ still satisfy every existing `main()`-level assertion, because those all feed
 in-workspace paths. W1/W2 deliberately use `/r/...` -- unrelated to any cwd --
 which is what makes them discriminating.
 
-Sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`, same conclusion
-and same reason as test_touched_capture_quoted_redirect.py): importing
+Sandbox (`e2e_state_dir_sandbox` -- cited by rule id on purpose: the rule
+file has moved once already and every candidate path is gitignored, so no
+path citation survives a clone; same conclusion and same reason as
+test_touched_capture_quoted_redirect.py): importing
 touched_capture runs `_find_state_root(os.getcwd()) or os.getcwd()` at module
 scope, so the import alone walks the cwd's ancestors looking for
 `_projects/_state` -- read-only `isdir` probes, but run from inside the repo

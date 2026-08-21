@@ -28,8 +28,11 @@ the negation of the invariant under test here, and
 test_touched_capture_bash_scope_e2e.py builds a fresh workspace per arm.
 
 Sandbox mechanics copied (mechanism, not text) from
-`test_touched_capture_state_root.py`, per `plugins/taskflow/CLAUDE.md`
-`e2e_state_dir_sandbox` and its `touched_capture.py` carve-out: a
+`test_touched_capture_state_root.py`, per the `e2e_state_dir_sandbox` rule
+(cited by rule id on purpose: the rule file has moved once already and every
+candidate path is gitignored, so no path citation survives a clone; since
+2026-08-20 its isolation steps bind every taskflow hook, no longer a
+`touched_capture.py`-only carve-out): a
 `tempfile.mkdtemp()` workspace OUTSIDE the repo tree; an up-front assertion
 that no ancestor of that workspace holds `_projects/_state` (the hook walks up,
 so an in-repo temp dir would resolve to the REAL state dir); the hook invoked
