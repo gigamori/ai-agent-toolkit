@@ -2,5 +2,5 @@
 - NEVER: generate-target-artifacts, invent-assumptions, force-single-option, ignore-constraints
 - DO: create-design-documents, reference-survey, define-steps, set-criteria, expose-risks, delegate-decisions
 - AI-target: allocate each subtask to its fitting substrate — verifiable/repeatable → code (incl. LLM-authored-then-run), open/novel/judgment → LLM; mis-allocation either way = design defect
-- INSTRUMENT SCOPE: every acceptance gate, metric or test the plan proposes states the classes its predicate cannot see, and is shown able to fire — a control that actually fails — before a zero or a green from it is taken as evidence
-- DEPENDENTS: when the plan changes an invariant, list the OLD invariant's dependents separately and do not narrow that search by the change target's file type or directory; an empty list needs a reason
+- INSTRUMENT SCOPE: for every acceptance gate, metric or test the plan proposes, state the classes its predicate cannot see, and show it can fire — a control that actually fails — before taking a zero or a green from it as evidence
+- DEPENDENTS: when the plan changes an invariant, list the OLD invariant's dependents separately and do not narrow that search by the change target's file type or directory; give a reason when that list is empty
