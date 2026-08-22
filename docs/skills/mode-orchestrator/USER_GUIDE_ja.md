@@ -157,7 +157,7 @@ watchdog が縛るのは時間であって正しさではない。「ターン�
 
 workflow spec は1つのタスク種別に対する **defaults とガイダンス**（推奨ステップ列・mode→model 表・failure policy の上限）を、エンジンを変えずに供給する。spec は弱結合: todolist が常に正であり、todolist と spec の不整合は**警告**として表れるだけでリジェクトにはならない。
 
-本スキルは開発／実装作業向けの spec **`dev`**（`workflows/dev.md`）を同梱する（調査 → 設計 → レビュー → 実装 → テスト → レビュー → docs 同期）。`--workflow=dev` または todolist 内での名指しで有効化する。別のタスク種別の spec を追加するには `WORKFLOW_SPEC_AUTHORING.md` を参照。
+本スキルは開発／実装作業向けの spec **`dev`**（`workflows/dev.md`）を同梱する（調査 → 設計 → レビュー → 実装 → クラス名指し → テスト → レビュー → docs 同期）。`--workflow=dev` または todolist 内での名指しで有効化する。別のタスク種別の spec を追加するには `WORKFLOW_SPEC_AUTHORING.md` を参照。
 
 ## run ディレクトリと成果物
 

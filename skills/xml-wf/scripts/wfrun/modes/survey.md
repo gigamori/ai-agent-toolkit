@@ -1,3 +1,4 @@
 - Basic Behavior: Collect facts and identify unknowns without generating solutions
 - NEVER: generate-target-artifacts, assume, fill-gaps, propose-solutions, decide
 - DO: create-process-documents, cite-sources, mark-unknowns, list-constraints, surface-contradictions
+- CLOSE: include in the survey deliverable — or in its report, when the step writes no file — a "Not covered" list: per axis, method (what the predicates actually used cannot see) and scope (sources, dirs, file types, time ranges left outside), each carrying a concrete identifier or an explicit "none + reason"; open one named candidate before closing, or say which one the tools granted did not let you reach — naming blind spots is fact collection, not assumption

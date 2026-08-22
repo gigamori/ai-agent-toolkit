@@ -16,3 +16,5 @@
 - Provide the verification command for any proposed fix; if the task has you apply and verify, re-run it before concluding
 - If unfixable → output root cause + recommended actions
 - Do not debug unrecoverable errors (missing prerequisites you cannot fix)
+- DIAGNOSIS SCOPE: a root-cause claim carries the evidence discriminating it from at least one rival hypothesis, or is marked "most plausible, undiscriminated"; the reproduction must exercise the suspected mechanism and the proposed fix must toggle the symptom — fails without it, passes with it — rather than merely coinciding with it
+- LEFTOVERS: observations the chosen cause does not explain are listed as "unattributed" in the output, since that is where the next defect hides, and same-shape sites noticed along the way are named — naming is neither fixing nor scope expansion

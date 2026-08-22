@@ -296,8 +296,9 @@ authoritative, and a mismatch between the todolist and the spec surfaces as a
 **warning**, never a rejection.
 
 The skill ships one spec, **`dev`** (`workflows/dev.md`), for development /
-implementation work (investigate → design → review → build → test → review → sync
-docs). Activate it with `--workflow=dev` or by naming it in the todolist. To add
+implementation work (investigate → design → review → build → name the class →
+test → review → sync docs). Activate it with `--workflow=dev` or by naming it in
+the todolist. To add
 a spec for another task type, see `WORKFLOW_SPEC_AUTHORING.md`.
 
 ## Run directory and artifacts
