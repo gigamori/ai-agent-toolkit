@@ -4,14 +4,14 @@
     - a segment that names a model or model alias is that child's model override
     - an unrecognized segment: report it to the user verbatim instead of silently ignoring it
   - agent type: use `general-purpose` for every delegated call, regardless of mode
-  - child prompt skeleton, in order:
-    - the framework header currently active in your own context (`_meta.md` or `_meta_role.md` content) — copied verbatim
-    - the current mode's rule lines (every `- ` bullet above the first heading — Basic Behavior / NEVER / DO / OVERRIDE and any further rule lines) — copied verbatim
-    - `_common.md` content — copied verbatim
-    - a `role: <value>` line if one is active this turn — copied verbatim
-    - a `mode: <name>` line — reconstructed, not copied: use only the mode name, with every suffix segment stripped
-    - a blank line
-    - the task instruction, with any inputs given as file paths, not inlined content
+  - child prompt skeleton — assemble these parts in this exact order:
+    1. the framework header currently active in your own context (`_meta.md` or `_meta_role.md` content) — copied verbatim
+    2. the current mode's rule lines (every `- ` bullet above the first heading — Basic Behavior / NEVER / DO / OVERRIDE and any further rule lines) — copied verbatim
+    3. `_common.md` content — copied verbatim
+    4. a `role: <value>` line if one is active this turn — copied verbatim
+    5. a `mode: <name>` line — reconstructed, not copied: use only the mode name, with every suffix segment stripped
+    6. a blank line
+    7. the task instruction, with any inputs given as file paths, not inlined content
   - never copy your own turn's `mode: <name>/<suffix...>` line verbatim into the child prompt — always reconstruct it with the suffix stripped
   - never pass this file (`_subagent.md`) to the child — passing it lets the child interpret suffix tokens and re-delegate recursively
   - parent duty: the child produces the mode-output, not you
