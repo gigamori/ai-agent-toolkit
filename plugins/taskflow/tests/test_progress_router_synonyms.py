@@ -1,44 +1,4 @@
 #!/usr/bin/env python3
-"""Static text-contract test for agents/progress-router.md (state-goal model)
-and its single-source pointer from skills/progress/SKILL.md Step 3.4.
-
-Covers the 2026-07-19 redesign (task
-2026-07-18_progress-revert-collides-with-revert-skill-gate): the router no
-longer claims any undo/revert vocabulary (that belongs to the global `revert`
-skill, whose UserPromptSubmit hook force-routes 戻す/undo/revert inputs), and
-instead resolves the GOAL STATE the user names:
-
-  (a) the goal-state table maps 2_done→approve / 1_in_progress→start /
-      0_todo→unstart with the expected synonyms, and NO synonym row contains
-      the released vocabulary (revert / 戻す / 戻し / undo / 取り消し) or the
-      historical `ok` collision token.
-  (b) English tokens still match on a word boundary only (negative-lookaround
-      `(?<![A-Za-z])T(?![A-Za-z])`); Japanese tokens still match as a
-      substring.
-  (c) maximal munch: overlapping Japanese tokens resolve to the longest
-      occurrence (未着手 / 着手前 suppress the contained 着手).
-  (d) path exclusion: synonyms inside path-like tokens (e.g. `@tasks/0_todo/`)
-      do not count — required for the `todo` English token to be safe.
-  (e) undo-intent gate: a sentence-level semantic judgment (NOT string
-      matching) short-circuits undo/cancel requests to a fixed unknown
-      terminal BEFORE any state match; example words are illustrative, and
-      content occurrences (戻り値, stems containing "revert") do not fire it.
-  (f) tie-break: multi-state matches resolve to the reach-state (NOT the state
-      being left); goal-state tokens beat maintenance tokens; undecidable →
-      "unknown". The old main-verb rule is gone.
-  (g) the JSON contract's action enum is approve|start|unstart|... with no
-      revert, and target_status is always the goal state.
-  (h) SKILL.md Step 3.4 still points at progress-router.md's Step 1 body as
-      the single source (no re-embedded table), dispatches `unstart` (not
-      `revert`), and its usage examples use state words.
-
-Read-only / no model call: this test only reads the two markdown files and
-greps their text. Run with:
-
-    uv run python plugins/taskflow/tests/test_progress_router_synonyms.py
-
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import re

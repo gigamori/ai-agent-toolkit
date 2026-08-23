@@ -1,35 +1,4 @@
 #!/usr/bin/env python3
-"""Unit tests for hooks/session_progress_capture.py::build_capture_context.
-
-Covers project-notes/specs/capture-context-abs-path.md (2026-07-28 incident:
-sidecar written to an unrelated repo's real `_state/` because the spawn-block
-context handed `sidecar_path` / `project_root` to the capture subagent as
-REPO-RELATIVE strings, while the hook's own read basis is absolute).
-
-D-1/D-2: `build_capture_context()` must emit `sidecar_path` / `project_root`
-as forward-slashed ABSOLUTE paths (same values the hook itself reads/resolves
-via `capture_path` / `project_root` in `main()`), so the subagent's cwd can
-never cause it to write/read the wrong tree.
-
-D2 (capture-detection-gaps.md §3.3): the block gained `project_roots`
-(`{name: forward-slashed absolute root}`) next to the retained primary
-`project_root`, because `touched_tasks` entries are now QUALIFIED
-`"<project>/<basename>"` and the subagent must be able to resolve one that
-belongs to a non-primary project. Both are pinned below.
-
-D-6 (AC-7): the array fields must be built via `json.dumps`, not a
-space-joined string — the prior `' '.join(f'"{b}"' ...)` produced
-`["a.md" "b.md"]` for 2+ entries, which is NOT valid JSON
-(`json.loads` raises `Expecting ',' delimiter`). This file pins the
-regression with 2+ entries in both `touched_tasks` and `note_writes`.
-
-This is a pure-function test: `build_capture_context()` does no I/O, so this
-file never touches any `_projects/_state/` (real or fixture) and needs no
-temp-dir sandbox.
-
-Run:  uv run --no-project python plugins/taskflow/tests/test_capture_context_block.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import inspect
@@ -84,17 +53,12 @@ def test_single_entry_is_valid_json_and_absolute() -> None:
     check("\\" not in obj["sidecar_path"], "sidecar_path has no backslash")
     check("\\" not in obj["project_root"], "project_root has no backslash")
     check(obj["sid8"] == "abc12345", "sid8 round-trips")
-    # R-1 (capture-detection-gaps.md §4.4.1 D1/D6): the block carries the round
-    # it belongs to, and the path it hands out is the PER-ROUND sidecar name —
-    # that name is what the hook matches a late sidecar against.
     check(obj["round"] == 7, f"round is emitted in the context block: {obj.get('round')}")
     check(obj["sidecar_path"].endswith("/abc123.r7.capture"),
           f"sidecar_path is the per-round name: {obj['sidecar_path']}")
     check(obj["touched_tasks"] == ["harness-taskflow/2026-07-28_capture-sidecar-abs-path.md"],
           "touched_tasks round-trips as a qualified <project>/<basename> key")
     check(obj["note_writes"] == ["project-notes/specs/capture-context-abs-path.md"], "note_writes round-trips")
-    # D2: project_roots is present, forward-slashed and absolute, and the
-    # primary project_root survives next to it (compatibility, §3.3).
     check(obj["project_roots"] == {"harness-taskflow": obj["project_root"]},
           f"project_roots maps the project to its absolute root: {obj.get('project_roots')}")
     check(all(os.path.isabs(v) and "\\" not in v for v in obj["project_roots"].values()),
@@ -102,7 +66,7 @@ def test_single_entry_is_valid_json_and_absolute() -> None:
 
 
 def test_multi_entry_is_valid_json_d6_regression() -> None:
-    print("--- 2+ task/note entries: valid JSON (D-6 space-join regression) ---")
+    print("--- 2+ task/note entries: valid JSON ---")
     sidecar_path = os.path.join(os.getcwd(), "_projects", "_state", "abc123.capture")
     project_root = os.path.join(os.getcwd(), "_projects", "harness-taskflow")
     other_root = os.path.join(os.getcwd(), "_projects", "pi-studio-dev")
@@ -146,10 +110,6 @@ def test_empty_arrays_are_valid_json() -> None:
 
 def test_no_filesystem_io() -> None:
     print("--- pure function: no I/O side effects ---")
-    # review F-I2: the prior version of this check was `check(True, ...)` — a
-    # vacuous assertion that always passed regardless of the function's real
-    # body. Inspect the actual source instead, so an accidental future I/O
-    # call (open/Write/os.remove/os.rename) would fail this test.
     source = inspect.getsource(spc.build_capture_context)
     io_markers = ("open(", "os.remove", "os.rename", ".write(", "Write(")
     hits = [m for m in io_markers if m in source]

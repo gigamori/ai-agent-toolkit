@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""E2E tests for the bash-parse-gap / cd-relative-target scope decisions,
-run as a real subprocess against the real hook (mode-orchestrator-runs/
-2026-08-19_touched-capture-bash-parse-gap-cd-target/02-plan.md §5.3, E1..E5).
-
-Separate file from `test_touched_capture_bash_scope.py` on purpose: that
-file's cases call `extract_bash_paths` directly and are FORBIDDEN from ever
-calling `main()` (see its own docstring); this file is the E2E half and
-exercises `main()` end to end -- extraction, `normalize_path` against
-`STATE_ROOT`, and (for E2/E2c) the downstream `extract_project` classifier.
-
-Sandbox mechanics copied (mechanism, not text) from
-`test_touched_capture_state_root.py`, per plan §5.3/§6 and
-`e2e_state_dir_sandbox`'s `touched_capture.py`
-carve-out: a `tempfile.mkdtemp()` workspace OUTSIDE the repo tree; an
-up-front assertion that no ancestor of that workspace holds
-`_projects/_state` (the hook walks up, so an in-repo temp dir would resolve
-to the REAL state dir); the hook invoked as a SUBPROCESS with an explicit
-`cwd=` via `uv run --no-project python <hook 絶対パス>`; and the real
-`_projects/_state` file set bracketed unchanged across the whole run.
-
-stdlib only. Run with:
-    uv run --no-project python plugins/taskflow/tests/test_touched_capture_bash_scope_e2e.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import io
@@ -40,11 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 HOOK = REPO_ROOT / "plugins" / "taskflow" / "hooks" / "touched_capture.py"
 REAL_STATE = REPO_ROOT / "_projects" / "_state"
 
-# extract_project is imported as a PURE function (plan §5.3): its module
-# scope only builds path strings (PROGRESS_ROOT/STATE_DIR from os.getcwd())
-# and compiles regexes -- no filesystem mutation. _cleanup_stale_markers
-# (the real hazard) is called from exactly one place, main(), which this
-# file never calls. Verified 2026-08-20 by reading session_progress_capture.py.
 sys.path.insert(0, str(REPO_ROOT / "plugins" / "taskflow" / "hooks"))
 import session_progress_capture as spc  # noqa: E402
 
@@ -77,7 +48,6 @@ def die(msg: str) -> None:
     raise SystemExit(2)
 
 
-# --- sandbox guards ----------------------------------------------------
 
 def ancestors_with_state(start: Path) -> list[str]:
     hits: list[str] = []
@@ -99,7 +69,6 @@ def assert_isolated(root: Path, label: str) -> None:
     ok(f"{label}: no ancestor of {root} holds _projects/_state")
 
 
-# --- fixture / invocation -----------------------------------------------
 
 def build_ws(root: Path, with_sid_json: bool = True) -> Path:
     ws = root
@@ -118,8 +87,6 @@ def build_ws(root: Path, with_sid_json: bool = True) -> Path:
 
 
 def run_hook(cwd: Path, command: str) -> subprocess.CompletedProcess:
-    """`uv run --no-project` per e2e_state_dir_sandbox step 2/§6.3: from a
-    temp cwd, plain `uv run` would otherwise resolve this repo's pyproject."""
     payload = {"session_id": SID, "tool_input": {"command": command}}
     return subprocess.run(
         ["uv", "run", "--no-project", "python", str(HOOK)],
@@ -129,7 +96,6 @@ def run_hook(cwd: Path, command: str) -> subprocess.CompletedProcess:
 
 
 def touched_lines(ws: Path) -> list[str] | None:
-    """Ledger lines, or None when the ledger file does not exist at all."""
     p = ws / "_projects" / "_state" / f"{SID}.touched"
     if not p.exists():
         return None
@@ -146,10 +112,9 @@ def warn_replacement(res: subprocess.CompletedProcess, label: str) -> None:
               f"replaced with U+FFFD")
 
 
-# --- arms ----------------------------------------------------------------
 
 def main() -> int:
-    print("=== touched_capture.py bash-scope E2E tests (02-plan.md §5.3 E1..E5) ===")
+    print("=== touched_capture.py bash-scope E2E tests ===")
     print()
 
     if not HOOK.is_file():
@@ -161,7 +126,7 @@ def main() -> int:
     tmp_root = Path(tempfile.mkdtemp(prefix="tf_bashscope_e2e_"))
     print(f"temp root: {tmp_root}")
     print()
-    print("--- sandbox guards (§6) ---")
+    print("--- sandbox guards ---")
     assert_isolated(tmp_root, "temp root")
     try:
         tmp_root.resolve().relative_to(REPO_ROOT.resolve())
@@ -173,9 +138,8 @@ def main() -> int:
 
     aborted = True
     try:
-        # ---------------- E1 / E1c ----------------
         print()
-        print("--- E1/E1c: sed -i operand extraction + normalize_path (D1) ---")
+        print("--- sed -i operand extraction + normalize_path ---")
         ws1 = build_ws(tmp_root / "e1")
         abs_task = abspath_fwd(ws1 / TASK_REL)
         res = run_hook(ws1, f"sed -i 's/a/b/' {abs_task}")
@@ -194,9 +158,8 @@ def main() -> int:
               f"E1c [control]: read-only sed -n writes no ledger at all "
               f"(got {got_c!r}, rc={res.returncode})")
 
-        # ---------------- E2 / E2c ----------------
         print()
-        print("--- E2/E2c: cd-relative target recorded verbatim, not bindable (D5) ---")
+        print("--- cd-relative target recorded verbatim, not bindable ---")
         ws2 = build_ws(tmp_root / "e2")
         notes_dir = abspath_fwd(ws2 / "_projects" / "demo" / "project-notes")
         res = run_hook(ws2, f"cd {notes_dir} && echo x >> index.md")
@@ -221,9 +184,8 @@ def main() -> int:
               " is discriminating, this shape, not a harness that never"
               " resolves anything")
 
-        # ---------------- E3 / E3c ----------------
         print()
-        print("--- E3: newline-bled verb-loop stage produces no extra line (P1) ---")
+        print("--- newline-bled verb-loop stage produces no extra line ---")
         ws3 = build_ws(tmp_root / "e3")
         scratch = abspath_fwd(ws3 / "scratch")
         cmd3 = f'rm -rf {scratch}\necho "=== gone ==="'
@@ -238,13 +200,12 @@ def main() -> int:
               f"E3: neither 'echo' nor '=== gone ===' appears in the ledger "
               f"(got {got3!r})")
         check(len(got3) >= 1,
-              "E3c [non-vacuity, folded into E3 per plan §5.3]: the ledger "
+              "E3c [non-vacuity, folded into E3 per plan]: the ledger "
               f"is non-empty, so E3's 'no extra line' is discriminating, not "
               f"a vacuous empty result (got {got3!r})")
 
-        # ---------------- E4 ----------------
         print()
-        print("--- E4: orphan guard -- no <SID>.json fixture -> no ledger file ---")
+        print("--- orphan guard -- no <SID>.json fixture -> no ledger file ---")
         ws4 = build_ws(tmp_root / "e4", with_sid_json=False)
         abs_task4 = abspath_fwd(ws4 / TASK_REL)
         res = run_hook(ws4, f"sed -i 's/a/b/' {abs_task4}")
@@ -256,9 +217,8 @@ def main() -> int:
 
         aborted = False
     finally:
-        # ---------------- E5 ----------------
         print()
-        print("--- E5: real _projects/_state untouched across the whole run ---")
+        print("--- real _projects/_state untouched across the whole run ---")
         after = sorted(os.listdir(REAL_STATE)) if REAL_STATE.is_dir() else []
         check(len(after) == len(before),
               f"real _projects/_state count unchanged ({len(before)} -> "

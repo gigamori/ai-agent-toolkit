@@ -3,27 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Unit tests for generate_kanban.py's tolerance of unreadable directories.
-
-Covers the three directory-scan sites that go through `iter_dir()`:
-`build_uuid_index()` (_state/), `load_tasks()` (tasks/<status>/) and
-`build_cc_session_index()` (<config dir>/projects/). A sandboxed run can hold
-traverse-but-not-list rights on a directory — `is_dir()` succeeds while
-`iterdir()` raises PermissionError — which used to abort the whole board.
-
-The denial is injected by patching `Path.iterdir` for chosen paths, which
-reproduces the syscall-level condition first measured on Windows with an
-`icacls <dir> /deny <SID>:(RD)` ACE (list-directory denied, attributes still
-readable). Every denied case is paired with a control run over the same
-fixture, so an empty result can never pass for the trivial reason that the
-fixture held nothing.
-
-stdlib only (plus generate_kanban's own pyyaml). Everything runs against temp
-dirs with `Path.home` monkeypatched; no `_projects/_state/` and no real
-`~/.claude` entry is written. Run with:
-  uv run --script plugins/taskflow/tests/test_kanban_unreadable_dirs.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import io
@@ -33,7 +12,6 @@ import tempfile
 from contextlib import redirect_stderr
 from pathlib import Path
 
-# Import the module under test from scripts/ (sibling of tests/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import generate_kanban as gk  # noqa: E402
 
@@ -60,11 +38,8 @@ def check(cond: bool, msg: str) -> None:
 
 
 class _Deny:
-    """Make `Path.iterdir()` raise PermissionError for the given paths.
-
-    Models the sandbox condition: only the listing is refused, so `is_dir()`
-    still reports True and the caller reaches `iterdir()`.
-    """
+    """Only the listing is refused, so `is_dir()` still reports True and the caller
+    reaches `iterdir()`."""
 
     def __init__(self, *denied: Path):
         self.denied = {os.path.normcase(str(p)) for p in denied}
@@ -87,8 +62,7 @@ class _Deny:
 
 
 class _Env:
-    """Set/unset CLAUDE_CONFIG_DIR and fake `Path.home()` (keeps the real
-    ~/.claude out of every scan)."""
+    """Fakes `Path.home()` so the real `~/.claude` stays out of every scan."""
 
     def __init__(self, cfg: str | None, home: Path):
         self.cfg = cfg
@@ -115,14 +89,12 @@ class _Env:
 
 
 def _capture(fn):
-    """Run `fn()` capturing stderr; return (result, stderr_text)."""
     buf = io.StringIO()
     with redirect_stderr(buf):
         result = fn()
     return result, buf.getvalue()
 
 
-# --- fixtures ---------------------------------------------------------------
 
 UUID_STATE = "44444444-4444-4444-4444-444444444444"
 UUID_ENV = "22222222-2222-2222-2222-222222222222"
@@ -130,7 +102,6 @@ UUID_HOME = "33333333-3333-3333-3333-333333333333"
 
 
 def _seed_state(root: Path) -> Path:
-    """`<root>/_state/<uuid>.json` — one CC-origin session sidecar."""
     d = root / "_state"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{UUID_STATE}.json").write_text(
@@ -162,7 +133,6 @@ def _seed_index(root: Path, names: list[str]) -> None:
     (root / "index.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-# --- iter_dir ---------------------------------------------------------------
 
 def test_iter_dir_helper() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -179,7 +149,6 @@ def test_iter_dir_helper() -> None:
               f"iter_dir: the refusal is reported on stderr with its path, got {err!r}")
 
 
-# --- build_uuid_index (_state/) ---------------------------------------------
 
 def test_state_dir_unreadable() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -194,7 +163,6 @@ def test_state_dir_unreadable() -> None:
         check(str(state) in err, f"_state unreadable -> warned with its path, got {err!r}")
 
 
-# --- load_tasks (tasks/<status>/) -------------------------------------------
 
 def test_task_status_dir_unreadable() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -212,7 +180,6 @@ def test_task_status_dir_unreadable() -> None:
         check(str(todo) in err, f"unreadable status dir -> warned with its path, got {err!r}")
 
 
-# --- build_cc_session_index (<config dir>/projects/) ------------------------
 
 def test_cc_projects_dir_unreadable() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -232,7 +199,6 @@ def test_cc_projects_dir_unreadable() -> None:
               f"unreadable config projects dir -> warned with its path, got {err!r}")
 
 
-# --- load_projects (whole-board path) ---------------------------------------
 
 def test_board_survives_one_unreadable_project() -> None:
     with tempfile.TemporaryDirectory() as tmp:

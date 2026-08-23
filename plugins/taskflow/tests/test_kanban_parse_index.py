@@ -3,29 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Case table for generate_kanban.py::parse_index (`_projects/index.md` rows).
-
-This file IS the shared parity table. pi-studio's
-`src/project-index.ts::parseProjectIndex` is a port of
-`parse_index`; "same input, same output" over the cases below is the definition
-of parity between the two implementations, so a case added here must be added
-to pi-studio's `src/project-index.test.ts` (and vice versa). C20 (missing
-file) has no pure-function equivalent there and is covered by a caller-side
-test in `src/kanban/kanban-data-provider.test.ts`.
-
-The three rules under test (see the INDEX_* regex comment in generate_kanban.py):
-  1. separator row: the WHOLE line matches `^\\|[-\\s|:]+\\|\\s*$`. A data row
-     whose Description merely contains `---` is NOT a separator (C06/C07).
-  2. cell split: strip exactly ONE leading and ONE trailing `|`, then split on
-     `|`. `||name|desc|` therefore has an empty cell 0 (C14).
-  3. project name: a cell 0 that is entirely one `[label](href)` yields
-     `label` (C08/C09); anything else is verbatim (C10). Description is never
-     unwrapped (C18).
-
-stdlib only. Run with:
-  uv run --script plugins/taskflow/tests/test_kanban_parse_index.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import shutil
@@ -33,7 +10,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Import the module under test from scripts/ (sibling of tests/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import generate_kanban as gk  # noqa: E402
 
@@ -43,7 +19,6 @@ FAIL = 0
 HEADER = "| Project | Description | Target |"
 SEP = "|---|---|---|"
 
-# (case id, index.md content, expected [(name, description), ...])
 CASES: list[tuple[str, str, list[tuple[str, str]]]] = [
     ("C01 header row is not a project",
      HEADER, []),
@@ -60,9 +35,9 @@ CASES: list[tuple[str, str, list[tuple[str, str]]]] = [
     ("C07 R2: description that is only a dash run is kept",
      "| alpha | --- | alpha/ |", [("alpha", "---")]),
     ("C08 R1: cell 0 that is entirely a link yields the label",
-     "| [alpha](alpha/index.md) | d | t |", [("alpha", "d")]),
-    ("C09 R1: link label is stripped of surrounding space",
      "| [ alpha ](alpha/index.md) | d | t |", [("alpha", "d")]),
+    ("C09 R1: link label is stripped of surrounding space",
+     "| [alpha](alpha/index.md) | d | t |", [("alpha", "d")]),
     ("C10 R1: a cell that merely contains a link is NOT unwrapped",
      "| see [alpha](alpha/index.md) | d | t |", [("see [alpha](alpha/index.md)", "d")]),
     ("C11 non-table lines are ignored",

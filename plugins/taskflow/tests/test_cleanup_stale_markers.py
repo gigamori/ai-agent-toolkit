@@ -1,38 +1,4 @@
 #!/usr/bin/env python3
-"""Unit tests for hooks/session_progress_capture.py::_cleanup_stale_markers.
-
-Covers project-notes/specs/review-2026-07-17-fixes.md P4-1 (F5b, D-2):
-
-  D-2 (a, confirmed): session-state `.json` (36-char UUID stem) whose
-  `project` field is EMPTY is swept after _MARKER_MAX_AGE_DAYS (7d, mtime
-  based); `project` non-empty is kept INDEFINITELY; a json that fails to
-  parse or is not a dict is NEVER removed (conservative). The existing
-  sidecar sweep (`.bind` / `.touched` / `.capture` / legacy `.captured`,
-  unconditional mtime sweep) is unchanged and covered too (F-1 guard: a
-  non-36-char-stem `.json`, e.g. `kanban-port-deadbeef.json`, is NEVER
-  touched by the `.json` branch regardless of age/content).
-
-Also covers project-notes/specs/capture-hook-sweep-sandbox.md (blast-cap +
-F-OBS-1, 2026-07-19 follow-up to the 250-file sweep incident): a combined
-(json + sidecar) per-sweep delete budget `TASKFLOW_SWEEP_MAX` (default 50,
-monkeypatched here via `spc._SWEEP_MAX`), oldest-mtime-first ordering when
-candidates exceed the cap, and stderr logging of the removed count / a
-cap-hit warning.
-
-ABSOLUTE SAFETY: every fixture lives inside a `tempfile.TemporaryDirectory()`
-and is passed explicitly as `state_dir` to `_cleanup_stale_markers()`. This
-test NEVER imports/calls `main()`, NEVER reads stdin, and NEVER touches the
-real `_projects/_state/` (this repo has one — the point of this guard is not
-academic). A final assertion re-checks the real `_state/` dir's file count is
-unchanged after the whole test run.
-
-Import note: session_progress_capture.py is stdlib-only (unlike
-check_progress.py, it does not require pyyaml) — run with plain:
-
-    uv run python plugins/taskflow/tests/test_cleanup_stale_markers.py
-
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -68,11 +34,10 @@ def check(cond: bool, msg: str) -> None:
 
 
 _DAY = 86400
-_MAX_AGE = spc._MARKER_MAX_AGE_DAYS  # verify against the real constant (7)
+_MAX_AGE = spc._MARKER_MAX_AGE_DAYS
 
 
 def age_file(path: Path, days_old: float) -> None:
-    """Backdate a file's mtime/atime by `days_old` days via os.utime."""
     ts = __import__("time").time() - days_old * _DAY
     os.utime(str(path), (ts, ts))
 
@@ -112,7 +77,7 @@ def test_case2_empty_project_fresh_json_kept(state_dir: Path) -> None:
     print("--- case 2: empty-project + fresh mtime -> kept ---")
     name = f"{uuid_stem()}.json"
     p = state_dir / name
-    write_json(p, {"session_id": "x", "project": ""})  # fresh mtime (just written)
+    write_json(p, {"session_id": "x", "project": ""})
     spc._cleanup_stale_markers(str(state_dir))
     check(p.exists(), "fresh empty-project state json is kept")
 
@@ -122,7 +87,7 @@ def test_case3_nonempty_project_stale_kept_indefinitely(state_dir: Path) -> None
     name = f"{uuid_stem()}.json"
     p = state_dir / name
     write_json(p, {"session_id": "x", "project": "harness-taskflow"},
-                days_old=_MAX_AGE + 30)  # very old, still must survive
+                days_old=_MAX_AGE + 30)
     spc._cleanup_stale_markers(str(state_dir))
     check(p.exists(), "non-empty-project state json is kept regardless of age")
 
@@ -147,9 +112,9 @@ def test_case4_corrupt_json_kept(state_dir: Path) -> None:
 def test_threshold_boundary(state_dir: Path) -> None:
     print("--- threshold: cutoff is ~7 days (mtime-based) ---")
     just_over = state_dir / f"{uuid_stem()}.json"
-    write_json(just_over, {"project": ""}, days_old=_MAX_AGE + (1 / 24))  # 7d + 1h
+    write_json(just_over, {"project": ""}, days_old=_MAX_AGE + (1 / 24))
     just_under = state_dir / f"{uuid_stem()}.json"
-    write_json(just_under, {"project": ""}, days_old=_MAX_AGE - (1 / 24))  # 7d - 1h
+    write_json(just_under, {"project": ""}, days_old=_MAX_AGE - (1 / 24))
 
     spc._cleanup_stale_markers(str(state_dir))
     check(not just_over.exists(), "empty-project json just past the 7d cutoff is removed")
@@ -157,10 +122,8 @@ def test_threshold_boundary(state_dir: Path) -> None:
 
 
 def test_f1_guard_non_uuid_stem_never_swept(state_dir: Path) -> None:
-    print("--- F-1 guard: non-36-char-stem .json is NEVER swept by the .json branch ---")
+    print("--- guard: non-36-char-stem .json is NEVER swept by the .json branch ---")
     p = state_dir / "kanban-port-deadbeef.json"
-    # Worst case for the guard: old + dict + empty project — would qualify for
-    # deletion under the UUID-stem branch if the len(stem)==36 guard were absent.
     write_json(p, {"project": ""}, days_old=_MAX_AGE + 100)
     spc._cleanup_stale_markers(str(state_dir))
     check(p.exists(), "kanban-port-*.json (non-36-char stem) survives even when "
@@ -175,7 +138,7 @@ def test_sidecar_suffix_sweep(state_dir: Path) -> None:
     age_file(old_touched, _MAX_AGE + 1)
 
     fresh_touched = state_dir / f"{uuid.uuid4()}.touched"
-    fresh_touched.write_text("tasks/0_todo/y.md\n", encoding="utf-8")  # fresh
+    fresh_touched.write_text("tasks/0_todo/y.md\n", encoding="utf-8")
 
     old_bind = state_dir / f"{uuid.uuid4()}.bind"
     old_bind.write_text("{}", encoding="utf-8")
@@ -215,7 +178,7 @@ def test_removal_logged_under_cap(state_dir: Path) -> None:
         spc._cleanup_stale_markers(str(state_dir))
     out = stderr_buf.getvalue()
     check("[progress capture] cleanup: removed 1 stale file(s)" in out,
-          f"removal count reported on stderr (F-OBS-1): {ascii(out)}")
+          f"removal count reported on stderr: {ascii(out)}")
     check("(json=1 sidecar=0)" in out, f"json/sidecar breakdown reported: {ascii(out)}")
     check("WARNING" not in out, f"no cap warning when under TASKFLOW_SWEEP_MAX: {ascii(out)}")
 
@@ -225,9 +188,7 @@ def test_sweep_blast_cap_combined_oldest_first(state_dir: Path) -> None:
     orig_cap = spc._SWEEP_MAX
     spc._SWEEP_MAX = 3
     try:
-        # 3 empty-project stale json (10/11/12 days old) + 3 stale sidecars
-        # (20/21/22 days old, i.e. OLDER) = 6 candidates competing for cap=3.
-        entries = []  # (age_days, path)
+        entries = []
         for i in range(3):
             p = state_dir / f"{uuid_stem()}.json"
             age = 10 + i
@@ -271,10 +232,6 @@ def test_real_state_dir_untouched() -> None:
     real_state_dir = Path(__file__).resolve().parent.parent.parent.parent / "_projects" / "_state"
     check(real_state_dir.is_dir(), "sanity: real _state/ dir exists in this repo "
           "(confirms the hazard this test avoids is real, not hypothetical)")
-    # This test process never called spc._cleanup_stale_markers with this path,
-    # never called spc.main(), and never read stdin. Nothing to assert about
-    # file counts (a concurrent session could legitimately write there) —
-    # the guarantee here is structural (see module docstring), not observational.
 
 
 def main() -> int:

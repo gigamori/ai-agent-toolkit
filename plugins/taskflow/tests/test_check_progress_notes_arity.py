@@ -3,51 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-r"""Unit tests for scripts/check_progress.py check #11: notes index row arity.
-
-Covers
-_projects/harness-taskflow/project-notes/specs/review-2026-08-19-fixes.md §8 A-4
-(the enforcement gap §4.9 residual 2 records: F-4 fixed the reminder TEXT, i.e.
-likelihood steering, but nothing mechanically rejected a malformed row, so
-`/progress check` stayed silent on one).
-
-check_notes_index_consistency now reports a `notes_index_arity` violation for
-any project-notes/index.md DATA row whose effective column count is not 4
-(File | Description | Tags | Updated).
-
-  A1  a 3-column row IS reported (the real defect class: a missing `Updated`).
-  A2  a well-formed 4-column row is NOT reported.
-  A3  a 4-column row whose Description contains an escaped pipe (`\|`) is NOT
-      reported. This is the A-3 -> A-4 ordering constraint's own regression
-      pin: before A-3 taught parse_notes_index_rows to split on unescaped "|"
-      only, this row parsed into 5 cells and an arity check would have
-      misreported this repo's own healthy index from its first run. The row is
-      the verbatim `investigations/llm-wiki-integration-survey.md` row of
-      _projects/harness-taskflow/project-notes/index.md (inlined — the test
-      never reads the live gitignored file).
-  A4  a 4-column row with ONE trailing space after the closing "|" is NOT
-      reported. str.strip("|") is a character strip and cannot remove the
-      closing pipe when whitespace follows it, so such a row parses into 5
-      cells with an empty last one while rendering identically; the predicate
-      drops at most one trailing empty cell before counting.
-  A5  a 5-column row IS reported (over-arity, not just under-arity).
-  A6  header ("| File | ... |") and separator ("|---|---|---|---|") rows are
-      never reported — parse_notes_index_rows drops them before the check sees
-      them, so no arity-side exclusion logic exists or is needed.
-  A7  the finding's labels: check == "notes_index_arity", severity ==
-      "violation", path == the index.md path, message names the row's File cell
-      and the observed column count.
-  A8  end-to-end through check_progress.main(): a malformed row drives a
-      non-zero exit and prints the check name and the VIOLATION label; a clean
-      index drives a zero exit.
-
-check_progress.py has a PEP723 header declaring `pyyaml` as a dependency, so
-this test also declares it and must be run via:
-
-    uv run --script plugins/taskflow/tests/test_check_progress_notes_arity.py
-
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -68,12 +23,8 @@ SEPARATOR = "|------|-------------|------|---------|"
 ROW_4 = "| specs/good.md | A well-formed row. | spec, ok | 2026-08-19 |"
 ROW_3 = "| investigations/missing-updated.md | No Updated cell. | stop-hook, procedure |"
 ROW_5 = "| specs/too-wide.md | Five | cells | here | 2026-08-19 |"
-# One trailing space after the closing pipe: invisible in the rendered table.
 ROW_4_TRAILING_SPACE = ROW_4 + " "
 
-# Verbatim from _projects/harness-taskflow/project-notes/index.md — the row
-# whose Description carries an escaped pipe (`wiki:on\|off`). Under the naive
-# split this parsed into 5 cells.
 ROW_4_ESCAPED_PIPE = (
     r"| investigations/llm-wiki-integration-survey.md "
     r"| taskflow×llm-wiki併用調査+Phase1設計: pjスコープ解決は実装済・session-aware化・"
@@ -99,9 +50,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 def make_project(root: Path, rows: list[str]) -> Path:
-    """A project whose project-notes/index.md holds `rows`, with every listed
-    note file actually present (so the only findings possible from check #2 are
-    arity ones — no unregistered / missing noise)."""
     project_dir = root / "proj"
     notes_dir = project_dir / "project-notes"
     notes_dir.mkdir(parents=True)
@@ -199,8 +147,6 @@ def test_five_column_row_reported(root: Path) -> None:
 def test_header_and_separator_excluded(root: Path) -> None:
     print("--- A6: header and separator rows are never reported ---")
     project_dir = make_project(root, [ROW_4])
-    # The fixture already contains both; a second separator with a different
-    # dash count pins that the exclusion is not arity-shaped.
     index_md = project_dir / "project-notes" / "index.md"
     index_md.write_text(
         index_md.read_text(encoding="utf-8") + "|---|---|---|\n", encoding="utf-8"

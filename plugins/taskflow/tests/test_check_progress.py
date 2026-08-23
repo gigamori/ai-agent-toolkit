@@ -3,31 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Unit tests for scripts/check_progress.py check #10: check_duplicate_basename.
-
-Covers project-notes/specs/review-2026-07-17-fixes.md P3-1 (F4):
-  - check_duplicate_basename() walks the WHOLE tasks/ tree with os.walk (not
-    just the 3 status folders) so a duplicate basename in a stray subdir
-    (e.g. a hand-made tasks/_archive/) is still caught — this must mirror
-    hooks/session_progress_capture.py::_task_basename_index's walk range.
-  - a duplicate is reported as a `violation` Finding listing all colliding
-    paths.
-  - a clean fixture (no duplicate basenames) produces no findings from this
-    check.
-  - running the check through check_progress.main() end-to-end drives a
-    non-zero process exit when a duplicate is present, and a zero exit /
-    "OK: ..." message on a clean fixture.
-
-check_progress.py has a PEP723 header declaring `pyyaml` as a dependency, so
-this test also declares it and must be run via:
-
-    uv run --script plugins/taskflow/tests/test_check_progress.py
-
-(plain `uv run python <path>` will fail with `ModuleNotFoundError: yaml` in
-this repo's ambient uv environment, which has no project-level pyyaml dep.)
-
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -63,8 +38,6 @@ TASK_BODY = "# Dup Task\n\nSome content, no frontmatter.\n"
 
 
 def make_duplicate_fixture(root: Path) -> Path:
-    """project/tasks/0_todo/2026-01-01_dup.md and project/tasks/_archive/2026-01-01_dup.md
-    (a stray subdir NOT one of the 3 status folders) share the same basename."""
     project_dir = root / "proj"
     todo = project_dir / "tasks" / "0_todo"
     archive = project_dir / "tasks" / "_archive"
@@ -76,7 +49,6 @@ def make_duplicate_fixture(root: Path) -> Path:
 
 
 def make_clean_fixture(root: Path) -> Path:
-    """project/tasks/0_todo with two DISTINCT basenames — no duplication."""
     project_dir = root / "proj"
     todo = project_dir / "tasks" / "0_todo"
     todo.mkdir(parents=True)

@@ -1,91 +1,4 @@
 #!/usr/bin/env bash
-# test_capture_late_sidecar.sh — T-W5-1..T-W5-3 / T-W6-1..T-W6-2 / T-R1-1..T-R1-3,T-R1-5..T-R1-10:
-# a capture sidecar that arrives AFTER its round expired must still apply
-# (project-notes/specs/capture-detection-gaps.md §1.9 / W5, §4.4 / R-1).
-#
-# W2 retired the round's closed item set once the backstop had run
-# (`items = {'tasks': [], 'notes': []}`, `round_base = {}`). `_apply_capture`
-# gates every `confirmed` / `note_links` entry on membership in that set, so a
-# subagent slower than the 30s expiry had its ENTIRE judgment discarded —
-# reported as `membership-skip`, one line per entry (observed live on session
-# e810b706: two valid note links thrown away). The deterministic placeholder
-# survived, so the task stayed bound; the rich summary and the note↔task links,
-# which is everything the judgment layer produces, did not.
-#
-#   T-W5-1  the exact observed sequence: request a round with notes → expire it
-#           → THEN write the sidecar → the next Stop APPLIES the summary and the
-#           note links instead of membership-skipping them
-#   T-W5-2  INV-1 proof: with `items` / `round_base` no longer retired, several
-#           consecutive Stops past the expiry with no new activity stay SILENT
-#           and add no duplicate `@log` line — for the placeholder backstop AND
-#           for the `referenced` over-bind (the latter looped even WITH the
-#           retirement, because it iterates the whole-session note scan and not
-#           `items` at all — the retirement never bounded it)
-#   T-W5-3  a task the agent logged itself this round gets no redundant
-#           `(referenced)` line: `_round_base` falls back to the STOP-ENTRY
-#           `log_seen` snapshot, not to the live dict the self-log pass has
-#           already advanced to the current count
-#   T-W6-1  the round bound (W6, review-2026-08-19-fixes.md §1): the
-#           `referenced` over-bind is scoped to the round's closed
-#           `items['tasks']`. A LATER round's expiry still REACHES a carried
-#           owner through the whole-session note scan, and neither the
-#           round-tagged text key nor the `_round_base` fallback bounds it —
-#           measured r1..r5 -> 5 false lines. This replaces T-W5-4, which
-#           asserted that growth as correct behaviour (F-15: expectation rot)
-#   T-W6-2  the POSITIVE arm: the bound scopes the over-bind, it does not
-#           disable it. An owner that ENTERS a later round's closed set still
-#           gets that round's line
-#
-# R-1 (§4.4): W5 only keeps the LAST round's closed set. Once the NEXT round
-# commits, `items` is replaced, so a sidecar still in flight from the previous
-# round was gated on the wrong set and had its whole judgment discarded as
-# `membership-skip` (observed live three times in one session). The round now
-# travels in the sidecar's FILE NAME (`{sid}.r{N}.capture`) and the `.bind`
-# retains the last K=3 rounds' closed sets in `capture['history']`:
-#
-#   T-R1-1  the main regression: round N requested -> expires -> round N+1
-#           commits -> only THEN does the r{N} sidecar land. It is applied
-#           against ROUND N's closed set (no `membership-skip`) and round N+1's
-#           status is NOT moved by it
-#   T-R1-2  a sidecar naming a round outside the retained history is discarded
-#           unapplied, reported exactly once as `round-mismatch`, and consumed
-#           (no re-report on later Stops)
-#   T-R1-3  r{N} and r{N+1} landing on the SAME Stop: both apply (ascending),
-#           and only the current round transitions to `done`
-#   T-R1-5  the history window is pruned to K=3 entries (`.bind` parsed directly)
-#   T-R1-6  F-A: applying an OLD round's sidecar must not suppress the current
-#           round's lifecycle — the in-flight round still expires on schedule
-#           and its backstop still runs on that same Stop
-#   T-R1-7  F-A second channel: the same must hold PER TASK. A task active in
-#           round N and in round N+1 keeps its `(r{N+1})` placeholder when
-#           round N's late sidecar lands, because a foreign-round apply
-#           re-baselines `round_base` for the keys it wrote to. T-R1-6's two
-#           tasks are disjoint, so only this arm can see it
-#   T-R1-7b the other direction of the same rule: that re-baseline absorbs the
-#           DELTA the foreign apply appended, never the absolute count — a
-#           shared task the agent self-logged this round is already satisfied
-#           and must still get NO placeholder (also pins F-9: the late apply's
-#           report line carries its round tag `(r1)`)
-#   T-R1-8  F-3 gate exclusivity: an r1 sidecar naming a task only round 2
-#           froze is membership-skipped and never reaches that task's @log —
-#           the one NEGATIVE arm; a regression widening row 2's gate passes
-#           every positive arm green
-#   T-R1-9  F-5: an r0 sidecar (round_n defaults to 0 with no capture state)
-#           is row-3 discarded, not fail-open applied through items=None
-#   T-R1-10 F-4: a torn/non-JSON sidecar is silently retried while its round
-#           is in the K=3 window, and consume-then-reported once
-#           (`unreadable and outside history`) after it ages out
-#
-# State-dir sandbox (`e2e_state_dir_sandbox`): the
-# Stop hook runs an unconditional stale-marker sweep on every invocation and
-# resolves `_projects` via getcwd() (no env override). This test therefore `cd`s
-# into an isolated tempdir and builds `_projects/` there — it NEVER cd's into
-# $REPO_ROOT while invoking the hook, so the sweep can never reach the real
-# _projects/_state/. The real dir's file count is bracketed below.
-#
-# Usage:  bash plugins/taskflow/tests/test_capture_late_sidecar.sh
-# Exit:   0 = all pass, 1 = failure
-# Requires: bash (Git-Bash on win32 — primary), uv.
 
 set -uo pipefail
 
@@ -134,12 +47,9 @@ printf '# index\n' > "$PDIR/project-notes/index.md"
 
 reset_state() { rm -f "$TF" "$BF" "$CF" "$STATE/$SID".r*.capture; }
 
-# rcap(): the per-round sidecar path (R-1 D1). Absolute path on purpose — the
-# suite has already cd'd into $TMP, so a `dirname "$0"` re-resolution here
-# would break under a relative invocation.
 . "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
-bind_get() {  # $1 = status | round | history_keys → read it out of `.bind`
+bind_get() {
   uv run --no-project python - "$BF" "$1" << 'PY'
 import json, sys
 try:
@@ -154,7 +64,7 @@ else:
 PY
 }
 
-mk() {  # $1 = task md path (with an @log block and an EMPTY @notes block)
+mk() {
   cat > "$1" << 'T'
 ---
 priority: HIGH
@@ -175,7 +85,7 @@ priority: HIGH
 T
 }
 
-mk_linked() {  # $1 = task md path, $2 = note project-rel pre-linked in @notes
+mk_linked() {
   cat > "$1" << T
 ---
 priority: HIGH
@@ -197,21 +107,21 @@ priority: HIGH
 T
 }
 
-write_touched() {  # $1 = absolute path under $PROJECTS → append one ledger EVENT
+write_touched() {
   local rel="${1#$PROJECTS/}"
   rel="_projects/${rel}"
   rel="${rel//\\//}"
   printf '%s\n' "$rel" >> "$TF"
 }
 
-stop() {  # $1 = expiry seconds
+stop() {
   export TASKFLOW_CAPTURE_EXPIRY_S="$1"
   TASKFLOW_SID="$SID" \
     uv run --no-project python -c "import json,os,sys;sys.stdout.write(json.dumps({'session_id':os.environ['TASKFLOW_SID']}))" \
     | uv run --no-project python "$(to_win "$HOOK")"
 }
 
-sidlines() {  # $1 = task md path → count [s:SID8] lines inside the @log block
+sidlines() {
   uv run --no-project python - "$1" "$SID8" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
@@ -220,7 +130,7 @@ print((m.group(1) if m else "").count("[s:%s]" % sys.argv[2]))
 PY
 }
 
-agent_log_line() {  # $1 = task md path, $2 = note — simulate the AGENT writing
+agent_log_line() {
   uv run --no-project python - "$1" "$SID8" "$2" << 'PY'
 import sys
 path, sid8, note = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -231,17 +141,11 @@ open(path, "w", encoding="utf-8").write(c[:at] + line + c[at:])
 PY
 }
 
-echo "=== T-W5-1..3 / T-W6-1..2: late capture sidecar (capture-detection-gaps.md §1.9 / W5, §1.10 / W6) ==="
+echo "=== late capture sidecar ==="
 echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
-echo ""
+  echo ""
 
-# =====================================================================
-# T-W5-1: the exact live sequence — round with notes -> expiry Stop ->
-# sidecar arrives LATE -> the next Stop must APPLY it.
-# Pre-W5 every entry came back as `membership-skip` because the expiry
-# Stop had retired `items` to the empty set.
-# =====================================================================
-echo "[T-W5-1] a sidecar delivered after the expiry Stop still applies"
+echo "a sidecar delivered after the expiry Stop still applies"
 reset_state
 T1="$PDIR/tasks/1_in_progress/2026-08-09_late.md"; mk "$T1"
 N1="$PDIR/project-notes/procedures/late-a.md"; printf '# a\n' > "$N1"
@@ -249,14 +153,11 @@ N2="$PDIR/project-notes/procedures/late-b.md"; printf '# b\n' > "$N2"
 N1REL="project-notes/procedures/late-a.md"
 N2REL="project-notes/procedures/late-b.md"
 write_touched "$T1"; write_touched "$N1"; write_touched "$N2"
-stop 999 >/dev/null          # Stop#1: round 1 requested (tasks + 2 unlinked notes)
-stop 0 >/dev/null            # Stop#2: expiry -> r1 placeholder, round resolved
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 [ "$(sidlines "$T1")" = "1" ] \
   && pass "the expiry Stop placeholder-bound the task (backstop intact)" \
   || fail "expiry placeholder count: $(sidlines "$T1")"
-# The subagent finally finishes and writes its judgment — to the per-round
-# name production actually hands out (F-2; the legacy un-suffixed name is no
-# longer read by the hook at all).
 cat > "$(rcap 1)" << EOF
 {"confirmed":[{"task":"2026-08-09_late.md","summary":"LATESUMMARY the round's real work"}],
  "note_links":[{"note":"$N1REL","task":"2026-08-09_late.md"},
@@ -285,23 +186,16 @@ grep -qF -- "- $N1REL" "$T1" && grep -qF -- "- $N2REL" "$T1" \
 [ ! -e "$(rcap 1)" ] \
   && pass "the late sidecar was consumed (unlinked)" || fail "sidecar not consumed"
 
-# =====================================================================
-# T-W5-2: INV-1 proof. `items` / `round_base` are no longer retired, so
-# the placeholder backstop AND the `referenced` over-bind are re-entered
-# for the same resolved round on every later Stop. Both must go silent.
-# The `referenced` loop is the one that fired even WITH the retirement:
-# it iterates the whole-session note scan, which `items` never bounded.
-# =====================================================================
-echo ""
-echo "[T-W5-2] 4 consecutive Stops past the expiry: silent, no duplicate line"
+  echo ""
+echo "4 consecutive Stops past the expiry: silent, no duplicate line"
 reset_state
 TA="$PDIR/tasks/1_in_progress/2026-08-09_inv1-plain.md"; mk "$TA"
 NB="$PDIR/project-notes/procedures/inv1-owned.md"; printf '# owned\n' > "$NB"
 NBREL="project-notes/procedures/inv1-owned.md"
 TB="$PDIR/tasks/1_in_progress/2026-08-09_inv1-owner.md"; mk_linked "$TB" "$NBREL"
 write_touched "$TA"; write_touched "$NB"
-stop 999 >/dev/null          # Stop#1: round 1 requested (TA touched, TB via note)
-O22=$(stop 0)                # Stop#2: expiry -> referenced (TB) + placeholder (TA)
+  stop 999 >/dev/null
+O22=$(stop 0)
 echo "$O22" | grep -q "auto-bound" \
   && pass "the expiry Stop reported its deterministic binds" || fail "no expiry binds: $O22"
 [ "$(sidlines "$TA")" = "1" ] \
@@ -315,37 +209,28 @@ LOOP_FAIL=0
 for n in 3 4 5 6; do
   ON=$(stop 0)
   if [ -n "$ON" ]; then
-    fail "Stop#$n past the expiry still blocked (INV-1 loop): $ON"
+    fail "Stop#$n past the expiry still blocked: $ON"
     LOOP_FAIL=1
   fi
 done
 [ "$LOOP_FAIL" = "0" ] \
-  && pass "Stops #3-#6 past the expiry are completely silent (INV-1)" || true
+ && pass "Stops #3-#6 past the expiry are completely silent" || true
 [ "$(sidlines "$TA")" = "1" ] \
   && pass "no duplicate placeholder after 4 further Stops" || fail "TA lines: $(sidlines "$TA")"
 [ "$(sidlines "$TB")" = "1" ] \
   && pass "no duplicate (referenced) line after 4 further Stops" || fail "TB lines: $(sidlines "$TB")"
 
-# =====================================================================
-# T-W5-3: the `_round_base` fallback. A note owner the agent logged ITSELF
-# this round must not also get a `(referenced)` line. The owner is reached
-# through the whole-session note scan and was never in this round's
-# `round_base`, so the guard falls back — and the fallback must be the
-# STOP-ENTRY `log_seen` snapshot. The live dict is useless here: the
-# self-log pass has already raised it to the current count, so
-# `count > log_seen` is false and the guard never fires.
-# =====================================================================
-echo ""
-echo "[T-W5-3] a self-logged note owner gets no redundant (referenced) line"
+  echo ""
+echo "a self-logged note owner gets no redundant (referenced) line"
 reset_state
 TC="$PDIR/tasks/1_in_progress/2026-08-09_r1-driver.md"; mk "$TC"
 write_touched "$TC"
-stop 999 >/dev/null          # round 1 opens on TC only ...
-stop 0 >/dev/null            # ... and resolves: round_base is frozen on TC
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 ND="$PDIR/project-notes/procedures/selflog-owned.md"; printf '# d\n' > "$ND"
 NDREL="project-notes/procedures/selflog-owned.md"
 TD="$PDIR/tasks/1_in_progress/2026-08-09_selflog-owner.md"; mk_linked "$TD" "$NDREL"
-write_touched "$ND"                                   # new activity: the note
+write_touched "$ND"
 agent_log_line "$TD" "the agent summarized this round itself"
 O33=$(stop 0)
 [ "$(sidlines "$TD")" = "1" ] \
@@ -356,28 +241,20 @@ grep -qF "(referenced) owner of" "$TD" \
   || pass "no (referenced) line was written over the agent's own summary"
 if [ -z "$O33" ]; then
   pass "the Stop is silent (nothing to report)"
-else
+  else
   fail "the Stop reported something: $O33"
-fi
+  fi
 
-# =====================================================================
-# T-W6-1: the (referenced) over-bind is bounded by the round's closed item set.
-# The note SCAN is whole-session (§1.9), so a LATER round's expiry still REACHES
-# an owner whose note that round never touched — the owner SET is what bounds it.
-# Before W6 each expired round appended one more `(referenced) ... (rN)` line:
-# the text key differs per round and `_round_base` falls back to a `log_seen`
-# the F-1 resync already advanced, so neither guard fired (measured r1..r5 -> 5).
-# =====================================================================
-echo ""
-echo "[T-W6-1] the (referenced) over-bind is bounded by the round's closed item set"
+  echo ""
+echo "the (referenced) over-bind is bounded by the round's closed item set"
 reset_state
 NE="$PDIR/project-notes/procedures/carry-owned.md"; printf '# e\n' > "$NE"
 NEREL="project-notes/procedures/carry-owned.md"
 TE="$PDIR/tasks/1_in_progress/2026-08-09_carry-owner.md"; mk_linked "$TE" "$NEREL"
 TOTHER="$PDIR/tasks/1_in_progress/2026-08-09_carry-other.md"; mk "$TOTHER"
 write_touched "$NE"
-stop 999 >/dev/null          # r1 requested (TE enters items via its note)
-stop 0   >/dev/null          # r1 expiry -> (referenced) r1 on TE
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 [ "$(sidlines "$TE")" = "1" ] \
   && pass "r1 over-bound the note owner once (owner IS in r1's items)" \
   || fail "TE after r1: $(sidlines "$TE")"
@@ -386,9 +263,9 @@ grep -qF "(referenced) owner of $NEREL via reverse-index; capture expired (r1)" 
   || fail "TE note wrong: $(grep -F "[s:$SID8]" "$TE")"
 GROW_FAIL=0
 for r in 2 3 4; do
-  write_touched "$TOTHER"    # a NEW round about a DIFFERENT task; the note is untouched
-  stop 999 >/dev/null        # r$r requested -> items = {TOTHER}; TE is NOT in it
-  stop 0   >/dev/null        # r$r expiry
+  write_touched "$TOTHER"
+  stop 999 >/dev/null
+  stop 0   >/dev/null
   if [ "$(sidlines "$TE")" != "1" ]; then
     fail "r$r bound an owner for a note it never touched: $(grep -F "[s:$SID8]" "$TE")"
     GROW_FAIL=1
@@ -404,17 +281,11 @@ for n in 1 2 3; do
 done
 pass "further Stops silent (same-round text-key bound retained)"
 
-# =====================================================================
-# T-W6-2: the POSITIVE arm — the bound must scope the over-bind, not disable it
-# after r1. An owner that ENTERS a later round's closed set (its task md is
-# written in that round's slice — which is exactly how a note link gets
-# established in a later round) still gets that round's line.
-# =====================================================================
-echo ""
-echo "[T-W6-2] an owner inside a LATER round's closed set still gets its line"
+  echo ""
+echo "an owner inside a LATER round's closed set still gets its line"
 write_touched "$TE"
-stop 999 >/dev/null          # r5 requested -> items includes TE
-stop 0   >/dev/null          # r5 expiry -> (referenced) r5 on TE
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 [ "$(sidlines "$TE")" = "2" ] \
   && pass "r5 over-bound TE again (TE is in r5's items)" \
   || fail "TE after r5: $(grep -F "[s:$SID8]" "$TE")"
@@ -422,25 +293,18 @@ grep -qF "capture expired (r5)" "$TE" \
   && pass "the later round's line carries its own round tag" \
   || fail "no r5 line: $(grep -F "[s:$SID8]" "$TE")"
 
-# =====================================================================
-# T-R1-1: the R-1 regression. Round 1 is requested, expires, and round 2
-# commits BEFORE the round-1 sidecar lands. The sidecar names round 1 in
-# its file name, so it is applied against ROUND 1's frozen set — which is
-# the only set its entries can be members of. Gated on the live `items`
-# (round 2's) every entry came back as `membership-skip`.
-# =====================================================================
-echo ""
-echo "[T-R1-1] a round-1 sidecar landing AFTER round 2 committed still applies"
+  echo ""
+echo "a round-1 sidecar landing AFTER round 2 committed still applies"
 reset_state
 TR1="$PDIR/tasks/1_in_progress/2026-08-19_r1-main.md"; mk "$TR1"
 NR1="$PDIR/project-notes/procedures/r1-main.md"; printf '# r1\n' > "$NR1"
 NR1REL="project-notes/procedures/r1-main.md"
 TR2="$PDIR/tasks/1_in_progress/2026-08-19_r1-next.md"; mk "$TR2"
 write_touched "$TR1"; write_touched "$NR1"
-stop 999 >/dev/null          # Stop#1: r1 requested (items = {TR1}, notes = {NR1})
-stop 0   >/dev/null          # Stop#2: r1 expires -> placeholder
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 write_touched "$TR2"
-stop 999 >/dev/null          # Stop#3: r2 requested -> `items` is now {TR2}
+  stop 999 >/dev/null
 [ "$(bind_get round)" = "2" ] \
   && pass "round 2 is the open round when the round-1 sidecar arrives" \
   || fail "round after Stop#3: $(bind_get round)"
@@ -449,7 +313,7 @@ cat > "$(rcap 1)" << EOF
  "note_links":[{"note":"$NR1REL","task":"2026-08-19_r1-main.md"}],
  "proposals":[]}
 EOF
-OR11=$(stop 999)             # Stop#4: r1 sidecar applies under r1's closed set
+OR11=$(stop 999)
 echo "$OR11" | grep -q "membership-skip" \
   && fail "the round-1 sidecar was membership-skipped against round 2's set: $OR11" \
   || pass "no membership-skip: the sidecar was gated on ITS OWN round"
@@ -466,13 +330,8 @@ echo "$OR11" | grep -qF "linked note: $NR1REL -> $PROJ/2026-08-19_r1-main.md" \
   && pass "round 2's request was NOT marked done by round 1's delivery" \
   || fail "status after the old-round apply: $(bind_get status)"
 
-# =====================================================================
-# T-R1-2: a sidecar whose round is outside the retained history is
-# consumed WITHOUT being applied and reported exactly once
-# (consume-then-report, F-C — a failed unlink must not re-report forever).
-# =====================================================================
-echo ""
-echo "[T-R1-2] a sidecar outside the round history is discarded with one report"
+  echo ""
+echo "a sidecar outside the round history is discarded with one report"
 cat > "$(rcap 99)" << EOF
 {"confirmed":[{"task":"2026-08-19_r1-main.md","summary":"R1BOGUS must never be applied"}],
  "note_links":[],"proposals":[]}
@@ -491,22 +350,18 @@ grep -qF "R1BOGUS must never be applied" "$TR1" \
 OR12B=$(stop 999)
 echo "$OR12B" | grep -q "round-mismatch" \
   && fail "the discard was re-reported on the next Stop: $OR12B" \
-  || pass "no re-report on the following Stop (INV-1)"
+ || pass "no re-report on the following Stop"
 
-# =====================================================================
-# T-R1-3: r{N} and r{N+1} land on the SAME Stop. Both apply, oldest first,
-# and only the CURRENT round transitions to `done` (D3 rows 1/2).
-# =====================================================================
-echo ""
-echo "[T-R1-3] two rounds' sidecars landing together: both apply, one transitions"
+  echo ""
+echo "two rounds' sidecars landing together: both apply, one transitions"
 reset_state
 TA3="$PDIR/tasks/1_in_progress/2026-08-19_r1-both-a.md"; mk "$TA3"
 TB3="$PDIR/tasks/1_in_progress/2026-08-19_r1-both-b.md"; mk "$TB3"
 write_touched "$TA3"
-stop 999 >/dev/null          # r1 requested: items = {TA3}
-stop 0   >/dev/null          # r1 expires
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 write_touched "$TB3"
-stop 999 >/dev/null          # r2 requested: items = {TB3}
+  stop 999 >/dev/null
 cat > "$(rcap 1)" << EOF
 {"confirmed":[{"task":"2026-08-19_r1-both-a.md","summary":"BOTHSUMA round one"}],
  "note_links":[],"proposals":[]}
@@ -530,18 +385,14 @@ grep -qF "BOTHSUMB round two" "$TB3" \
 [ ! -e "$(rcap 1)" ] && [ ! -e "$(rcap 2)" ] \
   && pass "both sidecars were consumed" || fail "a sidecar survived the apply"
 
-# =====================================================================
-# T-R1-5: the retained window is K=3 rounds. Five rounds must leave the
-# LAST THREE in `capture['history']` — read straight out of `.bind`.
-# =====================================================================
-echo ""
-echo "[T-R1-5] the round history is pruned to the last K=3 rounds"
+  echo ""
+echo "the round history is pruned to the last K=3 rounds"
 reset_state
 for r in 1 2 3 4 5; do
   TK="$PDIR/tasks/1_in_progress/2026-08-19_r1-k$r.md"; mk "$TK"
   write_touched "$TK"
-  stop 999 >/dev/null        # round $r requested
-  stop 0   >/dev/null        # round $r expires (placeholder), so the next opens
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 done
 [ "$(bind_get round)" = "5" ] \
   && pass "five rounds were committed" || fail "round: $(bind_get round)"
@@ -549,33 +400,26 @@ done
   && pass "history holds exactly rounds 3,4,5 (K=3)" \
   || fail "history keys: $(bind_get history_keys)"
 
-# =====================================================================
-# T-R1-6 (F-A): applying an OLD round's sidecar must not stand in for the
-# CURRENT round's delivery. `applied_this_stop` is current-round-only, so
-# the in-flight round still expires on this same Stop and its backstop
-# still runs — otherwise every late arrival pushes the expiry clock out by
-# one Stop.
-# =====================================================================
-echo ""
-echo "[T-R1-6] an old round's apply does not defer the current round's expiry"
+  echo ""
+echo "an old round's apply does not defer the current round's expiry"
 reset_state
 TA6="$PDIR/tasks/1_in_progress/2026-08-19_r1-fa-old.md"; mk "$TA6"
 TB6="$PDIR/tasks/1_in_progress/2026-08-19_r1-fa-open.md"; mk "$TB6"
 write_touched "$TA6"
-stop 999 >/dev/null          # r1 requested: items = {TA6}
-stop 0   >/dev/null          # r1 expires
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 write_touched "$TB6"
-stop 999 >/dev/null          # r2 requested: items = {TB6}, in flight
+  stop 999 >/dev/null
 cat > "$(rcap 1)" << EOF
 {"confirmed":[{"task":"2026-08-19_r1-fa-old.md","summary":"FASUM the old round's judgement"}],
  "note_links":[],"proposals":[]}
 EOF
-OR16=$(stop 0)               # r1 applies AND r2 must expire on this same Stop
+OR16=$(stop 0)
 grep -qF "FASUM the old round's judgement" "$TA6" \
   && pass "the old round's summary was applied" \
   || fail "old-round summary missing: $(grep -F "[s:$SID8]" "$TA6")"
 [ "$(bind_get status)" = "expired" ] \
-  && pass "the in-flight round still expired on schedule (F-A)" \
+ && pass "the in-flight round still expired on schedule" \
   || fail "status after the old-round apply: $(bind_get status)"
 grep -qF "(auto) touched; summary pending (r2)" "$TB6" \
   && pass "the current round's backstop ran on the same Stop" \
@@ -584,32 +428,23 @@ echo "$OR16" | grep -q "membership-skip" \
   && fail "the old-round apply was membership-skipped: $OR16" \
   || pass "no membership-skip on the old-round apply"
 
-# =====================================================================
-# T-R1-7 (F-A, second channel): an OLD round's late apply must not suppress
-# the CURRENT round's placeholder for a task that is active in BOTH rounds.
-# `round_base` is the `[s:sid8]` count frozen when the open round committed,
-# so round N's summary line raised the count past round N+1's baseline and
-# the `(r{N+1})` placeholder never fired — the same loss F-A closes on the
-# expiry channel, on the channel F-A did not look at. T-R1-6 cannot observe
-# this: its two tasks are disjoint, so no key is in both rounds' sets.
-# =====================================================================
-echo ""
-echo "[T-R1-7] an old round's apply does not suppress a SHARED task's placeholder"
+  echo ""
+echo "an old round's apply does not suppress a SHARED task's placeholder"
 reset_state
 TS7="$PDIR/tasks/1_in_progress/2026-08-19_r1-fa-shared.md"; mk "$TS7"
 write_touched "$TS7"
-stop 999 >/dev/null          # r1 requested: items = {TS7}
-stop 0   >/dev/null          # r1 expires -> (r1) placeholder on TS7
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 grep -qF "(auto) touched; summary pending (r1)" "$TS7" \
   && pass "setup: the shared task carries r1's placeholder" \
   || fail "setup broken, no r1 placeholder: $(grep -F "[s:$SID8]" "$TS7")"
 write_touched "$TS7"
-stop 999 >/dev/null          # r2 requested: items = {TS7} AGAIN, in flight
+  stop 999 >/dev/null
 cat > "$(rcap 1)" << EOF
 {"confirmed":[{"task":"2026-08-19_r1-fa-shared.md","summary":"SHAREDSUM round 1's judgement"}],
  "note_links":[],"proposals":[]}
 EOF
-OR17=$(stop 0)               # r1 applies AND r2 expires on this same Stop
+OR17=$(stop 0)
 grep -qF "SHAREDSUM round 1's judgement" "$TS7" \
   && pass "the old round's summary was applied to the shared task" \
   || fail "old-round summary missing: $(grep -F "[s:$SID8]" "$TS7")"
@@ -620,62 +455,46 @@ echo "$OR17" | grep -q "membership-skip" \
   && fail "the old-round apply was membership-skipped: $OR17" \
   || pass "no membership-skip on the shared-task old-round apply"
 
-# =====================================================================
-# T-R1-7b (F-A second channel, the OTHER direction): the foreign-round
-# re-baseline must absorb only what THAT apply appended. A shared task the
-# AGENT self-logged during the current round is already satisfied, so it
-# must still get NO placeholder — rebasing to the post-append count would
-# swallow the self-log too and hand the round a spurious `(r2)` line.
-# =====================================================================
-echo ""
-echo "[T-R1-7b] the re-baseline absorbs the foreign apply only, not this round's self-log"
+  echo ""
+echo "the re-baseline absorbs the foreign apply only, not this round's self-log"
 reset_state
 TS7B="$PDIR/tasks/1_in_progress/2026-08-19_r1-fa-selflog.md"; mk "$TS7B"
 write_touched "$TS7B"
-stop 999 >/dev/null          # r1 requested: items = {TS7B}
-stop 0   >/dev/null          # r1 expires -> (r1) placeholder
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 write_touched "$TS7B"
-stop 999 >/dev/null          # r2 requested: items = {TS7B}, baseline frozen
+  stop 999 >/dev/null
 agent_log_line "$TS7B" "SELFLOG the agent's own round-2 line"
 cat > "$(rcap 1)" << EOF
 {"confirmed":[{"task":"2026-08-19_r1-fa-selflog.md","summary":"SELFSUM round 1's judgement"}],
  "note_links":[],"proposals":[]}
 EOF
-OR17B=$(stop 0)              # r1 applies AND r2 expires on this same Stop
+OR17B=$(stop 0)
 grep -qF "SELFSUM round 1's judgement" "$TS7B" \
   && pass "the old round's summary was applied alongside the self-log" \
   || fail "old-round summary missing: $(grep -F "[s:$SID8]" "$TS7B")"
 grep -qF "(auto) touched; summary pending (r2)" "$TS7B" \
   && fail "spurious r2 placeholder despite the self-log: $(grep -F "[s:$SID8]" "$TS7B")" \
   || pass "the self-logged round got NO placeholder (delta re-baseline)"
-# F-9: the late apply's report line is attributable to ITS round.
 echo "$OR17B" | grep -q "applied summary: $PROJ/2026-08-19_r1-fa-selflog.md (r1)" \
   && pass "the late apply's report line carries its own round tag (r1)" \
   || fail "no (r1) tag on the applied-summary report: $OR17B"
 
-# =====================================================================
-# T-R1-8 (F-3): gate EXCLUSIVITY. Every arm above is positive — nothing
-# pinned that the wrong thing is REJECTED, so a regression widening row 2
-# to `history[N] | items_open` (or falling back to `items_open`) passed
-# the whole suite green. Pin the property: an r1 sidecar naming a task
-# that only round 2 froze is membership-skipped, and nothing lands in
-# that task's @log.
-# =====================================================================
-echo ""
-echo "[T-R1-8] an old round's sidecar cannot reach a task only the CURRENT round froze"
+  echo ""
+echo "an old round's sidecar cannot reach a task only the CURRENT round froze"
 reset_state
 TA8="$PDIR/tasks/1_in_progress/2026-08-19_r1-excl-a.md"; mk "$TA8"
 TB8="$PDIR/tasks/1_in_progress/2026-08-19_r1-excl-b.md"; mk "$TB8"
 write_touched "$TA8"
-stop 999 >/dev/null          # r1 requested: items = {A}
-stop 0   >/dev/null          # r1 expires
+  stop 999 >/dev/null
+  stop 0   >/dev/null
 write_touched "$TB8"
-stop 999 >/dev/null          # r2 requested: items = {B}, in flight
+  stop 999 >/dev/null
 cat > "$(rcap 1)" << EOF
 {"confirmed":[{"task":"2026-08-19_r1-excl-b.md","summary":"EXCLSUM must never land"}],
  "note_links":[],"proposals":[]}
 EOF
-OR18=$(stop 0)               # r1 sidecar names B: gated on r1's set = {A}
+OR18=$(stop 0)
 echo "$OR18" | grep -q "membership-skip: $PROJ/2026-08-19_r1-excl-b.md" \
   && pass "the wrong-round entry was membership-skipped by name" \
   || fail "no membership-skip for B: $OR18"
@@ -683,22 +502,15 @@ grep -qF "EXCLSUM must never land" "$TB8" \
   && fail "the r1 sidecar reached a task only r2 froze: $(grep -F "[s:$SID8]" "$TB8")" \
   || pass "nothing from the r1 sidecar landed in B's @log"
 
-# =====================================================================
-# T-R1-9 (F-5): an `r0` sidecar must not enter row 1. `round_n` defaults
-# to 0 when `.bind` has no capture state, so an r0 name used to match
-# row 1 and fall through `history.get('0') or items_open` to items=None —
-# a fail-open that bypassed the membership gate entirely. Rounds start at
-# 1, so r0 is always a stray write: row 3 (consume + one report).
-# =====================================================================
-echo ""
-echo "[T-R1-9] an r0 sidecar is discarded, not fail-open applied"
+  echo ""
+echo "an r0 sidecar is discarded, not fail-open applied"
 reset_state
 TA9="$PDIR/tasks/1_in_progress/2026-08-19_r1-zero.md"; mk "$TA9"
 cat > "$(rcap 0)" << EOF
 {"confirmed":[{"task":"2026-08-19_r1-zero.md","summary":"ZEROSUM must never land"}],
  "note_links":[],"proposals":[]}
 EOF
-OR19=$(stop 999)             # no round ever requested: round_n = 0
+OR19=$(stop 999)
 grep -qF "ZEROSUM must never land" "$TA9" \
   && fail "the r0 sidecar bypassed the gate: $(grep -F "[s:$SID8]" "$TA9")" \
   || pass "nothing from the r0 sidecar landed in the task @log"
@@ -709,39 +521,28 @@ echo "$OR19" | grep -q "round-mismatch: sidecar r0" \
   && fail "the r0 sidecar was left on disk" \
   || pass "the r0 sidecar was consumed"
 
-# =====================================================================
-# T-R1-10 (F-4): a torn/non-JSON sidecar has a terminal state. Inside the
-# retained window it is a SILENT retry (may still be mid-write). Once its
-# round ages OUT of the K=3 window it can never become applicable, and it
-# used to linger until the 7-day sweep with no consume and no report.
-# =====================================================================
-echo ""
-echo "[T-R1-10] a torn sidecar is retried in-window, disposed once out of window"
+  echo ""
+echo "a torn sidecar is retried in-window, disposed once out of window"
 reset_state
 TA10="$PDIR/tasks/1_in_progress/2026-08-19_r1-torn.md"; mk "$TA10"
 write_touched "$TA10"
-stop 999 >/dev/null          # r1 requested
-printf '{"confirmed": [ {"task": TRUNCATED' > "$(rcap 1)"   # torn write
-O110=$(stop 0)               # r1 in window: silent retry
+  stop 999 >/dev/null
+printf '{"confirmed": [ {"task": TRUNCATED' > "$(rcap 1)"
+O110=$(stop 0)
 [ -e "$(rcap 1)" ] \
   && pass "in-window torn sidecar was left for retry (not consumed)" \
   || fail "in-window torn sidecar was consumed"
 echo "$O110" | grep -q "round-mismatch: sidecar r1" \
   && fail "in-window torn sidecar was reported: $O110" \
   || pass "in-window torn sidecar stayed silent"
-# Age r1 out of the K=3 window: request rounds 2,3,4 (history keeps 2..4).
-# The disposal fires on the FIRST Stop after round 4's request commit prunes
-# r1 out of history — so that Stop's output must be the captured one, not a
-# discarded loop iteration (mis-sequencing this put the report in a
-# `>/dev/null` Stop and the assert read an empty string).
 for _i in 2 3; do
-  write_touched "$TA10"
+write_touched "$TA10"
   stop 999 >/dev/null
   stop 0   >/dev/null
 done
 write_touched "$TA10"
-stop 999 >/dev/null          # round 4 request commits -> history prunes to {2,3,4}
-O111=$(stop 0)               # first Stop with r1 outside the window
+  stop 999 >/dev/null
+O111=$(stop 0)
 [ -e "$(rcap 1)" ] \
   && fail "out-of-window torn sidecar still on disk" \
   || pass "out-of-window torn sidecar was consumed"
@@ -750,8 +551,8 @@ echo "$O111" | grep -q "round-mismatch: sidecar r1 unreadable and outside histor
   || fail "no unreadable round-mismatch report: $O111"
 O112=$(stop 0)
 echo "$O112" | grep -q "round-mismatch: sidecar r1 unreadable" \
-  && fail "the torn-sidecar report repeated (INV-1): $O112" \
-  || pass "no re-report on the following Stop (INV-1)"
+ && fail "the torn-sidecar report repeated: $O112" \
+ || pass "no re-report on the following Stop"
 
-echo ""
+  echo ""
 echo "=== Done ==="

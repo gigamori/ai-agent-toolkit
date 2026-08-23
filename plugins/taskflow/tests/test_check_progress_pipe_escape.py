@@ -3,62 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-r"""Unit tests for checks #6 and #2 — pipe-escape in table-row parsing.
-
-Both of check_progress.py's markdown-table parsers must split a row on
-*unescaped* "|" only and then unescape each cell. This file pins that rule on
-both sides: check #6 (summary_h1) via parse_progress_table_rows, and check #2
-(notes index) via parse_notes_index_rows.
-
-== check #6 / parse_progress_table_rows ==
-
-Regression for a pre-existing bug surfaced by the 2026-08-03 context-side
-Completed-row cap fix (see
-_projects/harness-taskflow/project-notes/specs/context-side-done-rows-cap.md):
-it had been hidden by the old file-side cap dropping the affected row, and only
-became visible once progress.md started listing every Completed task again.
-
-rebuild_progress.py::escape_cell escapes a literal "|" in a table cell as "\|"
-so it is not mistaken for a column separator. check_progress.py's
-parse_progress_table_rows used to split each row on every "|" character
-unconditionally, which:
-  1. split an escaped pipe into two spurious extra cells, and
-  2. discarded the "|" character itself (consumed as the split delimiter),
-so a task whose H1 contains "|" (e.g. "wiki:on|off") always false-positived as
-summary_h1 drift, no matter how fresh the table was.
-
-  T1  a row built by rebuild_progress.py for a task whose H1 contains "|"
-      parses back into exactly 5 cells with the pipe restored.
-  T2  check_progress.py reports no findings for that project (no false
-      positive from the pipe).
-  T3  the check still catches REAL drift on a pipe-bearing H1 (a stale row
-      after the task's H1 changes) — the fix must not neuter the check.
-
-== check #2 / parse_notes_index_rows ==
-
-parse_notes_index_rows carried the same naive `stripped.split("|")` long after
-its sibling was fixed, so a project-notes/index.md row whose Description or
-Tags cell contains an escaped pipe split into 5 or 6 cells instead of 4, with
-the pipe character itself consumed as a delimiter. It stayed latent because
-check_notes_index_consistency (and view_progress.py::build_notes_summary) read
-only cells[0], which is left of the damage.
-
-  T4  the two real escaped-pipe rows of
-      _projects/harness-taskflow/project-notes/index.md (verbatim, inlined —
-      the test never reads the live gitignored file) each parse into exactly
-      4 cells with the literal "|" restored.
-  T5  cells[0] is still the plain note rel path for those rows — the field
-      today's consumers actually read must not regress.
-  T6  check_notes_index_consistency reports no findings for an index whose
-      rows carry escaped pipes (no false positive at the consumer).
-
-check_progress.py and rebuild_progress.py both have a PEP723 header declaring
-`pyyaml` as a dependency, so this test also declares it and must be run via:
-
-    uv run --script plugins/taskflow/tests/test_check_progress_pipe_escape.py
-
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -76,13 +20,6 @@ FAIL = 0
 
 PIPE_H1 = "llm-wiki x taskflow Phase 1: session-aware pj + `wiki:on|off` toggle"
 
-# The two rows of _projects/harness-taskflow/project-notes/index.md that the
-# naive parser mis-split (lines 5 and 27 as of 2026-08-19), copied verbatim and
-# frozen here. Do NOT read the live file: _projects/ is gitignored and edited
-# by ordinary work, so it is not a stable fixture.
-#   line 5  — two escaped pipes in Description (`fullUuid\|\|shortId`): the
-#             naive split produced 6 cells.
-#   line 27 — one escaped pipe in Description (`wiki:on\|off`): 5 cells.
 NOTES_ROW_2_PIPES = (
     r"| procedures/sibling-handoff-taskflow-round-binding-kanban-2026-08-09.md "
     r"| pi-studio(P型) 宛: 1タスクに同一sidの[s:]行が複数付く/他プロジェクトのsidも入る"
@@ -145,7 +82,7 @@ def build(project_dir: Path) -> str:
 
 
 def test_row_parses_back_with_pipe_restored(root: Path) -> None:
-    print("--- T1: a rebuilt row with an escaped pipe parses into 5 cells ---")
+    print("--- a rebuilt row with an escaped pipe parses into 5 cells ---")
     project_dir = make_project_with_pipe_task(root, PIPE_H1)
     text = build(project_dir)
 
@@ -161,7 +98,7 @@ def test_row_parses_back_with_pipe_restored(root: Path) -> None:
 
 
 def test_no_false_positive(root: Path) -> None:
-    print("--- T2: check_progress reports no findings for a pipe-bearing H1 ---")
+    print("--- check_progress reports no findings for a pipe-bearing H1 ---")
     project_dir = make_project_with_pipe_task(root, PIPE_H1)
     build(project_dir)
 
@@ -177,11 +114,10 @@ def test_no_false_positive(root: Path) -> None:
 
 
 def test_real_drift_still_caught(root: Path) -> None:
-    print("--- T3: a genuinely stale pipe-bearing row is still flagged ---")
+    print("--- a genuinely stale pipe-bearing row is still flagged ---")
     project_dir = make_project_with_pipe_task(root, PIPE_H1)
     build(project_dir)
 
-    # Change the task's H1 without rebuilding — progress.md's row is now stale.
     task_path = project_dir / "tasks" / "2_done" / "2026-07-03_pipe-task.md"
     stale_content = task_path.read_text(encoding="utf-8").replace(
         PIPE_H1, "a completely different title with|a pipe too"
@@ -195,8 +131,6 @@ def test_real_drift_still_caught(root: Path) -> None:
 
 
 def make_project_with_notes_index(root: Path) -> Path:
-    """Materialize a project whose project-notes/index.md is NOTES_INDEX_MD and
-    whose note files are exactly the ones that index registers."""
     project_dir = root / "proj"
     notes_dir = project_dir / "project-notes"
     notes_dir.mkdir(parents=True)
@@ -209,7 +143,7 @@ def make_project_with_notes_index(root: Path) -> Path:
 
 
 def test_notes_index_row_arity_with_escaped_pipes() -> None:
-    print("--- T4: notes index rows with escaped pipes parse into 4 cells ---")
+    print("--- notes index rows with escaped pipes parse into 4 cells ---")
     rows = cp.parse_notes_index_rows(NOTES_INDEX_MD)
     check(len(rows) == 2, f"exactly two data rows parsed (got {len(rows)})")
     if len(rows) != 2:
@@ -233,7 +167,7 @@ def test_notes_index_row_arity_with_escaped_pipes() -> None:
 
 
 def test_notes_index_file_cell_unaffected() -> None:
-    print("--- T5: cells[0] still yields the plain note rel path ---")
+    print("--- cells[0] still yields the plain note rel path ---")
     rows = cp.parse_notes_index_rows(NOTES_INDEX_MD)
     files = tuple(r["file"] for r in rows)
     check(
@@ -243,7 +177,7 @@ def test_notes_index_file_cell_unaffected() -> None:
 
 
 def test_notes_index_no_false_positive(root: Path) -> None:
-    print("--- T6: check_notes_index_consistency is clean on escaped-pipe rows ---")
+    print("--- check_notes_index_consistency is clean on escaped-pipe rows ---")
     project_dir = make_project_with_notes_index(root)
     result = cp.Result()
     cp.check_notes_index_consistency(project_dir, result)

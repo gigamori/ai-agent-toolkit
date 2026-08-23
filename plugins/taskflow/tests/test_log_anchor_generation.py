@@ -1,38 +1,4 @@
 #!/usr/bin/env python3
-"""T-D3-1 — unit tests for hooks/session_progress_capture.py::append_auto_binding
-`@log` block GENERATION (project-notes/specs/capture-detection-gaps.md §4.2, D3).
-
-Before D3, a task md carrying NEITHER `<!-- @log:begin -->` NOR
-`<!-- @log:end -->` could never be bound: `repair_log_markers` only handles the
-"exactly one begin, no end" damage shape and returns None otherwise, so
-`append_auto_binding` returned False and the touched task was dropped silently.
-D3 makes that case GENERATE the block and bind:
-
-    \\n<!-- @log:begin -->\\n- {iso_ts} [s:{sid8}]: {note}\\n<!-- @log:end -->\\n
-
-inserted immediately before `<!-- @notes:begin -->` when one exists, otherwise
-at EOF, with a newline supplied first when the preceding content does not end
-with one.
-
-Covered here:
-  - no markers at all, no `@notes`      -> block generated at EOF, line inside
-  - a `@notes` block exists             -> new `@log` block precedes NOTES_BEGIN
-  - file does not end with a newline    -> no `...text<!-- @log:begin -->` splice
-  - second call on the generated block  -> appends into it, no 2nd block
-  - the half-damaged path (begin present / end missing) is UNCHANGED
-  - ambiguous residue (two begins, no end) still fails (T-D3-2 covers the
-    hook-level reporting of that case)
-
-ABSOLUTE SAFETY (`e2e_state_dir_sandbox`): every
-fixture lives inside a `tempfile.TemporaryDirectory()` under a real
-`tasks/<status>/` layout (so `log_lock` keys its sidecar inside the tempdir
-too). This test NEVER calls `main()`, NEVER reads stdin, and NEVER calls
-`_cleanup_stale_markers` — so the real `_projects/_state/` sweep can never
-fire. A file-count check on the real `_state/` dir brackets the whole run.
-
-Run with:  uv run --no-project python plugins/taskflow/tests/test_log_anchor_generation.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import re
@@ -71,8 +37,7 @@ def check(cond: bool, msg: str) -> None:
 
 
 def make_task(d: Path, name: str, body: str) -> Path:
-    """Write `body` verbatim (no trailing-newline normalization) under a real
-    tasks/<status>/ layout inside the tempdir."""
+    """Writes `body` verbatim: no trailing-newline normalization."""
     tasks_dir = d / "tasks" / "1_in_progress"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     p = tasks_dir / name
@@ -100,7 +65,7 @@ _HEAD = (
 
 
 def test_no_markers_at_all(d: Path) -> None:
-    print("--- T-D3-1a: no @log markers at all -> block generated at EOF ---")
+    print("--- no @log markers at all -> block generated at EOF ---")
     p = make_task(d, "2026-08-08_no-markers.md", _HEAD)
     before = spc.log_block_has_sid(str(p), SID8)
     rc = spc.append_auto_binding(str(p), SID8, TS)
@@ -129,7 +94,7 @@ def test_no_markers_at_all(d: Path) -> None:
 
 
 def test_notes_block_present(d: Path) -> None:
-    print("--- T-D3-1b: a @notes block exists -> new @log block precedes NOTES_BEGIN ---")
+    print("--- a @notes block exists -> new @log block precedes NOTES_BEGIN ---")
     notes = (f"\n{NOTES_BEGIN}\n"
              f"<!-- auto-managed by taskflow note-link; do not hand-edit -->\n"
              f"- project-notes/specs/pre-existing.md\n"
@@ -159,7 +124,7 @@ def test_notes_block_present(d: Path) -> None:
 
 
 def test_no_trailing_newline(d: Path) -> None:
-    print("--- T-D3-1c: file does not end with a newline -> newline supplied first ---")
+    print("--- file does not end with a newline -> newline supplied first ---")
     tail = "Some closing prose with no trailing newline"
     p = make_task(d, "2026-08-08_no-eol.md", _HEAD + tail)
     rc = spc.append_auto_binding(str(p), SID8, TS)
@@ -177,7 +142,7 @@ def test_no_trailing_newline(d: Path) -> None:
 
 
 def test_second_call_reuses_generated_block(d: Path) -> None:
-    print("--- T-D3-1d: a second bind appends INTO the generated block (no 2nd block) ---")
+    print("--- a second bind appends INTO the generated block (no 2nd block) ---")
     p = make_task(d, "2026-08-08_twice.md", _HEAD)
     spc.append_auto_binding(str(p), SID8, TS)
     rc2 = spc.append_auto_binding(str(p), "othersid", TS, "second binding")
@@ -229,7 +194,7 @@ def real_state_count() -> int:
 
 
 def main() -> int:
-    print("=== T-D3-1: append_auto_binding @log block generation (D3 §4.2) ===")
+    print("=== append_auto_binding @log block generation ===")
     before_count = real_state_count()
     print(f"  real _projects/_state/ file count (before): {before_count}")
 

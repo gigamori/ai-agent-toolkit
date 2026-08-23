@@ -3,30 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Unit tests: `.locks/progress.md.lock` is exempt from dead-lock sweeping.
-
-Protocol v2 (taskflow-write-lock-v2-design.md §3.1 rule 2) gave `progress.md`
-its own sidecar in the SAME `<project>/.locks/` directory that task-md sidecars
-live in. Both dead-lock classifiers there key on "does a task md with this
-basename still exist?", so without an explicit exemption `progress.md.lock`
-would be reported as dead in every project, forever, the moment a rebuild ran.
-
-The exemption exists in TWO separate implementations that must stay in
-lockstep:
-  - scripts/check_progress.py::check_orphan_lock  (report-only, check #9)
-  - scripts/clean_locks.py::find_dead_locks       (the deleting sweep)
-
-`clean_locks.py` deletes for real, and `_projects/` is typically gitignored, so
-a false positive there is unrecoverable data loss of a LIVE lock. That is why
-this is pinned rather than left to the two docstrings.
-
-Not covered here, by design: a crash-orphaned `progress.md.lock` is reclaimed
-by the next writer's stale-break (hooks/log_lock.py `_acquire_fd`), not by
-either sweep. That path is covered in tests/test_log_lock.py (V2-4).
-
-Run with:  uv run --script plugins/taskflow/tests/test_lock_sweep_exemption.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import sys
@@ -61,7 +37,6 @@ TASK_BODY = "# Live Task\n\nbody\n"
 
 
 def make_fixture(root: Path) -> Path:
-    """A project whose `.locks/` holds one live, one dead, one exempt sidecar."""
     project_dir = root / "proj"
     todo = project_dir / "tasks" / "0_todo"
     todo.mkdir(parents=True)
@@ -69,11 +44,8 @@ def make_fixture(root: Path) -> Path:
 
     locks = project_dir / ".locks"
     locks.mkdir()
-    # live: its task md still exists.
     (locks / "2026-08-08_live.md.lock").write_text("", encoding="utf-8")
-    # dead: the task md was deleted or renamed, so nothing resolves here again.
     (locks / "2026-08-08_gone.md.lock").write_text("", encoding="utf-8")
-    # exempt: keyed on progress.md itself, never on a task md.
     (locks / "progress.md.lock").write_text("", encoding="utf-8")
     return project_dir
 

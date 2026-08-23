@@ -3,20 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Unit tests for generate_kanban.py's CLAUDE_CONFIG_DIR resolution.
-
-Covers `_cc_config_dirs()` and the union scan in `build_cc_session_index()`
-(_projects/harness-taskflow/project-notes/specs/claude-config-dir-support.md,
-Change 1 / T1-T6): the kanban reader must resolve sessions from the union of
-`$CLAUDE_CONFIG_DIR` and `~/.claude`, with the env universe winning on a UUID
-collision, and must replicate CC's literal reading of the env value (no
-`expanduser`; relative values resolve against the cwd).
-
-stdlib only. Everything runs against temp dirs with `Path.home` monkeypatched;
-no `_projects/_state/` and no real `~/.claude` entry is written. Run with:
-  uv run --script plugins/taskflow/tests/test_kanban_config_dirs.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import os
@@ -24,7 +10,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Import the module under test from scripts/ (sibling of tests/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import generate_kanban as gk  # noqa: E402
 
@@ -52,7 +37,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 class _Env:
-    """Set/unset CLAUDE_CONFIG_DIR and optionally fake `Path.home()`."""
 
     def __init__(self, cfg: str | None, home: Path | None = None):
         self.cfg = cfg
@@ -83,7 +67,6 @@ def _same(a: Path, b: Path) -> bool:
     return os.path.normcase(str(a)) == os.path.normcase(str(b))
 
 
-# --- _cc_config_dirs --------------------------------------------------------
 
 def test_t1_env_unset() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -112,7 +95,6 @@ def test_t3_env_equals_default() -> None:
         home = Path(tmp) / "home"
         default = home / ".claude"
         default.mkdir(parents=True)
-        # Upper-cased to exercise the normcase comparison on Windows.
         with _Env(str(default).upper(), home):
             dirs = gk._cc_config_dirs()
         expected = 1 if os.path.normcase("A") == os.path.normcase("a") else 2
@@ -134,7 +116,6 @@ def test_t4_env_tilde_is_literal() -> None:
               "T4: '~/x' does NOT resolve under the home directory")
 
 
-# --- build_cc_session_index -------------------------------------------------
 
 UUID_SHARED = "11111111-1111-1111-1111-111111111111"
 UUID_ENV_ONLY = "22222222-2222-2222-2222-222222222222"
@@ -174,7 +155,7 @@ def test_t5b_env_unset_scans_home_only() -> None:
         with _Env(None, home):
             index = gk.build_cc_session_index()
         check(sorted(index) == [UUID_HOME_ONLY],
-              f"AC-1: env unset -> only ~/.claude/projects is scanned, got {sorted(index)}")
+              f"env unset -> only ~/.claude/projects is scanned, got {sorted(index)}")
 
 
 def test_t6_collision_env_wins() -> None:
@@ -214,9 +195,9 @@ def main() -> int:
     state_after = sorted(p.name for p in REPO_STATE_DIR.glob("*")) if REPO_STATE_DIR.is_dir() else []
     claude_after = sorted(p.name for p in REAL_CLAUDE_DIR.glob("*")) if REAL_CLAUDE_DIR.is_dir() else []
     check(state_before == state_after,
-          "AC-6: real _projects/_state/ is unchanged by this test run")
+          "real _projects/_state/ is unchanged by this test run")
     check(claude_before == claude_after,
-          "AC-6: real ~/.claude/ top-level entries are unchanged by this test run")
+          "real ~/.claude/ top-level entries are unchanged by this test run")
 
     print()
     if FAIL == 0:

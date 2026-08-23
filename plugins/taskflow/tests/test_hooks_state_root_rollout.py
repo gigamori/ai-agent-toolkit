@@ -1,63 +1,4 @@
 #!/usr/bin/env python3
-"""Acceptance tests for the `_projects` ancestor-search rollout across the
-taskflow hooks (mode-orchestrator-runs/2026-08-20_remaining-hooks-cwd-dependence,
-02-plan.md §5.2 AC-1 / AC-4 / AC-7 under the §5.3 guards, plus the two additions
-the 03a decision record's addendum assigns to the test turn).
-
-What landed, and what this file discriminates
----------------------------------------------
-Turn 03 gave `session_init.py`, `session_sync.py`, `session_compact_reset.py`
-and `session_progress_capture.py` the same `_find_state_root()` walk
-`touched_capture.py` already had, and pointed `precompact_flush.py`'s
-normalization base at the imported `STATE_ROOT`. Turn 03b changed
-`session_progress_capture.main()`'s `cwd = os.getcwd()` to `cwd = STATE_ROOT`.
-The bulk stale-marker sweep stayed cwd-pinned (`SWEEP_STATE_DIR`); that half is
-covered by `test_sweep_pin_state_dir.py`, not here.
-
-Every arm carries a control, because "nothing was produced" is otherwise
-indistinguishable from "the hook never ran". Three builds are derived from the
-REAL source into the temp tree, so a stale copy cannot make a control vacuous:
-
-  builds/current  : verbatim copy of `plugins/taskflow/hooks/`.
-  builds/pre03b   : current, with `session_progress_capture.py`'s
-                    `cwd = STATE_ROOT` reverted to `cwd = os.getcwd()` and the
-                    same reversion in `precompact_flush.py`. This is the
-                    turn-03 state; it isolates the 03b edit.
-  builds/head     : every `hooks/*.py` replaced by its `git show HEAD:` blob —
-                    the fully pre-rollout state. Read-only; the working tree is
-                    never touched.
-
-03b-execute.md finding F-1 governs over 03a-decision.md: for a ledger written by
-the current `touched_capture.py` the lines are already STATE_ROOT-relative and
-`normalize_path` is a no-op on relative input, so the read base cannot change
-touched-task resolution. AC-4's stated control ("the unmodified
-`cwd = os.getcwd()` version must fail to match the same line") is therefore
-expected to be VACUOUS, and this file measures that rather than asserting it
-away: arm AC-4-CTRL records what the reverted build actually does, and arm
-AC-4b supplies the base-discriminating case (an ABSOLUTE ledger line under
-STATE_ROOT, the one shape the two bases disagree on).
-
-The non-vacuous Stop-side arm (ADD-1) asserts what the 03b edit really changed:
-the `_rel()` key shape persisted into `.bind`'s `exec_tried`. It FAILS on the
-pre03b build (`../_projects/...`) and PASSES on current (`_projects/...`).
-
-ADD-2 covers the `.bind` key-shape migration 03b-execute.md §2.1 raises: a
-`.bind` written before the line-1335 edit, read by the current code, in BOTH
-configurations.
-
-Sandbox (`e2e_state_dir_sandbox`, modelled on
-`tests/test_touched_capture_state_root.py`): SIX hooks now resolve their root by
-walking ANCESTORS, so a temp workspace inside the repo tree resolves to the REAL
-`_projects/_state`. Every workspace is a `tempfile.mkdtemp()` tree OUTSIDE the
-repo, asserted up front to have no ancestor holding `_projects/_state`, and
-every hook is invoked as a SUBPROCESS with an explicit `cwd=` (the roots are
-module scope, so importing cannot vary cwd). The real state dir is fingerprinted
-before and after with the live session's own churn excluded.
-
-stdlib only; no PEP723 header. Run with:
-    uv run --no-project python plugins/taskflow/tests/test_hooks_state_root_rollout.py
-Exits 0 when all checks pass, 1 otherwise, 2 on an aborted sandbox guard.
-"""
 from __future__ import annotations
 
 import io
@@ -76,11 +17,6 @@ HOOKS_SRC = REPO_ROOT / "plugins" / "taskflow" / "hooks"
 PROMPTS_SRC = REPO_ROOT / "plugins" / "taskflow" / "prompts"
 REAL_STATE = REPO_ROOT / "_projects" / "_state"
 
-# Synthetic session id. 36 chars (UUID shape) so the sweep's `len(stem) == 36`
-# json branch and every orphan guard see the same shape a real session has.
-# Leak detection keys on the FULL id, not on a short prefix: the real state dir
-# holds unrelated sessions whose ids can share any 2-4 char prefix (measured
-# 2026-08-20: a live `f005be44-...json` made a `f0` prefix test false-positive).
 SID = "f0110000-1111-2222-3333-444455556666"
 SYNTH_IDS = (SID,)
 
@@ -95,17 +31,12 @@ TASK_BODY = (
     "<!-- @log:begin -->\n"
     "<!-- @log:end -->\n"
 )
-# Deliberately unbindable: two `@log:begin`, no `@log:end`. `repair_log_markers`
-# returns None for that damage shape, so `append_auto_binding` returns False and
-# the exec-bind records a 打止め in `exec_tried` — the only `_rel()` value that
-# survives the process.
 EXEC_BODY = (
     "# exec task\n\n"
     "<!-- @log:begin -->\n"
     "<!-- @log:begin -->\n"
 )
 
-# Substitution anchors. Each is asserted to occur exactly once in its file.
 SPC_FIXED_CWD = "    cwd = STATE_ROOT"
 SPC_PRE_CWD = "    cwd = os.getcwd()"
 
@@ -131,9 +62,7 @@ def check(cond: bool, msg: str) -> None:
 
 
 def note(msg: str) -> None:
-    """A measured observation that is reported but does not gate the exit code
-    (used where 02-plan.md's stated control is expected to be non-discriminating
-    per 03b-execute.md F-1)."""
+    """A measured observation that is reported but does not gate the exit code."""
     NOTES.append(msg)
     print(f"  NOTE: {msg}")
 
@@ -143,11 +72,8 @@ def die(msg: str) -> None:
     raise SystemExit(2)
 
 
-# --- sandbox guards --------------------------------------------------------
 
 def ancestors_with_state(start: Path) -> list[str]:
-    """Every ancestor of `start` (inclusive) holding `_projects/_state` — i.e.
-    exactly what `_find_state_root` would walk into."""
     hits: list[str] = []
     d = start.resolve()
     while True:
@@ -181,17 +107,14 @@ def churn_excluded(names: list[str], live: set[str]) -> list[str]:
 
 
 def live_prefixes(before: list[str], after: list[str]) -> set[str]:
-    """Session prefixes whose state json is present in BOTH snapshots. Those
-    sessions are alive and rewrite their own `.touched` every Stop
-    (e2e_state_dir_sandbox step 3 sub-bullet: a raw count comparison is a
-    false-positive generator). A DEAD session's json disappearing is exactly
-    what the guard must still catch, and such a prefix is not in this set."""
+    """Sessions whose state json is in both snapshots are alive and rewrite their own
+    `.touched`; a dead session's json disappearing is what the guard must still catch, so
+    those prefixes are deliberately excluded here."""
     jb = {n[:8] for n in before if n.endswith(".json") and len(n) == 41}
     ja = {n[:8] for n in after if n.endswith(".json") and len(n) == 41}
     return jb & ja
 
 
-# --- builds ----------------------------------------------------------------
 
 def _copy_plugin(dest_root: Path) -> Path:
     tf = dest_root / "taskflow"
@@ -209,8 +132,7 @@ def _git_show(rel: str) -> str | None:
 
 
 def make_builds(root: Path) -> dict[str, Path]:
-    """current / pre03b / head, all derived from the real tree. No git write
-    operation of any kind: `git show` only."""
+    """Derived from the real tree with `git show` only: no git write operation of any kind."""
     builds: dict[str, Path] = {}
 
     builds["current"] = _copy_plugin(root / "builds" / "current")
@@ -248,7 +170,6 @@ def make_builds(root: Path) -> dict[str, Path]:
     return builds
 
 
-# --- fixture ---------------------------------------------------------------
 
 def build_ws(root: Path, name: str, *, state: dict | None,
              tasks: dict[str, str] | None = None,
@@ -273,9 +194,6 @@ def build_ws(root: Path, name: str, *, state: dict | None,
 
 def run_hook(hooks: Path, script: str, cwd: Path, payload: dict,
              env_extra: dict | None = None) -> subprocess.CompletedProcess:
-    """e2e_state_dir_sandbox step 2: `uv run --no-project` (the hooks carry no
-    PEP723 header, and from a temp cwd uv would otherwise resolve this repo's
-    pyproject). G5: subprocess with an explicit cwd, never an import."""
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.pop("TASKFLOW_SWEEP_MAX", None)
@@ -320,11 +238,10 @@ def write_payload(ws: Path, rel: str) -> dict:
             "tool_input": {"file_path": str(ws / rel)}}
 
 
-# --- arms ------------------------------------------------------------------
 
 def arm_ac1(root: Path, builds: dict[str, Path]) -> None:
     print()
-    print("--- AC-1: subdir-launched session — init writes state, "
+    print("--- subdir-launched session — init writes state, "
           "touched_capture appends, Stop opens a round ---")
 
     ws = build_ws(root, "ac1_current", state=None,
@@ -366,7 +283,6 @@ def arm_ac1(root: Path, builds: dict[str, Path]) -> None:
           f"[fixed] Stop blocked and requested the capture subagent "
           f"(G6 positive execution marker; stdout={r.stdout.strip()[:160]!r})")
 
-    # ---- control: the same fixture against the pre-rollout build ----
     ws2 = build_ws(root, "ac1_head", state=None, tasks={TASK_REL: TASK_BODY})
     sub2 = ws2 / "sub"
     r = run_hook(builds["head"], "session_init.py", sub2,
@@ -398,7 +314,7 @@ def arm_ac1(root: Path, builds: dict[str, Path]) -> None:
 
 def arm_ac4(root: Path, builds: dict[str, Path]) -> None:
     print()
-    print("--- AC-4: PreCompact reads the ledger against the same base "
+    print("--- PreCompact reads the ledger against the same base "
           "touched_capture wrote it with ---")
 
     def pc_ws(name: str) -> Path:
@@ -422,7 +338,6 @@ def arm_ac4(root: Path, builds: dict[str, Path]) -> None:
           "[fixed] PreCompact appended its placeholder into the task @log "
           "(G6 positive execution marker)")
 
-    # ---- 02-plan.md §5.2's stated control, measured rather than assumed ----
     ws_c = pc_ws("ac4_pre03b")
     sub_c = ws_c / "sub"
     run_hook(builds["current"], "touched_capture.py", sub_c,
@@ -432,17 +347,16 @@ def arm_ac4(root: Path, builds: dict[str, Path]) -> None:
                     "trigger": "manual"})
     matched = want in rc_.stdout
     if matched:
-        note(f"AC-4's stated control is VACUOUS, as 03b-execute.md F-1 predicts: "
-             f"the `cwd = os.getcwd()` build ALSO matched the line "
-             f"(stdout={rc_.stdout.strip()[:160]!r}). The current writer emits "
-             f"STATE_ROOT-relative lines and `normalize_path` is a no-op on "
-             f"relative input, so the read base cannot discriminate here. "
-             f"AC-4b below supplies the arm that does.")
+        note(f"this control is VACUOUS: the `cwd = os.getcwd()` build ALSO "
+             f"matched the line (stdout={rc_.stdout.strip()[:160]!r}). The "
+             f"current writer emits STATE_ROOT-relative lines and "
+             f"`normalize_path` is a no-op on relative input, so the read base "
+             f"cannot discriminate here. The absolute-ledger arm below is the "
+             f"one that does.")
     else:
         ok(f"[control, PRE-03b] the cwd-based build failed to match "
            f"(stdout={rc_.stdout.strip()[:160]!r})")
 
-    # ---- rollout-level control: pre-rollout PreCompact produces nothing ----
     ws_h = pc_ws("ac4_head")
     sub_h = ws_h / "sub"
     run_hook(builds["current"], "touched_capture.py", sub_h,
@@ -454,9 +368,8 @@ def arm_ac4(root: Path, builds: dict[str, Path]) -> None:
           f"[control, PRE-ROLLOUT] PreCompact at <ws>/sub emits nothing at all "
           f"(rc={rh.returncode}, stdout={rh.stdout.strip()[:160]!r})")
 
-    # ---- AC-4b: the shape the two bases DO disagree on ----
     print()
-    print("--- AC-4b: an ABSOLUTE ledger line under STATE_ROOT — the base is "
+    print("--- an ABSOLUTE ledger line under STATE_ROOT — the base is "
           "load-bearing here (non-vacuous) ---")
     for label, build in (("fixed", "current"), ("PRE-03b", "pre03b")):
         wsx = pc_ws(f"ac4b_{build}")
@@ -480,7 +393,7 @@ def arm_ac4(root: Path, builds: dict[str, Path]) -> None:
 
 def arm_ac7(root: Path, builds: dict[str, Path]) -> None:
     print()
-    print("--- AC-7: the search-derived root and the pinned sweep target are "
+    print("--- the search-derived root and the pinned sweep target are "
           "DIFFERENT under a nested cwd ---")
     ws = build_ws(root, "ac7", state=None, tasks={TASK_REL: TASK_BODY})
     probe = root / "roots_probe.py"
@@ -534,7 +447,7 @@ def arm_ac7(root: Path, builds: dict[str, Path]) -> None:
 
 def arm_add1(root: Path, builds: dict[str, Path]) -> None:
     print()
-    print("--- ADD-1 (non-vacuous Stop-side arm): the persisted `exec_tried` "
+    print("--- (non-vacuous Stop-side arm): the persisted `exec_tried` "
           "key shape — FAILS on pre-03b code, PASSES on current ---")
 
     def exec_ws(name: str) -> Path:
@@ -570,7 +483,6 @@ def arm_add1(root: Path, builds: dict[str, Path]) -> None:
           f"[control, PRE-03b, config B] the same report carried `../_projects/` "
           f"(stderr={pre_err.strip()[:200]!r})")
 
-    # ---- configuration A: the substitution is string-identical ----
     a_tried: dict[str, list] = {}
     for build in ("current", "pre03b"):
         ws = exec_ws(f"add1_{build}_A")
@@ -586,8 +498,8 @@ def arm_add1(root: Path, builds: dict[str, Path]) -> None:
 
 def arm_add2(root: Path, builds: dict[str, Path]) -> None:
     print()
-    print("--- ADD-2: a `.bind` written BEFORE the line-1335 edit, read by the "
-          "current code (03b-execute.md §2.1 / F-2) ---")
+    print("--- a `.bind` written BEFORE the line-1335 edit, read by the "
+          "current code ---")
 
     def seeded(name: str, tried: list[str]) -> Path:
         return build_ws(
@@ -604,7 +516,6 @@ def arm_add2(root: Path, builds: dict[str, Path]) -> None:
                               "round": 7, "log_seen": {},
                               "round_base": {}, "history": {}}})
 
-    # --- configuration B: the shape a turn-03-window subdir session wrote ---
     old_key = f"../{EXEC_REL}"
     ws = seeded("add2_B", [old_key])
     r1 = run_hook(builds["current"], "session_progress_capture.py", ws / "sub",
@@ -638,7 +549,6 @@ def arm_add2(root: Path, builds: dict[str, Path]) -> None:
           f"(stderr={r2.stderr.strip()[:160]!r}, "
           f"exec_tried={b2.get('exec_tried')!r})")
 
-    # --- configuration A: a pre-edit root-launched `.bind` ---
     ws_a = seeded("add2_A", [EXEC_REL])
     ra = run_hook(builds["current"], "session_progress_capture.py", ws_a,
                   stop_payload())
@@ -652,10 +562,9 @@ def arm_add2(root: Path, builds: dict[str, Path]) -> None:
           f"exec_tried={ba.get('exec_tried')!r})")
 
 
-# --- driver ----------------------------------------------------------------
 
 def main() -> int:
-    print("=== ancestor-search rollout: AC-1 / AC-4 / AC-7 + ADD-1 / ADD-2 ===")
+    print("=== ancestor-search rollout: + ===")
     print()
     if not HOOKS_SRC.is_dir():
         die(f"hooks dir not found: {HOOKS_SRC}")
@@ -666,7 +575,7 @@ def main() -> int:
     tmp_root = Path(tempfile.mkdtemp(prefix="tf_rollout_"))
     print(f"temp root: {tmp_root}")
     print()
-    print("--- sandbox guards (02-plan.md §5.3 G1/G2) ---")
+    print("--- sandbox guards ---")
     assert_isolated(tmp_root)
 
     aborted = True
@@ -680,7 +589,7 @@ def main() -> int:
         aborted = False
     finally:
         print()
-        print("--- G3/G4: real _projects/_state fingerprint ---")
+        print("--- real _projects/_state fingerprint ---")
         after = state_snapshot()
         live = live_prefixes(before, after)
         b_ex, a_ex = churn_excluded(before, live), churn_excluded(after, live)

@@ -3,51 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Unit tests for the context-side Completed-row cap.
-
-The invariant under test: progress.md always holds EVERY task in tasks/2_done/,
-and only view_progress.py bounds how many Completed rows reach an agent's
-context. This file replaces test_rebuild_done_limit.py, which asserted the
-opposite (a file-side cap) and was removed together with that behavior.
-
-  V1  rebuild_progress.render_table_region() renders every done row and emits
-      no footnote.
-  V2  rebuild_progress.main() writes a progress.md whose Completed row count
-      equals the tasks/2_done/ file count.
-  V3  view_progress truncates to the newest N rows at the default limit and
-      does NOT renumber the `#` column.
-  V4  the view passes free-text sections, the TODO / In Progress tables and the
-      @table markers through unchanged.
-  V5  when the row count is at or below the limit, the view is byte-identical
-      to progress.md.
-  V6  --all and --limit 0 emit every row with no footnote.
-  V7  TASKFLOW_CONTEXT_DONE_ROWS_MAX overrides the default; --limit overrides
-      the env var.
-  V8  a progress.md with no @table region / no Completed section / an empty
-      Completed table passes through unchanged with exit 0.
-  V9  a missing progress.md exits 1; a missing project dir exits 2.
-  V10 check_progress.py reports no findings on an untruncated progress.md.
-  V11 the view never emits the retired env name or the retired file-side
-      footnote string.
-  V12 --notes-summary: category counts (descending, alpha tiebreak), the
-      _archive line, the index-drift line, and the enumerate line — all
-      correct on a mixed fixture; progress.md need not exist.
-  V13 --notes-summary degenerate cases: zero archive / zero drift omit their
-      lines; a missing project-notes/ dir emits exactly 'none'.
-  V14 --notes-summary: an index.md-less project-notes/ dir (with notes
-      present) emits the 'index: missing' line, not a silently-empty drift.
-  V15 --notes-summary is mutually exclusive with --limit and --all (exit 2).
-  V16 --notes-summary's index-drift counts agree with check_progress.py's own
-      notes_index findings on the same fixture (import consistency, not a
-      re-implementation).
-
-rebuild_progress.py and check_progress.py both have a PEP723 header declaring
-`pyyaml` as a dependency, so this test also declares it and must be run via:
-
-    uv run --script plugins/taskflow/tests/test_progress_view_cap.py
-
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -86,8 +41,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 def make_done_rows(count: int) -> list[rp.TaskRow]:
-    """count TaskRow entries with ascending n / date, as gather_tasks would
-    produce for files named 2026-06-01_done.md .. 2026-06-{count:02d}_done.md."""
     rows = []
     for i in range(1, count + 1):
         date = f"2026-06-{i:02d}"
@@ -114,9 +67,6 @@ def make_task_file(dir_path: Path, date: str, slug: str, title: str) -> Path:
 
 
 def make_project_with_done(root: Path, count: int, extras: bool = False) -> Path:
-    """A project with `count` done tasks. With extras=True it also gets one
-    0_todo and one 1_in_progress task, so the view's passthrough of the other
-    two tables is observable."""
     project_dir = root / "proj"
     done_dir = project_dir / "tasks" / "2_done"
     done_dir.mkdir(parents=True)
@@ -134,7 +84,6 @@ def make_project_with_done(root: Path, count: int, extras: bool = False) -> Path
 
 
 def build(project_dir: Path) -> str:
-    """Run rebuild_progress.main() quietly; return progress.md's text."""
     with contextlib.redirect_stdout(io.StringIO()):
         rc = rp.main([str(project_dir)])
     assert rc == 0, f"rebuild_progress.main() returned {rc}"
@@ -147,7 +96,7 @@ def view(project_dir: Path, *args: str) -> tuple[int, str]:
         with contextlib.redirect_stderr(io.StringIO()):
             try:
                 rc = vp.main([str(project_dir), *args])
-            except SystemExit as exc:  # argparse rejects bad flag combinations
+            except SystemExit as exc:
                 rc = int(exc.code or 0)
     return rc, buf.getvalue()
 
@@ -158,11 +107,10 @@ def completed_rows(text: str) -> list[str]:
     ]
 
 
-# --------------------------------------------------------------------------- V1
 
 
 def test_rebuild_renders_all(root: Path) -> None:
-    print("--- V1: render_table_region renders every done row, no footnote ---")
+    print("--- render_table_region renders every done row, no footnote ---")
     by_status = {"0_todo": [], "1_in_progress": [], "2_done": make_done_rows(12)}
     region = rp.render_table_region(by_status)
 
@@ -178,11 +126,10 @@ def test_rebuild_renders_all(root: Path) -> None:
     )
 
 
-# --------------------------------------------------------------------------- V2
 
 
 def test_rebuild_file_is_complete(root: Path) -> None:
-    print("--- V2: progress.md row count == tasks/2_done file count ---")
+    print("--- progress.md row count == tasks/2_done file count ---")
     project_dir = make_project_with_done(root, 23)
     text = build(project_dir)
     files = list((project_dir / "tasks" / "2_done").glob("*.md"))
@@ -195,11 +142,10 @@ def test_rebuild_file_is_complete(root: Path) -> None:
     check(RETIRED_FOOTNOTE not in text, "progress.md carries no truncation footnote")
 
 
-# --------------------------------------------------------------------------- V3
 
 
 def test_view_truncates_without_renumbering(root: Path) -> None:
-    print("--- V3: view truncates to the newest N and keeps the original # ---")
+    print("--- view truncates to the newest N and keeps the original # ---")
     project_dir = make_project_with_done(root, 12)
     build(project_dir)
     rc, out = view(project_dir)
@@ -226,11 +172,10 @@ def test_view_truncates_without_renumbering(root: Path) -> None:
     )
 
 
-# --------------------------------------------------------------------------- V4
 
 
 def test_view_passthrough(root: Path) -> None:
-    print("--- V4: free text, TODO / In Progress tables and markers survive ---")
+    print("--- free text, TODO / In Progress tables and markers survive ---")
     project_dir = make_project_with_done(root, 12, extras=True)
     text = build(project_dir)
     _, out = view(project_dir)
@@ -255,11 +200,10 @@ def test_view_passthrough(root: Path) -> None:
     )
 
 
-# --------------------------------------------------------------------------- V5
 
 
 def test_view_identity_under_limit(root: Path) -> None:
-    print("--- V5: at or below the limit the view is byte-identical ---")
+    print("--- at or below the limit the view is byte-identical ---")
     for count in (3, 10):
         with tempfile.TemporaryDirectory() as d:
             project_dir = make_project_with_done(Path(d), count, extras=True)
@@ -270,11 +214,10 @@ def test_view_identity_under_limit(root: Path) -> None:
             check("context view" not in out, f"{count} rows: no footnote")
 
 
-# --------------------------------------------------------------------------- V6
 
 
 def test_view_unlimited(root: Path) -> None:
-    print("--- V6: --all and --limit 0 emit every row ---")
+    print("--- --all and --limit 0 emit every row ---")
     project_dir = make_project_with_done(root, 12)
     text = build(project_dir)
     for flags in (["--all"], ["--limit", "0"]):
@@ -289,11 +232,10 @@ def test_view_unlimited(root: Path) -> None:
     check(rc == 2, f"--all with --limit is rejected with exit 2 (got {rc})")
 
 
-# --------------------------------------------------------------------------- V7
 
 
 def test_view_env_precedence(root: Path) -> None:
-    print("--- V7: env overrides the default, --limit overrides env ---")
+    print("--- env overrides the default, --limit overrides env ---")
     project_dir = make_project_with_done(root, 12)
     build(project_dir)
     old = os.environ.get(vp.ENV_DONE_ROWS_MAX)
@@ -316,11 +258,10 @@ def test_view_env_precedence(root: Path) -> None:
             os.environ[vp.ENV_DONE_ROWS_MAX] = old
 
 
-# --------------------------------------------------------------------------- V8
 
 
 def test_view_degenerate_inputs(root: Path) -> None:
-    print("--- V8: degenerate progress.md shapes pass through unchanged ---")
+    print("--- degenerate progress.md shapes pass through unchanged ---")
     header = (
         "| # | Priority | Task | Completed | Link |\n"
         "|---|----------|------|---------|------|\n"
@@ -350,11 +291,10 @@ def test_view_degenerate_inputs(root: Path) -> None:
             check(out == content, f"{label}: stdout is byte-identical to the input")
 
 
-# --------------------------------------------------------------------------- V9
 
 
 def test_view_exit_codes(root: Path) -> None:
-    print("--- V9: missing progress.md exits 1, missing project dir exits 2 ---")
+    print("--- missing progress.md exits 1, missing project dir exits 2 ---")
     empty = root / "empty"
     empty.mkdir()
     rc_missing_file, _ = view(empty)
@@ -364,11 +304,10 @@ def test_view_exit_codes(root: Path) -> None:
     check(rc_missing_dir == 2, f"missing project dir exits 2 (got {rc_missing_dir})")
 
 
-# --------------------------------------------------------------------------- V10
 
 
 def test_check_progress_clean(root: Path) -> None:
-    print("--- V10: check_progress finds nothing on an untruncated progress.md ---")
+    print("--- check_progress finds nothing on an untruncated progress.md ---")
     project_dir = make_project_with_done(root, 12)
     build(project_dir)
 
@@ -383,11 +322,10 @@ def test_check_progress_clean(root: Path) -> None:
     )
 
 
-# --------------------------------------------------------------------------- V11
 
 
 def test_no_retired_strings(root: Path) -> None:
-    print("--- V11: the view never emits retired cap strings ---")
+    print("--- the view never emits retired cap strings ---")
     project_dir = make_project_with_done(root, 12)
     text = build(project_dir)
     _, out = view(project_dir)
@@ -398,7 +336,6 @@ def test_no_retired_strings(root: Path) -> None:
     check(RETIRED_FOOTNOTE not in text, "progress.md has no retired footnote string")
 
 
-# --------------------------------------------------------------------- notes fixture helpers
 
 
 def make_note(notes_dir: Path, rel: str, title: str = "Note") -> None:
@@ -415,10 +352,6 @@ def make_notes_index(notes_dir: Path, files: list[str]) -> None:
 
 
 def make_mixed_notes_fixture(root: Path) -> Path:
-    """7 live notes (investigations 3 / specs 3 / checks 1, a count-tie between
-    investigations and specs) + 1 _archive note; index.md registers specs/a.md,
-    specs/b.md, and a phantom investigations/ghost.md (-> 6 unregistered,
-    1 missing)."""
     project_dir = root / "proj"
     notes_dir = project_dir / "project-notes"
     for rel in (
@@ -443,11 +376,10 @@ def notes_summary(project_dir: Path, *args: str) -> tuple[int, str]:
     return rc, buf.getvalue()
 
 
-# -------------------------------------------------------------------------- V12
 
 
 def test_notes_summary_mixed_fixture(root: Path) -> None:
-    print("--- V12: --notes-summary categories / _archive / drift / enumerate ---")
+    print("--- --notes-summary categories / _archive / drift / enumerate ---")
     project_dir = make_mixed_notes_fixture(root)
     check(not (project_dir / "progress.md").exists(), "fixture has no progress.md")
     rc, out = notes_summary(project_dir)
@@ -473,11 +405,10 @@ def test_notes_summary_mixed_fixture(root: Path) -> None:
     )
 
 
-# -------------------------------------------------------------------------- V13
 
 
 def test_notes_summary_degenerate(root: Path) -> None:
-    print("--- V13: --notes-summary zero-archive / zero-drift / no project-notes ---")
+    print("--- --notes-summary zero-archive / zero-drift / no project-notes ---")
     with tempfile.TemporaryDirectory() as d:
         project_dir = Path(d) / "proj"
         notes_dir = project_dir / "project-notes"
@@ -500,11 +431,10 @@ def test_notes_summary_degenerate(root: Path) -> None:
         check(out == "none", f"no project-notes/: stdout is exactly 'none' (got {out!r})")
 
 
-# -------------------------------------------------------------------------- V14
 
 
 def test_notes_summary_missing_index(root: Path) -> None:
-    print("--- V14: --notes-summary with notes present but no index.md ---")
+    print("--- --notes-summary with notes present but no index.md ---")
     project_dir = root / "proj"
     notes_dir = project_dir / "project-notes"
     make_note(notes_dir, "specs/a.md")
@@ -517,11 +447,10 @@ def test_notes_summary_missing_index(root: Path) -> None:
     )
 
 
-# -------------------------------------------------------------------------- V15
 
 
 def test_notes_summary_mutually_exclusive(root: Path) -> None:
-    print("--- V15: --notes-summary rejects --limit / --all ---")
+    print("--- --notes-summary rejects --limit / --all ---")
     project_dir = make_mixed_notes_fixture(root)
     rc, _ = notes_summary(project_dir, "--limit", "5")
     check(rc == 2, f"--notes-summary --limit 5 exits 2 (got {rc})")
@@ -529,11 +458,10 @@ def test_notes_summary_mutually_exclusive(root: Path) -> None:
     check(rc == 2, f"--notes-summary --all exits 2 (got {rc})")
 
 
-# -------------------------------------------------------------------------- V16
 
 
 def test_notes_summary_matches_check_progress(root: Path) -> None:
-    print("--- V16: --notes-summary drift counts agree with check_progress.py ---")
+    print("--- --notes-summary drift counts agree with check_progress.py ---")
     project_dir = make_mixed_notes_fixture(root)
     _, out = notes_summary(project_dir)
 

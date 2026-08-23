@@ -3,19 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Unit tests for generate_kanban.py's multi-workspace port resolution.
-
-Regression guard for the kanban port-conflict fix
-(_projects/harness-taskflow/tasks/0_todo/2026-07-16_kanban-multi-workspace-port-conflict.md):
-each workspace must derive a stable port from its `_projects` roots via
-`hashlib` (not the PYTHONHASHSEED-salted builtin `hash()`), and
-`resolve_workspace_port` must never mistake one workspace's server for
-another's, even when their derived ports collide.
-
-stdlib only (network calls are monkeypatched out). Run with:
-  uv run python plugins/taskflow/tests/test_kanban_port.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import shutil
@@ -23,7 +10,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Import the module under test from scripts/ (sibling of tests/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import generate_kanban as gk  # noqa: E402
 
@@ -66,9 +52,6 @@ def test_derive_port_deterministic_and_in_span() -> None:
     check(gk.PORT_BASE <= p1 < gk.PORT_BASE + gk.PORT_SPAN,
           f"_derive_port: result {p1} within [PORT_BASE, PORT_BASE+PORT_SPAN)")
 
-    # hashlib.sha1, not the builtin hash() (which is salted per-process via
-    # PYTHONHASHSEED) — assert against a fixed, hand-computed value so a
-    # future switch back to hash() would break this test.
     import hashlib
     expected = gk.PORT_BASE + (int(hashlib.sha1(key.encode("utf-8")).hexdigest(), 16) % gk.PORT_SPAN)
     check(p1 == expected, "_derive_port: matches hashlib.sha1-based computation")
@@ -98,8 +81,6 @@ def test_resolve_finds_own_server_at_start() -> None:
 
 
 def test_resolve_skips_hash_collision_from_other_workspace() -> None:
-    """A different workspace's server occupying our derived port must NOT be
-    mistaken for ours — the whole point of the workspace-key check."""
     roots = [Path("C:/Work/Alpha")]
     key = gk._workspace_key(roots)
     other_key = gk._workspace_key([Path("C:/Work/Beta")])
@@ -118,8 +99,6 @@ def test_resolve_skips_hash_collision_from_other_workspace() -> None:
 
 
 def test_resolve_finds_own_server_displaced_by_collision() -> None:
-    """Our own server, previously started under a collision and bound to a
-    fallback slot, must still be found on a later invocation."""
     roots = [Path("C:/Work/Alpha")]
     key = gk._workspace_key(roots)
     other_key = gk._workspace_key([Path("C:/Work/Beta")])
@@ -140,8 +119,6 @@ def test_resolve_finds_own_server_displaced_by_collision() -> None:
 
 
 def test_port_state_path_isolates_different_keys_sharing_root() -> None:
-    """Two workspaces that share roots[0] (distinct secondary roots, hence
-    distinct keys) must not collide on the same persisted-port file."""
     shared_root = Path("C:/Work/Shared")
     key_a = gk._workspace_key([shared_root, Path("C:/Work/SecondaryA")])
     key_b = gk._workspace_key([shared_root, Path("C:/Work/SecondaryB")])
@@ -169,7 +146,7 @@ def test_persist_read_clear_roundtrip() -> None:
         check(gk._read_persisted_port(roots, other_key) is None,
               "_read_persisted_port: a record for a different key is never trusted")
 
-        gk._clear_persisted_port(roots, key, 99999)  # wrong port -> must NOT clear
+        gk._clear_persisted_port(roots, key, 99999)
         check(gk._read_persisted_port(roots, key) == 17400,
               "_clear_persisted_port: no-ops when the port doesn't match the record")
 
@@ -181,10 +158,8 @@ def test_persist_read_clear_roundtrip() -> None:
 
 
 def test_resolve_finds_displaced_server_after_collision_occupant_leaves() -> None:
-    """F1 regression: a server bound to a fallback slot (hash collision at
-    the derived start) must still be discoverable once the collision's
-    occupant is gone — re-deriving `start` and finding it merely "free" must
-    NOT be treated as "our server isn't running anywhere"."""
+    """Re-deriving `start` and finding it merely free must not be read as "our server
+    isn't running anywhere"."""
     tmp = Path(tempfile.mkdtemp(prefix="kanban-port-test-"))
     try:
         roots = [tmp / "_projects"]
@@ -193,8 +168,6 @@ def test_resolve_finds_displaced_server_after_collision_occupant_leaves() -> Non
         other_key = gk._workspace_key([tmp / "_projects-other"])
         start = gk._derive_port(key)
 
-        # 1. Collision at start (a different workspace is "ours" there) ->
-        #    bind falls through to the first free slot.
         gk.port_status = (
             lambda port, timeout=2.0:
             ("ours", {"app": "taskflow-kanban", "pid": 1, "key": other_key}) if port == start
@@ -204,11 +177,8 @@ def test_resolve_finds_displaced_server_after_collision_occupant_leaves() -> Non
         check(state == "free" and bound_port != start,
               f"F1 setup: collision at start -> bound elsewhere, got ({bound_port}, {state})")
 
-        # 2. Simulate main() persisting the port after a successful bind.
         gk._persist_port(roots, key, bound_port, 777)
 
-        # 3. The collision's occupant is gone; `start` now probes free too.
-        #    Only `bound_port` answers, as ours.
         def probe_after(port, timeout=2.0):
             if port == bound_port:
                 return ("ours", {"app": "taskflow-kanban", "pid": 777, "key": key})
@@ -224,8 +194,6 @@ def test_resolve_finds_displaced_server_after_collision_occupant_leaves() -> Non
 
 
 def test_resolve_stale_persisted_record_self_heals() -> None:
-    """A persisted port whose server is gone (crash / unclean kill, no
-    `--stop` to clear the record) must not block finding a fresh port."""
     tmp = Path(tempfile.mkdtemp(prefix="kanban-port-test-"))
     try:
         roots = [tmp / "_projects"]
@@ -234,7 +202,7 @@ def test_resolve_stale_persisted_record_self_heals() -> None:
         start = gk._derive_port(key)
 
         gk._persist_port(roots, key, start + 1 if start + 1 < gk.PORT_BASE + gk.PORT_SPAN else start - 1, 999)
-        gk.port_status = lambda port, timeout=2.0: ("free", None)  # nothing is actually running
+        gk.port_status = lambda port, timeout=2.0: ("free", None)
         port, state, info = gk.resolve_workspace_port(roots)
         check(state == "free", f"stale persisted record falls through to a free port, got {state}")
     finally:
@@ -242,9 +210,6 @@ def test_resolve_stale_persisted_record_self_heals() -> None:
 
 
 def test_resolve_avoids_double_probe_when_persisted_equals_start() -> None:
-    """Common repeat-invocation case (no collision ever happened): the
-    persisted port equals the derived start, so it must be probed only
-    once, not twice."""
     tmp = Path(tempfile.mkdtemp(prefix="kanban-port-test-"))
     try:
         roots = [tmp / "_projects"]

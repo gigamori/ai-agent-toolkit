@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-"""Acceptance tests for touched_capture.py's state-root resolution (04-plan
-section 1.5, A-AC1..A-AC4; method A-m1, scope A-s1).
-
-The defect: PROGRESS_ROOT/STATE_DIR were anchored on `os.getcwd()` at module
-scope, and `main()` normalized paths against `os.getcwd()` too. A Claude Code
-session launched inside a subdirectory keeps that subdirectory as its hook cwd
-for its whole life (live probe on 2.1.233), so STATE_DIR resolved to a path that
-does not exist and `main()` returned at its first line -- every write of that
-session was dropped from the `.touched` ledger, which is the sole input to task
-and note resolution.
-
-The fix is two INSEPARABLE hunks: `_find_state_root()` + STATE_ROOT, and
-`cwd = STATE_ROOT` in `main()`. Fixing only the first moves the loss from the
-ledger to the classifier: the line is written, but as an ABSOLUTE path, which
-fails `_PROJECT_RE` in session_progress_capture.py so `extract_project` returns
-'' and the line is dropped from both the task and the note resolution. A-AC2 is
-that negative control, run against a hunk-1-only variant derived from the real
-source.
-
-Every arm carries its stated control, because a "no line was written" result is
-otherwise indistinguishable from a fixture that never triggers the hook at all.
-
-Sandbox (`e2e_state_dir_sandbox`, plus the new
-condition from 04-plan section 5.2 (4) / R-A2): the hook is invoked as a
-SUBPROCESS with an explicit `cwd=` (STATE_DIR is module scope, so importing
-cannot vary cwd), each workspace is a `tempfile.mkdtemp()` tree, and -- because
-A-m1 now WALKS UP -- this script asserts up front that no ancestor of that temp
-tree holds `_projects/_state`. A temp workspace created inside this repo would
-resolve to the REAL `_projects/_state`, so it must stay outside the repo. The
-real state dir's file count is asserted unchanged at the end (A-AC6).
-
-stdlib only. Run with:
-    uv run --no-project python plugins/taskflow/tests/test_touched_capture_state_root.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import io
@@ -80,11 +45,8 @@ def die(msg: str) -> None:
     raise SystemExit(2)
 
 
-# --- sandbox guards --------------------------------------------------------
 
 def ancestors_with_state(start: Path) -> list[str]:
-    """Every ancestor of `start` (inclusive) that holds `_projects/_state` --
-    i.e. exactly what `_find_state_root` would walk into."""
     hits: list[str] = []
     d = start.resolve()
     while True:
@@ -103,7 +65,6 @@ def assert_isolated(root: Path, label: str) -> None:
     ok(f"{label}: no ancestor of {root} holds _projects/_state (R-A2)")
 
 
-# --- hook variants ---------------------------------------------------------
 
 FIXED_STATE_ROOT = "STATE_ROOT = _find_state_root(os.getcwd()) or os.getcwd()"
 PREFIX_STATE_ROOT = "STATE_ROOT = os.getcwd()"
@@ -112,17 +73,9 @@ PREFIX_CWD = "    cwd = os.getcwd()"
 
 
 def make_variants(dest: Path) -> tuple[Path, Path]:
-    """Derive the two control hooks from the REAL source by substitution, so a
-    stale copy cannot make a control arm vacuous. Each substitution is asserted
-    to have matched exactly once.
-
-    - `prefix.py`   : both hunks reverted. `STATE_ROOT = os.getcwd()` makes
-                      `cwd = STATE_ROOT` byte-equivalent to the old
-                      `cwd = os.getcwd()`, so this IS the pre-fix hook.
-                      Control for A-AC1.
-    - `rootonly.py` : hunk 1 only (state root resolved by walking up, but the
-                      normalization base is still the cwd). Control for A-AC2.
-    """
+    """Both control hooks are derived from the real source by substitution, each
+    substitution asserted to match exactly once, so a stale copy cannot make a control
+    arm vacuous."""
     src = io.open(HOOK, encoding="utf-8").read()
     for anchor in (FIXED_STATE_ROOT, FIXED_CWD):
         if src.count(anchor) != 1:
@@ -137,7 +90,6 @@ def make_variants(dest: Path) -> tuple[Path, Path]:
     return prefix, rootonly
 
 
-# --- fixture / invocation --------------------------------------------------
 
 def build_ws(root: Path, with_state: bool, with_sid_json: bool) -> Path:
     ws = root
@@ -155,8 +107,6 @@ def build_ws(root: Path, with_state: bool, with_sid_json: bool) -> Path:
 
 
 def run_hook(hook: Path, cwd: Path, payload: dict) -> subprocess.CompletedProcess:
-    """`uv run --no-project` per e2e_state_dir_sandbox step 2: from a temp cwd,
-    uv would otherwise resolve this repo's pyproject."""
     return subprocess.run(
         ["uv", "run", "--no-project", "python", str(hook)],
         cwd=str(cwd), input=json.dumps(payload),
@@ -165,7 +115,6 @@ def run_hook(hook: Path, cwd: Path, payload: dict) -> subprocess.CompletedProces
 
 
 def touched_lines(ws: Path) -> list[str] | None:
-    """Ledger lines, or None when the ledger file does not exist at all."""
     p = ws / "_projects" / "_state" / f"{SID}.touched"
     if not p.exists():
         return None
@@ -189,10 +138,9 @@ def warn_replacement(res: subprocess.CompletedProcess, label: str) -> None:
               f"replaced with U+FFFD")
 
 
-# --- arms ------------------------------------------------------------------
 
 def main() -> int:
-    print("=== touched_capture.py state-root resolution (A-AC1..A-AC4) ===")
+    print("=== touched_capture.py state-root resolution ===")
     print()
 
     if not HOOK.is_file():
@@ -220,13 +168,12 @@ def main() -> int:
         sub = ws / "plugins" / "sub"
         prefix_hook, rootonly_hook = make_variants(tmp_root)
 
-        # ---------------- A-AC1 ----------------
         print()
-        print("--- A-AC1: subdir cwd records a repo-relative line ---")
+        print("--- subdir cwd records a repo-relative line ---")
         for tool in ("Write", "Edit"):
             reset_ledger(ws)
             res = run_hook(HOOK, sub, payload_for(ws, tool))
-            warn_replacement(res, f"A-AC1 {tool}")
+            warn_replacement(res, f"pre-fix control {tool}")
             got = touched_lines(ws)
             check(got == [TASK_REL],
                   f"[fixed] cwd=<ws>/plugins/sub {tool} -> [{TASK_REL!r}] "
@@ -253,9 +200,8 @@ def main() -> int:
               f"[control, PRE-FIX] cwd=<ws>/plugins/sub writes NO ledger at all "
               f"(<absent>) (got {got_pre_sub!r}, rc={res.returncode})")
 
-        # ---------------- A-AC2 ----------------
         print()
-        print("--- A-AC2: the recorded line is not an absolute path (hunk 2) ---")
+        print("--- the recorded line is not an absolute path (hunk 2) ---")
         reset_ledger(ws)
         res = run_hook(HOOK, sub, payload_for(ws, "Write"))
         got = touched_lines(ws) or []
@@ -270,9 +216,8 @@ def main() -> int:
               f"[control, HUNK-1-ONLY] subdir line is ABSOLUTE -- proves hunk 2 "
               f"is load-bearing (got {got_ro!r})")
 
-        # ---------------- A-AC3 ----------------
         print()
-        print("--- A-AC3: no ancestor holds state -> '' and a silent return 0 ---")
+        print("--- no ancestor holds state -> '' and a silent return 0 ---")
         bare = tmp_root / "bare" / "deep"
         bare.mkdir(parents=True)
         probe = tmp_root / "probe.py"
@@ -287,7 +232,7 @@ def main() -> int:
             ["uv", "run", "--no-project", "python", str(probe), str(HOOK)],
             cwd=str(bare), capture_output=True, text=True,
             encoding="utf-8", errors="replace")
-        warn_replacement(pr, "A-AC3 probe")
+        warn_replacement(pr, "probe")
         check(pr.stdout.strip() == "FOUND=",
               f"_find_state_root() returns '' from a stateless tree "
               f"(got {pr.stdout.strip()!r}, rc={pr.returncode})")
@@ -296,7 +241,7 @@ def main() -> int:
             ["uv", "run", "--no-project", "python", str(probe), str(HOOK)],
             cwd=str(sub), capture_output=True, text=True,
             encoding="utf-8", errors="replace")
-        warn_replacement(pr2, "A-AC3 probe control")
+        warn_replacement(pr2, "root-only control probe")
         check(pr2.stdout.strip() == f"FOUND={ws}",
               f"[control] _find_state_root() returns <ws> from <ws>/plugins/sub "
               f"(got {pr2.stdout.strip()!r})")
@@ -304,7 +249,7 @@ def main() -> int:
         res = run_hook(HOOK, bare,
                        {"session_id": SID, "tool_name": "Write",
                         "tool_input": {"file_path": str(bare / "x.md")}})
-        warn_replacement(res, "A-AC3 main")
+        warn_replacement(res, "main")
         leaked = list((tmp_root / "bare").rglob("*.touched"))
         check(res.returncode == 0 and not res.stdout.strip() and not leaked,
               f"main() in a stateless tree returns 0 silently and writes nothing "
@@ -313,9 +258,8 @@ def main() -> int:
         check(not (tmp_root / "bare" / "_projects").exists(),
               "main() in a stateless tree creates no _projects/")
 
-        # ---------------- A-AC4 ----------------
         print()
-        print("--- A-AC4: orphan guard still fires on the resolved state dir ---")
+        print("--- orphan guard still fires on the resolved state dir ---")
         ws2 = build_ws(tmp_root / "ws_noguard", with_state=True,
                        with_sid_json=False)
         sub2 = ws2 / "plugins" / "sub"
@@ -336,9 +280,8 @@ def main() -> int:
 
         aborted = False
     finally:
-        # ---------------- A-AC6 ----------------
         print()
-        print("--- A-AC6: real _projects/_state untouched ---")
+        print("--- real _projects/_state untouched ---")
         after = sorted(os.listdir(REAL_STATE)) if REAL_STATE.is_dir() else []
         check(len(after) == len(before),
               f"real _projects/_state count unchanged ({len(before)} -> "

@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-"""Acceptance tests for the PINNED bulk stale-marker sweep
-(mode-orchestrator-runs/2026-08-20_remaining-hooks-cwd-dependence, 02-plan.md
-§5.2 AC-2 / AC-3 / AC-5 under the §5.3 guards).
-
-What is under test
-------------------
-Turn 03 gave `session_progress_capture.py` the `_find_state_root()` ancestor
-walk, but DELIBERATELY did not let the bulk sweep follow it: line 151 keeps
-`SWEEP_STATE_DIR = os.path.join(os.getcwd(), '_projects', '_state')` and line
-1283 passes that, not the search-derived `STATE_DIR`, to
-`_cleanup_stale_markers`. The reason is the 2026-07-17 incident (250 files
-deleted from the real `_projects/_state/`, gitignored and unrecoverable): if the
-sweep followed the search, its reachable-cwd set would grow from "a directory
-that contains `_projects`" to "every descendant of a directory that holds
-`_projects/_state`".
-
-AC-2 and AC-3 are each other's control, exactly as 02-plan.md §5.2 requires:
-pinning must stop the sweep in a subdir-launched session AND must not disable GC
-in the normal one. AC-2 additionally runs a `follow` build — the same source
-with `_cleanup_stale_markers(SWEEP_STATE_DIR)` substituted back to
-`_cleanup_stale_markers(STATE_DIR)` — so "the planted files survived" cannot be
-satisfied by a hook that never reached the sweep at all.
-
-Sandbox (`e2e_state_dir_sandbox`, modelled on
-`tests/test_touched_capture_state_root.py`): the module now walks ANCESTORS, so
-a temp workspace inside the repo tree would resolve to the REAL
-`_projects/_state` — and the `follow` build derived here would then sweep it.
-Every workspace is a `tempfile.mkdtemp()` tree OUTSIDE the repo, asserted up
-front to have no ancestor holding `_projects/_state`; the hook is invoked as a
-SUBPROCESS with an explicit `cwd=`; the real state dir is fingerprinted before
-and after with the live session's own churn excluded.
-
-stdlib only; no PEP723 header. Run with:
-    uv run --no-project python plugins/taskflow/tests/test_sweep_pin_state_dir.py
-Exits 0 when all checks pass, 1 otherwise, 2 on an aborted sandbox guard.
-"""
 from __future__ import annotations
 
 import io
@@ -54,15 +18,10 @@ HOOKS_SRC = REPO_ROOT / "plugins" / "taskflow" / "hooks"
 PROMPTS_SRC = REPO_ROOT / "plugins" / "taskflow" / "prompts"
 REAL_STATE = REPO_ROOT / "_projects" / "_state"
 
-# 36-char UUID-shaped ids; the sweep's json branch keys on `len(stem) == 36`.
 SID = "f0220000-1111-2222-3333-444455556666"
 DEAD_JSON = "f0d10000-1111-2222-3333-444455556666"
 DEAD_TOUCHED = "f0d20000-1111-2222-3333-444455556666"
 DEAD_BIND = "f0d30000-1111-2222-3333-444455556666"
-# Leak detection keys on the FULL synthetic ids, not on a short prefix: the real
-# state dir holds unrelated sessions whose ids can share any 2-4 char prefix
-# (measured 2026-08-20: a live `f005be44-...json` made a `f0` prefix test
-# false-positive).
 SYNTH_IDS = (SID, DEAD_JSON, DEAD_TOUCHED, DEAD_BIND)
 
 PROJECT = "demo"
@@ -70,7 +29,7 @@ TASK_BASE = "2026-01-01_demo-task.md"
 TASK_REL = f"_projects/{PROJECT}/tasks/1_in_progress/{TASK_BASE}"
 TASK_BODY = "# demo task\n\n<!-- @log:begin -->\n<!-- @log:end -->\n"
 
-STALE_AGE_S = 8 * 86400  # > _MARKER_MAX_AGE_DAYS (7)
+STALE_AGE_S = 8 * 86400
 
 PIN_ANCHOR = "_cleanup_stale_markers(SWEEP_STATE_DIR)"
 FOLLOW_ANCHOR = "_cleanup_stale_markers(STATE_DIR)"
@@ -100,7 +59,6 @@ def die(msg: str) -> None:
     raise SystemExit(2)
 
 
-# --- sandbox guards --------------------------------------------------------
 
 def ancestors_with_state(start: Path) -> list[str]:
     hits: list[str] = []
@@ -141,7 +99,6 @@ def churn_excluded(names: list[str], live: set[str]) -> list[str]:
     return [n for n in names if n[:8] not in live]
 
 
-# --- builds ----------------------------------------------------------------
 
 def _copy_plugin(dest_root: Path) -> Path:
     tf = dest_root / "taskflow"
@@ -173,7 +130,6 @@ def make_builds(root: Path) -> dict[str, Path]:
     return {"current": current, "follow": follow}
 
 
-# --- fixture ---------------------------------------------------------------
 
 def build_ws(root: Path, name: str) -> Path:
     ws = root / name
@@ -189,11 +145,8 @@ def build_ws(root: Path, name: str) -> Path:
 
 
 def plant(ws: Path, names: list[str]) -> list[Path]:
-    """Plant 8-day-old sweep candidates under `<ws>/_projects/_state`.
-
-    A `.json` candidate must additionally have a 36-char stem and an EMPTY
-    `project` to be collected (the sweep keeps a non-empty project state
-    indefinitely); a sidecar is collected on mtime alone."""
+    """A `.json` candidate additionally needs a 36-char stem and an empty `project`; a
+    sidecar is collected on mtime alone."""
     old = time.time() - STALE_AGE_S
     out = []
     for i, n in enumerate(names):
@@ -203,7 +156,6 @@ def plant(ws: Path, names: list[str]) -> list[Path]:
                 json.dumps({"session_id": n[:-5], "project": ""}))
         else:
             io.open(p, "w", encoding="utf-8").write("stale\n")
-        # Distinct mtimes so the oldest-first cap ordering is deterministic.
         os.utime(p, (old - i * 3600, old - i * 3600))
         out.append(p)
     return out
@@ -239,7 +191,6 @@ def touch_ledger(hooks: Path, ws: Path, cwd: Path) -> None:
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
 
 
-# --- arms ------------------------------------------------------------------
 
 TWO = [f"{DEAD_TOUCHED}.touched", f"{DEAD_JSON}.json"]
 THREE = [f"{DEAD_TOUCHED}.touched", f"{DEAD_JSON}.json", f"{DEAD_BIND}.bind"]
@@ -247,7 +198,7 @@ THREE = [f"{DEAD_TOUCHED}.touched", f"{DEAD_JSON}.json", f"{DEAD_BIND}.bind"]
 
 def arm_ac2(root: Path, builds: dict[str, Path]) -> None:
     print()
-    print("--- AC-2: subdir cwd — the planted stale files SURVIVE (the pin) ---")
+    print("--- subdir cwd — the planted stale files SURVIVE (the pin) ---")
     ws = build_ws(root, "ac2_current")
     planted = plant(ws, TWO)
     touch_ledger(builds["current"], ws, ws / "sub")
@@ -278,7 +229,7 @@ def arm_ac2(root: Path, builds: dict[str, Path]) -> None:
 
 def arm_ac3(root: Path, builds: dict[str, Path]) -> None:
     print()
-    print("--- AC-3: root cwd — the same planted files ARE deleted "
+    print("--- root cwd — the same planted files ARE deleted "
           "(pinning did not disable GC) ---")
     ws = build_ws(root, "ac3_current")
     planted = plant(ws, TWO)
@@ -298,7 +249,7 @@ def arm_ac3(root: Path, builds: dict[str, Path]) -> None:
 
 def arm_ac5(root: Path, builds: dict[str, Path]) -> None:
     print()
-    print("--- AC-5: TASKFLOW_SWEEP_MAX still caps and still defers, with the "
+    print("--- TASKFLOW_SWEEP_MAX still caps and still defers, with the "
           "pinned target ---")
     ws = build_ws(root, "ac5_root")
     planted = plant(ws, THREE)
@@ -316,8 +267,6 @@ def arm_ac5(root: Path, builds: dict[str, Path]) -> None:
           f"removed 2, 1 deferred under {target}" in r.stderr,
           f"[fixed] the WARNING line is verbatim and names the PINNED target "
           f"(stderr={r.stderr.strip()[:400]!r})")
-    # `plant` ages entry i by i hours, so index 0 is the NEWEST of the three;
-    # oldest-first selection removes indexes 2 and 1 and defers index 0.
     check(alive == [THREE[0]],
           f"[fixed] the deferred candidate is the newest of the three "
           f"(oldest-first ordering; alive={alive!r})")
@@ -335,10 +284,9 @@ def arm_ac5(root: Path, builds: dict[str, Path]) -> None:
           "[fixed] G6 positive execution marker: the Stop ran past the sweep")
 
 
-# --- driver ----------------------------------------------------------------
 
 def main() -> int:
-    print("=== pinned bulk sweep: AC-2 / AC-3 / AC-5 ===")
+    print("=== pinned bulk sweep: ===")
     print()
     if not HOOKS_SRC.is_dir():
         die(f"hooks dir not found: {HOOKS_SRC}")
@@ -349,7 +297,7 @@ def main() -> int:
     tmp_root = Path(tempfile.mkdtemp(prefix="tf_sweeppin_"))
     print(f"temp root: {tmp_root}")
     print()
-    print("--- sandbox guards (02-plan.md §5.3 G1/G2) ---")
+    print("--- sandbox guards ---")
     assert_isolated(tmp_root)
 
     aborted = True
@@ -361,7 +309,7 @@ def main() -> int:
         aborted = False
     finally:
         print()
-        print("--- G3/G4: real _projects/_state fingerprint ---")
+        print("--- real _projects/_state fingerprint ---")
         after = state_snapshot()
         live = live_prefixes(before, after)
         b_ex, a_ex = churn_excluded(before, live), churn_excluded(after, live)

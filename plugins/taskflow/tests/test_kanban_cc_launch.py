@@ -3,22 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Unit tests for generate_kanban.py's serve-mode CC-launch gating.
-
-Regression guard for
-(_projects/harness-taskflow/tasks/1_in_progress/2026-07-24_kanban-serve-cc-link-ext-check.md):
-the serve-mode ``/open`` handler must probe the VS Code / VSCodium CLI and the
-``anthropic.claude-code`` extension ONCE per process, and — when the CLI is
-missing or the extension is not installed — return an informative error page
-(carrying the session UUID / prompt) instead of an uncaught FileNotFoundError
-or a silent editor no-op.
-
-stdlib only. No sockets are bound and no `_projects/_state/` is touched: the
-handler is driven directly with fake IO and every subprocess/`shutil.which`
-call is monkeypatched. Run with:
-  uv run --script plugins/taskflow/tests/test_kanban_cc_launch.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import contextlib
@@ -29,7 +13,6 @@ import sys
 import types
 from pathlib import Path
 
-# Import the module under test from scripts/ (sibling of tests/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import generate_kanban as gk  # noqa: E402
 
@@ -55,16 +38,12 @@ def check(cond: bool, msg: str) -> None:
     ok(msg) if cond else bad(msg)
 
 
-# --- _resolve_cc_launcher ---------------------------------------------------
 
 def _fake_which(mapping: dict[str, str | None]):
     return lambda name: mapping.get(name)
 
 
 def _fake_run(stdout: str):
-    # **kwargs, not a fixed signature: the real call passes decoding kwargs
-    # (encoding=/errors=) that this stub does not care about, and pinning the
-    # signature made the stub fail on a caller change that was not a defect.
     def run(cmd, capture_output=False, text=False, timeout=None, **kwargs):
         return types.SimpleNamespace(stdout=stdout, stderr="", returncode=0)
     return run
@@ -161,7 +140,7 @@ def test_launcher_probes_once() -> None:
     calls = {"n": 0}
 
     def counting_run(cmd, capture_output=False, text=False, timeout=None,
-                     **kwargs):  # see _fake_run on why the signature is open
+                     **kwargs):
         calls["n"] += 1
         return types.SimpleNamespace(stdout="anthropic.claude-code\n", stderr="", returncode=0)
 
@@ -215,7 +194,7 @@ def test_launcher_nonzero_returncode() -> None:
     calls = {"n": 0}
 
     def failing_run(cmd, capture_output=False, text=False, timeout=None,
-                    **kwargs):  # see _fake_run on why the signature is open
+                    **kwargs):
         calls["n"] += 1
         return types.SimpleNamespace(stdout="", stderr="boom", returncode=3)
 
@@ -240,12 +219,8 @@ def test_launcher_nonzero_returncode() -> None:
 
 
 class _StrictAsciiStderr(io.StringIO):
-    """Stand-in for a console whose codec cannot encode the message.
-
-    A real JA Windows console is cp932 with errors='strict'; this raises in the
-    same place (the write) for anything outside ASCII, so a log line that has
-    not been sanitized fails the test instead of passing silently.
-    """
+    """Stand-in for a console whose codec cannot encode the message: it raises at the
+    write, so an unsanitized log line fails here instead of passing silently."""
 
     encoding = "ascii"
 
@@ -255,12 +230,8 @@ class _StrictAsciiStderr(io.StringIO):
 
 
 def test_probe_failure_log_is_sanitized() -> None:
-    """The EXT_UNKNOWN stderr line must not become a second failure source.
-
-    str(OSError) carries an OS-localized strerror and cmd is a filesystem path,
-    so neither is guaranteed encodable; printing them raw would raise
-    UnicodeEncodeError inside the probe's except block and escape into /open.
-    """
+    """`str(OSError)` carries an OS-localized strerror and `cmd` is a filesystem path, so
+    printing them raw would raise inside the probe's except block and escape into /open."""
     gk._reset_cc_launcher_cache()
     orig_which, orig_run = shutil.which, subprocess.run
 
@@ -290,7 +261,6 @@ def test_probe_failure_log_is_sanitized() -> None:
           "_resolve_cc_launcher: the line is sanitized, not dropped -- cmd, cause and detail survive")
 
 
-# --- _launch_error_html -----------------------------------------------------
 
 def test_error_html_carries_hint_and_escapes() -> None:
     hint = gk.ManualHint("Resume it <l>:", "claude --resume abc-123 <y>")
@@ -303,7 +273,6 @@ def test_error_html_carries_hint_and_escapes() -> None:
           "_launch_error_html: HTML-escapes the message, the hint lead and the payload")
 
 
-# --- manual hints -----------------------------------------------------------
 
 def test_session_hint_with_claude_cli() -> None:
     orig_which = shutil.which
@@ -339,15 +308,11 @@ def test_prompt_hint_carries_prompt_body() -> None:
           "_launch_unverified_html: prompt payload escaped in a standalone <pre>")
 
 
-# --- /open handler branching -------------------------------------------------
 
 SESSION = "0a1b2c3d-4e5f-6789-abcd-ef0123456789"
 
 
 def _make_open_handler(launcher, popen_recorder):
-    """Build a KanbanHandler instance wired for a single /open GET, with the
-    launcher probe and subprocess.Popen replaced. Returns (handler, captured)
-    where captured collects (code, body, content_type) from _respond."""
     cls = gk.make_handler(lambda: b"", "vscode", [Path(".")],
                           open_token="TOK", key="k", port=12345)
     h = cls.__new__(cls)
@@ -356,7 +321,7 @@ def _make_open_handler(launcher, popen_recorder):
     h._respond = lambda code, body, content_type="text/plain": captured.append(
         (code, body, content_type))
 
-    gk._resolve_cc_launcher = launcher  # replace name in module globals
+    gk._resolve_cc_launcher = launcher
     orig_sub = gk.subprocess
     gk.subprocess = types.SimpleNamespace(
         Popen=popen_recorder, DEVNULL=subprocess.DEVNULL,
@@ -496,7 +461,7 @@ def main() -> int:
 
     after = sorted(p.name for p in REPO_STATE_DIR.glob("*")) if REPO_STATE_DIR.is_dir() else []
     check(before == after,
-          "AC-6: real _projects/_state/ is unchanged by this test run")
+          "real _projects/_state/ is unchanged by this test run")
 
     print()
     if FAIL == 0:

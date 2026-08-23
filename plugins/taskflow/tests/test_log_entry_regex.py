@@ -3,24 +3,11 @@
 # requires-python = ">=3.10"
 # dependencies = ["pyyaml"]
 # ///
-"""Unit tests for generate_kanban.py's LOG_ENTRY_RE (@log line parsing).
-
-Regression guard for the timestamp-timezone-consistency fix
-(_projects/harness-taskflow/tasks/0_todo/2026-07-14_log-timestamp-timezone-consistency.md,
-item #6): the regex must keep matching pre-fix entries (no offset, `T`
-timestamp or bare date) AND new offset-aware entries produced by
-`tstamp.now_iso()` (`+HH:MM` or `Z`), so channel A/B's timestamp format
-change never silently drops entries from the kanban session list again.
-
-stdlib only. Run with:  uv run python plugins/taskflow/tests/test_log_entry_regex.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-# Import the module under test from scripts/ (sibling of tests/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import generate_kanban as gk  # noqa: E402
 
@@ -45,7 +32,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 CASES = [
-    # (label, line, expected groups or None if no match)
     ("legacy T-timestamp, no offset",
      "- 2026-07-13T22:52:03 [s:2053faf1]: Moved from 0_todo to 1_in_progress",
      ("2026-07-13T22:52:03", "2053faf1")),
@@ -74,7 +60,7 @@ def test_formats_match() -> None:
 
 
 def test_extract_sessions_mixed_log() -> None:
-    """A single @log block mixing pre-fix and post-fix entries must yield all of them."""
+    """A single @log block mixing both entry spellings must yield all of them."""
     content = (
         "<!-- @log:begin -->\n"
         "- 2026-07-13T13:45:45 [s:907c0329]: legacy narrative entry\n"

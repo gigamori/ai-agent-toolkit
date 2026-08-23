@@ -1,22 +1,4 @@
 #!/usr/bin/env bash
-# test_guidelines_reminder_mode.sh — TASKFLOW_GUIDELINES_REMINDER full/manifest toggle.
-# Spec: _projects/harness-taskflow/tasks/0_todo/2026-05-15_guidelines-reminder-compact-variant.md
-#
-# Cases:
-#   1. env unset -> full reminder (guidelines_reminder.md) injected.
-#   2. env=full  -> same as unset (explicit).
-#   3. env=manifest -> manifest reminder (guidelines_reminder_manifest.md) injected,
-#      full-only prose absent.
-#   4. env=bogus -> falls back to full (unknown values are conservative).
-#   5. (b) block (ROUTER / RESPONSE LEADING LINES) is byte-identical between the
-#      two prompt files on disk (static check, no hook invocation).
-#   6. Real _projects/_state/ under the repo is untouched by this run (sandboxing
-#      proof per `e2e_state_dir_sandbox`).
-#
-# Usage:  bash plugins/taskflow/tests/test_guidelines_reminder_mode.sh
-# Requires: bash (Git-Bash on win32 — primary), uv, python3.
-# Runs the REAL session_init.py hook against an ISOLATED tempdir (never the
-# repo's real _projects/_state/), per `e2e_state_dir_sandbox`.
 
 set -uo pipefail
 
@@ -33,9 +15,6 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 echo "=== Test: TASKFLOW_GUIDELINES_REMINDER full/manifest toggle ==="
 echo ""
 
-# -------------------------------------------------------------------------
-# Case 5 (static, no hook/tempdir needed): (b) block byte-identity.
-# -------------------------------------------------------------------------
 echo "[Case 5] (b) block byte-identical between full and manifest prompt files"
 FULL_B=$(grep -E '^(ROUTER:|RESPONSE LEADING LINES:)' "$FULL_MD")
 MANIFEST_B=$(grep -E '^(ROUTER:|RESPONSE LEADING LINES:)' "$MANIFEST_MD")
@@ -45,9 +24,6 @@ else
   fail "Case 5: (b) block MISMATCH — manifest drifted from full"
 fi
 
-# -------------------------------------------------------------------------
-# Tempdir sandbox for hook-invocation cases (never the real _projects/_state/).
-# -------------------------------------------------------------------------
 TMP="$(mktemp -d)"
 echo ""
 echo "=== isolated tmpdir: $TMP ==="
@@ -55,7 +31,7 @@ STATE_BEFORE_COUNT=$(find "$REAL_STATE_DIR" -maxdepth 1 -name '*.json' 2>/dev/nu
 
 cleanup() {
   rm -rf "$TMP"
-  echo ""
+echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
 }
 trap cleanup EXIT
@@ -68,20 +44,17 @@ printf '# Progress: %s\n\n<!-- @table:begin -->\n<!-- @table:end -->\n' "$PROJ" 
 
 SID="deadbeef-cafe-4caf-8caf-cafecafecafe"
 STATE_FILE="_projects/_state/$SID.json"
-# Pre-primed state: rules_loaded/guidelines_loaded already true so this turn
-# hits the reminder branch (not the full-injection first-turn branch).
 STATE_JSON="{\"project\":\"$PROJ\",\"rules_loaded\":true,\"indexed_project\":\"$PROJ\",\"guidelines_loaded\":true,\"project_rules_indexed\":\"\",\"origin\":\"cc\"}"
 
 run_hook() {
-  # $1 = env value for TASKFLOW_GUIDELINES_REMINDER ("" = unset)
   printf '%s' "$STATE_JSON" > "$STATE_FILE"
   local payload
   payload=$(uv run --no-project python -c "import json;print(json.dumps({'session_id':'$SID','prompt':'次のターン','transcript_path':''}))")
   if [ -n "$1" ]; then
     TASKFLOW_GUIDELINES_REMINDER="$1" bash -c "echo '$payload' | uv run --no-project python '$HOOK' 2>/dev/null" || true
-  else
+else
     echo "$payload" | uv run --no-project python "$HOOK" 2>/dev/null || true
-  fi
+fi
 }
 
 ctx() {
@@ -100,9 +73,6 @@ except Exception:
 FULL_MARKER="no status: or summary: in task frontmatter"
 MANIFEST_MARKER="GUIDELINES manifest"
 
-# -------------------------------------------------------------------------
-# Case 1: env unset -> full.
-# -------------------------------------------------------------------------
 echo ""
 echo "[Case 1] env unset -> full reminder"
 OUT=$(run_hook "" | ctx)
@@ -112,9 +82,6 @@ else
   fail "Case 1: unexpected content. OUT=$OUT"
 fi
 
-# -------------------------------------------------------------------------
-# Case 2: env=full -> same as unset (explicit).
-# -------------------------------------------------------------------------
 echo ""
 echo "[Case 2] env=full -> full reminder (explicit)"
 OUT=$(run_hook "full" | ctx)
@@ -124,9 +91,6 @@ else
   fail "Case 2: unexpected content. OUT=$OUT"
 fi
 
-# -------------------------------------------------------------------------
-# Case 3: env=manifest -> manifest, full-only prose absent.
-# -------------------------------------------------------------------------
 echo ""
 echo "[Case 3] env=manifest -> manifest reminder"
 OUT=$(run_hook "manifest" | ctx)
@@ -135,16 +99,12 @@ if echo "$OUT" | grep -qF "$MANIFEST_MARKER" && ! echo "$OUT" | grep -qF "$FULL_
 else
   fail "Case 3: unexpected content. OUT=$OUT"
 fi
-# (b) still present in manifest mode (unconditional per-turn cue must survive).
 if echo "$OUT" | grep -q 'ROUTER: \[Progress Session\]' && echo "$OUT" | grep -q 'RESPONSE LEADING LINES:'; then
   pass "Case 3: (b) ROUTER + RESPONSE LEADING LINES present in manifest mode"
 else
   fail "Case 3: (b) block missing in manifest mode. OUT=$OUT"
 fi
 
-# -------------------------------------------------------------------------
-# Case 4: env=bogus -> conservative fallback to full.
-# -------------------------------------------------------------------------
 echo ""
 echo "[Case 4] env=bogus -> falls back to full"
 OUT=$(run_hook "not-a-real-mode" | ctx)
@@ -154,9 +114,6 @@ else
   fail "Case 4: unexpected content. OUT=$OUT"
 fi
 
-# -------------------------------------------------------------------------
-# Case 6: real _projects/_state/ under the repo was never touched.
-# -------------------------------------------------------------------------
 echo ""
 echo "[Case 6] real _projects/_state/ untouched by this run"
 if [ -e "$REAL_STATE_DIR/$SID.json" ]; then

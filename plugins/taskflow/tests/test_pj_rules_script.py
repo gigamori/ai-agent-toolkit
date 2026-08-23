@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/pj_rules.py (the /pj-rules skill's deterministic
-helper — spec §9, review findings M2/M3/M4).
-
-Covers:
-  - M4: `show` line-count is the frontmatter-stripped body; cap read from
-    frontmatter `max_lines` (default 100); `over_cap` set correctly.
-  - `show` heading extraction: `## ` only, fenced-code `##` excluded, `###`+
-    ignored (same contract as hooks/session_init.py's extract_headings).
-  - `show` on a missing rules.md: exit 1, `exists: false`.
-  - M2: `reset-indexed` is merge-preserving — unrelated state fields
-    (progress_capture_done, exec_bind, ...) survive; project_rules_indexed
-    becomes "".
-  - `reset-indexed` error handling: missing file / non-dict JSON -> exit 2.
-
-stdlib only. Run with:  uv run python plugins/taskflow/tests/test_pj_rules_script.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import json
@@ -47,9 +30,6 @@ def run(*args: str) -> subprocess.CompletedProcess:
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
-        # Strict UTF-8, not the platform default: the script's output is what
-        # the assertions read, so a substituting decode would hide a defect
-        # instead of failing on it.
         encoding="utf-8",
     )
 
@@ -133,7 +113,7 @@ def test_show_under_cap_and_default_cap() -> None:
 
 
 def test_reset_indexed_merge_preserving() -> None:
-    print("[reset-indexed] merge-preserving (M2)")
+    print("[reset-indexed] merge-preserving")
     with tempfile.TemporaryDirectory() as td:
         state_file = Path(td) / "state.json"
         original = {

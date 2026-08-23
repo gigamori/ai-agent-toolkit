@@ -1,45 +1,4 @@
 #!/usr/bin/env python3
-"""Unit tests for the cross-harness advisory write lock (log_lock.py).
-
-Covers the deterministic acceptance criteria of the stable-key work (D1/D2,
-project-notes/specs/log-lock-stable-key.md) plus the protocol v2 port
-(taskflow-write-lock-v2-design.md §3):
-
-  - AC-L1  lock_path_for(): tasks/<status>/X.md -> <project_root>/.locks/X.lock;
-           no tasks/ ancestor -> adjacent <target>.lock fallback
-  - AC-L2a lock_path_for() is invariant across the three status folders
-           (the core fix: the rendezvous point must not move on task-move)
-  - AC-L2b lock_path_for() is invariant across path spelling (relative vs
-           absolute, case, symlink) via realpath+normcase normalization
-  - AC-L5  INV-2 preserved: acquire remains bounded, body always runs
-  - AC-L6  release-time delete: after the holder releases, the sidecar is gone
-  - V2-1   progress.md -> <project_root>/.locks/progress.md.lock (rule 2)
-  - V2-2   rule 3 stays pure: no tasks/ ancestor and not progress.md ->
-           adjacent fallback
-  - V2-3   a FRESH foreign sidecar + a tiny TASKFLOW_LOCK_TIMEOUT degrades
-           unlocked, still runs the body, and does NOT unlink a sidecar it
-           does not own
-  - V2-4   a BACKDATED sidecar is stale-broken, acquired, and removed on
-           release
-  - V2-5   rule 1 and rule 2 define <project_root> differently but land in the
-           SAME <project_root>/.locks/ directory for one project
-
-Deliberately NOT covered here, and not a gap:
-  - The stale-break TOCTOU window is narrowed, not eliminated (see
-    log_lock._acquire_fd). No test asserts its absence.
-  - The win32 live-holder-blocks-unlink behaviour needs a second live process
-    holding an open handle; that is platform-dependent to construct and is
-    left to the race harnesses.
-  - Key-string equality with the Pi side's write-lock.ts. The two normalize to
-    different strings on win32 and resolve to the same file; comparing the
-    strings would be wrong.
-
-Philosophy (unchanged): pure-function invariants over timing-dependent
-concurrency.
-
-stdlib only. Run with:  uv run python plugins/taskflow/tests/test_log_lock.py
-Exits 0 when all checks pass, 1 otherwise.
-"""
 from __future__ import annotations
 
 import os
@@ -48,7 +7,6 @@ import tempfile
 import time
 from pathlib import Path
 
-# Import the module under test from hooks/ (sibling of note_links.py).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 import log_lock as ll  # noqa: E402
 
@@ -73,11 +31,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 class env_override:
-    """Set env vars for a block and restore them exactly afterwards.
-
-    log_lock reads its tunables per call precisely so this works on a module
-    that was imported once at the top of this file.
-    """
 
     def __init__(self, **kv: str) -> None:
         self._kv = kv
@@ -98,15 +51,12 @@ class env_override:
 
 
 def test_ac_l1_primary_and_fallback(root: Path) -> None:
-    print("--- AC-L1: tasks/<status>/ -> <project>/.locks/, else adjacent fallback ---")
+    print("--- tasks/<status>/ -> <project>/.locks/, else adjacent fallback ---")
     task = root / "tasks" / "0_todo" / "2026-08-05_example.md"
     task.parent.mkdir(parents=True)
     task.write_text("x", encoding="utf-8")
 
     got = ll.lock_path_for(str(task))
-    # Both sides go through the same realpath+normcase transform so this
-    # doesn't spuriously fail on platforms where the temp dir itself is a
-    # symlink (e.g. macOS /tmp -> /private/tmp) or has case quirks.
     expected = os.path.join(os.path.normcase(os.path.realpath(str(root))),
                              ".locks", "2026-08-05_example.md.lock")
     check(os.path.normcase(got) == expected,
@@ -121,7 +71,7 @@ def test_ac_l1_primary_and_fallback(root: Path) -> None:
 
 
 def test_ac_l2a_status_invariance(root: Path) -> None:
-    print("--- AC-L2a: same key across all 3 status folders (the core fix) ---")
+    print("--- same key across all 3 status folders (the core fix) ---")
     basename = "2026-08-05_moved-task.md"
     paths = [root / "tasks" / status / basename
              for status in ("0_todo", "1_in_progress", "2_done")]
@@ -135,7 +85,7 @@ def test_ac_l2a_status_invariance(root: Path) -> None:
 
 
 def test_ac_l2b_spelling_invariance(root: Path) -> None:
-    print("--- AC-L2b: same key across path spelling variance ---")
+    print("--- same key across path spelling variance ---")
     task = root / "tasks" / "1_in_progress" / "2026-08-05_spelled.md"
     task.parent.mkdir(parents=True)
     task.write_text("x", encoding="utf-8")
@@ -173,8 +123,6 @@ def test_v2_1_progress_md_key(root: Path) -> None:
           f"progress.md routes under its OWN parent's .locks/ "
           f"(got {got!r}, expected {expected!r})")
 
-    # Rule 2 must key on progress.md's own parent, NOT on some tasks/ sibling
-    # lookup -- a progress.md that is not beside a tasks/ dir still resolves.
     lonely_dir = root / "no_tasks_here"
     lonely_dir.mkdir()
     lonely = lonely_dir / "progress.md"
@@ -194,7 +142,6 @@ def test_v2_2_rule3_purity(root: Path) -> None:
     check(ll.lock_path_for(str(loose)) == str(loose) + ".lock",
           "a non-progress.md file with no tasks/ ancestor gets the adjacent fallback")
 
-    # Near-miss on rule 2: the basename must be exactly `progress.md`.
     nearly = root / "notes" / "progress.md.bak"
     nearly.write_text("x", encoding="utf-8")
     check(ll.lock_path_for(str(nearly)) == str(nearly) + ".lock",
@@ -219,7 +166,7 @@ def test_v2_5_rule1_rule2_share_locks_dir(root: Path) -> None:
 
 
 def test_ac_l6_release_time_delete(root: Path) -> None:
-    print("--- AC-L6: lock sidecar removed after the holder releases ---")
+    print("--- lock sidecar removed after the holder releases ---")
     task = root / "tasks" / "1_in_progress" / "2026-08-05_release.md"
     task.parent.mkdir(parents=True)
     task.write_text("x", encoding="utf-8")
@@ -233,7 +180,7 @@ def test_ac_l6_release_time_delete(root: Path) -> None:
 
 
 def test_ac_l5_inv2_bounded(root: Path) -> None:
-    print("--- AC-L5: acquire stays bounded (INV-2) ---")
+    print("--- acquire stays bounded ---")
     task = root / "tasks" / "1_in_progress" / "2026-08-05_bounded.md"
     task.parent.mkdir(parents=True)
     task.write_text("x", encoding="utf-8")
@@ -253,12 +200,10 @@ def test_v2_3_degrade_unlocked_on_fresh_foreign_sidecar(root: Path) -> None:
     lock_file = ll.lock_path_for(str(task))
     os.makedirs(os.path.dirname(lock_file), exist_ok=True)
     with open(lock_file, "w", encoding="utf-8") as f:
-        f.write("99999 someone-elses-lock pi\n")  # fresh: mtime is now
+        f.write("99999 someone-elses-lock pi\n")
 
     entered = False
     t0 = time.monotonic()
-    # Tiny timeout so the bounded acquire gives up promptly; stale threshold
-    # left high so the fresh sidecar is NOT eligible for a break.
     with env_override(TASKFLOW_LOCK_TIMEOUT="0.05", TASKFLOW_LOCK_STALE="600"):
         with ll.log_lock(str(task)):
             entered = True
@@ -283,7 +228,6 @@ def test_v2_4_stale_break(root: Path) -> None:
     os.makedirs(os.path.dirname(lock_file), exist_ok=True)
     with open(lock_file, "w", encoding="utf-8") as f:
         f.write("99999 abandoned pi\n")
-    # Backdate well past the stale threshold used below.
     old = time.time() - 3600
     os.utime(lock_file, (old, old))
 
@@ -292,8 +236,6 @@ def test_v2_4_stale_break(root: Path) -> None:
     with env_override(TASKFLOW_LOCK_TIMEOUT="3.0", TASKFLOW_LOCK_STALE="10"):
         with ll.log_lock(str(task)):
             entered = True
-            # We broke the stale lock and re-created it, so the abandoned
-            # holder's payload must be gone.
             try:
                 payload_replaced = "abandoned" not in Path(lock_file).read_text(
                     encoding="utf-8")

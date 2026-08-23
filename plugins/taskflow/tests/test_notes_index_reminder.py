@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""The reminder's column row must equal the canonical `index.md format` header
-in prompts/notes_guidelines.md. The hook hard-codes the row (no import spans
-Python<->Markdown), so this test IS the anti-drift mechanism — the cross-language
-equivalent of the _PRECOMPACT_NOTE_PREFIX shared constant.
-
-Runner note: this file is self-executing (house style — `uv run --script <path>`
-prints `All N checks passed.` and exits non-zero on failure). It deliberately
-does NOT rely on pytest: an earlier revision defined bare `test_*` functions with
-no `__main__` block, so running it the same way as its siblings collected nothing
-and exited 0 without executing a single assertion.
-
-The hook itself is stdlib-only, so the `sys.executable` subprocess needs no
-third-party dependency and this file declares no PEP 723 header.
-"""
 import json, subprocess, sys
 from pathlib import Path
 

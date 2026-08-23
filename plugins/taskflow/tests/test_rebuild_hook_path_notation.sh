@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# test_rebuild_hook_path_notation.sh — verifies task_rebuild_progress.py resolves
-# PostToolUse tool_input paths across absolute-path notations: Git-Bash/MSYS
-# style (/c/...), native forward-slash (c:/...), and native backslash (c:\...).
-# Regression for the silent-skip bug: /c/... resolved via os.path.isdir() under
-# native Windows Python returns False (no drive letter), so the hook used to
-# exit 0 without ever running rebuild_progress.py.
-#
-# Isolated: creates its own tempdir fixture, cd's into it, and never touches
-# the repo's real _projects/ (task_rebuild_progress.py does not read/write
-# _projects/_state/, but cwd isolation is kept for consistency with the
-# project's E2E sandbox convention). Safe to re-run.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -20,13 +9,8 @@ ok(){ echo "  [o] $1"; PASS=$((PASS+1)); }
 ng(){ echo "  [x] $1"; FAIL=$((FAIL+1)); }
 
 TMP_RAW="$(mktemp -d)"
-NATIVE_TMP="$(cygpath -m "$TMP_RAW")"   # e.g. C:/Users/.../AppData/Local/Temp/tmp.XXXX
-NATIVE_TMP_BS="${NATIVE_TMP//\//\\}"    # backslash form
-# This sandbox's mktemp -d resolves under /tmp (no drive letter), which is NOT
-# the notation that caused the original bug (Git-Bash's /c/... drive mount).
-# Re-derive the /c/...-style alias from NATIVE_TMP so Case 1/3 exercise the
-# real regression, not a same-string no-op. Confirmed alias (same underlying
-# dir) via cygpath -m.
+NATIVE_TMP="$(cygpath -m "$TMP_RAW")"
+NATIVE_TMP_BS="${NATIVE_TMP//\//\\}"
 DRIVE_LETTER=$(echo "${NATIVE_TMP:0:1}" | tr 'A-Z' 'a-z')
 TMP="/$DRIVE_LETTER${NATIVE_TMP:2}"
 echo "=== isolated tmpdir: $TMP (native: $NATIVE_TMP) ==="
@@ -48,9 +32,6 @@ make_task() {
   printf -- '---\npriority: MID\ncreated: 2026-07-24\nupdated: 2026-07-24\n---\n\n# %s\n\n<!-- @log:begin -->\n- 2026-07-24: created\n<!-- @log:end -->\n' "$title" > "$path"
 }
 
-# ----------------------------------------------------------
-# Case 1 (repro): Bash command referencing Git-Bash /c/... style path
-# ----------------------------------------------------------
 echo ""
 echo "--- Case 1 (repro): Bash mv with Git-Bash /c/... style path ---"
 setup_fixture testpj1
@@ -68,9 +49,6 @@ else
   ng "Case1: progress.md 未反映"
 fi
 
-# ----------------------------------------------------------
-# Case 2 (regression, #45): Bash command with native c:/... style path
-# ----------------------------------------------------------
 echo ""
 echo "--- Case 2 (regression): Bash mv with native c:/... style path ---"
 setup_fixture testpj2
@@ -83,9 +61,6 @@ else
   ng "Case2: c:/ 形式 mv が退行。OUT=$OUT2"
 fi
 
-# ----------------------------------------------------------
-# Case 3 (repro variant): Edit file_path with Git-Bash /c/... style path
-# ----------------------------------------------------------
 echo ""
 echo "--- Case 3 (repro): Edit file_path with Git-Bash /c/... style path ---"
 setup_fixture testpj3
@@ -98,9 +73,6 @@ else
   ng "Case3: /c/ 形式 Edit file_path が resolve されない。OUT=$OUT3"
 fi
 
-# ----------------------------------------------------------
-# Case 4 (regression, #45): Edit file_path with native c:\... backslash style
-# ----------------------------------------------------------
 echo ""
 echo "--- Case 4 (regression): Edit file_path with native c:\\... backslash style ---"
 setup_fixture testpj4
@@ -114,11 +86,8 @@ else
   ng "Case4: c:\\ 形式 Edit file_path が退行。OUT=$OUT4"
 fi
 
-# ----------------------------------------------------------
-# Case 5: candidate extracted but unresolvable — must report, not silently skip
-# ----------------------------------------------------------
 echo ""
-echo "--- Case 5: 存在しないプロジェクトパス参照 -> unresolved を報告(silent exit しない) ---"
+echo "--- Case 5: a reference to a nonexistent project path reports unresolved instead of exiting silently ---"
 FP5="$TMP/_projects/ghost-project-does-not-exist/tasks/1_in_progress/x.md"
 OUT5=$(run_hook "{\"session_id\":\"case5\",\"tool_input\":{\"file_path\":\"$FP5\"}}")
 if echo "$OUT5" | grep -qi 'unresolved'; then
@@ -127,9 +96,6 @@ else
   ng "Case5: 解決不能なのに無音 exit(旧挙動に後退)。OUT=$OUT5"
 fi
 
-# ----------------------------------------------------------
-# Summary + isolation guarantee
-# ----------------------------------------------------------
 STATE_SNAPSHOT_AFTER=$(find "$REPO_ROOT/_projects/_state" -type f 2>/dev/null | wc -l)
 if [ "$STATE_SNAPSHOT_BEFORE" = "$STATE_SNAPSHOT_AFTER" ]; then
   ok "isolation: 実 _projects/_state/ のファイル数は不変 ($STATE_SNAPSHOT_BEFORE)"
@@ -140,7 +106,7 @@ fi
 echo ""
 echo "=== PASS=$PASS FAIL=$FAIL ==="
 rm -rf "$TMP"
-echo "tmpdir 削除済み: $TMP"
+echo "tmpdir removed: $TMP"
 
 if [ "$FAIL" -gt 0 ]; then
   exit 1
