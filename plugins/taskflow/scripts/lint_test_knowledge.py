@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Pre-test gate for plugins/taskflow/tests/.
 
-R1  No comments in a test file, except the enumerated directive allowlist.
-R2  No unreachable references, on every line -- comments, test names, assertion
-    messages and docstrings alike.
+R1  No comments and no docstrings in a test file, except the enumerated
+    directive allowlist.
+R2  No unreachable references, on every line -- comments, docstrings, test names
+    and assertion messages alike.
 
-Both are grep-level checks. Run this before running the suites:
+R1's comment half and all of R2 are grep-level. The docstring half is not: a
+pattern over triple-quoted strings cannot tell a docstring from a fixture string
+assigned to a name, so docstrings are found at the positions the language defines
+-- a module's first statement, and the first statement in a def or class body --
+and every other string is left alone.
+
+Run this before running the suites:
 
     uv run --no-project python plugins/taskflow/scripts/lint_test_knowledge.py
 
@@ -14,6 +21,7 @@ failure, not a clean tree).
 """
 from __future__ import annotations
 
+import ast
 import io
 import re
 import subprocess
@@ -94,6 +102,24 @@ def comments_py(path: Path, src: str) -> list[tuple[int, str]]:
     return out
 
 
+def docstrings_py(path: Path, src: str) -> list[tuple[int, str]]:
+    """Strings sitting where the language defines a docstring, and nowhere else."""
+    tree = ast.parse(src)
+    out = []
+    nodes = [tree] + [n for n in ast.walk(tree)
+                      if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    for node in nodes:
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            where = "module" if isinstance(node, ast.Module) else f"{node.name}()"
+            out.append((first.lineno, f"{where}: {first.value.value.strip()[:80]}"))
+    return out
+
+
 def comments_sh(path: Path, src: str) -> list[tuple[int, str]]:
     """Whole-line and trailing comments outside heredoc bodies.
 
@@ -140,6 +166,9 @@ def main() -> int:
         finder = comments_py if p.suffix == ".py" else comments_sh
         for line_no, text in finder(p, src):
             failures.append(f"R1 {rel}:{line_no}: comment outside the directive allowlist: {text[:100]}")
+        if p.suffix == ".py":
+            for line_no, text in docstrings_py(p, src):
+                failures.append(f"R1 {rel}:{line_no}: docstring: {text}")
         for i, line in enumerate(src.splitlines(), 1):
             for pat, why in UNREACHABLE:
                 m = pat.search(line)
@@ -181,7 +210,8 @@ def main() -> int:
         return 1
     if ratchet.returncode != 0:
         return 1
-    print("gate holds: no comments outside the directive allowlist, no unreachable references.")
+    print("gate holds: no comments or docstrings outside the directive allowlist, "
+          "no unreachable references.")
     return 0
 
 
