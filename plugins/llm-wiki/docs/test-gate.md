@@ -3,18 +3,18 @@
 Two mechanical rules over the plugin's test suites, the command that enforces them, and the
 scope decisions taken when they were introduced.
 
-The reason they exist: a comment in a test file is prose no run ever shows, and an agent that
-holds only this checkout reads it as fact. A claim it cannot check from here is worse than no
+The reason they exist: a comment or a docstring in a test file is prose no run ever shows, and an
+agent that holds only this checkout reads it as fact. A claim it cannot check from here is worse than no
 claim at all. So facts about the world outside the codebase move to
 [`test-constraints.md`](test-constraints.md), intent behind a counter-intuitive assertion moves
 into the assertion message where a failure prints it, and everything else goes.
 
 ## The rules
 
-- **R1** No comments in a test file, except the directive allowlist.
-- **R2** No unreachable references, applied to every line — comments, test names, assertion
-  messages and docstrings alike. R2 is what stops a reference from being smuggled into the
-  relocation targets when a comment's content moves into a test name.
+- **R1** No comments and no docstrings in a test file, except the directive allowlist.
+- **R2** No unreachable references, applied to every line — comments, docstrings, test names and
+  assertion messages alike. R2 is what stops a reference from being smuggled into the relocation
+  targets when a comment's content moves into a test name.
 
 Directive allowlist, enumerated by grep over the tree rather than from memory:
 
@@ -25,10 +25,15 @@ Directive allowlist, enumerated by grep over the tree rather than from memory:
 | `# type: ignore[...]` | none today; kept for stub classes standing in for stdlib objects |
 | `# /// script` … `# ///` (PEP 723 block) | none today; kept for a test that declares inline dependencies |
 
-Docstrings are not comments and are exempt from R1, because banning them fights Python's own
-convention. Their text is still subject to R2 and to deletion as narration: what may remain is a
-single sentence carrying intent that will not fit the test name. After the migration the suite
-holds five docstring lines, all of them in `conftest.py`.
+A docstring is a comment for this gate's purposes and has no exemption. A runner prints neither,
+so an agent reads both as unverifiable assertion and neither becomes visible when it is wrong; a
+test function's name is already its description. After the migration no test file holds a
+docstring. `conftest.py` still carries its five-line one, and is not a test file (see Coverage).
+
+The docstring half of R1 is not a grep — a triple-quoted string could equally be a fixture
+assigned to a name. The gate reads the positions Python defines (a module's first statement, and
+the first statement in a def or class body) through `ast`, and leaves every other string literal
+alone.
 
 A `#` inside a triple-quoted fixture string is content under test — a markdown heading in a
 `SCHEMA.md` fixture, a command body in a generated driver script — never a comment. The gate
@@ -63,8 +68,8 @@ packages in this repository (`plugins/taskflow/tests/`, which has
 `skills/*/scripts/tests/`, the top-level `tests/`) are **outside this gate** and carry no
 assurance from it.
 
-`conftest.py` is a test configuration file, not a test file, so R1 does not reach it. R2 does.
-The gate names the exemption on every run.
+`conftest.py` asserts no contract, so Scope does not make it a test file and R1 does not reach it.
+R2 does. The gate names it on every run.
 
 The gate's own blind spots, printed on every run: a citation phrased without one of its citation
 verbs and without a section sign; a bare gitignored path such as
@@ -102,8 +107,9 @@ Recorded because an undocumented scope call is the failure the scope rule exists
   projector is asserted against — not prose.
 
 What the migration moved, measured over those 46 files: 1,379 comment lines to 1 (the single
-allowlisted directive), and 949 docstring lines to 5 (all in `conftest.py`). Facts about the world
-outside the codebase went to [`test-constraints.md`](test-constraints.md) with the date each was
+allowlisted directive), and 949 docstring lines to 5 — all five in `conftest.py`, which R1 does
+not reach, so the test files themselves hold none. Facts about the world outside the codebase went
+to [`test-constraints.md`](test-constraints.md) with the date each was
 first recorded, taken from git history rather than from the comment that carried it.
 
 No allowlist file exists. The migration completed in one pass, so there were no violations left to

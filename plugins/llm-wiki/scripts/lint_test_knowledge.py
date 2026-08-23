@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Pre-test gate for the llm-wiki test suites.
 
-R1  No comments in a test file, except the enumerated directive allowlist.
-R2  No unreachable references, on every line -- comments, test names, assertion
-    messages and docstrings alike.
+R1  No comments and no docstrings in a test file, except the enumerated
+    directive allowlist.
+R2  No unreachable references, on every line -- comments, docstrings, test names
+    and assertion messages alike.
 
-Both are grep-level checks. Run this before running the suite:
+R2 and the comment half of R1 are textual. The docstring half is not: a grep for
+a triple-quoted string cannot tell a docstring from a fixture string assigned to
+a name, so this scans the positions the language defines (a module's first
+statement, and the first statement in a def or class body) through `ast` and
+leaves every other string literal alone. Run this before running the suite:
 
     uv run --no-project python plugins/llm-wiki/scripts/lint_test_knowledge.py
 
@@ -14,6 +19,7 @@ failure, not a clean tree).
 """
 from __future__ import annotations
 
+import ast
 import io
 import re
 import sys
@@ -28,7 +34,8 @@ EXCLUDED_DIRS = {
     "__pycache__": "build artifact",
 }
 
-# Test configuration files are not test files: R1 does not reach them, R2 does.
+# Not test files: they assert no contract, so Scope does not reach them with R1.
+# R2 still applies to every line of them.
 CONFIG_FILES = {"conftest.py"}
 
 # Directive allowlist. Enumerated by grep over the tree, never from memory.
@@ -93,6 +100,24 @@ def comments_py(src: str) -> list[tuple[int, str]]:
     return out
 
 
+def docstrings_py(src: str) -> list[tuple[int, int, str]]:
+    """Module, class and function docstrings -- the language-defined positions only."""
+    out = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            out.append((first.lineno, first.end_lineno or first.lineno,
+                        " ".join(first.value.value.split())))
+    return out
+
+
 def main() -> int:
     files, skipped = scan_targets()
     failures: list[str] = []
@@ -104,6 +129,9 @@ def main() -> int:
             for line_no, text in comments_py(src):
                 failures.append(
                     f"R1 {rel}:{line_no}: comment outside the directive allowlist: {text[:100]}")
+            for start, end, text in docstrings_py(src):
+                span = f"{start}" if start == end else f"{start}-{end}"
+                failures.append(f"R1 {rel}:{span}: docstring: {text[:100]}")
         for i, line in enumerate(src.splitlines(), 1):
             for pat, why in UNREACHABLE:
                 m = pat.search(line)
@@ -120,7 +148,7 @@ def main() -> int:
           + ", ".join(d.relative_to(ROOT).as_posix() + "/" for d in TEST_DIRS))
     for s in skipped:
         print(f"  out of scope: {s}")
-    print("  R1 exempt (test configuration, not a test file): "
+    print("  R1 not applied (asserts no contract, so not a test file; R2 still is): "
           + ", ".join(sorted(CONFIG_FILES)))
     print(f"allowlist entries remaining: {len(allow)}"
           + ("" if allow else "  (no allowlist file -- migration complete)"))
@@ -140,7 +168,8 @@ def main() -> int:
         for f in failures:
             print(f"  {f}")
         return 1
-    print("gate holds: no comments outside the directive allowlist, no unreachable references.")
+    print("gate holds: no comments outside the directive allowlist, no docstrings, "
+          "no unreachable references.")
     return 0
 
 
