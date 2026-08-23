@@ -475,6 +475,89 @@ def _safe_close(cursor, sa_conn) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# ドライラン（クエリを実行せずコストを見積もる）
+# ---------------------------------------------------------------------------
+
+# ドライランを提供できるバックエンド。ここに無い方言はクエリを実行せずエラー終了する。
+_DRY_RUN_BACKENDS = ("bigquery",)
+
+
+def emit_dry_run(estimate: dict, max_bytes: int) -> None:
+    """見積もり結果を JSON で出力する（emit_rows と同じ直列化・同じサイズ上限）。"""
+    output_json = json.dumps(estimate, ensure_ascii=False, default=str)
+    output_bytes = len(output_json.encode("utf-8"))
+    if output_bytes > max_bytes:
+        output_kb = output_bytes // 1024
+        limit_kb = max_bytes // 1024
+        print(
+            f"Error: Output size {output_kb}KB exceeds the limit of {limit_kb}KB.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(output_json)
+
+
+def _bigquery_dry_run(sql: str, dsn: str) -> dict:
+    """BigQuery のドライランで見積もりを取る（クエリ本体は実行されない）。"""
+    from google.cloud import bigquery
+
+    engine = _make_engine(dsn)
+    with engine.connect() as conn:
+        # BigQueryCanceller.cancel() と同じ経路で、dbapi 接続が解決済みの Client を再利用する。
+        # これにより資格情報（GOOGLE_APPLICATION_CREDENTIALS / gcloud ADC）と project /
+        # location の解決が通常のクエリ経路と完全に一致する。
+        driver_conn = conn.connection.driver_connection
+        client = getattr(driver_conn, "_client", None)
+        if client is None:
+            client = bigquery.Client()
+        # dry_run=True では jobs.insert が見積もりだけを返しジョブを作成しない。
+        # use_query_cache=False はキャッシュヒット時に 0 バイトと報告されるのを防ぐ。
+        job = client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False),
+        )
+
+    try:
+        accuracy = job._properties["statistics"]["query"]["totalBytesProcessedAccuracy"]
+    except Exception:
+        accuracy = None
+
+    referenced = [
+        f"{t.project}.{t.dataset_id}.{t.table_id}" for t in (job.referenced_tables or [])
+    ]
+
+    return {
+        "dry_run": True,
+        "dialect": "bigquery",
+        "total_bytes_processed": job.total_bytes_processed,
+        "total_bytes_processed_accuracy": accuracy,
+        "referenced_tables": referenced,
+    }
+
+
+def cmd_query_dry_run(args: argparse.Namespace, sql: str, dsn: str) -> None:
+    """--dry-run: 実行せずに見積もりを出す。非対応方言はクエリを実行せずエラー終了する。"""
+    backend = _backend_name(dsn)
+    if backend not in _DRY_RUN_BACKENDS:
+        print(
+            f"Error: --dry-run is not supported for dialect [{backend}]"
+            f" (supported: {', '.join(_DRY_RUN_BACKENDS)})."
+            " The query was NOT executed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        estimate = _bigquery_dry_run(sql, dsn)
+    except Exception as e:
+        print(f"Error: Dry run failed [{backend}]: {_redact_secret(str(e), dsn)}", file=sys.stderr)
+        sys.exit(1)
+
+    emit_dry_run(estimate, args.max_bytes)
+
+
 def cmd_query(args: argparse.Namespace) -> None:
     config = load_config()
     dsn = resolve_connection(config, args.connection)
@@ -483,11 +566,17 @@ def cmd_query(args: argparse.Namespace) -> None:
         sql, control_stream = read_sql_and_control(args)
         if getattr(args, "read_only", False):
             _assert_read_only(sql)
+        if getattr(args, "dry_run", False):
+            cmd_query_dry_run(args, sql, dsn)
+            return
         cmd_query_managed(args, sql, control_stream, dsn)
     else:
         sql = args.sql if args.sql is not None else sys.stdin.read()
         if getattr(args, "read_only", False):
             _assert_read_only(sql)
+        if getattr(args, "dry_run", False):
+            cmd_query_dry_run(args, sql, dsn)
+            return
         cmd_query_simple(args, sql, dsn)
 
 
@@ -515,6 +604,7 @@ def main() -> None:
     query_parser.add_argument("--control-stdin", action="store_true", dest="control_stdin")
     query_parser.add_argument("--read-only", action="store_true", dest="read_only",
                               help="読み取り文(SELECT/SHOW/DESCRIBE/EXPLAIN/WITH/VALUES/PRAGMA)以外を拒否する簡易ガード")
+    query_parser.add_argument("--dry-run", action="store_true", dest="dry_run")
 
     args = parser.parse_args()
 
