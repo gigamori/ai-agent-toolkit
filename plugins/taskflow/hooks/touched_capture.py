@@ -189,7 +189,8 @@ _SED_UNSAFE_CHARS = ('$', '`', '*', '?')
 # enough: `sed -i 's/a/b/' f.md 2>err.txt` recorded the literal `2>err.txt` as
 # a written path, and `... 2>&1` recorded `2>&1`, neither of which is a file
 # this command wrote -- a false positive in ANY class, and the mechanism behind
-# the `2>&1` fragments seen in Stop-hook `touched:` lines. The same token shape
+# the `2>&1` fragments observed while the Stop-hook output used the `touched:`
+# label. The same token shape
 # reached the mv/cp/rm/tee loop, so this is NOT sed-specific. Reported by the
 # pi-extensions sibling (2026-08-20 handoff, discovery 3), reproduced here on
 # both paths before the fix. `extract_redirect_targets` captures the real

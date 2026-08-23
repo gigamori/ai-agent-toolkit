@@ -279,7 +279,8 @@ def read_touched_raw(touched_path: str, cwd: str) -> list[str]:
     is the round cursor: `.touched` is append-only with one line per write
     event and no timestamps, so "how many lines have I already consumed" is the
     only novelty signal available. `read_touched` stays as the deduped reader
-    used for display and the whole-session note scan.
+    for the whole-session note scan; `main()` builds the display by deduping
+    its current `new_slice`.
     """
     if not os.path.isfile(touched_path):
         return []
@@ -2084,11 +2085,12 @@ def main() -> int:
     )
 
     if spawn:
-        # Round-scoped display (§1.3): the subagent summarizes THIS round's
-        # work, so it is shown this round's ledger slice, not the whole session.
+        # Non-authoritative round diagnostic: the classified authority is the
+        # JSON context below, while this keeps the deduped ledger slice visible.
         shown = slice_display[:MAX_TOUCHED_IN_INJECTION]
         tail = '' if len(slice_display) <= MAX_TOUCHED_IN_INJECTION else \
             f' ...({len(slice_display) - MAX_TOUCHED_IN_INJECTION} more)'
+        display = ' '.join(shown) if shown else '(none)'
         # Per-round sidecar path (§4.4.1 D1): the round the (E) commit above
         # just opened. Both the context block and the step-3 prose below take it
         # from this single value (review F-I3).
@@ -2101,7 +2103,7 @@ def main() -> int:
         reason = (
             f'{auto_lines}'
             f'[progress capture] session={sid8} date={date}\n'
-            f'touched: {" ".join(shown)}{tail}\n\n'
+            f'round ledger entries (unclassified; diagnostic only): {display}{tail}\n\n'
             f'Spawn the async capture subagent to summarize this round\'s task '
             f'work and map note deliverables to owning tasks. Do NOT update '
             f'`@log` / `@notes` yourself — the taskflow Stop hook applies the '

@@ -313,7 +313,14 @@ session end
         (project-notes/specs/capture-context-abs-path.md). `sidecar_path` is the PER-ROUND
         `{session_id}.r{N}.capture` and the block also carries `round` as an echo; the round
         identity is decided by the hook's file name, so the subagent's contract gains no new
-        output field (§4.4.1 D1/D6).
+        output field (§4.4.1 D1/D6). The preceding Stop-block line
+        `round ledger entries (unclassified; diagnostic only): ...` is a separate,
+        non-authoritative diagnostic: it is the current round's normalized, first-occurrence-
+        deduped ledger slice, capped at `MAX_TOUCHED_IN_INJECTION` (30). It can contain entries
+        that classify to neither task nor note, and it can read `(none)` when an exec carry opens
+        a capture request without a ledger entry. `touched_tasks` and `note_writes` in the JSON
+        context are the classified authority; the capture subagent receives that context, not a
+        separate contract based on the diagnostic line.
      6. expiry (30 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
         backstop takes over for THAT ROUND's closed `items` set — `referenced` over-bind of the
         note-write owners resolvable via the reverse index first (so an owner keeps the more
