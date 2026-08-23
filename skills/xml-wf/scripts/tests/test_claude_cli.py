@@ -1,9 +1,3 @@
-"""Tests for the launch-path fix (reliability-spec.md §13): executable
-resolution, shim loud-failure, and the `transient` error_class.
-
-subprocess.run and shutil.which are monkeypatched; no real claude CLI is
-invoked (that is covered separately by a real-CLI E2E, run manually in an
-isolated worktree per reliability-spec.md §13.6)."""
 import json
 import os
 import sys
@@ -61,7 +55,7 @@ class ResolutionChainTests(unittest.TestCase):
                            / "claude-code" / "bin")
             sibling_dir.mkdir(parents=True)
             sibling = sibling_dir / "claude.exe"
-            sibling.write_bytes(b"x" * 5000)  # above the 4096-byte stub threshold
+            sibling.write_bytes(b"x" * 5000)
 
             with mock.patch.object(claude_cli.shutil, "which", return_value=str(shim)):
                 path, via_shim = claude_cli._resolve_claude_bin()
@@ -77,7 +71,7 @@ class ResolutionChainTests(unittest.TestCase):
                            / "claude-code" / "bin")
             sibling_dir.mkdir(parents=True)
             sibling = sibling_dir / "claude.exe"
-            sibling.write_bytes(b"x" * 500)  # below the 4096-byte stub threshold
+            sibling.write_bytes(b"x" * 500)
 
             with mock.patch.object(claude_cli.shutil, "which", return_value=str(shim)):
                 path, via_shim = claude_cli._resolve_claude_bin()
@@ -102,8 +96,6 @@ class ResolutionChainTests(unittest.TestCase):
 
 
 class RunClaudeLaunchTests(unittest.TestCase):
-    """Exercises run_claude() with subprocess.run mocked out."""
-
     def setUp(self):
         claude_cli._resolution_cache.clear()
         self.which_patch = mock.patch.object(
@@ -152,7 +144,6 @@ class RunClaudeLaunchTests(unittest.TestCase):
         self.assertIn("--append-system-prompt-file", captured_cmd["cmd"])
         self.assertEqual(written_content["text"], "<role>x</role>")
         self.assertTrue(written_content["existed_during_call"])
-        # cleaned up after the call
         idx = captured_cmd["cmd"].index("--append-system-prompt-file")
         self.assertFalse(os.path.isfile(captured_cmd["cmd"][idx + 1]))
 
@@ -169,7 +160,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
                     "task", system_prompt="line1 & line2 | line3")
         self.assertFalse(res.ok)
         self.assertEqual(res.error_class, "env")
-        run.assert_not_called()  # loud failure: never launches
+        run.assert_not_called()
 
     def test_shim_with_benign_system_prompt_and_no_file_support_launches_inline(self):
         stdout = json.dumps({"result": "ok", "is_error": False})
@@ -206,8 +197,6 @@ class RunClaudeLaunchTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_hostile_schema_refusal_leaks_no_temp_file(self):
-        # Regression: the schema refusal must not strand a system-prompt
-        # temp file. All rejection checks run before the file is created.
         before = set(Path(tempfile.gettempdir()).glob("wfrun-sysprompt-*"))
         with tempfile.TemporaryDirectory() as d:
             shim = Path(d) / "claude.cmd"
@@ -237,8 +226,6 @@ class RunClaudeLaunchTests(unittest.TestCase):
         self.assertEqual(before, after)
 
     def test_non_ascii_system_prompt_written_as_utf8(self):
-        # Role/rules bodies in this repo are routinely Japanese; the platform
-        # default encoding (cp932) would corrupt them silently.
         captured = {}
 
         def fake_run(cmd, **kwargs):
@@ -262,8 +249,6 @@ class RunClaudeLaunchTests(unittest.TestCase):
         self.assertEqual(res.error_class, "timeout")
 
     def test_nonzero_exit_with_valid_json_is_parsed_not_discarded(self):
-        # This is the O2a regression case (reliability-spec.md §13.5): a
-        # non-zero exit still carries a fully-formed error JSON on stdout.
         stdout = json.dumps({
             "is_error": True, "result": "There's an issue with the model",
             "terminal_reason": "api_error", "api_error_status": 404,
@@ -272,7 +257,8 @@ class RunClaudeLaunchTests(unittest.TestCase):
                                return_value=_fake_completed(1, stdout)):
             res = claude_cli.run_claude("hi", model="bogus")
         self.assertFalse(res.ok)
-        self.assertEqual(res.error_class, "env")  # 404 is not retryable
+        self.assertEqual(res.error_class, "env",
+                         "a 4xx api_error is not retryable")
         self.assertIn("status=404", res.error)
 
     def test_transient_status_classified_as_transient(self):
@@ -295,7 +281,9 @@ class RunClaudeLaunchTests(unittest.TestCase):
                                return_value=_fake_completed(1, stdout)):
             res = claude_cli.run_claude("hi")
         self.assertFalse(res.ok)
-        self.assertEqual(res.error_class, "env")  # fail-closed, not transient
+        self.assertEqual(res.error_class, "env",
+                         "an api_error carrying no status fails closed "
+                         "rather than being retried as transient")
 
     def test_unparseable_stdout_is_env(self):
         with mock.patch.object(claude_cli.subprocess, "run",
@@ -305,10 +293,6 @@ class RunClaudeLaunchTests(unittest.TestCase):
         self.assertEqual(res.error_class, "env")
 
     def test_is_error_with_non_api_error_terminal_reason_is_behavioral(self):
-        # Any other is_error terminal_reason (budget_exhausted,
-        # structured_output_retry_exhausted, tool_deferred_unavailable,
-        # turn_setup_failed, ...) is a CLI/model hiccup, not further
-        # classified -- treated as retryable `behavioral` (§3.1).
         stdout = json.dumps({
             "is_error": True, "result": "x", "terminal_reason": "budget_exhausted",
         })
@@ -316,11 +300,11 @@ class RunClaudeLaunchTests(unittest.TestCase):
                                return_value=_fake_completed(0, stdout)):
             res = claude_cli.run_claude("hi")
         self.assertFalse(res.ok)
-        self.assertEqual(res.error_class, "behavioral")
+        self.assertEqual(res.error_class, "behavioral",
+                         "every terminal_reason other than api_error is a "
+                         "retryable hiccup, not further classified")
 
     def test_subtype_success_with_is_error_true_is_still_an_error(self):
-        # Regression for reliability-spec.md §13.9.1: subtype must not be
-        # trusted as a success signal.
         stdout = json.dumps({
             "is_error": True, "subtype": "success", "result": "x",
             "terminal_reason": "api_error", "api_error_status": 404,
@@ -332,10 +316,6 @@ class RunClaudeLaunchTests(unittest.TestCase):
 
 
 class ClassifyResultTests(unittest.TestCase):
-    """Phase 2.1 (reliability-spec.md §3.1): the full error_class table,
-    exercised directly against classify_result() rather than through
-    run_claude()'s subprocess plumbing."""
-
     def test_guardrail(self):
         stdout = json.dumps({"result": "ERROR: boom", "is_error": False})
         res = claude_cli.classify_result(0, stdout, "")
@@ -363,8 +343,6 @@ class ClassifyResultTests(unittest.TestCase):
         self.assertEqual(res.error_class, "behavioral")
 
     def test_empty_body_with_structured_output_is_not_an_error(self):
-        # structured is present -> the empty text body is fine, the answer
-        # lives in structured_output.
         stdout = json.dumps({"result": "", "is_error": False,
                              "structured_output": {"count": 1}})
         res = claude_cli.classify_result(0, stdout, "", schema="{}")
@@ -378,7 +356,6 @@ class ClassifyResultTests(unittest.TestCase):
         self.assertEqual(res.error_class, "behavioral")
 
     def test_denied_independent_of_is_error(self):
-        # Phase 0 O1: observed with returncode=0, is_error=False.
         stdout = json.dumps({
             "result": "waiting for permission", "is_error": False,
             "permission_denials": [{"tool_name": "Write", "tool_use_id": "t1"}],
@@ -398,10 +375,6 @@ class ClassifyResultTests(unittest.TestCase):
         self.assertEqual(res.error_class, "denied")
 
     def test_denied_carries_the_command_that_was_refused(self):
-        """`tool_name` alone cannot tell "reached for an ungranted tool" from
-        "sent a command no allow prefix could match" -- the distinction an
-        eval spent three runs failing to make. The payload has the command;
-        the error string now shows it (truncated)."""
         stdout = json.dumps({
             "result": "x", "is_error": False,
             "permission_denials": [{
@@ -427,14 +400,11 @@ class ClassifyResultTests(unittest.TestCase):
         res = claude_cli.classify_result(0, stdout, "")
         self.assertIn("...", res.error)
         self.assertNotIn("\n", res.error)
-        # the fragment itself stays within the cap (the prefix is extra)
         fragment = res.error.split("first denial: ", 1)[1]
         self.assertLessEqual(len(fragment.rstrip(".")),
                              claude_cli._DENIED_COMMAND_LIMIT)
 
     def test_denied_degrades_when_tool_input_is_absent_or_odd(self):
-        """A diagnostic must never be the thing that raises: every shape below
-        falls back to the pre-existing tool_name-only message."""
         for label, denials in (
             ("no tool_input", [{"tool_name": "Bash"}]),
             ("tool_input not a dict", [{"tool_name": "Bash",
@@ -475,7 +445,6 @@ class ClassifyResultTests(unittest.TestCase):
         res = claude_cli.classify_result(0, stdout, "")
         self.assertIn("FIRST-CMD", res.error)
         self.assertNotIn("SECOND-CMD", res.error)
-        # every denied tool is still named, so the set is not lost
         self.assertIn("Bash", res.error)
         self.assertIn("Write", res.error)
 
@@ -526,7 +495,6 @@ class SupportsSystemPromptFileTests(unittest.TestCase):
             self.assertTrue(claude_cli._supports_system_prompt_file("claude"))
 
     def test_indeterminate_probe_fails_closed(self):
-        # Neither verdict message -> do not assume support.
         with mock.patch.object(
                 claude_cli.subprocess, "run",
                 return_value=_fake_completed(1, "", "some unrelated crash")):

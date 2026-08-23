@@ -136,13 +136,19 @@ ai-agent-toolkit/
 │   ├── render-report/          Skill: render a contract-conforming report Markdown to pptx/docx/xlsx
 │   └── xml-wf/                 Skill: deterministic XML v2 workflow runner (wfrun)
 ├── docs/
-│   └── skills/                Non-runtime skill docs (user guides, authoring contracts)
-│       ├── index.md           Index of the skill doc dirs below
-│       ├── xml-wf/            xml-wf reference README + user guide (EN/JA)
-│       ├── register-pi-tools/ register-pi-tools user guide (EN/JA)
-│       ├── mode-orchestrator/ mode-orchestrator user guide (EN/JA) + workflow-spec authoring
-│       └── compact-document/  compact-document authoring contract
+│   ├── skills/                Non-runtime skill docs (user guides, authoring contracts)
+│   │   ├── index.md           Index of the skill doc dirs below
+│   │   ├── xml-wf/            xml-wf reference README + user guide (EN/JA)
+│   │   ├── register-pi-tools/ register-pi-tools user guide (EN/JA)
+│   │   ├── mode-orchestrator/ mode-orchestrator user guide (EN/JA) + workflow-spec authoring
+│   │   └── compact-document/  compact-document authoring contract
+│   └── dev/                   Repo-level developer docs (owned by no single skill)
+│       ├── index.md           Index of the dev docs below
+│       ├── test-gate.md       The test-knowledge gate over skills/ and its migration record
+│       └── test-constraints.md Outside-world facts the skills/ test suites depend on
 ├── tests/                     Repo-wide checks owned by no plugin or skill
+│   ├── lint_test_knowledge.py Pre-test gate: no comments/docstrings, no unreachable refs
+│   └── .knowledge-allowlist   Violations frozen when that gate was introduced
 ├── LICENSE
 ├── README.md
 └── README_ja.md

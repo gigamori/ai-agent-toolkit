@@ -16,6 +16,28 @@ Because Pi loads this skill via a symlink into `~/.pi/agent/skills/` (not a copy
 - After editing `scripts/wfrun/modes/*.md` or the prompt assembly, sample the prompt layer (`uv run python evals/prompt_smoke.py`, also from `scripts/`) and compare compliance rates before/after — that layer is probabilistic and outside the unit tests.
 - Injected guardrail text lives in `scripts/wfrun/guardrails.py` and nowhere else, including the conditionally injected `VALUE_LINE_RULE` and the `VALUE_LINE_PREFIX` / `VALUE_LINE_PLACEHOLDER` tokens its extractor compares against: `stepio` holds the *condition* and the parsing, never a string literal of the prompt. This is what keeps the A/B control cheap — a **wording** change is measured by restoring `guardrails.py` alone in a worktree, and only a change to the injection **condition** needs `stepio.py` in the before-condition too. Wording that migrates into `stepio.py` silently escapes that control.
 
+## Test knowledge gate
+
+The test files under `scripts/tests/` carry no comments and no docstrings — they are read by
+agents that hold only this checkout, and prose no run ever prints reads to them as fact.
+The two rules, the directive allowlist, the running order and the migration record live in
+[`docs/dev/test-gate.md`](../../dev/test-gate.md); do not restate them here.
+
+What an editor of this skill has to do:
+
+- Run `uv run --no-project python tests/lint_test_knowledge.py` from the checkout root
+  before the suites. Exit 2 means it scanned nothing, which is a coverage failure and not a
+  clean tree.
+- A fact about the world outside this repository — a CLI's observed behaviour, a platform
+  encoding default, a measured model rate — goes to
+  [`docs/dev/test-constraints.md`](../../dev/test-constraints.md) with the date it was
+  observed, never into the test file. That document is its only home.
+- The intent behind a counter-intuitive assertion goes into the assertion message, where a
+  failure prints it. If it needs more than one line, the test is too complex to operate.
+- `scripts/evals/` is deliberately outside the gate: those harnesses spend money and the
+  ordinary change loop does not run them. Fold one into that loop and it is in scope the
+  same day.
+
 ## Relationship to mode-orchestrator
 
 xml-wf and `skills/mode-orchestrator/` are separate products that independently reimplement the same idea — running an isolated, mode-tagged turn per step — over different substrates (xml-wf: `wfrun`'s deterministic Python control flow over `<step>` elements; mode-orchestrator: one subagent call per todolist step). Neither is canonical for the other; there is no shared file, and — with the one exception below — no propagation obligation between them.

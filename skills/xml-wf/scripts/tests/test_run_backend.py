@@ -1,11 +1,3 @@
-"""Tests for `wfrun run --backend` (mode-orchestrator-runs/
-phase6-run-pi-design.md §3.1, §3.3): auto/explicit/mismatch resolution
-(mirrors `ask --backend`, tested in test_ask_backend.py), the pi-backend
-startup fail-fast wired into cmd_run (pi_cli.pi_compat_errors), and
-resume's backend inheritance via backend.json.
-
-claude_cli.run_claude / pi_cli.run_pi are monkeypatched; no real CLI is
-invoked."""
 import io
 import json
 import os
@@ -36,8 +28,6 @@ MINIMAL_XML = """\
 </workflow>
 """
 
-# schema= alone is enough to trip pi_compat_errors; no output= needed, so
-# a CC-backend run of this XML doesn't have to exercise stepio.unwrap_value.
 SCHEMA_XML = """\
 <workflow name="t" version="2" max="5">
   <step id="s1" schema='{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}'>
@@ -74,9 +64,6 @@ class RunBackendTestCase(unittest.TestCase):
 
 
 class BackendResolutionTests(RunBackendTestCase):
-    """`--backend` auto detection / explicit override / mismatch warning --
-    same shape as `ask --backend` (test_ask_backend.py)."""
-
     def test_auto_resolves_to_cc_and_uses_cc_table(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = "abc"
         xml = self._write("wf.xml", MINIMAL_XML)
@@ -116,13 +103,10 @@ class BackendResolutionTests(RunBackendTestCase):
                 ["run", xml, "--run-dir", str(run_dir), "--backend", "cc"])
         self.assertEqual(code, 0)
         run_claude.assert_called_once()
-        # unlike `ask`, `run` also emits lint findings to stderr (unrelated
-        # to backend selection) -- only the backend-mismatch warning itself
-        # must be absent here.
         self.assertNotIn("warning: --backend", err)
 
     def test_explicit_backend_mismatch_warns_but_still_runs(self):
-        os.environ["CLAUDE_CODE_SESSION_ID"] = "abc"  # environment looks like cc
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "abc"
         xml = self._write("wf.xml", MINIMAL_XML)
         run_dir = self.dir / "runs" / "r1"
         with mock.patch.object(
@@ -137,11 +121,6 @@ class BackendResolutionTests(RunBackendTestCase):
 
 
 class PiBackendFailFastCliTests(RunBackendTestCase):
-    """cmd_run wiring for pi_cli.pi_compat_errors (design §2.2, §2.3):
-    rejected before run_dir gets any artifact and before run_pi is ever
-    called -- message-content fidelity itself is covered directly against
-    pi_compat_errors() in test_pi_cli.py."""
-
     def test_schema_workflow_rejected_before_any_run_dir_artifact(self):
         xml = self._write("wf.xml", SCHEMA_XML)
         run_dir = self.dir / "runs" / "r1"
@@ -169,7 +148,6 @@ class PiBackendFailFastCliTests(RunBackendTestCase):
         self.assertFalse(run_dir.exists())
 
     def test_schema_workflow_is_unaffected_under_cc_backend(self):
-        # The fail-fast is pi-specific: claude enforces schema= itself.
         xml = self._write("wf.xml", SCHEMA_XML)
         run_dir = self.dir / "runs" / "r1"
         with mock.patch.object(
@@ -182,14 +160,9 @@ class PiBackendFailFastCliTests(RunBackendTestCase):
 
 
 class ResumeBackendInheritanceTests(RunBackendTestCase):
-    """resume reads backend.json rather than re-detecting (design §3.3):
-    an environment change between run and resume must not switch the
-    execution facility mid-run."""
-
     def test_resume_reuses_pi_backend_regardless_of_current_environment(self):
         xml = self._write("wf.xml", MINIMAL_XML)
         run_dir = self.dir / "runs" / "r1"
-        # Original run: explicit pi backend, step fails so a resume applies.
         with mock.patch.object(
                 pi_cli, "run_pi",
                 return_value=CliResult(ok=False, error="ERROR: die",
@@ -201,8 +174,6 @@ class ResumeBackendInheritanceTests(RunBackendTestCase):
             json.loads((run_dir / "backend.json").read_text(encoding="utf-8")),
             {"backend": "pi"})
 
-        # Resume, with the environment now looking like Claude Code: the
-        # recorded backend ("pi") must still be the one used, not "cc".
         os.environ["CLAUDE_CODE_SESSION_ID"] = "abc"
         with mock.patch.object(
                 pi_cli, "run_pi",
@@ -223,7 +194,7 @@ class ResumeBackendInheritanceTests(RunBackendTestCase):
             code, out, err = run_cli(
                 ["run", xml, "--run-dir", str(run_dir), "--backend", "cc"])
         self.assertEqual(code, 1)
-        (run_dir / "backend.json").unlink()  # simulate a pre-existing run dir
+        (run_dir / "backend.json").unlink()
 
         with mock.patch.object(
                 claude_cli, "run_claude",

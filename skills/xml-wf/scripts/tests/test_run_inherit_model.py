@@ -1,13 +1,3 @@
-"""Tests for `wfrun run --inherit-model` (mode-orchestrator-runs/
-reliability-spec.md §10.8, review-2 finding 2, 2026-07-30): a step with no
-model= of its own (no step attribute, no role-frontmatter default) must run
-on the invoking skill session's own model, passed in via --inherit-model,
-rather than falling through to the backend CLI's own configured default.
-Mirrors test_run_backend.py's shape (inherit_model.json persistence and
-resume read-back parallel backend.json's).
-
-claude_cli.run_claude / pi_cli.run_pi are monkeypatched; no real CLI is
-invoked."""
 import io
 import json
 import sys
@@ -31,8 +21,6 @@ def run_cli(argv):
     return code, out.getvalue().strip(), err.getvalue()
 
 
-# s1 has no model= and an inline <role> (no frontmatter to fall back to) --
-# exactly the gap --inherit-model is meant to fill.
 NO_MODEL_XML = """\
 <workflow name="t" version="2" max="5">
   <step id="s1"><role>W</role><task>do it</task></step>
@@ -128,15 +116,9 @@ class InheritModelFallbackWarningTests(RunInheritModelTestCase):
 
 
 class ResumeInheritModelTests(RunInheritModelTestCase):
-    """resume reads inherit_model.json rather than accepting a CLI override
-    (no such flag exists on `resume`), mirroring backend.json's inheritance
-    (test_run_backend.py's ResumeBackendInheritanceTests)."""
-
     def test_resume_reuses_inherit_model_from_the_original_run(self):
         xml = self._write("wf.xml", NO_MODEL_XML)
         run_dir = self.dir / "runs" / "r1"
-        # Original run fails (so a resume applies) but still records
-        # inherit_model.json before the failing step runs.
         with mock.patch.object(
                 claude_cli, "run_claude",
                 return_value=CliResult(ok=False, error="ERROR: die",
@@ -144,7 +126,7 @@ class ResumeInheritModelTests(RunInheritModelTestCase):
             code, out, err = run_cli(
                 ["run", xml, "--run-dir", str(run_dir),
                  "--backend", "cc", "--inherit-model", "session-model"])
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 1, "the original run must fail so a resume applies")
 
         with mock.patch.object(
                 claude_cli, "run_claude",
@@ -163,8 +145,8 @@ class ResumeInheritModelTests(RunInheritModelTestCase):
                                        error_class="guardrail", cost_usd=0.0)):
             code, out, err = run_cli(
                 ["run", xml, "--run-dir", str(run_dir), "--backend", "cc"])
-        self.assertEqual(code, 1)
-        (run_dir / "inherit_model.json").unlink()  # simulate a pre-existing run dir
+        self.assertEqual(code, 1, "the original run must fail so a resume applies")
+        (run_dir / "inherit_model.json").unlink()
 
         with mock.patch.object(
                 claude_cli, "run_claude",

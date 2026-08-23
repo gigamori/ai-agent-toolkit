@@ -1,16 +1,3 @@
-"""Tests: CLAUDE_CONFIG_DIR support (C class) — ccdirs resolver, agent
-discovery priority, base-dir union guard (both Executor and the A-layer copy),
-and the settings-guard 4th check point.
-
-Run: python -m unittest discover -s tests -v
-
-Design: cc-config-dir-bc-skills.md (repo root, provisional location) §2.
-Shared semantics with the A/B classes: env value literal (no expanduser), a
-relative value resolves against the process cwd, dedup via normcase.
-
-Hermetic: HOME/USERPROFILE are redirected per-test, so real ~/.claude is never
-read or written.
-"""
 import os
 import sys
 import tempfile
@@ -59,9 +46,6 @@ def _write_agent(base: Path, name: str, description: str = "d"):
     )
 
 
-# --------------------------------------------------------------------------- #
-# ccdirs.claude_config_dirs — the shared resolver
-# --------------------------------------------------------------------------- #
 class ClaudeConfigDirsTest(_TmpHomeCase):
     def test_unset_env_is_the_default_only(self):
         self.assertEqual(claude_config_dirs(), [self.default_claude])
@@ -89,9 +73,6 @@ class ClaudeConfigDirsTest(_TmpHomeCase):
         self.assertEqual(claude_config_dirs(), [self.default_claude])
 
 
-# --------------------------------------------------------------------------- #
-# agents.discover_agents — AC-C1: project > env > default priority
-# --------------------------------------------------------------------------- #
 class DiscoverAgentsPriorityTest(_TmpHomeCase):
     def test_env_unset_matches_pre_existing_behaviour(self):
         _write_agent(self.default_claude, "shared", "default")
@@ -124,10 +105,6 @@ class DiscoverAgentsPriorityTest(_TmpHomeCase):
         self.assertIn("env-only", agents)
 
 
-# --------------------------------------------------------------------------- #
-# AC-C2: base-dir protection is a union of env dir and ~/.claude, and the
-# error message names the dir that actually matched.
-# --------------------------------------------------------------------------- #
 def _wf():
     return parser.parse_string(
         '<workflow name="t" version="2" max="10">'
@@ -146,8 +123,6 @@ class BaseDirGuardTest(_TmpHomeCase):
                          run_claude=self._fake_claude)
 
     def test_env_config_dir_is_also_rejected(self):
-        """The union guard (not env-only): running from inside the ACTIVE
-        CLAUDE_CONFIG_DIR must be rejected too, matching the default-dir case."""
         os.environ["CLAUDE_CONFIG_DIR"] = str(self.cfg)
         with tempfile.TemporaryDirectory() as run_dir:
             with self.assertRaises(WorkflowFailure) as ctx:
@@ -161,7 +136,7 @@ class BaseDirGuardTest(_TmpHomeCase):
         normal.mkdir()
         with tempfile.TemporaryDirectory() as run_dir:
             Executor(_wf(), {}, run_dir, base_dir=normal,
-                     run_claude=self._fake_claude)  # must not raise
+                     run_claude=self._fake_claude)
 
     def test_error_message_names_the_matched_dir(self):
         with tempfile.TemporaryDirectory() as run_dir:
@@ -172,8 +147,6 @@ class BaseDirGuardTest(_TmpHomeCase):
 
 
 class MainLayerBaseDirGuardTest(_TmpHomeCase):
-    """The A-layer's independent `_check_base_dir` copy in __main__.py."""
-
     def test_env_dir_rejected_by_the_a_layer_copy_too(self):
         from wfrun.__main__ import _check_base_dir
         os.environ["CLAUDE_CONFIG_DIR"] = str(self.cfg)
@@ -189,9 +162,6 @@ class MainLayerBaseDirGuardTest(_TmpHomeCase):
         self.assertIsNone(_check_base_dir(normal))
 
 
-# --------------------------------------------------------------------------- #
-# AC-C3: the settings-guard check includes the env dir as a 4th location
-# --------------------------------------------------------------------------- #
 class SettingsGuardTest(_TmpHomeCase):
     def test_marker_only_in_env_settings_suppresses_the_warning(self):
         from wfrun.__main__ import _warn_if_no_llm_guard, LLM_GUARD_MARKER
@@ -210,7 +180,7 @@ class SettingsGuardTest(_TmpHomeCase):
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
                 _warn_if_no_llm_guard()
-            self.assertNotIn(LLM_GUARD_MARKER, buf.getvalue())  # no warning printed
+            self.assertNotIn(LLM_GUARD_MARKER, buf.getvalue())
             self.assertEqual(buf.getvalue(), "")
         finally:
             os.chdir(cwd)

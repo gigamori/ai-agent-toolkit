@@ -1,4 +1,3 @@
-"""Tests for the LLM-orchestrator helper subcommands (interp / eval)."""
 import io
 import json
 import sys
@@ -93,21 +92,20 @@ class TestPromptRecord(unittest.TestCase):
         code, out = self.run_cli(["prompt", self.xml, "s1", "--vars", self.vars_path,
                                   "--out", prompt_file, "--result", result_file])
         self.assertEqual(code, 0)
-        # stdout carries pointer + dispatch facts only, no task content
         self.assertIn("s1_prompt.md", out)
         self.assertIn("role=inline", out)
         self.assertIn("mode=execute", out)
         self.assertNotIn("data.csv", out)
         self.assertNotIn("ROLE-W", out)
         content = Path(prompt_file).read_text(encoding="utf-8")
-        self.assertIn("Mode > Rules > Task > Role", content)  # _meta precedence
-        self.assertIn("<role>\nROLE-W\n</role>", content)   # role injected
-        self.assertIn("mode:execute", content)              # mode declaration
-        self.assertIn("mode-output", content)               # _common.md rules
-        self.assertIn("RULE-BODY", content)                 # rules injected
-        self.assertIn("Analyze data.csv", content)          # interpolated task
-        self.assertIn(result_file, content)                 # response protocol
-        self.assertIn("ERROR:", content)                    # guardrails
+        self.assertIn("Mode > Rules > Task > Role", content)
+        self.assertIn("<role>\nROLE-W\n</role>", content)
+        self.assertIn("mode:execute", content)
+        self.assertIn("mode-output", content)
+        self.assertIn("RULE-BODY", content)
+        self.assertIn("Analyze data.csv", content)
+        self.assertIn(result_file, content)
+        self.assertIn("ERROR:", content)
 
     def test_prompt_dispatch_line_maps_model(self):
         from wfrun import modelmap
@@ -122,7 +120,6 @@ class TestPromptRecord(unittest.TestCase):
         finally:
             modelmap.MAP_PATH = old
         self.assertEqual(code, 0)
-        # runner-resolved name with the canonical origin for audit
         self.assertIn("model=gpt-5-high (mapped from opus)", out)
 
     def test_prompt_undefined_var(self):
@@ -138,7 +135,7 @@ class TestPromptRecord(unittest.TestCase):
         code, out = self.run_cli(["record", self.xml, "s1", "--result", str(result),
                                   "--vars", self.vars_path, "--log", str(log)])
         self.assertEqual(code, 0)
-        self.assertEqual(out, "ok (set report_path)")       # no payload in stdout
+        self.assertEqual(out, "ok (set report_path)")
         variables = json.loads(Path(self.vars_path).read_text(encoding="utf-8"))
         self.assertEqual(variables["report_path"], str(result))
         self.assertIn('"status": "success"', log.read_text(encoding="utf-8"))
@@ -158,7 +155,7 @@ class TestPromptRecord(unittest.TestCase):
                                   "--vars", self.vars_path])
         self.assertEqual(code, 1)
         self.assertIn("error", out)
-        self.assertNotIn("connection refused", out)         # details stay in the file
+        self.assertNotIn("connection refused", out)
         self.assertNotIn("report_path", json.loads(Path(self.vars_path).read_text(encoding="utf-8")))
 
     def test_record_schema_violation(self):
@@ -169,8 +166,6 @@ class TestPromptRecord(unittest.TestCase):
         self.assertEqual(code, 1)
 
     def test_record_strips_mode_line(self):
-        # _common.md mandates a leading [Mode: x] line; it must not hide the
-        # ERROR: protocol nor leak into extracted values.
         result = self.dir / "s1_result.md"
         result.write_text("[Mode: execute]\nERROR: connection refused", encoding="utf-8")
         code, _ = self.run_cli(["record", self.xml, "s1", "--result", str(result),
@@ -184,12 +179,11 @@ class TestPromptRecord(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(Path(self.vars_path).read_text(encoding="utf-8"))["count"], 7)
 
-
     def test_viz_stdout_and_file(self):
         code, out = self.run_cli(["viz", self.xml])
         self.assertEqual(code, 0)
         self.assertTrue(out.startswith("flowchart TD"))
-        self.assertNotIn("Analyze", out)  # no task bodies in the diagram
+        self.assertNotIn("Analyze", out)
         mmd = self.dir / "wf.mmd"
         code, out = self.run_cli(["viz", self.xml, "--out", str(mmd)])
         self.assertEqual(code, 0)
@@ -200,7 +194,7 @@ class TestPromptRecord(unittest.TestCase):
         expected = self.dir / "made.txt"
         Path(self.vars_path).write_text(json.dumps({"expected": str(expected)}), encoding="utf-8")
         result = self.dir / "s3_result.md"
-        result.write_text("OK wrote it")  # compliant-looking, but no artifact
+        result.write_text("OK wrote it")
         code, out = self.run_cli(["record", self.xml, "s3", "--result", str(result),
                                   "--vars", self.vars_path])
         self.assertEqual(code, 1)
@@ -217,14 +211,11 @@ class TestPromptRecord(unittest.TestCase):
                                   "--vars", self.vars_path])
         self.assertEqual(code, 1)
         self.assertIn("blocked", out)
-        self.assertNotIn("generate-target-artifacts", out)  # details stay in file
+        self.assertNotIn("generate-target-artifacts", out)
         self.assertNotIn("report_path", json.loads(Path(self.vars_path).read_text(encoding="utf-8")))
 
 
 class TestRunLlmProtocol(unittest.TestCase):
-    """Phase 2.2 (reliability-spec.md §4): sentinel, handle.json, the
-    record decision table (§4.2), and poll (§4.3)."""
-
     XML = """
 <workflow name="t" version="2" max="10">
   <step id="s1" output="report_path"><role>W</role><task>write it</task></step>
@@ -263,8 +254,6 @@ class TestRunLlmProtocol(unittest.TestCase):
         self.assertEqual(code, 0)
         return prompt_file, result_file
 
-    # ---- prompt: handle.json / sentinel / stale-result deletion ----
-
     def test_prompt_writes_handle_json(self):
         prompt_file, result_file = self.dispatch(attempt=2)
         handle = json.loads((self.dir / "s1_handle.json").read_text(encoding="utf-8"))
@@ -300,8 +289,6 @@ class TestRunLlmProtocol(unittest.TestCase):
         self.assertNotIn("WFRUN-END", content)
 
     def test_prompt_role_less_replan_has_no_leading_blank_lines(self):
-        """An empty system channel must not leave stray blank lines at the
-        top of the combined prompt file (review-dev F2)."""
         prompt_file = str(self.dir / "r2_prompt.md")
         result_file = str(self.dir / "r2_result.md")
         code, _ = self.run_cli(
@@ -311,8 +298,6 @@ class TestRunLlmProtocol(unittest.TestCase):
         content = Path(prompt_file).read_text(encoding="utf-8")
         self.assertFalse(content.startswith("\n"))
         self.assertTrue(content.startswith("You are a continuation planner"))
-
-    # ---- record decision table (reliability-spec.md §4.2) ----
 
     def test_row1_missing_file_reply_claims_ok_is_error(self):
         self.dispatch()
@@ -329,8 +314,6 @@ class TestRunLlmProtocol(unittest.TestCase):
         self.assertEqual(out, "aborted: result file not found")
 
     def test_row2_legacy_missing_file_no_reply_is_also_aborted(self):
-        # No handle.json (no prompt --result ever ran): rows 1-2 are not
-        # handle-gated, only the sentinel check (row 3) is.
         code, out = self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                                   "--vars", self.vars_path])
         self.assertEqual(code, 3)
@@ -355,15 +338,15 @@ class TestRunLlmProtocol(unittest.TestCase):
         self.assertEqual(out, "error: claimed-ok-but-no-result")
 
     def test_row3_no_handle_sentinel_like_text_is_not_stripped(self):
-        # Legacy (no handle): sentinel checking is skipped entirely, so a
-        # line that merely looks like the marker is part of the output.
         self.result.write_text("real content\n[[WFRUN-END step=s1]]",
                                encoding="utf-8")
         code, out = self.run_cli(["record", self.xml, "s2", "--result", str(self.result),
                                   "--vars", self.vars_path])
         self.assertEqual(code, 0)
         value = json.loads(Path(self.vars_path).read_text(encoding="utf-8"))["count"]
-        self.assertIn("WFRUN-END", value)
+        self.assertIn("WFRUN-END", value,
+                      "with no handle the sentinel check is skipped "
+                      "entirely, so marker-looking text is ordinary output")
 
     def test_row4_empty_body_is_error(self):
         self.dispatch()
@@ -380,7 +363,7 @@ class TestRunLlmProtocol(unittest.TestCase):
                                   "--vars", self.vars_path])
         self.assertEqual(code, 1)
         self.assertIn("error", out)
-        self.assertNotIn("boom", out)  # details stay in the file
+        self.assertNotIn("boom", out)
 
     def test_row6_reply_claims_error_but_file_is_clean_is_mismatch(self):
         self.dispatch()
@@ -434,8 +417,6 @@ class TestRunLlmProtocol(unittest.TestCase):
                      "--vars", self.vars_path])
         self.assertFalse((self.dir / "s1_attempts.json").is_file())
 
-    # ---- poll (reliability-spec.md §4.3) ----
-
     def test_poll_done(self):
         self.dispatch()
         self.result.write_text("done\n[[WFRUN-END step=s1]]", encoding="utf-8")
@@ -472,16 +453,13 @@ class TestModeHelpers(unittest.TestCase):
         from wfrun.modes import strip_mode_line
         self.assertEqual(strip_mode_line("[Mode: execute]\npath.txt"), "path.txt")
         self.assertEqual(strip_mode_line("no mode line"), "no mode line")
-        # only one leading line is stripped; mid-text brackets stay intact
         self.assertEqual(strip_mode_line("body\n[Mode: x]\n"), "body\n[Mode: x]\n")
 
     def test_blocked_line(self):
         from wfrun.modes import blocked_line
         self.assertEqual(blocked_line("[BLOCKED: mode-rule x] reason\nrest"),
                          "[BLOCKED: mode-rule x] reason")
-        # tolerates a legacy leading [Mode:] line
         self.assertIsNotNone(blocked_line("[Mode: survey]\n[BLOCKED: rules r1] no"))
-        # first-line anchored: mid-text mentions do not trip it
         self.assertIsNone(blocked_line("report mentions [BLOCKED: x] token"))
         self.assertIsNone(blocked_line("ordinary output"))
 

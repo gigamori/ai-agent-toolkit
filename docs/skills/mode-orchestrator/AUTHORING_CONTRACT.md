@@ -16,10 +16,32 @@ Because both facets live in one skill and Pi loads it via a symlink into `~/.pi/
 
 A fresh `pi -p --mode json` capture is a recording of a real session on a real machine, so it carries that machine's absolute paths: the session record's `cwd`, and the `path` argument of every file-reading tool call. Those are machine-local absolute paths, which must not enter a tracked file — the rule lives in the machine-global instructions file (`git_universal` block), not in this repository, and its sanctioned substitute is a generic `/path/to/...`. So the re-carve instructed above has a scrub step, and it is not optional:
 
-- **Scrub by value substitution, keeping every key and nesting level.** The header's fidelity claim in `scripts/pi_reply_test.sh` is about the measured *shape* — which keys exist and how they nest — not about literal values, so replacing a value leaves it intact. The fixtures already carry two worked precedents: `"cwd": "/path/to/workspace"` on line 1 of all five, and `"path": "/path/to/agent/skills/mode-orchestrator/SKILL.md"` on line 2 of the four that have a tool call.
+- **Scrub by value substitution, keeping every key and nesting level.** The fidelity claim recorded in [`docs/dev/test-constraints.md`](../../dev/test-constraints.md) is about the measured *shape* — which keys exist and how they nest — not about literal values, so replacing a value leaves it intact. The fixtures already carry two worked precedents: `"cwd": "/path/to/workspace"` on line 1 of all five, and `"path": "/path/to/agent/skills/mode-orchestrator/SKILL.md"` on line 2 of the four that have a tool call.
 - **Scrub every line, not just the first.** Line 2 was missed the first time round and shipped the capturing user's real home directory for months, while line 1 was already clean — a scrub that stops at the session record looks finished and is not.
 - **Do the substitution in an editor or a script, never in a shell one-liner.** Inside the JSON the separators are backslash-doubled, and a quoting layer collapses `\\` to `\` silently, so a `sed`/`grep` pass can search for the wrong string and report the fixtures clean when they are not (measured 2026-08-23).
 - **Verify with the repo-wide lint, not by eye.** `uv run --no-project python tests/test_tracked_path_hygiene.py` from the checkout root reads every tracked file in Python and flags any path naming this machine. Eyeballing does not work here: each leak sits inside a single multi-kilobyte JSON line.
+
+## Test knowledge gate
+
+`scripts/watchdog_test.sh`, `scripts/deny_scan_test.sh` and `scripts/pi_reply_test.sh` carry
+no comments — they are read by agents that hold only this checkout, and prose no run ever
+prints reads to them as fact. The two rules, the directive allowlist and the migration
+record live in [`docs/dev/test-gate.md`](../../dev/test-gate.md); do not restate them here.
+
+What an editor of this skill has to do:
+
+- Run `uv run --no-project python tests/lint_test_knowledge.py` from the checkout root
+  before the suites. Exit 2 means it scanned nothing, which is a coverage failure and not a
+  clean tree.
+- A fact about the world outside this repository — the shape of a captured pi stream, how
+  Claude Code serializes a permission denial — goes to
+  [`docs/dev/test-constraints.md`](../../dev/test-constraints.md) with the date it was
+  observed, never into the suite. That document is its only home.
+- What a case asserts belongs in the name it is registered under (`expect "…"`,
+  `check "…"`), which the run prints; the watchdog suite's threshold cases are the worked
+  example.
+- `deny_scan.sh`, `watchdog.sh` and `pi_reply.js` are runtime scripts, not test files, and
+  the gate does not read them.
 
 ## Relationship to xml-wf
 

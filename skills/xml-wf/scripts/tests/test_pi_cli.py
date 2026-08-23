@@ -1,9 +1,3 @@
-"""Tests for wfrun ask's Pi backend (pi_cli.py; mode-orchestrator-runs/
-phase5-item1-cc-inventory-design.md) and for run-pi (pi_cli.py;
-mode-orchestrator-runs/phase6-run-pi-design.md).
-
-subprocess.run and shutil.which are monkeypatched; no real pi CLI is invoked
--- same pattern as test_claude_cli.py."""
 import json
 import os
 import subprocess
@@ -55,14 +49,14 @@ class ResolvePiLauncherTests(unittest.TestCase):
                              [r"C:\nodejs\node.exe", entry])
 
     def test_shim_without_resolvable_entry_fails_closed(self):
-        # Refusing beats launching through the shim: it silently truncates a
-        # multi-line prompt at the first newline (measured).
         def fake_which(name):
             return {"pi": r"C:\npm\pi.CMD", "node": r"C:\nodejs\node.exe"}.get(name)
 
         with mock.patch.object(pi_cli.shutil, "which", side_effect=fake_which), \
              mock.patch.object(pi_cli.os.path, "isfile", return_value=False):
-            self.assertIsNone(pi_cli.resolve_pi_launcher())
+            self.assertIsNone(
+                pi_cli.resolve_pi_launcher(),
+                "refusing beats launching through the .CMD shim")
 
     def test_shim_without_node_fails_closed(self):
         def fake_which(name):
@@ -104,8 +98,6 @@ class AskLlmPiTests(unittest.TestCase):
         self.assertEqual(cost, 0.0)
 
     def test_success_path_json_wrapped_in_code_fence(self):
-        # This is the shape the model actually returns (measured), not a
-        # hypothetical -- the brace-extraction pass is load bearing.
         stdout = '```json\n{"answer": false, "reason": "nope"}\n```\n'
         with mock.patch.object(pi_cli.subprocess, "run",
                                return_value=_fake_completed(0, stdout)):
@@ -114,9 +106,6 @@ class AskLlmPiTests(unittest.TestCase):
         self.assertEqual(reason, "nope")
 
     def test_prompt_is_a_positional_argument_not_an_at_file(self):
-        # `@file` attaches the file as content to reason about, not as the
-        # turn's instruction -- a probe using it got a prompt-injection
-        # refusal. The prompt must ride on argv.
         captured = {}
 
         def capture(cmd, **kwargs):
@@ -166,7 +155,6 @@ class AskLlmPiTests(unittest.TestCase):
         self.assertIsNone(answer)
 
     def test_stdin_is_closed(self):
-        # An open stdin pipe makes `pi -p` block forever before dispatch.
         captured = {}
 
         def capture(cmd, **kwargs):
@@ -175,11 +163,11 @@ class AskLlmPiTests(unittest.TestCase):
 
         with mock.patch.object(pi_cli.subprocess, "run", side_effect=capture):
             pi_cli.ask_llm_pi("q?")
-        self.assertEqual(captured["stdin"], subprocess.DEVNULL)
+        self.assertEqual(captured["stdin"], subprocess.DEVNULL,
+                         "pi must be launched with stdin closed")
 
 
 def _turn_end(**message) -> str:
-    """One JSONL line: a turn_end event wrapping the given message fields."""
     return json.dumps({"type": "turn_end", "message": message})
 
 
@@ -188,8 +176,6 @@ def _jsonl(*lines: str) -> str:
 
 
 class ConvertToolsTests(unittest.TestCase):
-    """_convert_tools(): TOOL_NAME_MAP (design phase6-run-pi-design.md §4.2)."""
-
     def test_glob_converts_to_find(self):
         converted, error, warnings = pi_cli._convert_tools("Glob")
         self.assertIsNone(error)
@@ -221,10 +207,6 @@ class ConvertToolsTests(unittest.TestCase):
         self.assertEqual(warnings, [])
 
     def test_specifier_is_stripped_to_bare_tool_name(self):
-        # design phase6 review point 3, 2026-07-30: pi has no per-command
-        # tool matching, so a CC-style argument specifier is widened to the
-        # whole tool rather than rejected (rejecting would lose access to a
-        # tool the workflow genuinely needs, e.g. git).
         converted, error, warnings = pi_cli._convert_tools("Bash(git:*)")
         self.assertIsNone(error)
         self.assertEqual(converted, "bash")
@@ -258,15 +240,6 @@ class ConvertToolsTests(unittest.TestCase):
 
 
 class PiToolWideningNotesTests(unittest.TestCase):
-    """pi_tool_widening_notes(): preflight surfacing of _convert_tools()'s
-    specifier-widening warnings (design phase6 review point 3, 2026-07-30).
-
-    Workflows are built through parser.parse_string(), same convention as
-    test_executor.py's wrap(), rather than hand-constructed model.Workflow/
-    model.Step dataclasses -- Workflow has no steps= kwarg (it holds a Seq
-    body; iter_steps() walks that tree), so going through the real parser
-    is both simpler and avoids drifting from the actual field layout."""
-
     def wrap(self, inner):
         return f'<workflow name="t" version="2" max="20">{inner}</workflow>'
 
@@ -304,10 +277,6 @@ class PiToolWideningNotesTests(unittest.TestCase):
 
 
 class SumUsageTests(unittest.TestCase):
-    """_sum_usage(): per-turn_end usage is incremental, not cumulative
-    (design phase6 review point 5, 2026-07-30) -- summed here rather than
-    read from the terminal turn_end alone."""
-
     def _te(self, usage):
         return {"message": {"usage": usage}}
 
@@ -350,8 +319,6 @@ class SumUsageTests(unittest.TestCase):
 
 
 class ClassifyResultPiTests(unittest.TestCase):
-    """classify_result_pi(): the full classification table (design §4.1)."""
-
     def test_missing_turn_end_is_behavioral(self):
         stdout = _jsonl(json.dumps({"type": "session"}),
                         json.dumps({"type": "agent_start"}))
@@ -361,11 +328,6 @@ class ClassifyResultPiTests(unittest.TestCase):
         self.assertEqual(res.raw["last_event_type"], "agent_start")
 
     def test_terminal_turn_end_wins_over_tool_round_trips(self):
-        # Measured 2026-07-30: a tool-using step emits one turn_end per agent
-        # loop iteration. The intermediate ones carry stopReason=toolUse and
-        # an empty content list; only the last carries the reply. Reading the
-        # first turn_end classified every tool-using step as `empty result` --
-        # the real E2E failure this test locks down.
         stdout = _jsonl(
             json.dumps({"type": "session"}),
             _turn_end(role="assistant", content=[], stopReason="toolUse"),
@@ -376,12 +338,11 @@ class ClassifyResultPiTests(unittest.TestCase):
             json.dumps({"type": "agent_settled"}))
         res = pi_cli.classify_result_pi(0, stdout, "")
         self.assertTrue(res.ok, res.error)
-        self.assertEqual(res.text, "output/poem.txt")
+        self.assertEqual(res.text, "output/poem.txt",
+                         "the reply is the terminal turn_end's text, never "
+                         "the first one's")
 
     def test_stream_cut_off_mid_tool_use_is_not_empty_result(self):
-        # Last turn_end still toolUse => the loop never finished. Same empty
-        # body as a genuine empty answer, but a different cause, so it must
-        # not be reported as "empty result".
         stdout = _jsonl(
             _turn_end(role="assistant", content=[], stopReason="toolUse"),
             json.dumps({"type": "tool_execution_update"}))
@@ -389,7 +350,9 @@ class ClassifyResultPiTests(unittest.TestCase):
         self.assertFalse(res.ok)
         self.assertEqual(res.error_class, "behavioral")
         self.assertIn("mid-tool-use", res.error)
-        self.assertNotIn("empty result", res.error)
+        self.assertNotIn("empty result", res.error,
+                         "an unfinished tool loop has the same empty body as "
+                         "a genuine empty answer but a different cause")
 
     def test_no_events_at_all_is_behavioral(self):
         res = pi_cli.classify_result_pi(0, "", "")
@@ -450,10 +413,6 @@ class ClassifyResultPiTests(unittest.TestCase):
         self.assertEqual(res.cost_usd, 0.00123875)
 
     def test_usage_summed_across_tool_round_trips(self):
-        # design phase6 review point 5, 2026-07-30 (real values from a
-        # captured tool-using step, tooluse.jsonl): turn_end usage is
-        # per-iteration, not a running total, so the terminal turn_end alone
-        # under-reports whenever a step uses tools.
         stdout = _jsonl(
             _turn_end(role="assistant", content=[], stopReason="toolUse",
                       usage={"input": 2247, "output": 189, "cacheRead": 0,
@@ -469,8 +428,10 @@ class ClassifyResultPiTests(unittest.TestCase):
                                     "cacheWrite": 0, "total": 0}}))
         res = pi_cli.classify_result_pi(0, stdout, "")
         self.assertTrue(res.ok)
-        self.assertEqual(res.text, "done")  # reply still from the terminal turn_end only
-        self.assertEqual(res.raw["usage"]["input"], 2247 + 2438)
+        self.assertEqual(res.text, "done")
+        self.assertEqual(res.raw["usage"]["input"], 2247 + 2438,
+                         "usage is summed across turn_ends; the terminal one "
+                         "alone under-reports a tool-using step")
         self.assertEqual(res.raw["usage"]["output"], 189 + 160)
         self.assertEqual(res.raw["usage"]["totalTokens"], 2436 + 2598)
 
@@ -506,9 +467,6 @@ class ClassifyResultPiTests(unittest.TestCase):
                 model="pi-claude-agent-sdk/sonnet", provider="anthropic"))
         res = pi_cli.classify_result_pi(0, stdout, "")
         self.assertTrue(res.ok)
-        # usage is the summed shape (_sum_usage, review point 5) -- every
-        # field present at 0 even though the fixture's usage={"cost": {...}}
-        # only specified "cost".
         self.assertEqual(
             res.raw,
             {"content": [{"type": "text", "text": "answer"}],
@@ -518,7 +476,6 @@ class ClassifyResultPiTests(unittest.TestCase):
                       "cost": {"input": 0, "output": 0, "cacheRead": 0,
                               "cacheWrite": 0, "total": 0.0}},
              "model": "pi-claude-agent-sdk/sonnet", "provider": "anthropic"})
-        # the full JSONL (message_start line, thinking block) is not in raw
         self.assertNotIn("message_start", json.dumps(res.raw))
         self.assertNotIn("pondering", json.dumps(res.raw))
 
@@ -531,8 +488,6 @@ class ClassifyResultPiTests(unittest.TestCase):
 
 
 class RunPiTests(unittest.TestCase):
-    """run_pi(): design phase6-run-pi-design.md §4."""
-
     def setUp(self):
         pi_cli._resolution_cache.clear()
         self.which_patch = mock.patch.object(
@@ -549,11 +504,6 @@ class RunPiTests(unittest.TestCase):
         return _fake_completed(0, stdout)
 
     def _patch_tree_kill(self, capture):
-        """run_pi's own subprocess execution always goes through
-        claude_cli._run_with_tree_kill (unconditionally -- see run_pi's
-        docstring on why `kill_tree` is not honored as an off switch for
-        this backend). `capture` has _run_with_tree_kill's own signature:
-        (cmd, prompt, timeout, cwd)."""
         return mock.patch.object(pi_cli.claude_cli, "_run_with_tree_kill",
                                  side_effect=capture)
 
@@ -599,7 +549,9 @@ class RunPiTests(unittest.TestCase):
             pi_cli.run_pi("task", effort="xhigh")
         cmd = captured["cmd"]
         idx = cmd.index("--thinking")
-        self.assertEqual(cmd[idx + 1], "xhigh")  # forwarded verbatim, no mapping
+        self.assertEqual(cmd[idx + 1], "xhigh",
+                         "effort is forwarded verbatim; this backend has no "
+                         "mapping table")
 
     def test_tools_converted_to_pi_names_in_argv(self):
         captured = {}
@@ -630,7 +582,7 @@ class RunPiTests(unittest.TestCase):
             return self._ok_completed()
 
         with self._patch_tree_kill(capture):
-            pi_cli.run_pi("task")  # tools=None: unrestricted, same as run_claude
+            pi_cli.run_pi("task")
         self.assertNotIn("--tools", captured["cmd"])
 
     def test_prompt_is_positional_not_at_file(self):
@@ -674,17 +626,9 @@ class RunPiTests(unittest.TestCase):
             pi_cli.run_pi("task", system_prompt="<role>x</role>")
         self.assertEqual(written["text"], "<role>x</role>")
         self.assertTrue(written["existed_during_call"])
-        self.assertFalse(os.path.isfile(written["path"]))  # cleaned up after
+        self.assertFalse(os.path.isfile(written["path"]))
 
     def test_stdin_never_left_open_even_with_kill_tree_defaulted_false(self):
-        # Regression lock for the orphan-process fix (design phase6 review
-        # point 1, 2026-07-30): a real E2E without this fix left a Bash-tool-
-        # spawned `sleep 120` alive after node.exe/pi had already been reaped
-        # by a plain subprocess.run(timeout=). Tree-kill is now unconditional
-        # in run_pi regardless of the kill_tree argument -- this call omits
-        # it (default False) and must still go through _run_with_tree_kill,
-        # whose Popen+communicate(input="") immediately closes stdin (EOF)
-        # rather than leaving a pipe open and unclosed.
         captured = {}
 
         def capture(cmd, prompt, timeout, cwd):
@@ -698,9 +642,6 @@ class RunPiTests(unittest.TestCase):
         self.assertTrue(res.ok)
 
     def test_timeout_is_classified(self):
-        # _run_with_tree_kill itself re-raises TimeoutExpired after tree-
-        # killing (claude_cli.py) -- run_pi's except clause must still catch
-        # it there, now that plain subprocess.run is no longer in this path.
         with self._patch_tree_kill(subprocess.TimeoutExpired(cmd="pi", timeout=5)):
             res = pi_cli.run_pi("task", timeout=5)
         self.assertFalse(res.ok)
@@ -720,7 +661,6 @@ class RunPiTests(unittest.TestCase):
             res = pi_cli.run_pi("task", kill_tree=True)
         plain_run.assert_not_called()
         self.assertTrue(res.ok)
-        # the real prompt already rides on argv; nothing is fed over stdin
         self.assertEqual(captured["prompt"], "")
         self.assertIn("task", captured["cmd"])
 
@@ -732,9 +672,6 @@ class RunPiTests(unittest.TestCase):
 
 
 class DiagnoseStubPiTests(unittest.TestCase):
-    """diagnose_stub_pi(): the second line of defense behind the startup
-    fail-fast (design §1, §2.3) -- verifies it fails loudly if ever reached."""
-
     def test_raises_workflow_failure(self):
         with self.assertRaises(WorkflowFailure):
             pi_cli.diagnose_stub_pi(step=None, prompt="p", failure=None, cwd=None)
@@ -745,8 +682,6 @@ class DiagnoseStubPiTests(unittest.TestCase):
 
 
 class PiCompatErrorsTests(unittest.TestCase):
-    """pi_compat_errors(): startup fail-fast (design §2.2, §2.3)."""
-
     def _wf(self, body: str):
         xml = f'<workflow name="t" version="2" max="10">{body}</workflow>'
         return parser.parse_string(xml)
@@ -787,19 +722,17 @@ class PiCompatErrorsTests(unittest.TestCase):
             "         should continue and the failure needs recording instead of fixing\n"
             "       See references/run-pi.md, \"Replacing on-error=debug\".")
         self.assertEqual(errors[0], expected)
-        # the three replacement hints, explicitly
         self.assertIn('on-error="fail"', errors[0])
         self.assertIn("retry=N", errors[0])
         self.assertIn('on-error="ignore"', errors[0])
 
     def test_replan_on_error_debug_is_not_flagged(self):
-        # <replan> cannot carry schema= at all (parser.py's _REPLAN_ATTRS
-        # excludes it), and its on-error="debug" is already inert under
-        # every backend (_exec_replan never calls self._diagnose) -- not a
-        # pi-specific gap this check needs to close.
         wf = self._wf(
             '<replan id="r1" on-error="debug"><role>W</role><task>x</task></replan>')
-        self.assertEqual(pi_cli.pi_compat_errors(wf), [])
+        self.assertEqual(
+            pi_cli.pi_compat_errors(wf), [],
+            "a <replan> cannot carry schema= at all, and its on-error is "
+            "already inert on every backend")
 
     def test_multiple_violations_combine_in_step_order(self):
         wf = self._wf(

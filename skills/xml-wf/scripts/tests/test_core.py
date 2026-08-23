@@ -1,7 +1,3 @@
-"""Unit tests for the claude-independent core: parser, interp, lint.
-
-Run: python -m unittest discover -s tests -v
-"""
 import sys
 import unittest
 from pathlib import Path
@@ -69,16 +65,15 @@ class TestParser(unittest.TestCase):
 
     def test_step_requires_id_and_task(self):
         for bad in (
-            '<step role="w"><task>x</task></step>',            # no id
-            '<step id="a" role="w"/>',                         # no task
-            '<step id="a" role="w"><role>r</role><task>x</task></step>',  # both forms
-            '<step id="a"><role>  </role><task>x</task></step>',          # empty inline
+            '<step role="w"><task>x</task></step>',
+            '<step id="a" role="w"/>',
+            '<step id="a" role="w"><role>r</role><task>x</task></step>',
+            '<step id="a"><role>  </role><task>x</task></step>',
         ):
             with self.assertRaises(parser.ParseError, msg=bad):
                 self.parse(f'<workflow name="t" version="2" max="1">{bad}</workflow>')
 
     def test_step_role_is_optional(self):
-        """Neither role= nor an inline <role> — a role-less step is valid."""
         wf = self.parse('<workflow name="t" version="2" max="1">'
                         '<step id="a" mode="execute"><task>x</task></step></workflow>')
         step = next(iter(wf.iter_steps()))
@@ -87,8 +82,6 @@ class TestParser(unittest.TestCase):
         self.assertIsNone(model.role_label(step))
 
     def test_step_empty_role_attr_is_role_less(self):
-        """role="" is an explicit role-less declaration, not a parse error —
-        equivalent to omitting role= entirely (spec.md, "Role is optional")."""
         wf = self.parse('<workflow name="t" version="2" max="1">'
                         '<step id="a" role="" mode="execute"><task>x</task></step>'
                         '</workflow>')
@@ -194,10 +187,8 @@ class TestModelMap(unittest.TestCase):
                 encoding="utf-8")
             self.assertEqual(modelmap.resolve("opus", "cc", path), "big-local")
             self.assertEqual(modelmap.resolve("opus", "llm", path), "gpt-5-high")
-            # unmapped names and None pass through
             self.assertEqual(modelmap.resolve("sonnet", "cc", path), "sonnet")
             self.assertIsNone(modelmap.resolve(None, "cc", path))
-            # missing file = identity; broken file = loud error
             self.assertEqual(
                 modelmap.resolve("opus", "cc", Path(d) / "absent.json"), "opus")
             path.write_text("{broken", encoding="utf-8")
@@ -241,16 +232,14 @@ class TestViz(unittest.TestCase):
         out = viz.mermaid(wf)
         self.assertTrue(out.startswith("flowchart TD"))
         for token in ("<b>s1</b>", "mode=survey", "model=haiku",
-                      "expect: out.csv",           # step facts
-                      "|yes|", "|no|",             # if branches
-                      "while", "|done|",           # while + loop exit
-                      "subgraph", "max-workers",   # parallel
-                      "each i in range 2",         # each
+                      "expect: out.csv",
+                      "|yes|", "|no|",
+                      "while", "|done|",
+                      "subgraph", "max-workers",
+                      "each i in range 2",
                       "<b>replan r1</b>", "stroke-dasharray"):
             self.assertIn(token, out, token)
-        # control-plane only: task bodies never leak into the diagram
         self.assertNotIn("SECRET-TASK-TEXT", out)
-        # deterministic: same model -> identical text
         self.assertEqual(out, viz.mermaid(parser.parse_string(self.XML)))
 
     def test_empty_workflow_connects_start_end(self):
@@ -314,7 +303,9 @@ class TestLint(unittest.TestCase):
             </parallel>'''))
         codes = self.codes(findings, "error")
         self.assertIn("parallel-output-conflict", codes)
-        self.assertIn("var-undefined", codes)  # {o} not visible inside parallel
+        self.assertIn("var-undefined", codes,
+                      "a sibling's output is not visible inside the same "
+                      "<parallel>")
 
     def test_each_loop_var_scoped(self):
         findings = self.lint(self.wrap('''
@@ -341,7 +332,6 @@ class TestLint(unittest.TestCase):
 
     def test_replan_requires_task(self):
         for bad in ('<replan id="r1" role="b"/>',
-                    # mode= is deliberately not a <replan> attribute
                     '<replan id="r1" role="b" mode="plan"><task>t</task></replan>'):
             with self.assertRaises(parser.ParseError, msg=bad):
                 parser.parse_string(self.wrap(bad))
@@ -367,12 +357,13 @@ class TestLint(unittest.TestCase):
             self.assertEqual(self.codes(findings, "error"), [], msg=mode)
 
     def test_interactive_modes_rejected(self):
-        # ask/brainstorm/discuss/organize need a live human exchange and are
-        # not bundled; a batch step must not reference them.
         for mode in ("ask", "brainstorm", "discuss", "organize"):
             findings = self.lint(self.wrap(
                 f'<step id="s1" role="w" mode="{mode}"><task>x</task></step>'))
-            self.assertIn("mode-unknown", self.codes(findings, "error"), msg=mode)
+            self.assertIn(
+                "mode-unknown", self.codes(findings, "error"),
+                msg=f"{mode} needs a live human exchange and is not bundled, "
+                    "so a batch step may not reference it")
 
     def test_expect_file_parsed_and_var_checked(self):
         wf = parser.parse_string(self.wrap(
@@ -388,23 +379,19 @@ class TestLint(unittest.TestCase):
         self.assertIn("var-undefined", self.codes(findings, "error"))
 
     def test_expect_file_cannot_use_own_output(self):
-        # the check runs before the output variable is committed
         findings = self.lint(self.wrap(
             '<step id="s1" role="w" output="p" expect-file="{p}">'
             '<task>t</task></step>'))
-        self.assertIn("var-undefined", self.codes(findings, "error"))
+        self.assertIn("var-undefined", self.codes(findings, "error"),
+                      "the expect-file check runs before the step's own "
+                      "output variable is committed")
 
-    # Model names are a pi-only concern: on cc the canonical vocabulary is all
-    # a workflow may use and model_map binds it to claude CLI names, so there
-    # is no catalog for a name to be missing from and nothing is checked.
     CATALOG = [("google", "gemini-3.5-flash"), ("pi-claude-agent-sdk", "opus[1m]"),
                ("pi-claude-agent-sdk", "sonnet"), ("openai-codex", "gpt-5.6-luna")]
 
     _DEFAULT = object()
 
     def lint_pi(self, text, catalog=_DEFAULT):
-        """Lint as the pi backend with a stubbed catalog — never launches pi.
-        Pass catalog=None for "the catalog could not be read"."""
         from wfrun import pi_cli
         wf = parser.parse_string(text)
         rows = self.CATALOG if catalog is self._DEFAULT else catalog
@@ -424,7 +411,6 @@ class TestLint(unittest.TestCase):
         warns = [f for f in findings if f.code == "model-not-canonical"]
         self.assertEqual(len(warns), 1)
         self.assertIn("s1", warns[0].message)
-        # ...and it is only a vocabulary nudge: the name does resolve on pi.
         self.assertNotIn("pi-model-unavailable", self.codes(findings))
 
     def test_pi_model_unavailable_is_an_error(self):
@@ -435,12 +421,11 @@ class TestLint(unittest.TestCase):
         self.assertIn("gemni-3.5-flash", errs[0].message)
 
     def test_pi_model_substring_match_resolves(self):
-        # pi's tryMatchModel falls back to substring on id, so the canonical
-        # `opus` reaches `opus[1m]`. An exact-equality check would reject the
-        # default adjudicator on every pi workflow.
         findings = self.lint_pi(self.wrap(
             '<step id="s1" role="w" decider="llm"><task>x</task></step>'))
-        self.assertNotIn("pi-model-unavailable", self.codes(findings))
+        self.assertNotIn("pi-model-unavailable", self.codes(findings),
+                         "an exact-equality check against the catalog would "
+                         "reject the default adjudicator on every pi workflow")
 
     def test_pi_decider_model_checked_only_when_llm_decides(self):
         bad = '<step id="s1" role="w" decider="llm" decider-model="nope-9"><task>x</task></step>'
@@ -468,8 +453,6 @@ class TestLint(unittest.TestCase):
         self.assertIn("s1", warns[0].message)
 
     def test_tools_not_inherited_warns(self):
-        """Fires whenever no named role can supply tools and tools= is unset —
-        for an inline role (s1) and for a role-less step (s3) alike."""
         findings = self.lint(self.wrap(
             '<step id="s1"><role>persona</role><task>x</task></step>'
             '<step id="s2" tools="Read"><role>persona</role><task>y</task></step>'
@@ -481,7 +464,6 @@ class TestLint(unittest.TestCase):
         self.assertTrue(any("s3" in m for m in warns))
 
     def test_role_less_step_is_clean(self):
-        """A role-less step raises no error — only the tools= warning."""
         findings = self.lint(self.wrap(
             '<step id="s1" mode="survey" tools="Read"><task>x</task></step>'))
         self.assertEqual(self.codes(findings, "error"), [])

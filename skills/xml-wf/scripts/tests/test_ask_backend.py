@@ -1,9 +1,3 @@
-"""Tests for `wfrun ask --backend` selection (mode-orchestrator-runs/
-phase5-item1-cc-inventory-design.md §2.3): env-based `auto` detection,
-mismatch warnings, and modelmap table routing.
-
-claude_cli.ask_llm / pi_cli.ask_llm_pi are monkeypatched; no real CLI is
-invoked."""
 import io
 import json
 import sys
@@ -92,7 +86,7 @@ class CmdAskBackendRoutingTests(unittest.TestCase):
 
     def test_explicit_backend_mismatch_warns_but_still_runs(self):
         import os
-        os.environ["CLAUDE_CODE_SESSION_ID"] = "abc"  # environment looks like cc
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "abc"
         with mock.patch.object(pi_cli, "ask_llm_pi",
                                return_value=(True, "yes", 0.0)) as ask_llm_pi:
             code, out, err = run_cli(["ask", "q?", "--backend", "pi"])

@@ -136,13 +136,19 @@ ai-agent-toolkit/
 │   ├── render-report/          スキル: 契約準拠レポート Markdown を pptx/docx/xlsx に変換
 │   └── xml-wf/                 スキル: 決定論的 XML v2 ワークフローランナー (wfrun)
 ├── docs/
-│   └── skills/                非 runtime のスキル文書 (ユーザガイド・authoring contract)
-│       ├── index.md           以下のスキル文書ディレクトリのインデックス
-│       ├── xml-wf/            xml-wf リファレンス README + ユーザガイド (EN/JA)
-│       ├── register-pi-tools/ register-pi-tools ユーザガイド (EN/JA)
-│       ├── mode-orchestrator/ mode-orchestrator ユーザガイド (EN/JA) + workflow spec 執筆ガイド
-│       └── compact-document/  compact-document authoring contract
+│   ├── skills/                非 runtime のスキル文書 (ユーザガイド・authoring contract)
+│   │   ├── index.md           以下のスキル文書ディレクトリのインデックス
+│   │   ├── xml-wf/            xml-wf リファレンス README + ユーザガイド (EN/JA)
+│   │   ├── register-pi-tools/ register-pi-tools ユーザガイド (EN/JA)
+│   │   ├── mode-orchestrator/ mode-orchestrator ユーザガイド (EN/JA) + workflow spec 執筆ガイド
+│   │   └── compact-document/  compact-document authoring contract
+│   └── dev/                   リポジトリ全体の開発者向け文書 (単一スキルに属さないもの)
+│       ├── index.md           以下の開発者向け文書のインデックス
+│       ├── test-gate.md       skills/ に対するテスト知識ゲートと移行記録
+│       └── test-constraints.md skills/ のテストが依存する外界の事実
 ├── tests/                     どの plugin / skill にも属さないリポジトリ全体のチェック
+│   ├── lint_test_knowledge.py テスト前ゲート: コメント/docstring 禁止・到達不能参照禁止
+│   └── .knowledge-allowlist   ゲート導入時に凍結した違反リスト
 ├── LICENSE
 ├── README.md
 └── README_ja.md

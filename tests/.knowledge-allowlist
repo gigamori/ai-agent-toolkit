@@ -1,0 +1,12 @@
+# Frozen when the gate was introduced (2026-08-24). Every entry is a test file
+# outside the ai-workflow project's two skills; each is cleared by migrating
+# that file, not by editing this list. Migration is done when this file is
+# deleted -- see docs/dev/test-gate.md.
+skills/.private/generate-sibling-handoff/scripts/tests/test_drift_check.py
+skills/.private/rm-cc-session/scripts/rm-cc-session_test.sh
+skills/compact-cc-log/scripts/tests/test_transcript.py
+skills/compact-cc-log/scripts/tests/test_views_contract.py
+skills/inspect-cc-log/scripts/tests/test_config_dir.py
+skills/inspect-pi-log/scripts/tests/test_session_dirs.py
+skills/register-pi-tools/scripts/tests/test_output_path.py
+skills/revert/scripts/tests/test_config_dir.py

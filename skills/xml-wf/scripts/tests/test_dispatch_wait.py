@@ -1,10 +1,3 @@
-"""Tests for the A-layer (reliability-spec.md §5): dispatch / _wrapper /
-wait, and the kill_tree plumbing in claude_cli.
-
-subprocess.Popen (for the detached wrapper launch) and claude_cli._launch
-(for the actual claude -p call) are monkeypatched throughout; no real
-process is spawned here (that is covered separately by a real-CLI E2E, run
-manually in an isolated worktree per reliability-spec.md §5.3)."""
 import io
 import json
 import sys
@@ -76,8 +69,6 @@ class DispatchWaitTestCase(unittest.TestCase):
         }
 
     def seed_cycle(self, attempts, step_id="s1", cycle=1):
-        """Make a prior cycle exist: dispatch keys cycle detection off the
-        handle file, and reads the ledger from the matching attempts file."""
         p = self.paths(step_id, cycle)
         p["handle"].parent.mkdir(parents=True, exist_ok=True)
         p["handle"].write_text(json.dumps({"cycle": cycle}), encoding="utf-8")
@@ -108,7 +99,7 @@ class DispatchTests(DispatchWaitTestCase):
         self.assertEqual(handle["wrapper_pid"], 4242)
         self.assertEqual(handle["attempt"], 1)
         self.assertEqual(handle["step_id"], "s1")
-        self.assertEqual(handle["timeout"], 600)  # model.DEFAULT_TIMEOUT
+        self.assertEqual(handle["timeout"], 600)
         self.assertIn("run_dir", handle)
         self.assertIsInstance(handle["started_at"], (int, float))
 
@@ -117,7 +108,7 @@ class DispatchTests(DispatchWaitTestCase):
         self.assertEqual(code, 0, err)
         wrapper_argv = popen.call_args[0][0]
         self.assertIn("_wrapper", wrapper_argv)
-        self.assertIn("--tools", wrapper_argv)  # coder-role tools, if any resolved
+        self.assertIn("--tools", wrapper_argv)
 
     def test_dispatch_rejects_replan(self):
         code, out, err, popen = self.dispatch(step_id="r1")
@@ -135,7 +126,7 @@ class DispatchTests(DispatchWaitTestCase):
         self.assertFalse(p["result"].is_file())
 
     def test_dispatch_cap_exceeded_refuses_without_launching(self):
-        self.write_xml(retry="0")  # cap = 0+1+1+1 = 3
+        self.write_xml(retry="0")
         self.seed_cycle([
             {"seq": 1, "class": "timeout", "ended_at": 1},
             {"seq": 2, "class": "timeout", "ended_at": 2},
@@ -147,18 +138,14 @@ class DispatchTests(DispatchWaitTestCase):
         popen.assert_not_called()
 
     def test_dispatch_under_cap_proceeds(self):
-        self.write_xml(retry="1")  # cap = 1+1+1+1 = 4
+        self.write_xml(retry="1")
         self.seed_cycle([{"seq": 1, "class": "timeout", "ended_at": 1}])
         code, out, err, popen = self.dispatch()
         self.assertEqual(code, 0, err)
         popen.assert_called_once()
 
-    # ---- cycles: <while>/<each> re-visits vs retries ----
-
     def test_new_cycle_after_success_is_automatic(self):
-        # A loop body step that succeeded, then comes round again: the
-        # previous cycle's full ledger must not block it.
-        self.write_xml(retry="0")  # cap = 3, and the prior cycle used all 3
+        self.write_xml(retry="0")
         self.seed_cycle([
             {"seq": 1, "class": "timeout", "ended_at": 1},
             {"seq": 2, "class": "timeout", "ended_at": 2},
@@ -168,29 +155,26 @@ class DispatchTests(DispatchWaitTestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("cycle=2", out)
         popen.assert_called_once()
-        # cycle 2 gets its own files; cycle 1's are untouched
         self.assertTrue(self.paths(cycle=2)["handle"].is_file())
 
     def test_retry_after_failure_stays_in_same_cycle(self):
-        self.write_xml(retry="1")  # cap = 4
+        self.write_xml(retry="1")
         self.seed_cycle([{"seq": 1, "class": "timeout", "ended_at": 1}])
         code, out, err, popen = self.dispatch()
         self.assertEqual(code, 0, err)
-        self.assertIn("cycle=1", out)   # not a new iteration
-        self.assertIn("seq=2", out)     # continues the ledger
+        self.assertIn("cycle=1", out)
+        self.assertIn("seq=2", out)
 
     def test_new_cycle_flag_forces_fresh_budget_after_failure(self):
-        # on-error="ignore" inside a loop: the outcome was a failure, so the
-        # ledger cannot infer acceptance -- the flag says so explicitly.
-        self.write_xml(retry="0")  # cap = 3, exhausted below
+        self.write_xml(retry="0")
         self.seed_cycle([
             {"seq": 1, "class": "timeout", "ended_at": 1},
             {"seq": 2, "class": "timeout", "ended_at": 2},
             {"seq": 3, "class": "behavioral", "ended_at": 3},
         ])
         blocked, _, err, _ = self.dispatch()
-        self.assertEqual(blocked, 1)          # without the flag: capped
-        self.assertIn("--new-cycle", err)     # and told how to proceed
+        self.assertEqual(blocked, 1)
+        self.assertIn("--new-cycle", err)
         code, out, err, popen = self.dispatch(extra=["--new-cycle"])
         self.assertEqual(code, 0, err)
         self.assertIn("cycle=2", out)
@@ -210,15 +194,12 @@ class DispatchTests(DispatchWaitTestCase):
                          "ITERATION-1-PROMPT")
 
     def test_cycle_detected_even_when_wrapper_never_wrote_attempts(self):
-        # A wrapper that died leaves a handle but no attempts file; that
-        # cycle must still be visible (otherwise the ledger silently
-        # restarts and the cap stops bounding anything).
         p = self.paths(cycle=1)
         p["handle"].parent.mkdir(parents=True, exist_ok=True)
         p["handle"].write_text(json.dumps({"cycle": 1}), encoding="utf-8")
         code, out, err, popen = self.dispatch()
         self.assertEqual(code, 0, err)
-        self.assertIn("cycle=1", out)  # continues, does not jump to 2
+        self.assertIn("cycle=1", out)
 
     def test_dispatch_refuses_when_steps_log_reaches_wf_max(self):
         self.write_xml(max_="2")
@@ -233,9 +214,6 @@ class DispatchTests(DispatchWaitTestCase):
         popen.assert_not_called()
 
     def test_wf_max_ignores_ask_judgment_entries(self):
-        # `wfrun ask --log steps.log` shares the file by run-llm.md's
-        # convention, but an ask is a condition evaluation, not a step
-        # execution -- it must not consume the cap.
         self.write_xml(max_="2")
         log = self.run_dir / "steps.log"
         log.parent.mkdir(parents=True)
@@ -244,7 +222,7 @@ class DispatchTests(DispatchWaitTestCase):
             '{"kind":"ask","question":"q2","answer":false}\n'
             '{"ts":"t","step":"s1","status":"success"}\n', encoding="utf-8")
         code, out, err, popen = self.dispatch()
-        self.assertEqual(code, 0, err)  # 1 step execution < max=2
+        self.assertEqual(code, 0, err)
         popen.assert_called_once()
 
     def test_wf_max_tolerates_blank_and_corrupt_log_lines(self):
@@ -258,9 +236,6 @@ class DispatchTests(DispatchWaitTestCase):
         popen.assert_called_once()
 
     def test_dispatch_permission_mode_forwarded_only_for_write_tools(self):
-        # role "w" has no frontmatter tools -> tools_can_write(None) is False
-        # by convention elsewhere in this codebase; just check no crash and
-        # that the flag is consistently either present or absent.
         code, out, err, popen = self.dispatch(extra=["--permission-mode", "acceptEdits"])
         self.assertEqual(code, 0, err)
 
@@ -305,7 +280,9 @@ class WrapperTests(DispatchWaitTestCase):
                     ok=False, exit_code=-1, error_class="env",
                     error="claude CLI not found on PATH")):
             code, out, err = self.run_wrapper()
-        self.assertEqual(code, 0)  # the wrapper itself always "succeeds" at its job
+        self.assertEqual(code, 0,
+                         "the wrapper exits 0 whenever it recorded a verdict; "
+                         "the step's own failure rides in exit.json")
         exit_data = json.loads(self.p["exit"].read_text(encoding="utf-8"))
         self.assertEqual(exit_data["early_class"], "env")
         self.assertEqual(self.p["result"].read_text(encoding="utf-8"), "")
@@ -313,10 +290,6 @@ class WrapperTests(DispatchWaitTestCase):
         self.assertEqual(attempts[0]["class"], "env")
 
     def test_wrapper_records_early_class_for_timeout(self):
-        # Regression: an empty result.json must NOT be silently reclassified
-        # as "env" by whoever reads it back (it would be, via a bare
-        # classify_result() call on empty stdout) -- early_class preserves
-        # the true reason.
         with mock.patch.object(
                 claude_cli, "_launch",
                 return_value=claude_cli.CliResult(
@@ -324,7 +297,9 @@ class WrapperTests(DispatchWaitTestCase):
                     error="timeout after 600s")):
             self.run_wrapper()
         exit_data = json.loads(self.p["exit"].read_text(encoding="utf-8"))
-        self.assertEqual(exit_data["early_class"], "timeout")
+        self.assertEqual(exit_data["early_class"], "timeout",
+                         "an empty result.json alone reads as env; "
+                         "early_class is what keeps the true reason")
 
     def test_wrapper_uses_kill_tree(self):
         with mock.patch.object(claude_cli, "_launch",
@@ -371,17 +346,13 @@ class WaitTests(DispatchWaitTestCase):
                                     encoding="utf-8")
         code, out, err = self.wait()
         self.assertEqual(code, 0)
-        # The bare "42" is adopted unchanged (rule 6 is fail-open), but the
-        # missing VALUE: line is named rather than swallowed -- this step is
-        # value-typed and schema-less, so it was asked for one
-        # (xml-wf-decision-request.md §18.6).
-        self.assertEqual(out, "ok (set answer; no value line)")
+        self.assertEqual(out, "ok (set answer; no value line)",
+                         "a missing VALUE: line is reported, not failed: "
+                         "the value line rule is fail-open")
         variables = json.loads(Path(self.vars_path).read_text(encoding="utf-8"))
         self.assertEqual(variables["answer"], "42")
 
     def test_wait_done_ok_with_value_line(self):
-        """The same step, complying: the line's value is what lands, and the
-        report carries no deviation suffix."""
         self.write_handle()
         self.p["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
                                   encoding="utf-8")
@@ -407,7 +378,7 @@ class WaitTests(DispatchWaitTestCase):
         self.assertIn(str(self.p["result"]), out)
 
     def test_wait_running_within_max(self):
-        self.write_handle()  # started_at=now, timeout=600 -> abort far away
+        self.write_handle()
         code, out, err = self.wait(max_=0.2)
         self.assertEqual(code, 10)
         self.assertEqual(out, "running")
@@ -460,8 +431,6 @@ class WaitTests(DispatchWaitTestCase):
         fake_diag.assert_not_called()
 
     def test_wait_is_idempotent_no_duplicate_log_or_vars_rewrite(self):
-        # The orchestrator loops on "running", so a completed handle WILL be
-        # re-polled. A second wait must replay the verdict, not redo it.
         self.write_handle()
         self.p["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
                                   encoding="utf-8")
@@ -470,10 +439,12 @@ class WaitTests(DispatchWaitTestCase):
         code1, out1, _ = self.wait()
         code2, out2, _ = self.wait()
         self.assertEqual((code1, code2), (0, 0))
-        self.assertEqual(out1, out2)  # same verdict replayed verbatim
+        self.assertEqual(out1, out2)
         log = self.run_dir / "steps.log"
         lines = [l for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
-        self.assertEqual(len(lines), 1)  # not 2
+        self.assertEqual(len(lines), 1,
+                         "a second wait replays the verdict instead of "
+                         "redoing it, so it logs nothing new")
 
     def test_wait_idempotency_does_not_refire_debug(self):
         self.write_xml(on_error="debug")
@@ -487,11 +458,9 @@ class WaitTests(DispatchWaitTestCase):
         with mock.patch("wfrun.__main__.adp.diagnose", fake_diag):
             self.wait()
             self.wait()
-        fake_diag.assert_called_once()  # the LLM call must not repeat
+        fake_diag.assert_called_once()
 
     def test_wait_re_dispatch_clears_wait_record(self):
-        # A new attempt (dispatch again) must NOT be short-circuited by the
-        # previous attempt's wait record.
         self.write_handle()
         self.p["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
                                   encoding="utf-8")
@@ -509,8 +478,6 @@ class WaitTests(DispatchWaitTestCase):
         self.assertFalse(self.p["wait"].is_file())
 
     def test_wait_tolerates_torn_exit_json(self):
-        # Regression: a half-written exit.json used to raise JSONDecodeError
-        # out of main(); it must read as "not ready yet" instead.
         self.write_handle()
         self.p["exit"].write_text('{"returncode": 0, "std', encoding="utf-8")
         code, out, err = self.wait(max_=0.2)
@@ -518,9 +485,6 @@ class WaitTests(DispatchWaitTestCase):
         self.assertEqual(out, "running")
 
     def test_wait_expect_file_resolves_against_xml_dir_not_cwd(self):
-        # The wrapper runs the step with cwd = the XML's parent, so a
-        # relative expect-file must be checked there -- not wherever `wait`
-        # happens to be invoked from.
         Path(self.xml).write_text(
             self.XML.format(max="10", retry="0", on_error="fail").replace(
                 '<step id="s2" role="w"><task>write it</task></step>',
@@ -540,8 +504,6 @@ class WaitTests(DispatchWaitTestCase):
                               encoding="utf-8")
         p2["result"].write_text(json.dumps({"result": "wrote it", "is_error": False}),
                                 encoding="utf-8")
-        # cwd here is the repo/test runner dir, NOT self.dir -- the old
-        # cwd-relative check would report made.txt as missing.
         code, out, err = self.run_cli(
             ["wait", str(p2["handle"]), "--max", "5", "--vars", self.vars_path])
         self.assertEqual(code, 0, out)
