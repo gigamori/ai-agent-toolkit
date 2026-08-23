@@ -46,7 +46,7 @@ confused for each other.
 
 An inserted **decision turn** (`SKILL.md` Execution step 7) is an ordinary
 delegated turn here and needs nothing new: it runs as `mode: review-dev`, so
-`--mode review-dev` gives it `DEADLINE_REVIEW_DEV` (900 s, `scripts/watchdog.sh`
+`--mode review-dev` gives it `DEADLINE_REVIEW_DEV` (1800 s, `scripts/watchdog.sh`
 — unchanged; whether a decision turn deserves its own budget is still open),
 and `--deliv` takes its decision record (`NNa-decision.md` in the simple
 case; the actual name is the next free suffix letter). A `--decider=human`

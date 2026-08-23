@@ -277,17 +277,17 @@ pass one explicitly, taken from this table. The upper bound is
 | `execute` | 1500 |
 | `debug` | 900 |
 | `review` | 900 |
-| `review-dev` | 900 |
+| `review-dev` | 1800 |
 | anything else | 900 |
 
 An inserted **decision turn** (`SKILL.md` Execution step 7) runs as
-`mode: review-dev` and therefore takes the `review-dev` row (900 s) — the same
+`mode: review-dev` and therefore takes the `review-dev` row (1800 s) — the same
 budget the CC watchdog gives it. Nothing in this mechanism is decision-specific.
 A `--decider=human` wait makes no `pi -p` call at all, so no `timeout` applies
 to it; see below.
 
 These are the CC watchdog's `DEADLINE_*` values verbatim
-(`scripts/watchdog.sh`, read 2026-07-29), so the same turn gets the same
+(`scripts/watchdog.sh`, re-verified 2026-08-20), so the same turn gets the same
 wall-clock budget on either harness. They are **numbers, not a starting
 point to re-derive per run**: the whole reason CC's bound lives in a script is
 that a wall-clock bound decided fresh each turn is no bound at all, and the
