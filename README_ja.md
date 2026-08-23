@@ -142,6 +142,7 @@ ai-agent-toolkit/
 │       ├── register-pi-tools/ register-pi-tools ユーザガイド (EN/JA)
 │       ├── mode-orchestrator/ mode-orchestrator ユーザガイド (EN/JA) + workflow spec 執筆ガイド
 │       └── compact-document/  compact-document authoring contract
+├── tests/                     どの plugin / skill にも属さないリポジトリ全体のチェック
 ├── LICENSE
 ├── README.md
 └── README_ja.md
