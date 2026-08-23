@@ -6,10 +6,12 @@
 """Case table for generate_kanban.py::parse_index (`_projects/index.md` rows).
 
 This file IS the shared parity table. pi-studio's
-`src/kanban/kanban-data-provider.ts::parseProjectIndex` is a port of
+`src/project-index.ts::parseProjectIndex` is a port of
 `parse_index`; "same input, same output" over the cases below is the definition
 of parity between the two implementations, so a case added here must be added
-there (and vice versa).
+to pi-studio's `src/project-index.test.ts` (and vice versa). C20 (missing
+file) has no pure-function equivalent there and is covered by a caller-side
+test in `src/kanban/kanban-data-provider.test.ts`.
 
 The three rules under test (see the INDEX_* regex comment in generate_kanban.py):
   1. separator row: the WHOLE line matches `^\\|[-\\s|:]+\\|\\s*$`. A data row
