@@ -1,8 +1,3 @@
-"""Make the llmwiki package importable for tests without installation.
-
-Inserts the package root (plugins/llm-wiki/) onto sys.path so that
-`from llmwiki.core import ...` resolves under path-import (no-install).
-"""
 import os
 import sys
 

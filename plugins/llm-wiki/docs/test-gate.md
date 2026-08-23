@@ -11,7 +11,8 @@ into the assertion message where a failure prints it, and everything else goes.
 
 ## The rules
 
-- **R1** No comments and no docstrings in a test file, except the directive allowlist.
+- **R1** No comments and no docstrings in a test file, except the directive allowlist. In a
+  runner's own configuration R1 still applies, and one comment form passes: the pointer template.
 - **R2** No unreachable references, applied to every line — comments, docstrings, test names and
   assertion messages alike. R2 is what stops a reference from being smuggled into the relocation
   targets when a comment's content moves into a test name.
@@ -27,8 +28,33 @@ Directive allowlist, enumerated by grep over the tree rather than from memory:
 
 A docstring is a comment for this gate's purposes and has no exemption. A runner prints neither,
 so an agent reads both as unverifiable assertion and neither becomes visible when it is wrong; a
-test function's name is already its description. After the migration no test file holds a
-docstring. `conftest.py` still carries its five-line one, and is not a test file (see Coverage).
+test function's name is already its description. No file under `tests/` holds a docstring,
+`conftest.py` included.
+
+### The pointer, in a runner's configuration
+
+`conftest.py` asserts no contract of its own, so it is not a test — but the same agent reads it,
+and a constraint written there misleads it exactly as one in a test would. R1 reaches it. One
+comment form passes, a fixed template rather than a judgement call:
+
+```
+See <path>.md, "<heading>".
+```
+
+The path must exist; the gate resolves it against the plugin root and against the repository root.
+The heading is never checked — checking it would turn a document edit into a build failure, which
+is what Not built, deliberately rules out. Nothing else passes: no run instructions, no rationale,
+no second sentence. A docstring in such a file is judged by the same template and fails it.
+
+The pointer is permitted by R1 and matched by R2's citation pattern, so the two rules collide on
+the only comment the policy allows here. An accepted pointer line is exempt from that one R2
+pattern; every other R2 pattern still applies to it, and a pointer whose target is missing is not
+accepted and so is not exempt.
+
+`tests/conftest.py` carries no pointer today. Its former docstring narrated the three lines below
+it, so it was not a constraint with a home to point at; and no pointer path could be written
+there anyway, because the file is a byte-identical copy in the Pi package, where neither the
+plugin-root nor the repository-root spelling of this document resolves.
 
 The docstring half of R1 is not a grep — a triple-quoted string could equally be a fixture
 assigned to a name. The gate reads the positions Python defines (a module's first statement, and
@@ -55,8 +81,8 @@ uv run --no-project python plugins/llm-wiki/scripts/lint_test_knowledge.py && uv
 
 (the `pytest` invocation runs from `plugins/llm-wiki/`, which owns the dev dependency group).
 
-Every run prints the number of files it scanned, what it excluded and why, the remaining
-allowlist count, and what its patterns cannot see.
+Every run prints the number of files it scanned, what it excluded and why, which files are held to
+the pointer template, the remaining allowlist count, and what its patterns cannot see.
 
 ## Coverage
 
@@ -68,8 +94,8 @@ packages in this repository (`plugins/taskflow/tests/`, which has
 `skills/*/scripts/tests/`, the top-level `tests/`) are **outside this gate** and carry no
 assurance from it.
 
-`conftest.py` asserts no contract, so Scope does not make it a test file and R1 does not reach it.
-R2 does. The gate names it on every run.
+`conftest.py` is a runner configuration: R1 reaches it under the pointer template above, and R2
+applies to it in full. The gate names it on every run.
 
 The gate's own blind spots, printed on every run: a citation phrased without one of its citation
 verbs and without a section sign; a bare gitignored path such as
@@ -84,6 +110,13 @@ Recorded because an undocumented scope call is the failure the scope rule exists
 - **In scope:** every `.py` under `tests/` — 45 test files plus `conftest.py`. These assert
   contracts and are re-run whenever the code changes. That they are run by hand rather than by CI
   does not matter; there is no "automated" condition in the rule.
+- **`conftest.py` reversed, 2026-08-24.** It was first ruled out of R1 as a configuration file
+  that asserts nothing. The policy now reaches a runner's configuration under the pointer
+  template, so R1 applies. Its docstring was judged not to be K1 — the filter asks whether an
+  author rewriting the file from scratch would rediscover the fact, and a three-line `sys.path`
+  insert makes it self-evident — so there was nothing to relocate and nothing to point at. The
+  docstring was deleted and the file now carries no prose at all. It also named `plugins/llm-wiki/`
+  as the inserted root, which is false in the Pi copy of the same bytes.
 - **Out of scope:** nothing was excluded on judgement. The suite contains no probe, race harness,
   or one-off measurement script; `__pycache__` is a build artifact and is skipped mechanically.
 - **Static source-text tests were kept, all of them.** `test_agents_tool_contract.py`,
@@ -107,8 +140,7 @@ Recorded because an undocumented scope call is the failure the scope rule exists
   projector is asserted against — not prose.
 
 What the migration moved, measured over those 46 files: 1,379 comment lines to 1 (the single
-allowlisted directive), and 949 docstring lines to 5 — all five in `conftest.py`, which R1 does
-not reach, so the test files themselves hold none. Facts about the world outside the codebase went
+allowlisted directive), and 949 docstring lines to 0. Facts about the world outside the codebase went
 to [`test-constraints.md`](test-constraints.md) with the date each was
 first recorded, taken from git history rather than from the comment that carried it.
 

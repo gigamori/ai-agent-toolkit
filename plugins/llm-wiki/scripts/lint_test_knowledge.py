@@ -2,7 +2,10 @@
 """Pre-test gate for the llm-wiki test suites.
 
 R1  No comments and no docstrings in a test file, except the enumerated
-    directive allowlist.
+    directive allowlist. In a runner's own configuration R1 still applies, but
+    one comment form passes: the pointer template `See <path>.md, "<heading>".`,
+    whose path must exist. The heading is not checked -- checking it would turn
+    a document edit into a build failure.
 R2  No unreachable references, on every line -- comments, docstrings, test names
     and assertion messages alike.
 
@@ -34,14 +37,23 @@ EXCLUDED_DIRS = {
     "__pycache__": "build artifact",
 }
 
-# Not test files: they assert no contract, so Scope does not reach them with R1.
-# R2 still applies to every line of them.
-CONFIG_FILES = {"conftest.py"}
+# A runner's own configuration asserts no contract of its own, so it is not a
+# test -- but the same agent reads it, and a constraint written there misleads it
+# exactly as one in a test would. R1 reaches it; only the pointer template passes.
+CONFIG_FILE = re.compile(
+    r"^(?:vitest(?:\.[a-z0-9-]+)?\.config\.[cm]?[jt]s|conftest\.py|test-setup\.[cm]?[jt]s)$")
+POINTER = re.compile(r'^See ([A-Za-z0-9._/-]+\.md)(?:, "[^"]+")?\.$')
 
 # Directive allowlist. Enumerated by grep over the tree, never from memory.
 DIRECTIVE = re.compile(r"^#!|# noqa:|# type: ignore\[")
 PEP723_OPEN = re.compile(r"^#\s*///\s*script\s*$")
 PEP723_CLOSE = re.compile(r"^#\s*///\s*$")
+
+# A pointer is a citation by construction, so R2's citation pattern would reject
+# the one comment R1 permits in a runner's configuration. An accepted pointer line
+# is exempt from THAT pattern only; every other R2 pattern still applies to it.
+CITATION = re.compile(r"(?i)\b(?:see|per|spec:?|design|governed by|documented in|described in|"
+                r"covers|mirrors|traced to)\s+[A-Za-z0-9_./-]*\.md\b")
 
 # R2 patterns: references a reader holding only this checkout cannot open. The
 # design and plan documents live under `_projects/llm-wiki/project-notes/`,
@@ -51,9 +63,7 @@ UNREACHABLE = [
     (re.compile(r"\b(?:D-?\d{1,2}[a-z]?|D-[a-z]|DEC-[A-Za-z0-9-]+|D-Q\d|P\d/[A-Za-z0-9+/-]+|"
                 r"AC-[A-Z]?\d+[a-z]?|OI-\d+|INV-\d+|[A-Z]-\d+[a-z]?)\b"),
      "spec-scoped id -- defined only in a document outside this checkout"),
-    (re.compile(r"(?i)\b(?:see|per|spec:?|design|governed by|documented in|described in|"
-                r"covers|mirrors|traced to)\s+[A-Za-z0-9_./-]*\.md\b"),
-     "citation of a document by name"),
+    (CITATION, "citation of a document by name"),
     (re.compile(r"\b[A-Za-z0-9_./-]+\.(?:py|ts|sql|md|json):\d+"),
      "file-and-line reference -- drifts on the next edit"),
     (re.compile(r"\bL\d{3,}(?:-\d+)?\b"), "line-number reference"),
@@ -118,14 +128,39 @@ def docstrings_py(src: str) -> list[tuple[int, int, str]]:
     return out
 
 
+def flatten(text: str) -> str:
+    return " ".join(re.sub(r"^#+\s*", "", text).split())
+
+
+def pointer_target_exists(target: str) -> bool:
+    return (ROOT / target).is_file() or (ROOT.parent.parent / target).is_file()
+
+
 def main() -> int:
     files, skipped = scan_targets()
     failures: list[str] = []
+    config_seen: list[str] = []
 
     for p in files:
         src = p.read_text(encoding="utf-8")
         rel = p.relative_to(ROOT).as_posix()
-        if p.name not in CONFIG_FILES:
+        prose = [(str(line_no), text) for line_no, text in comments_py(src)]
+        prose += [(f"{a}" if a == b else f"{a}-{b}", text) for a, b, text in docstrings_py(src)]
+        pointer_lines: set[int] = set()
+        if CONFIG_FILE.match(p.name):
+            config_seen.append(rel)
+            for span, text in prose:
+                m = POINTER.match(flatten(text))
+                if not m:
+                    failures.append(
+                        f"R1 {rel}:{span}: not the pointer template: {flatten(text)[:100]}")
+                elif not pointer_target_exists(m.group(1)):
+                    failures.append(
+                        f"R1 {rel}:{span}: pointer target does not exist: {m.group(1)}")
+                else:
+                    bounds = [int(x) for x in span.split("-")]
+                    pointer_lines.update(range(bounds[0], bounds[-1] + 1))
+        else:
             for line_no, text in comments_py(src):
                 failures.append(
                     f"R1 {rel}:{line_no}: comment outside the directive allowlist: {text[:100]}")
@@ -134,6 +169,8 @@ def main() -> int:
                 failures.append(f"R1 {rel}:{span}: docstring: {text[:100]}")
         for i, line in enumerate(src.splitlines(), 1):
             for pat, why in UNREACHABLE:
+                if pat is CITATION and i in pointer_lines:
+                    continue
                 m = pat.search(line)
                 if m:
                     failures.append(f"R2 {rel}:{i}: {why}: {m.group(0)!r}")
@@ -148,8 +185,10 @@ def main() -> int:
           + ", ".join(d.relative_to(ROOT).as_posix() + "/" for d in TEST_DIRS))
     for s in skipped:
         print(f"  out of scope: {s}")
-    print("  R1 not applied (asserts no contract, so not a test file; R2 still is): "
-          + ", ".join(sorted(CONFIG_FILES)))
+    print("  pointer-only (runner config, asserts no contract): "
+          + (", ".join(sorted(config_seen)) if config_seen else "none"))
+    print("  a pointer's path is resolved against the plugin root and against the "
+          "repository root; its heading is never checked.")
     print(f"allowlist entries remaining: {len(allow)}"
           + ("" if allow else "  (no allowlist file -- migration complete)"))
     print("not seen by this gate: a citation phrased without one of its citation verbs and "
