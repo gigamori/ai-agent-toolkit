@@ -21,7 +21,7 @@
 # Every section drives the REAL Stop hook; a failure of either mechanism shows
 # up as "the round after the hook's own write never forms".
 #
-# State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
+# State-dir sandbox (`e2e_state_dir_sandbox`): the
 # Stop hook runs an unconditional stale-marker sweep on every invocation and
 # resolves `_projects` via getcwd() (no env override). This test therefore `cd`s
 # into an isolated tempdir and builds `_projects/` there — it NEVER cd's into

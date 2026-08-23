@@ -24,7 +24,7 @@
 # removed). Subagent writes (P3) are captured by touched_capture.py with the
 # parent sid (TBD-1 probe 2026-06-28) and so flow through the same .touched path.
 #
-# State-dir sandbox (plugins/taskflow/CLAUDE.md, project-notes/specs/
+# State-dir sandbox (`e2e_state_dir_sandbox`, project-notes/specs/
 # capture-hook-sweep-sandbox.md): the Stop hook runs an unconditional stale-marker
 # sweep on every invocation and resolves `_projects` via getcwd() (no env override).
 # This test therefore `cd`s into an isolated tempdir and builds `_projects/` there —

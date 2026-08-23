@@ -18,7 +18,7 @@
 #   T-D1-5  a note write with a known owner puts that OWNER in A_r — the
 #           via-a-note path that produced the real 2026-08 loss (§1.3)
 #
-# State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
+# State-dir sandbox (`e2e_state_dir_sandbox`): the
 # Stop hook runs an unconditional stale-marker sweep on every invocation and
 # resolves `_projects` via getcwd() (no env override). This test therefore `cd`s
 # into an isolated tempdir and builds `_projects/` there — it NEVER cd's into

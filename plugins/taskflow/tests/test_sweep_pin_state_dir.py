@@ -22,7 +22,7 @@ with `_cleanup_stale_markers(SWEEP_STATE_DIR)` substituted back to
 `_cleanup_stale_markers(STATE_DIR)` — so "the planted files survived" cannot be
 satisfied by a hook that never reached the sweep at all.
 
-Sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`, modelled on
+Sandbox (`e2e_state_dir_sandbox`, modelled on
 `tests/test_touched_capture_state_root.py`): the module now walks ANCESTORS, so
 a temp workspace inside the repo tree would resolve to the REAL
 `_projects/_state` — and the `follow` build derived here would then sweep it.

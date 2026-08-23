@@ -28,7 +28,7 @@
 #           projects binds the copy the ledger actually names, and a line naming
 #           a project that does not exist binds nothing at all.
 #
-# State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
+# State-dir sandbox (`e2e_state_dir_sandbox`): the
 # Stop hook runs an unconditional stale-marker sweep on every invocation and
 # resolves `_projects` via getcwd() (no env override). This test therefore `cd`s
 # into an isolated tempdir and builds `_projects/` there — it NEVER cd's into

@@ -11,7 +11,7 @@ exercises `main()` end to end -- extraction, `normalize_path` against
 
 Sandbox mechanics copied (mechanism, not text) from
 `test_touched_capture_state_root.py`, per plan §5.3/§6 and
-`plugins/taskflow/CLAUDE.md` `e2e_state_dir_sandbox`'s `touched_capture.py`
+`e2e_state_dir_sandbox`'s `touched_capture.py`
 carve-out: a `tempfile.mkdtemp()` workspace OUTSIDE the repo tree; an
 up-front assertion that no ancestor of that workspace holds
 `_projects/_state` (the hook walks up, so an in-repo temp dir would resolve

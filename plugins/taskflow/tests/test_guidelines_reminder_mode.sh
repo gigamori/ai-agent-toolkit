@@ -11,12 +11,12 @@
 #   5. (b) block (ROUTER / RESPONSE LEADING LINES) is byte-identical between the
 #      two prompt files on disk (static check, no hook invocation).
 #   6. Real _projects/_state/ under the repo is untouched by this run (sandboxing
-#      proof per plugins/taskflow/CLAUDE.md e2e_state_dir_sandbox).
+#      proof per `e2e_state_dir_sandbox`).
 #
 # Usage:  bash plugins/taskflow/tests/test_guidelines_reminder_mode.sh
 # Requires: bash (Git-Bash on win32 — primary), uv, python3.
 # Runs the REAL session_init.py hook against an ISOLATED tempdir (never the
-# repo's real _projects/_state/), per plugins/taskflow/CLAUDE.md e2e_state_dir_sandbox.
+# repo's real _projects/_state/), per `e2e_state_dir_sandbox`.
 
 set -uo pipefail
 

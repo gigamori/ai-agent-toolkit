@@ -13,7 +13,7 @@ runs inside the writer's process tree and inherits the writer's env.
 The hook reads the env at module load, so each case runs the real hook in a
 subprocess (`uv run --no-project python <hook>`), with:
   - cwd = a temp workspace holding its own `_projects/` fixture, per the
-    `e2e_state_dir_sandbox` rule in plugins/taskflow/CLAUDE.md;
+    `e2e_state_dir_sandbox` rule;
   - HOME / USERPROFILE pointed at a temp fake home carrying a decoy
     `.claude/plans/` universe, so the real `~/.claude` is never even reachable.
 

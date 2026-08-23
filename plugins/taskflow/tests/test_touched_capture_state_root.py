@@ -21,7 +21,7 @@ source.
 Every arm carries its stated control, because a "no line was written" result is
 otherwise indistinguishable from a fixture that never triggers the hook at all.
 
-Sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`, plus the new
+Sandbox (`e2e_state_dir_sandbox`, plus the new
 condition from 04-plan section 5.2 (4) / R-A2): the hook is invoked as a
 SUBPROCESS with an explicit `cwd=` (STATE_DIR is module scope, so importing
 cannot vary cwd), each workspace is a `tempfile.mkdtemp()` tree, and -- because

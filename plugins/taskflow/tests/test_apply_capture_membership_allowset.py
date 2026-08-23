@@ -45,7 +45,7 @@ Pinned here (04-plan §2.4):
            non-requesting Stop, and is re-frozen (with the round's own,
            wider-than-`tasks` content) at the round-2 request.
 
-State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
+State-dir sandbox (`e2e_state_dir_sandbox`): the
 unit tests build fixtures under `tempfile.TemporaryDirectory()` and never call
 `main()`; the B-AC5 arm runs the hook as a SUBPROCESS with `cwd=` set to its
 own temp workspace (`PROGRESS_ROOT` is module-scope, resolved from

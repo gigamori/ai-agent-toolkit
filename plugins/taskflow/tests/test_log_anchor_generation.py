@@ -23,7 +23,7 @@ Covered here:
   - ambiguous residue (two begins, no end) still fails (T-D3-2 covers the
     hook-level reporting of that case)
 
-ABSOLUTE SAFETY (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): every
+ABSOLUTE SAFETY (`e2e_state_dir_sandbox`): every
 fixture lives inside a `tempfile.TemporaryDirectory()` under a real
 `tasks/<status>/` layout (so `log_lock` keys its sidecar inside the tempdir
 too). This test NEVER calls `main()`, NEVER reads stdin, and NEVER calls

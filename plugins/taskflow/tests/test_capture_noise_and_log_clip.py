@@ -15,7 +15,7 @@ _projects/harness-taskflow/project-notes/specs/capture-noise-and-log-clip.md
       paths. A phantom target spelling an existing task md resolves downstream
       and gets an UNCORRECTABLE `@log` line.
 
-Sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the D1/D3 arms
+Sandbox (`e2e_state_dir_sandbox`): the D1/D3 arms
 call pure functions only. The D2 arms need `main()`, whose STATE_DIR is module
 scope, so they run the hook as a SUBPROCESS from a `tempfile.mkdtemp()`
 workspace — asserted up front to lie outside this repo and to have no ancestor

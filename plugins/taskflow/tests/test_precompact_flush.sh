@@ -20,7 +20,7 @@
 #       PreCompact placeholders (F-1 (b), §1.4)
 #   [F] N tracks the round: after r1 was committed, a later flush says (r2)
 #
-# State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
+# State-dir sandbox (`e2e_state_dir_sandbox`): the
 # Stop hook sweeps stale markers on every invocation and resolves `_projects`
 # via getcwd() (no env override), so this test `cd`s into an isolated tempdir
 # and NEVER invokes a hook with $REPO_ROOT as cwd. The real _projects/_state/ is

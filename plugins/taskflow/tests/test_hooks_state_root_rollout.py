@@ -45,7 +45,7 @@ ADD-2 covers the `.bind` key-shape migration 03b-execute.md §2.1 raises: a
 `.bind` written before the line-1335 edit, read by the current code, in BOTH
 configurations.
 
-Sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`, modelled on
+Sandbox (`e2e_state_dir_sandbox`, modelled on
 `tests/test_touched_capture_state_root.py`): SIX hooks now resolve their root by
 walking ANCESTORS, so a temp workspace inside the repo tree resolves to the REAL
 `_projects/_state`. Every workspace is a `tempfile.mkdtemp()` tree OUTSIDE the

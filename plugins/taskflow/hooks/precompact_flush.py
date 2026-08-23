@@ -15,7 +15,7 @@ What it does (§2.2), deterministically, with no subprocess and no LLM:
      here; they come from `_find_state_root(os.getcwd()) or os.getcwd()` —
      the walk up to the nearest ancestor (the cwd itself included) holding
      `_projects/_state` — which every root-resolving taskflow hook now shares
-     (no env override — plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`).
+     (no env override — `e2e_state_dir_sandbox`).
      Exit 0 on anything missing.
   2. Compute the pending set = D1's round-active set A_r over the ledger slice
      `raw[touch_cursor:]` (`resolve_touch_cursor` + `compute_round_active`).

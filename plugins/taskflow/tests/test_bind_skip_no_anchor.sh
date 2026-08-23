@@ -17,7 +17,7 @@
 #   4. the task lands in `capture.tried_tasks` in the `<sid>.bind` sidecar
 #   5. a LATER Stop does NOT re-report it (INV-1 boundedness: reported once)
 #
-# State-dir sandbox (plugins/taskflow/CLAUDE.md `e2e_state_dir_sandbox`): the
+# State-dir sandbox (`e2e_state_dir_sandbox`): the
 # Stop hook runs an unconditional stale-marker sweep on every invocation and
 # resolves `_projects` via getcwd() (no env override). This test therefore `cd`s
 # into an isolated tempdir and builds `_projects/` there — it NEVER cd's into

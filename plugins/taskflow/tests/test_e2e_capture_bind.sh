@@ -14,7 +14,7 @@
 #            (through the per-round `{sid}.r2.capture` name — round 2, since
 #            round 1 already closed via Stage 3's backstop)
 #
-# State-dir sandbox (plugins/taskflow/CLAUDE.md, project-notes/specs/
+# State-dir sandbox (`e2e_state_dir_sandbox`, project-notes/specs/
 # capture-hook-sweep-sandbox.md): the Stop hook runs an unconditional stale-marker
 # sweep on every invocation and resolves `_projects` via getcwd() (no env override).
 # This test therefore `cd`s into an isolated tempdir and builds `_projects/` there —

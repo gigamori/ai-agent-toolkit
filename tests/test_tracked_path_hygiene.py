@@ -61,16 +61,16 @@ identities rather than "absolute-looking path" shapes, and why there is no
 allowlist file -- an allowlist is precisely the maintenance-rot class this
 check exists to close.
 
-Deliberately NOT implemented (recorded rather than silently omitted)
--------------------------------------------------------------------
-A second clause was specified and then deferred: flagging citations of a
-known-dead documentation path (the deleted `plugins/taskflow/CLAUDE.md`).
-It is not implemented here, and its omission is a pending decision, not an
-oversight. The taskflow project rules file currently declares those citations
-still resolvable by rule id, and roughly twenty tracked files carry them, so
-enforcing the clause today would land permanently red. It awaits a human
-ruling on which of the two live citation conventions (by dead path, or by
-bare rule id) wins.
+Second clause: dead documentation paths
+---------------------------------------
+A rule is cited by id, never by path. The rule files here are gitignored, so a
+path citation resolves for nobody who clones this repository, and it goes on
+resolving for nobody after the file behind it moves again. DEAD_DOC_PATHS holds
+the paths already known to be dead; a tracked file naming one of them fails.
+
+That list is hand-maintained, and short on purpose. It is not an allowlist of
+violations to be worked off -- it is the set of strings that must not reappear,
+so it grows only when another governing document moves, one line at a time.
 
 How it is detected -- and why not with a shell one-liner
 --------------------------------------------------------
@@ -207,11 +207,21 @@ def spellings(identity):
     ]
 
 
+# Governing documents that have moved. A tracked file naming one of these is
+# citing by path something no clone can resolve; cite the rule id instead.
+# Assembled from fragments so this file does not match its own needle.
+DEAD_DOC_PATHS = [
+    "plugins/taskflow/" + "CLAUDE" + ".md",
+]
+
+
 def build_needles(identities):
     needles = []
     for kind, ident in identities:
         for label, needle in spellings(ident):
             needles.append((kind, ident, label, needle.lower()))
+    for dead in DEAD_DOC_PATHS:
+        needles.append(("dead doc path", dead, "repo-relative", dead.lower()))
     return needles
 
 
@@ -273,10 +283,17 @@ def self_check(identities, needles):
             problems.append(
                 "detector did NOT flag a synthesized %s spelling of the %s"
                 % (label, kind))
+    for dead in DEAD_DOC_PATHS:
+        probe = "State-dir sandbox (" + dead + " `some_rule_id`): the"
+        if not scan_line(probe, needles):
+            problems.append(
+                "detector did NOT flag a synthesized citation of the dead doc "
+                "path %r" % dead)
     controls = [
         "uv run python /path/to/lib/src/run_tool.py",
         "see " + "C:" + BS + "Users" + BS + "<user>" + BS + "plugins for it",
         "open /home/alice/.ssh/id_rsa now",
+        "cite the rule by id: `e2e_state_dir_sandbox`, never by path",
     ]
     for control in controls:
         if scan_line(control, needles):
@@ -310,7 +327,8 @@ def main():
         print("Exiting 2 without reporting a result.")
         return 2
     print("  non-vacuity self-check:          PASS "
-          "(4 synthesized spellings flagged, 3 controls clean)")
+          "(4 spellings + %d dead doc path(s) flagged, 4 controls clean)"
+          % len(DEAD_DOC_PATHS))
 
     paths = tracked_paths()
     print("  tracked files scanned:           %d" % len(paths))
