@@ -1,11 +1,3 @@
-"""Tests: the `file` verb (FE-A filing) — DEC-R3 completion.
-
-Verifies the full FE-A write envelope now realized in `cli._file`:
-  - a raw/derived/<hash>.md provenance snapshot is written (D1/D18);
-  - the PAGE is the REDACTED body (D16), staged through the allowlist (D20);
-  - re-filing identical content is a content-hash dedup no-op (D18);
-  - a seeded secret is masked in the page AND surfaced as a redaction flag (D16).
-"""
 import io
 
 import pytest
@@ -28,8 +20,6 @@ def _make_wiki(tmp_path):
 
 
 def _make_wiki_tiny_bytes(tmp_path):
-    # B-2: mirrors _make_wiki but the SCHEMA carries a TINY max_bytes override
-    # so the `file` verb's WriteSession budget gate can be exercised.
     (tmp_path / "wiki" / "derived").mkdir(parents=True)
     (tmp_path / ".llmwiki").write_text("version: 1\nschema: SCHEMA.md\n",
                                        encoding="utf-8")
@@ -53,12 +43,10 @@ def test_file_writes_raw_snapshot_and_page(monkeypatch, capsys, tmp_path):
     assert rc == 0
     page = tmp_path / "wiki" / "derived" / "answer.md"
     assert page.read_text(encoding="utf-8") == "the answer body"
-    # Raw provenance snapshot under raw/derived/<hash>.md (D1/D18).
     h = ch.content_hash("the answer body")
     raw = tmp_path / "raw" / "derived" / f"{h}.md"
     assert raw.is_file()
     assert raw.read_text(encoding="utf-8") == "the answer body"
-    # Index regenerated to include the page.
     assert "wiki/derived/answer.md" in (
         tmp_path / "index.md").read_text(encoding="utf-8")
 
@@ -74,20 +62,18 @@ def test_file_second_time_is_dedup_noop(monkeypatch, capsys, tmp_path):
 
 def test_file_redacts_secret_in_page_and_flags(monkeypatch, capsys, tmp_path):
     root = _make_wiki(tmp_path)
-    secret = "AKIA" + "A" * 16          # matches the AWS-key pattern (redaction.py)
+    secret = "AKIA" + "A" * 16
     body = f"the key is {secret} do not leak"
     rc, out = _run_file(monkeypatch, capsys, root,
                         "wiki/derived/leak.md", "Leak", body)
     assert rc == 0
     page = (tmp_path / "wiki" / "derived" / "leak.md").read_text(encoding="utf-8")
-    assert secret not in page                       # D16: masked in the page
+    assert secret not in page, "an AWS-key-shaped literal is masked in the page, not merely flagged"
     assert redaction.PH_SECRET in page
-    assert "redaction-flags:" in out                # surfaced to the human gate
+    assert "redaction-flags:" in out
 
 
-def test_file_redaction_flags_bounded_at_100_matches(monkeypatch, capsys, tmp_path):
-    # P2/E1: the `file` verb echo caps per-flag lines at 20 and reports the
-    # true total via `flags_total=…`, even when far more flags fire.
+def test_file_redaction_flag_previews_cap_at_20_and_report_true_total(monkeypatch, capsys, tmp_path):
     root = _make_wiki(tmp_path)
     body = "\n".join(f"key line {i}: AKIA{'A' * 16}" for i in range(100))
     rc, out = _run_file(monkeypatch, capsys, root,
@@ -100,8 +86,6 @@ def test_file_redaction_flags_bounded_at_100_matches(monkeypatch, capsys, tmp_pa
 
 
 def test_file_outside_wiki_derived_is_rejected(monkeypatch, capsys, tmp_path):
-    # item4: filing a page OUTSIDE wiki/derived/ stays REJECTED (D20 cross-
-    # namespace), the existing contract. A `file`-origin write is derived-origin.
     root = _make_wiki(tmp_path)
     monkeypatch.setattr("sys.stdin", io.StringIO("body"))
     with pytest.raises(WriteRejected):
@@ -111,20 +95,13 @@ def test_file_outside_wiki_derived_is_rejected(monkeypatch, capsys, tmp_path):
 
 
 def test_file_usage_discloses_wiki_derived_constraint(capsys):
-    # item4: too-few args prints the usage, which now discloses the
-    # wiki/derived/ target constraint.
-    rc = cli.main(["file", "only-root"])            # < 3 positional args
+    rc = cli.main(["file", "only-root"])
     assert rc == cli.EX_USAGE
     err = capsys.readouterr().err
     assert "wiki/derived/" in err
 
 
 def test_file_tiny_max_bytes_rejects_budget(monkeypatch, capsys, tmp_path):
-    # B-2: before the fix, cli.py:298 built the WriteSession with no
-    # max_count/max_bytes at all, so the SCHEMA's max_bytes override was never
-    # enforced and this body would file regardless. Post-fix, the body (> 10
-    # raw bytes, no secrets so redaction/dedup don't interfere) trips the byte
-    # gate.
     root = _make_wiki_tiny_bytes(tmp_path)
     monkeypatch.setattr("sys.stdin", io.StringIO("this body is over ten bytes"))
     with pytest.raises(WriteRejected):
@@ -135,10 +112,6 @@ def test_file_tiny_max_bytes_rejects_budget(monkeypatch, capsys, tmp_path):
 
 
 def test_file_default_budget_matches_dataclass_defaults(monkeypatch, capsys, tmp_path):
-    # T3: defaults-unchanged-when-config-absent. `_make_wiki`'s SCHEMA has an
-    # empty `config:` -> config_resolver's default tier
-    # (max_count="100", max_bytes="10485760"), identical to the WriteSession
-    # dataclass defaults -> the `file` verb still succeeds for a normal body.
     root = _make_wiki(tmp_path)
     rc, out = _run_file(monkeypatch, capsys, root,
                         "wiki/derived/normal.md", "Normal", "a normal body")

@@ -1,29 +1,3 @@
-"""Read-profile import-closure test (D-2 enforcement / spec §read-profile 閉包).
-
-D-2 is enforced by the IMPORT GRAPH, not by extras: the read CLI verbs must not
-drag `llmwiki.write` / `llmwiki.ingest` into their import closure. `cli.py`
-achieves this with branch-local lazy imports; this test pins that structurally.
-
-Each verb is dispatched in a FRESH interpreter (so the closure is the verb's own,
-not contaminated by a sibling verb run earlier in the same process), then the
-loaded `llmwiki.*` modules are inspected.
-
-Classification (verified against spec §CLI verb 契約 L79-80/L89 and the migrated
-`cli.py` source — NOT assumed):
-  - PURE read verbs (closure must contain NEITHER write NOR ingest):
-        resolve-root, scan-pages, search, marker-detect, declare
-    `declare` is read-only (D5 config read) and imports `core` only. `search`
-    dispatches index|qmd internally (DEC-3) but imports only `read`/`core` (and
-    the external qmd CLI is a subprocess, not a Python import), so its closure is
-    write/ingest-free on both branches.
-  - promote-check: read-only (NO move), the read-path INTO write/promote. By
-    construction it lazy-imports `llmwiki.write.promote` (and transitively
-    core.wiki_index) but NEVER `promote.promote` (the move) and NEVER
-    `llmwiki.ingest`. So its assert is the WEAKER "no ingest" (write is expected,
-    ingest is forbidden) — this is the spec's "read 部を move から分離".
-  - file / promote / ingest-apply / floor-check are write/ingest-side verbs and
-    are intentionally NOT covered by the read-profile closure assert.
-"""
 import json
 import os
 import subprocess
@@ -38,8 +12,6 @@ _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(llmwiki.__file__)))
 
 
 def _verb_closure(argv, stdin=""):
-    """Dispatch `argv` via cli.main in a fresh interpreter; return loaded
-    `llmwiki.*` modules after the verb's branch-local imports executed."""
     driver = textwrap.dedent(
         """
         import sys, json
@@ -60,8 +32,6 @@ def _verb_closure(argv, stdin=""):
     )
     r = subprocess.run(
         [sys.executable, "-c", driver, _PKG_ROOT, json.dumps(argv)],
-        # Strict UTF-8 both ways: encoding= governs stdin too, so this also
-        # pins how `stdin` reaches the driver.
         input=stdin, capture_output=True, text=True, encoding="utf-8",
     )
     marker = "__MODS__="
@@ -80,8 +50,6 @@ def _has_ingest(mods):
 
 @pytest.fixture
 def nonwiki_dir(tmp_path):
-    # A plain dir with no .llmwiki marker: read verbs import their branch closure
-    # then exit early (NO-WIKI / NO-MARKER), which is enough to capture the closure.
     return str(tmp_path)
 
 
@@ -99,10 +67,6 @@ def test_pure_read_verb_closure_excludes_write_and_ingest(argv_factory, nonwiki_
 
 
 def test_promote_check_closure_excludes_ingest_but_uses_write(tmp_path):
-    # promote-check is the read-only read-path into write/promote: it MAY import
-    # llmwiki.write (the preview reads derived_to_source_path / detect_contamination)
-    # but must NOT import llmwiki.ingest, and must not call the move (asserted by
-    # the unit-level promote tests; here we pin the import boundary).
     f = tmp_path / "wiki" / "derived" / "x.md"
     f.parent.mkdir(parents=True)
     f.write_text("derived page", encoding="utf-8")

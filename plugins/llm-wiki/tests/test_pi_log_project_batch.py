@@ -1,43 +1,3 @@
-"""Tests: pi_log_project batch split + composition (OI-1 S1, design A/A2).
-
-Mirrors test_cc_log_project_batch.py's shape for the pi mirror of the R1
-scan-collapse split (plan 12-plan-oi1.md rev4, S1):
-
-  - `extract_turns_batch` walks the session dir ONCE for ALL requested sids
-    (single filesystem walk, not one rglob per sid), assigns the F5 hash at
-    extraction time, and maps a sid with no matching session file to an empty
-    list (does NOT raise — mirrors cc's not-found-is-empty-list semantics);
-  - `project_from_turns` consumes pre-extracted turn dicts (does not
-    recompute the hash — a tampered hash passes through unchanged), applies
-    within-sid exact dedup + ledger diff, and raises `ProjectionError` when a
-    non-empty-text turn is missing its `hash` key (fail-closed, pi-specific:
-    cc KeyErrors on the same condition instead);
-  - `project_owned` (Path A) is the composition `extract_turns_batch([sid])`
-    -> `project_from_turns`, verified equivalent to the direct call on a
-    synthetic fixture (S1 non-regression criterion, formalized here without
-    depending on real ~/.pi/agent/sessions data).
-
-Session fixtures are synthetic and deterministic: `PI_CODING_AGENT_DIR` is
-overridden (via monkeypatch.setenv) to a tmp_path-rooted "agent dir" so
-`pi_log_project._session_dir()` resolves under the fixture, never the real
-user session store (per S1's confirmed override mechanism,
-`pi_log_project.py:137-143`). Most fixtures use the pi JSONL ARRAY content
--block shape (`[{"type": "text", "text": ...}]`, via the `_msg` helper)
-since that was the shape observed in real P6 session data. The plain-
-VARCHAR content shape (`_msg_str` helper) is ALSO a legal pi message shape
--- ``UserMessage.content`` is typed ``string | (TextContent | ImageContent)
-[]`` (pi-mono packages/ai/src/types.ts:186) -- and previously raised a
-DuckDB ConversionException in `pi_views.sql`'s CASE branch, because DuckDB
-1.5.4 eagerly evaluates the ARRAY-cast subquery regardless of which CASE
-branch is taken. This was fixed (item 4, 2026-07-03) by changing the ARRAY
-branch's `cast(json_extract(j, '$.message.content') AS JSON[])` to
-`try_cast(...)` in `pi_views.sql`, so the subquery now returns NULL instead
-of raising when the content is VARCHAR-shaped; the existing VARCHAR CASE
-branch (`json_extract_string`) already produced the correct result and was
-unaffected. `test_extract_turns_batch_varchar_content_only` and
-`test_project_owned_mixed_varchar_and_array_content` below exercise the
-VARCHAR-only and mixed VARCHAR/ARRAY shapes directly.
-"""
 import json
 
 import pytest
@@ -46,9 +6,6 @@ from llmwiki.ingest import pi_log_project as pilp
 from llmwiki.ingest import ledger
 
 
-# --------------------------------------------------------------------------- #
-# fixture helpers
-# --------------------------------------------------------------------------- #
 def _msg(entry_id, parent_id, role, ts, text):
     return {
         "type": "message",
@@ -60,12 +17,6 @@ def _msg(entry_id, parent_id, role, ts, text):
 
 
 def _msg_str(entry_id, parent_id, role, ts, text):
-    """pi JSONL message entry with content as a PLAIN STRING (VARCHAR shape).
-
-    ``UserMessage.content: string | (TextContent | ImageContent)[]``
-    (pi-mono packages/ai/src/types.ts:186) -- plain string is a legal, real
-    shape for user messages, not merely a defensive/hypothetical case.
-    """
     return {
         "type": "message",
         "id": entry_id,
@@ -76,7 +27,6 @@ def _msg_str(entry_id, parent_id, role, ts, text):
 
 
 def _write_session(session_dir, sid, ts_prefix, entries, cwd="/synthetic/cwd"):
-    """Write one synthetic pi session file `<ts_prefix>_<sid>.jsonl`."""
     session_dir.mkdir(parents=True, exist_ok=True)
     path = session_dir / f"{ts_prefix}_{sid}.jsonl"
     header = {"type": "session", "version": 1, "id": sid, "cwd": cwd}
@@ -87,15 +37,11 @@ def _write_session(session_dir, sid, ts_prefix, entries, cwd="/synthetic/cwd"):
 
 
 def _use_agent_dir(tmp_path, monkeypatch):
-    """Override PI_CODING_AGENT_DIR so _session_dir() resolves under tmp_path."""
     agent_dir = tmp_path / "agentdir"
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
     return pilp._session_dir()
 
 
-# --------------------------------------------------------------------------- #
-# extract_turns_batch: single walk, multi-sid split, hash assignment
-# --------------------------------------------------------------------------- #
 def test_extract_turns_batch_one_walk_for_multiple_sids(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
@@ -120,8 +66,7 @@ def test_extract_turns_batch_one_walk_for_multiple_sids(tmp_path, monkeypatch):
 
     out = pilp.extract_turns_batch([sid_a, sid_b], ledger=ledger)
 
-    # exactly ONE rglob call covers BOTH sids (R1 batch walk, not per-sid).
-    assert len(calls) == 1
+    assert len(calls) == 1, "one filesystem walk covers every requested sid, not one per sid"
     assert set(out.keys()) == {sid_a, sid_b}
     assert [t["text"] for t in out[sid_a]] == ["A first"]
     assert [t["text"] for t in out[sid_b]] == ["B first"]
@@ -158,9 +103,6 @@ def test_extract_turns_batch_assigns_hash(tmp_path, monkeypatch):
     assert out[sid][0]["hash"] == ledger.compute_hash("user", "hello world")
 
 
-# --------------------------------------------------------------------------- #
-# project_from_turns: dedup, ledger-diff, hash-not-recomputed, missing-hash
-# --------------------------------------------------------------------------- #
 def _turn(entry_id, parent_id, role, ts, text, *, hash_=None):
     d = {"id": entry_id, "parentId": parent_id, "role": role, "ts": ts, "text": text}
     if hash_ is not None:
@@ -172,14 +114,14 @@ def test_project_from_turns_within_sid_dedup(tmp_path):
     t1 = pilp._assign_hash(
         _turn("u1", None, "user", "t1", "question A"), ledger=ledger)
     t2 = pilp._assign_hash(
-        _turn("u2", "u1", "user", "t2", "question A"), ledger=ledger)  # dup text
+        _turn("u2", "u1", "user", "t2", "question A"), ledger=ledger)
     t3 = pilp._assign_hash(
         _turn("a1", "u2", "assistant", "t3", "answer A"), ledger=ledger)
 
     res = pilp.project_from_turns(tmp_path, "sid-x", [t1, t2, t3], ledger=ledger)
     hashes = [e["hash"] for e in res.novel_entries]
     assert len(hashes) == len(set(hashes))
-    assert len(res.novel_entries) == 2  # "question A" collapses once
+    assert len(res.novel_entries) == 2
 
 
 def test_project_from_turns_ledger_diff_drops_and_counts(tmp_path, monkeypatch):
@@ -197,7 +139,6 @@ def test_project_from_turns_ledger_diff_drops_and_counts(tmp_path, monkeypatch):
 
 
 def test_project_from_turns_does_not_recompute_hash(tmp_path):
-    """A tampered hash passes through unchanged (single source of truth)."""
     d = pilp._assign_hash(
         _turn("u1", None, "user", "t1", "hello"), ledger=ledger)
     real_hash = d["hash"]
@@ -209,21 +150,17 @@ def test_project_from_turns_does_not_recompute_hash(tmp_path):
 
 
 def test_project_from_turns_missing_hash_raises_projection_error(tmp_path):
-    d = _turn("u1", None, "user", "t1", "has no hash key")  # no hash_=...
+    d = _turn("u1", None, "user", "t1", "has no hash key")
     with pytest.raises(pilp.ProjectionError, match="hash"):
         pilp.project_from_turns(tmp_path, "sid", [d], ledger=ledger)
 
 
 def test_project_from_turns_empty_text_turn_skips_before_hash_check(tmp_path):
-    """A turn with empty text is skipped before the hash check (no raise)."""
-    d = _turn("u1", None, "user", "t1", "")  # no hash key, empty text
+    d = _turn("u1", None, "user", "t1", "")
     res = pilp.project_from_turns(tmp_path, "sid", [d], ledger=ledger)
     assert res.novel_entries == []
 
 
-# --------------------------------------------------------------------------- #
-# project_owned == extract_turns_batch([sid]) -> project_from_turns (S1 parity)
-# --------------------------------------------------------------------------- #
 def test_project_owned_equals_batch_then_project_composition(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
@@ -249,12 +186,9 @@ def test_project_owned_equals_batch_then_project_composition(tmp_path, monkeypat
     assert split.markdown == owned.markdown
     assert split.novel_entries == owned.novel_entries
     assert split.ledger_skipped == owned.ledger_skipped
-    assert len(owned.novel_entries) == 2  # "question A" dedup collapses e1/e3
+    assert len(owned.novel_entries) == 2
 
 
-# --------------------------------------------------------------------------- #
-# VARCHAR-content message shape (item 4: pi_views.sql try_cast fix)
-# --------------------------------------------------------------------------- #
 def test_extract_turns_batch_varchar_content_only(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
@@ -274,9 +208,6 @@ def test_extract_turns_batch_varchar_content_only(tmp_path, monkeypatch):
 
 
 def test_project_owned_mixed_varchar_and_array_content(tmp_path, monkeypatch):
-    """VARCHAR- and ARRAY-shaped messages in the SAME session both project,
-    in chronological order, and dedup collapses across the two shapes (the
-    F5 hash is computed from role+text, not from the raw JSONL shape)."""
     pytest.importorskip("duckdb")
     sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
     sid = "11111111-1111-0000-0000-000000000007"
@@ -284,35 +215,23 @@ def test_project_owned_mixed_varchar_and_array_content(tmp_path, monkeypatch):
         sessions_dir / "--projG--", sid, "2026-07-02T09-00-00-000Z",
         [
             _msg("g1", None, "user", "2026-07-02T09:00:00.000Z",
-                 "question A"),  # ARRAY shape
+                 "question A"),
             _msg_str("g2", "g1", "assistant", "2026-07-02T09:00:01.000Z",
-                      "answer A"),  # VARCHAR shape
+                      "answer A"),
             _msg_str("g3", "g2", "user", "2026-07-02T09:00:02.000Z",
-                      "question A"),  # VARCHAR shape, dup text of g1
+                      "question A"),
         ])
 
     wiki_root = tmp_path / "wiki"
     wiki_root.mkdir()
     res = pilp.project_owned(wiki_root, sid, ledger=ledger)
 
-    # g3 ("question A", VARCHAR) dedups against g1 ("question A", ARRAY):
-    # only 2 novel turns survive (g1, g2), not 3.
     assert len(res.novel_entries) == 2
     assert "question A" in res.markdown
     assert "answer A" in res.markdown
-    # chronological order preserved: g1's turn precedes g2's turn.
     assert res.markdown.index("question A") < res.markdown.index("answer A")
 
 
-# --------------------------------------------------------------------------- #
-# D7-pi — blank the llm-wiki command-invocation turn at extraction.
-#
-# pi persists the EXPANDED prompt template as the user's turn (agent-session.ts
-# expands before persisting; prompt-templates.ts hands back the .md body with
-# frontmatter stripped and trimmed), so an invocation turn's text IS this
-# package's prompt body, first line `# /wiki-file`. Un-blanked, the NEXT run of
-# the same command files those hundreds of lines as conversation content.
-# --------------------------------------------------------------------------- #
 _WIKI_FILE_BODY = (
     "# /wiki-file\n"
     "\n"
@@ -329,15 +248,11 @@ def test_is_command_invocation_matches_every_shipped_h1():
 
 
 def test_is_command_invocation_requires_the_user_role():
-    """Two signals, never one (same shape as cc's isMeta AND denylist, D12).
-    An assistant turn quoting the heading is not an invocation."""
     turn = {"role": "assistant", "text": _WIKI_FILE_BODY}
     assert not pilp._is_command_invocation(turn)
 
 
 def test_is_command_invocation_ignores_a_mere_mention():
-    """The denylist is FIRST-LINE only. A user talking ABOUT the command — or
-    pasting the heading further down — keeps their turn."""
     assert not pilp._is_command_invocation(
         {"role": "user", "text": "how does # /wiki-file decide the cutoff?"})
     assert not pilp._is_command_invocation(
@@ -348,9 +263,6 @@ def test_is_command_invocation_ignores_a_mere_mention():
 
 
 def test_blank_command_invocations_keeps_position_and_role():
-    """BLANK, never drop: the D13 cutoff anchors on the last USER-role turn, so
-    removing the invocation would move the anchor onto the user's last real
-    question and delete the exchange the run exists to file."""
     turns = [
         {"role": "user", "text": "real question", "id": "u1"},
         {"role": "assistant", "text": "real answer", "id": "a1"},
@@ -362,7 +274,6 @@ def test_blank_command_invocations_keeps_position_and_role():
     assert [t["id"] for t in out] == ["u1", "a1", "u2"]
     assert out[2]["text"] == ""
     assert [t["text"] for t in out[:2]] == ["real question", "real answer"]
-    # inputs are not mutated in place
     assert turns[2]["text"] == _WIKI_FILE_BODY
 
 
@@ -381,13 +292,13 @@ def test_extract_owned_blanks_the_invocation_turn(tmp_path, monkeypatch):
     turns = pilp.extract_owned(sid, ledger=ledger)
 
     assert [t["text"] for t in turns] == ["real question", "real answer", ""]
-    # the blanked turn keeps its user role -> it is still the cutoff's anchor
-    assert turns[-1]["role"] == "user"
+    assert turns[-1]["role"] == "user", (
+        "the invocation turn is blanked and kept, never dropped, so it stays the "
+        "cutoff anchor"
+    )
 
 
 def test_extract_turns_batch_blanks_the_invocation_turn(tmp_path, monkeypatch):
-    """The batch (Path B) channel applies the same filter as Path A —
-    /wiki-ingest-sessions ingests logs that contain invocation turns too."""
     pytest.importorskip("duckdb")
     sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
     sid = "dddddddd-0000-0000-0000-000000000011"
@@ -405,9 +316,6 @@ def test_extract_turns_batch_blanks_the_invocation_turn(tmp_path, monkeypatch):
 
 def test_blanked_invocation_never_reaches_the_wiki_or_the_ledger(tmp_path,
                                                                 monkeypatch):
-    """The end-to-end point of D7-pi: a blanked turn is not rendered, not
-    hashed into the ledger, and not counted as ledger_skipped — so the NEXT
-    run cannot file it as conversation content."""
     pytest.importorskip("duckdb")
     sessions_dir = _use_agent_dir(tmp_path, monkeypatch)
     sid = "dddddddd-0000-0000-0000-000000000012"
@@ -426,5 +334,4 @@ def test_blanked_invocation_never_reaches_the_wiki_or_the_ledger(tmp_path,
     assert "You are the filing orchestrator" not in res.markdown
     assert "/wiki-file" not in res.markdown
     assert res.ledger_skipped == 0
-    # only the two real turns are novel; the invocation contributes nothing
     assert len(res.novel_entries) == 2

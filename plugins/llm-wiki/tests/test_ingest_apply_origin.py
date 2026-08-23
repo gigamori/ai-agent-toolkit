@@ -1,18 +1,3 @@
-"""Contract tests: `ingest-apply` origin -> WriteSession tier mapping (D20).
-
-Trust is decided by location: projection origins carry UNTRUSTED transcript
-content and may target ONLY wiki/derived/. Both projection origins must map to
-the "derived" tier:
-
-  - fe_b_prime (cc-log)  -> derived
-  - fe_pi_log  (pi-log)  -> derived   (regression: previously fell through to
-                                       "source", letting an untrusted pi
-                                       transcript write outside wiki/derived/)
-  - fe_b (explicit 3rd-party source file) -> source
-
-The verb requires an open transaction (journal dir + sidecar) — the fixtures
-fabricate the driver's on-disk state directly (the verb never opens one).
-"""
 import io
 import json
 
@@ -29,7 +14,6 @@ def _init_wiki_with_txn(tmp_path):
     (tmp_path / "SCHEMA.md").write_text("# SCHEMA\n", encoding="utf-8")
     (tmp_path / "index.md").write_text("# Index\n", encoding="utf-8")
     (tmp_path / "log.md").write_text("# Log\n", encoding="utf-8")
-    # Fabricate the driver-owned transaction state ingest-apply requires.
     (tmp_path / transaction.JOURNAL_DIR).mkdir()
     (tmp_path / ".llmwiki.txn").write_text(
         json.dumps({"max_count": 100, "max_bytes": 10485760}),
@@ -42,7 +26,6 @@ def _run_ingest_apply(monkeypatch, root, origin, manifest) -> int:
 
 
 def test_fe_pi_log_maps_to_derived_tier(tmp_path, monkeypatch):
-    """fe_pi_log content outside wiki/derived/ is REJECTED (cross_namespace)."""
     _init_wiki_with_txn(tmp_path)
     with pytest.raises(WriteRejected) as exc:
         _run_ingest_apply(monkeypatch, tmp_path, "fe_pi_log",

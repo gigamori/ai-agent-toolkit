@@ -1,9 +1,3 @@
-"""Tests: allowlist write tool (D19/D20).
-
-Covers: targets limited to wiki/ + wiki/derived/; reject SCHEMA.md/.llmwiki/raw/,
-absolute paths, traversal; budget overflow -> human gate; derived-origin edits
-confined to wiki/derived/; commit writes files.
-"""
 import pytest
 
 from llmwiki.write import write_tool as wt
@@ -44,10 +38,11 @@ def test_rejects_traversal():
 
 
 def test_rejects_non_md_target(tmp_path):
-    # DEC-MD-1 (P10, ENFORCE): a non-.md target under wiki/ is invisible to
-    # scan_pages/lint/index, so classify_target rejects it outright.
     c = wt.classify_target("wiki/notes.txt")
-    assert not c.ok and c.gate == "path"
+    assert not c.ok and c.gate == "path", (
+        "a non-.md target under wiki/ is invisible to scan_pages, lint and the "
+        "index, so it is rejected outright rather than written"
+    )
     assert not wt.classify_target("wiki/derived/data.json").ok
     with pytest.raises(wt.WriteRejected) as e:
         wt.WriteSession(tmp_path, origin="source").add("wiki/notes.txt", "x")
@@ -66,7 +61,7 @@ def test_budget_count_overflow_is_human_gate(tmp_path):
 def test_budget_size_overflow_is_human_gate(tmp_path):
     s = wt.WriteSession(tmp_path, max_bytes=10, origin="source")
     with pytest.raises(wt.WriteRejected) as e:
-        s.add("wiki/a.md", "0123456789ABCDEF")  # 16 bytes > 10
+        s.add("wiki/a.md", "0123456789ABCDEF")
     assert e.value.gate == "budget"
 
 
@@ -91,16 +86,14 @@ def test_commit_writes_files(tmp_path):
 def test_initial_bytes_carry_counts_toward_budget(tmp_path):
     s = wt.WriteSession(tmp_path, max_bytes=10, initial_bytes=6, origin="source")
     with pytest.raises(wt.WriteRejected) as e:
-        s.add("wiki/a.md", "01234")   # 5 bytes; 6 + 5 = 11 > 10
+        s.add("wiki/a.md", "01234")
     assert e.value.gate == "budget"
 
 
-def test_initial_bytes_default_zero_is_backward_compatible(tmp_path):
-    # A session with initial_bytes=0 (the default) behaves exactly as before
-    # this change: only its own accumulated bytes count toward max_bytes.
+def test_initial_bytes_defaults_to_zero_and_counts_only_own_bytes(tmp_path):
     s = wt.WriteSession(tmp_path, max_bytes=10, origin="source")
     assert s.initial_bytes == 0
-    s.add("wiki/a.md", "0123456789")  # exactly 10 bytes -> at the ceiling, ok
+    s.add("wiki/a.md", "0123456789")
     with pytest.raises(wt.WriteRejected) as e:
-        s.add("wiki/b.md", "x")       # 10 + 1 > 10
+        s.add("wiki/b.md", "x")
     assert e.value.gate == "budget"

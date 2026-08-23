@@ -1,8 +1,3 @@
-"""Tests: redaction / secret-scan (D16).
-
-Covers: known secrets and absolute paths are masked; clean text untouched;
-deterministic placeholders keep dedup stable.
-"""
 from llmwiki.ingest import redaction
 
 
@@ -61,7 +56,6 @@ def test_empty_and_non_str_safe():
     assert redaction.redact(None).text == ""
 
 
-# --- P2/A-1 regression: pass-through (must NOT mask) -----------------------
 
 def test_passthrough_https_url():
     s = "see https://example.com/path here"
@@ -98,7 +92,6 @@ def test_passthrough_markdown_link():
     assert r.text == s
 
 
-# --- P2/A-1 regression: still mask -----------------------------------------
 
 def test_masks_windows_abs_path_no_lead():
     r = redaction.redact(r"open C:\Users\x\a.txt")
@@ -130,7 +123,6 @@ def test_masks_posix_home_path_still_masks():
     assert "/home/x" not in r.text
 
 
-# --- P2/A-2 regression: flag carries masked snippet + line_no, never raw ---
 
 def test_flag_carries_masked_snippet_and_line_no_no_raw_bytes():
     text = "line one\napi_key = FAKEfake1234567890 trailing\nline three"
@@ -143,9 +135,6 @@ def test_flag_carries_masked_snippet_and_line_no_no_raw_bytes():
     assert len(f.preview) <= 120
 
 
-# --- P2/F1+F5 regression: multi-match-per-line preview must never leak a
-# sibling match's raw bytes (each match's preview is built from a snippet
-# with ALL patterns applied, not just its own span) -------------------------
 
 def test_flag_preview_no_raw_bytes_multi_secret_same_line_kv():
     text = "api_key = AAAAAAAA88 and token = BBBBBBBB99"

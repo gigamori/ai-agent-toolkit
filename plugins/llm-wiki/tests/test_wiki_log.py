@@ -1,8 +1,3 @@
-"""Tests: log append + parse (design §4, grep-parseable prefix grammar).
-
-Covers: header format; append starts at line-begin with "## ["; parse reads
-op/tag/title back; front-end dispatch helpers; tail.
-"""
 from llmwiki.core import wiki_log
 
 
@@ -29,18 +24,16 @@ def test_headers_start_at_line_begin(tmp_path):
     wiki_log.append(log, "file", "derived", "X", date="2026-06-26",
                     body="some body text")
     text = log.read_text(encoding="utf-8")
-    # grep "^## \[" must find the header.
     header_lines = [ln for ln in text.splitlines() if ln.startswith("## [")]
-    assert header_lines == ["## [2026-06-26] file|derived | X"]
+    assert header_lines == ["## [2026-06-26] file|derived | X"], (
+        "the log grammar is grep-parseable: a header starts at line begin, never indented"
+    )
 
 
 def test_parses_template_example_spacing():
-    # The template shows "file|derived  | <Title>" with extra spacing.
     entries = []
     import io
     line = "## [2026-06-26] file|derived  | Spaced Title"
-    # parse() works on a file; emulate via a tmp file path through a small helper.
-    # Instead validate the regex tolerance directly.
     m = wiki_log._HEADER_RE.match(line)
     assert m is not None
     assert m.group(2) == "file" and m.group(3) == "derived"

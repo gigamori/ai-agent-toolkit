@@ -1,20 +1,3 @@
-"""Tests: ingest_driver — the deterministic ingest CLI (plan C1, §3 contract).
-
-Covers:
-  - begin -> finish(success) round-trip (zero LLM-threaded state: state lives in
-    the .llmwiki.txn sidecar) -> {committed: true}, index regenerated, sidecar +
-    lock cleared;
-  - finish(fail) and abort both replay the journal (remove the orphan raw) +
-    delete the sidecar;
-  - a success-path failure rolls back journaled writes + releases;
-  - dedup_noop path (same content re-ingest -> dedup_noop True);
-  - plan-fanout ceil split (each cluster <= k);
-  - the consistency invariant violation (apply_fanout_k > max_count) aborts begin
-    BEFORE locking;
-  - the sidecar is removed on every terminal path (success / fail / abort).
-
-No git — the transaction is a file journal.
-"""
 import json
 import os
 import shutil
@@ -46,7 +29,6 @@ config:
 
 
 def _init_wiki(tmp_path):
-    """A .llmwiki marker + SCHEMA.md + index/log — a plain directory (no git)."""
     (tmp_path / ".llmwiki").write_text("version: 1\nschema: SCHEMA.md\n",
                                        encoding="utf-8")
     (tmp_path / "SCHEMA.md").write_text(_SCHEMA, encoding="utf-8")
@@ -54,9 +36,6 @@ def _init_wiki(tmp_path):
     (tmp_path / "log.md").write_text("# Log\n", encoding="utf-8")
 
 
-# --------------------------------------------------------------------------- #
-# begin -> finish(success): commit (discard journal), zero LLM-threaded state
-# --------------------------------------------------------------------------- #
 def test_begin_finish_success_round_trip(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
@@ -68,9 +47,6 @@ def test_begin_finish_success_round_trip(tmp_path):
     assert out["origin"] == drv.ORIGIN_FE_B
     assert out["max_count"] == 100
     assert out["apply_fanout_k"] == 10
-    # E1 (D-1): begin stdout no longer carries the inline `redacted_body`; it
-    # carries the raw artifact's wiki-relative path (Read-able by a downstream
-    # stage) plus a short code-side declaration hash instead.
     assert "redacted_body" not in out
     assert out["raw_rel_path"].startswith("raw/")
     assert out["raw_rel_path"].endswith(".txt")
@@ -79,24 +55,18 @@ def test_begin_finish_success_round_trip(tmp_path):
     assert isinstance(out["declaration_hash"], str)
     assert len(out["declaration_hash"]) == 12
 
-    # Simulate Stage2 having written a page (the driver does NOT author content).
     (tmp_path / "wiki").mkdir(exist_ok=True)
     (tmp_path / "wiki" / "page.md").write_text("# Page", encoding="utf-8")
 
     res = drv.finish(str(tmp_path), "success",
                      expected_pages=["wiki/page.md"], title="page")
     assert res == {"committed": True}
-    # Sidecar removed + lock released + journal discarded on the terminal path.
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / tx.JOURNAL_DIR).exists()
-    # index regenerated to include the new page.
     assert "wiki/page.md" in (tmp_path / "index.md").read_text(encoding="utf-8")
 
 
-# --------------------------------------------------------------------------- #
-# finish(fail): replay journal + remove orphan raw + release + delete sidecar
-# --------------------------------------------------------------------------- #
 def test_finish_fail_replays_and_cleans_orphan_raw(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
@@ -109,17 +79,12 @@ def test_finish_fail_replays_and_cleans_orphan_raw(tmp_path):
 
     res = drv.finish(str(tmp_path), "fail")
     assert res == {"rolled_back": True}
-    # Orphan raw removed by the journal replay (the raw create is undone).
     assert not (tmp_path / raw_rel).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / tx.JOURNAL_DIR).exists()
 
 
-# --------------------------------------------------------------------------- #
-# finish(success) failure: a raise on the success path must roll back journaled
-# writes + release + delete sidecar (honours one-of-commit/rollback)
-# --------------------------------------------------------------------------- #
 def test_finish_success_failure_rolls_back(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
@@ -130,8 +95,6 @@ def test_finish_success_failure_rolls_back(tmp_path, monkeypatch):
     raw_rel = f"raw/{fe_hash}.txt"
     assert (tmp_path / raw_rel).exists()
 
-    # Simulate Stage2 writing a page THROUGH the journal (as WriteSession does),
-    # so the failed success-path rolls it back too.
     (tmp_path / "wiki").mkdir(exist_ok=True)
     tx.journal_before_write(str(tmp_path), ["wiki/page.md"])
     (tmp_path / "wiki" / "page.md").write_text("# Page", encoding="utf-8")
@@ -144,16 +107,12 @@ def test_finish_success_failure_rolls_back(tmp_path, monkeypatch):
         drv.finish(str(tmp_path), "success",
                    expected_pages=["wiki/page.md"], title="page")
 
-    # Rollback restored the pre-ingest state: orphan raw + the page are gone.
     assert not (tmp_path / raw_rel).exists()
     assert not (tmp_path / "wiki" / "page.md").exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
 
 
-# --------------------------------------------------------------------------- #
-# abort: replay + release + delete sidecar (manual recovery, D-g)
-# --------------------------------------------------------------------------- #
 def test_abort_replays_and_deletes_sidecar(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
@@ -166,7 +125,7 @@ def test_abort_replays_and_deletes_sidecar(tmp_path):
 
     res = drv.abort(str(tmp_path))
     assert res["aborted"] is True
-    assert not (tmp_path / raw_rel).exists()        # orphan raw cleaned
+    assert not (tmp_path / raw_rel).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
 
@@ -179,45 +138,31 @@ def test_abort_no_sidecar_is_noop_with_message(tmp_path):
 
 
 def test_abort_recovers_crashed_begin_without_sidecar(tmp_path):
-    """F1: a hard crash in begin's window between the lock and the sidecar leaves
-    a held lock + a journal (+ orphan raw) but NO sidecar. abort must still
-    recover (replay journal -> remove orphan raw + release lock), else the lock
-    wedges every future ingest and the orphan raw poisons D18 dedup."""
     _init_wiki(tmp_path)
-    # Simulate begin up to just before _write_sidecar: lock, checkpoint, and a
-    # journaled-then-written raw artifact — sidecar never reached.
     tx.acquire_lock(str(tmp_path))
     tx.checkpoint(str(tmp_path))
     tx.journal_before_write(str(tmp_path), ["raw/deadbeef.txt"])
     (tmp_path / "raw").mkdir(exist_ok=True)
     (tmp_path / "raw" / "deadbeef.txt").write_text("orphan raw", encoding="utf-8")
-    assert not (tmp_path / drv.SIDECAR_NAME).exists()      # crashed before sidecar
+    assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert (tmp_path / tx.LOCK_NAME).exists()
 
     res = drv.abort(str(tmp_path))
     assert res["aborted"] is True
     assert res["recovered_without_sidecar"] is True
-    assert not (tmp_path / "raw" / "deadbeef.txt").exists()  # orphan raw undone
-    assert not (tmp_path / tx.LOCK_NAME).exists()            # lock released
-    assert not (tmp_path / tx.JOURNAL_DIR).exists()          # journal discarded
+    assert not (tmp_path / "raw" / "deadbeef.txt").exists()
+    assert not (tmp_path / tx.LOCK_NAME).exists()
+    assert not (tmp_path / tx.JOURNAL_DIR).exists()
 
 
-# --------------------------------------------------------------------------- #
-# dedup_noop path: same content re-ingest is a no-op (D18)
-# --------------------------------------------------------------------------- #
 def test_dedup_noop_path(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("stable third-party content", encoding="utf-8")
 
-    # First ingest: not a no-op; finish(success) commits the raw + index/log.
     drv.begin(str(tmp_path), str(src), kind="fe_b")
     drv.finish(str(tmp_path), "success", title="first")
 
-    # Second ingest of identical content -> dedup_noop True (raw already exists).
-    # C1: begin now auto-closes the txn itself (rollback + release_lock), so it
-    # also returns auto_closed True and leaves NO sidecar/lock residue. The caller
-    # must NOT run finish (there is no sidecar to finish; a finish would error).
     out = drv.begin(str(tmp_path), str(src), kind="fe_b")
     assert out["dedup_noop"] is True
     assert out["auto_closed"] is True
@@ -225,38 +170,20 @@ def test_dedup_noop_path(tmp_path):
     assert not (tmp_path / tx.LOCK_NAME).exists()
 
 
-# --------------------------------------------------------------------------- #
-# C1 / F5: a dedup begin auto-closes with NO lock/sidecar residue and does NOT
-# destroy the legitimately committed raw.
-#
-# Structural premise (spec ingest-llm-dep-fixes.md :24 — "dedup_noop => orphan
-# raw non-survival"): a dedup can only ever match a COMMITTED raw, never a half-
-# written orphan. While a lock is held the *next* begin fails with LockHeld
-# BEFORE it reaches the dedup check, and abort's journal replay removes any
-# orphan raw. So auto-close's rollback (here a no-op journal replay — a dedup
-# begin journals nothing) leaves both the released lock and the committed raw
-# clean, and the caller never needs to run finish to reclaim the lock.
-# --------------------------------------------------------------------------- #
 def test_dedup_begin_auto_closes_without_residue(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("owned third-party content", encoding="utf-8")
 
-    # Commit a raw so the content is a legitimately owned (committed) artifact.
     drv.begin(str(tmp_path), str(src), kind="fe_b")
     drv.finish(str(tmp_path), "success", title="owned")
 
-    # begin against already-owned content: dedup no-op, auto-closed, no residue.
     out = drv.begin(str(tmp_path), str(src), kind="fe_b")
     assert out["dedup_noop"] is True
     assert out["auto_closed"] is True
-    # Caller runs NO finish, yet the lock + sidecar are already gone.
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
 
-    # The lock was genuinely released (not stranded): a subsequent begin proceeds
-    # instead of raising LockHeld — and it STILL sees the committed raw (auto-
-    # close's rollback did not remove the legitimate raw), so it dedups again.
     again = drv.begin(str(tmp_path), str(src), kind="fe_b")
     assert again["dedup_noop"] is True
     assert again["auto_closed"] is True
@@ -264,15 +191,12 @@ def test_dedup_begin_auto_closes_without_residue(tmp_path):
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
 
 
-# --------------------------------------------------------------------------- #
-# plan-fanout: ceil split, each cluster <= k
-# --------------------------------------------------------------------------- #
 def test_plan_fanout_under_k_one_cluster(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("x", encoding="utf-8")
-    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
-    touched = [f"wiki/p{i}.md" for i in range(7)]      # 7 <= 10
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
+    touched = [f"wiki/p{i}.md" for i in range(7)]
     out = drv.plan_fanout(str(tmp_path), json.dumps({"touched": touched}))
     assert out["clusters"] == [touched]
     drv.abort(str(tmp_path))
@@ -282,28 +206,22 @@ def test_plan_fanout_over_k_ceil_split_each_le_k(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("x", encoding="utf-8")
-    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
-    touched = [f"wiki/p{i}.md" for i in range(23)]     # 23 > 10
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
+    touched = [f"wiki/p{i}.md" for i in range(23)]
     out = drv.plan_fanout(str(tmp_path), json.dumps(touched))
     clusters = out["clusters"]
-    # ceil(23/10) = 3 clusters, each <= 10, union == touched, order preserved.
     assert len(clusters) == 3
     assert all(len(c) <= 10 for c in clusters)
     assert [p for c in clusters for p in c] == touched
     drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# B-6 (F-2): plan-fanout returns manifest_paths — one code-authored ABSOLUTE
-# path per cluster ordinal, so the orchestrator/worker never reconstructs a
-# temp path across turns (same defect class as #1 stage1_blob_path above).
-# --------------------------------------------------------------------------- #
 def test_plan_fanout_manifest_paths_inline_json_uses_system_temp(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("x", encoding="utf-8")
-    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
-    touched = [f"wiki/p{i}.md" for i in range(23)]     # 23 > 10 -> 3 clusters
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
+    touched = [f"wiki/p{i}.md" for i in range(23)]
     out = drv.plan_fanout(str(tmp_path), json.dumps(touched))
     state = drv._read_sidecar(tmp_path)
     fe_hash12 = state["fe_hash"][:12]
@@ -311,7 +229,7 @@ def test_plan_fanout_manifest_paths_inline_json_uses_system_temp(tmp_path):
     for i, p in enumerate(out["manifest_paths"]):
         path = Path(p)
         assert path.is_absolute()
-        assert path.parent == Path(tempfile.gettempdir())   # inline form -> temp fallback
+        assert path.parent == Path(tempfile.gettempdir())
         assert path.name == f"manifest-{fe_hash12}-{i}.json"
     drv.abort(str(tmp_path))
 
@@ -320,8 +238,8 @@ def test_plan_fanout_manifest_paths_file_input_parented_at_blob_dir(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("x", encoding="utf-8")
-    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
-    touched = [f"wiki/p{i}.md" for i in range(7)]      # 7 <= 10 -> one cluster
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
+    touched = [f"wiki/p{i}.md" for i in range(7)]
     blobdir = tmp_path / "blobdir"
     blobdir.mkdir()
     proposal_path = blobdir / "stage1.json"
@@ -333,19 +251,17 @@ def test_plan_fanout_manifest_paths_file_input_parented_at_blob_dir(tmp_path):
     for i, p in enumerate(out["manifest_paths"]):
         path = Path(p)
         assert path.is_absolute()
-        assert path.parent == blobdir                       # FILE-path branch, not temp
+        assert path.parent == blobdir
         assert path.name == f"manifest-{fe_hash12}-{i}.json"
     drv.abort(str(tmp_path))
 
 
 def test_plan_fanout_manifest_paths_file_under_out_dir_rides_cleanup(tmp_path):
-    """Path B: a proposal file inside $OUT_DIR yields manifest_paths under
-    that same out_dir, so the manifest rides the project-batch-cleanup sweep."""
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("x", encoding="utf-8")
-    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
-    touched = [f"wiki/p{i}.md" for i in range(23)]     # 23 > 10 -> 3 clusters
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
+    touched = [f"wiki/p{i}.md" for i in range(23)]
     out_dir = tmp_path / "batchtmp"
     out_dir.mkdir()
     proposal_path = out_dir / "stage1.json"
@@ -358,15 +274,10 @@ def test_plan_fanout_manifest_paths_file_under_out_dir_rides_cleanup(tmp_path):
 
 
 def test_plan_fanout_manifests_inherit_the_per_run_stage1_dir(tmp_path):
-    """The manifests inherit run-uniqueness from the blob's parent dir — they need
-    no keying of their own. This is load-bearing: `fe_hash` is a CONTENT hash, so
-    two concurrent runs projecting identical content produce the SAME
-    `manifest-<fe_hash12>-<ordinal>.json` filename, and only the per-run parent
-    dir keeps them apart."""
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("x", encoding="utf-8")
-    out = drv.begin(str(tmp_path), str(src), kind="fe_b")     # no out_dir
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b")
     blob = Path(out["stage1_blob_path"])
     blob.write_text(json.dumps({"touched": ["wiki/p0.md"]}), encoding="utf-8")
 
@@ -383,7 +294,7 @@ def test_plan_fanout_manifest_paths_empty_touched_aligned(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("x", encoding="utf-8")
-    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 from config
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
     out = drv.plan_fanout(str(tmp_path), json.dumps([]))
     assert out["clusters"] == []
     assert out["manifest_paths"] == []
@@ -397,26 +308,17 @@ def test_plan_fanout_requires_sidecar(tmp_path):
 
 
 def test_plan_fanout_over_max_count_hits_human_gate(tmp_path):
-    """F2: total touched > max_count escalates to the human gate at plan-fanout —
-    the per-worker WriteSession budget would otherwise be multiplied by the
-    cluster count and never gate the ingest as a whole (D19)."""
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("x", encoding="utf-8")
-    drv.begin(str(tmp_path), str(src), kind="fe_b")    # max_count=100 from config
-    touched = [f"wiki/p{i}.md" for i in range(101)]     # 101 > 100
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
+    touched = [f"wiki/p{i}.md" for i in range(101)]
     with pytest.raises(drv.DriverError) as ei:
         drv.plan_fanout(str(tmp_path), json.dumps(touched))
     assert "budget overflow" in str(ei.value)
     drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# #1 follow-up: begin returns an ABSOLUTE stage1_blob_path (code-authored) so
-# the orchestrator never reconstructs a temp path across turns (a reconstructed
-# `AppData\Local\Temp\...` was resolved against the CWD on Windows). Under
-# `--out_dir` for Path B (rides project-batch-cleanup); system temp otherwise.
-# --------------------------------------------------------------------------- #
 def test_begin_stage1_blob_path_absolute_under_out_dir(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
@@ -426,35 +328,27 @@ def test_begin_stage1_blob_path_absolute_under_out_dir(tmp_path):
     out = drv.begin(str(tmp_path), str(src), kind="fe_b", out_dir=str(out_dir))
     blob = Path(out["stage1_blob_path"])
     assert blob.is_absolute()
-    assert blob.parent == out_dir                       # placed under out_dir
-    assert blob.name == "stage1-input.json"             # keyed by source stem
+    assert blob.parent == out_dir
+    assert blob.name == "stage1-input.json"
     drv.abort(str(tmp_path))
 
 
 def test_begin_stage1_blob_path_defaults_to_a_per_run_temp_dir(tmp_path):
-    """Without `--out_dir` the blob lands in a FRESH per-run `llmwiki-stage1-*`
-    dir under the system temp — not directly in the system temp, which keyed the
-    path on the source stem alone and collided across concurrent runs."""
     _init_wiki(tmp_path)
     src = tmp_path / "doc.md"
     src.write_text("y", encoding="utf-8")
-    out = drv.begin(str(tmp_path), str(src), kind="fe_b")   # no out_dir
+    out = drv.begin(str(tmp_path), str(src), kind="fe_b")
     blob = Path(out["stage1_blob_path"])
     assert blob.is_absolute()
-    assert blob.name == "stage1-doc.json"                   # filename unchanged
+    assert blob.name == "stage1-doc.json"
     assert blob.parent.name.startswith(drv._STAGE1_DIR_PREFIX)
     assert blob.parent.parent == Path(tempfile.gettempdir())
-    assert blob.parent.is_dir()                             # created eagerly
+    assert blob.parent.is_dir()
     drv.abort(str(tmp_path))
     shutil.rmtree(blob.parent, ignore_errors=True)
 
 
 def test_begin_stage1_blob_dir_is_unique_per_run(tmp_path):
-    """THE collision regression: two begins on the SAME source must not share a
-    Stage1 blob path. Measured failure before this fix — five parallel runs of one
-    sid overwrote each other's blob, `plan-fanout` consumed a foreign run's
-    content, and `apply-finish`'s F2 gate could not detect it (planned_clusters
-    and the Stage2 manifest both derive from that same file)."""
     _init_wiki(tmp_path)
     src = tmp_path / "same-source.md"
     src.write_text("first", encoding="utf-8")
@@ -463,24 +357,22 @@ def test_begin_stage1_blob_dir_is_unique_per_run(tmp_path):
     blob1 = Path(first["stage1_blob_path"])
     drv.abort(str(tmp_path))
 
-    # Same source stem, so the FILENAME is identical by design ...
     src.write_text("second", encoding="utf-8")
     second = drv.begin(str(tmp_path), str(src), kind="fe_b")
     blob2 = Path(second["stage1_blob_path"])
     drv.abort(str(tmp_path))
 
-    assert blob1.name == blob2.name          # ... keyed on the source stem
-    assert blob1 != blob2                    # ... but the full paths differ
-    assert blob1.parent != blob2.parent      # because the DIR is per-run
+    assert blob1.name == blob2.name
+    assert blob1 != blob2
+    assert blob1.parent != blob2.parent, (
+        "two begins on the same source share a blob FILENAME by design, so only the "
+        "per-run parent dir keeps concurrent runs from overwriting each other"
+    )
     for d in (blob1.parent, blob2.parent):
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_begin_dedup_noop_creates_no_stage1_dir(tmp_path):
-    """A dedup no-op dispatches no stages, so it must not create a per-run dir
-    (it would be an empty leak on every no-op). begin creates the dir ONLY on the
-    branch that hands back a live transaction — zero residue by construction, no
-    compensating cleanup."""
     _init_wiki(tmp_path)
     src = tmp_path / "dup.md"
     src.write_text("identical body", encoding="utf-8")
@@ -491,7 +383,7 @@ def test_begin_dedup_noop_creates_no_stage1_dir(tmp_path):
     shutil.rmtree(Path(first["stage1_blob_path"]).parent, ignore_errors=True)
 
     before = set(Path(tempfile.gettempdir()).glob(f"{drv._STAGE1_DIR_PREFIX}*"))
-    second = drv.begin(str(tmp_path), str(src), kind="fe_b")   # same content
+    second = drv.begin(str(tmp_path), str(src), kind="fe_b")
     after = set(Path(tempfile.gettempdir()).glob(f"{drv._STAGE1_DIR_PREFIX}*"))
 
     assert second["dedup_noop"] is True
@@ -500,9 +392,6 @@ def test_begin_dedup_noop_creates_no_stage1_dir(tmp_path):
 
 
 def test_begin_with_out_dir_creates_no_extra_stage1_dir(tmp_path):
-    """Path B already gets run-uniqueness from project-batch's own mkdtemp, and the
-    blob must stay INSIDE that dir so `project-batch-cleanup` sweeps it. begin must
-    not create a second dir there (one leak per sid across the loop)."""
     _init_wiki(tmp_path)
     src = tmp_path / "b.md"
     src.write_text("z", encoding="utf-8")
@@ -518,15 +407,7 @@ def test_begin_with_out_dir_creates_no_extra_stage1_dir(tmp_path):
     drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# #2 follow-up: plan-fanout enforces the derived tier for projection origins.
-# The derived-tier prefix is a deterministic function of origin (fe_b_prime /
-# fe_pi_log -> wiki/derived/, D20), so a Stage1 proposal that omits it is
-# rejected HERE (fail-closed, before planned_clusters or any write) rather than
-# surfacing only as a late apply-finish cluster_pageset REJECT.
-# --------------------------------------------------------------------------- #
 def _begin_fe_b_prime(tmp_path, monkeypatch, sid="sid-x"):
-    """Open a fe_b_prime transaction via a stubbed projection (no corpus scan)."""
     tf = tmp_path.parent / f"tier-turns-{sid}.json"
     tf.write_text(json.dumps({"sid": sid, "origin": drv.ORIGIN_FE_B_PRIME,
                               "turns": []}), encoding="utf-8")
@@ -543,13 +424,11 @@ def _begin_fe_b_prime(tmp_path, monkeypatch, sid="sid-x"):
 def test_plan_fanout_derived_origin_rejects_base_tier(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     _begin_fe_b_prime(tmp_path, monkeypatch)
-    # fe_b_prime writes the derived tier: a base-tier `wiki/...` touched page is
-    # rejected before planned_clusters is persisted.
     with pytest.raises(drv.DriverError, match="tier mismatch"):
         drv.plan_fanout(str(tmp_path), json.dumps(["wiki/db-spec/foo.md"]))
     sidecar = json.loads(
         (tmp_path / drv.SIDECAR_NAME).read_text(encoding="utf-8"))
-    assert "planned_clusters" not in sidecar             # fail-closed, nothing written
+    assert "planned_clusters" not in sidecar
     drv.abort(str(tmp_path))
 
 
@@ -562,38 +441,27 @@ def test_plan_fanout_derived_origin_accepts_derived_tier(tmp_path, monkeypatch):
     drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# R6: a binary (non-UTF-8) FE-B source is a clean DriverError, not a traceback
-# --------------------------------------------------------------------------- #
 def test_begin_binary_source_is_clean_driver_error(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "image.bin"
-    src.write_bytes(b"\xff\xfe\x00\x01\x02\x80\x81")     # invalid UTF-8
+    src.write_bytes(b"\xff\xfe\x00\x01\x02\x80\x81")
     with pytest.raises(drv.DriverError):
         drv.begin(str(tmp_path), str(src), kind="fe_b")
-    # The read fails BEFORE locking -> nothing stranded (glob loop continues, G-f).
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.JOURNAL_DIR).exists()
 
 
-# --------------------------------------------------------------------------- #
-# A-3 fail-closed kind gate (DEC-KIND-1 = Option A / F-3): .jsonl under
-# auto/empty --kind is refused; explicit --kind bypasses; non-jsonl auto is
-# byte-identical.
-# --------------------------------------------------------------------------- #
 def test_begin_jsonl_auto_kind_refused_fail_closed(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "some-sid.jsonl"
     src.write_text('{"turns": []}\n', encoding="utf-8")
     with pytest.raises(drv.DriverError) as exc_info:
-        drv.begin(str(tmp_path), str(src))     # kind defaults "auto"
+        drv.begin(str(tmp_path), str(src))
     msg = str(exc_info.value)
     assert "--kind=fe_b_prime" in msg
     assert "--kind=fe_pi_log" in msg
     assert "--kind=fe_b" in msg
-    # Refused BEFORE any side effect -> nothing locked/written (mirrors
-    # test_begin_binary_source_is_clean_driver_error).
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.JOURNAL_DIR).exists()
@@ -632,82 +500,60 @@ def test_begin_jsonl_explicit_fe_b_prime_bypasses_gate(tmp_path, monkeypatch):
 
 
 def test_begin_non_jsonl_auto_unaffected(tmp_path):
-    """Scope guard: the gate's suffix conjunct means non-jsonl auto is
-    byte-identical to pre-gate behavior."""
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("plain text source", encoding="utf-8")
-    out = drv.begin(str(tmp_path), str(src))     # kind defaults "auto"
+    out = drv.begin(str(tmp_path), str(src))
     assert out["origin"] == drv.ORIGIN_FE_B
     drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# consistency invariant: violation aborts begin BEFORE locking
-# --------------------------------------------------------------------------- #
 def test_consistency_violation_aborts_begin_before_locking(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("never ingested", encoding="utf-8")
 
-    # apply_fanout_k (200, prompt override) > max_count (100) violates D-c.
     with pytest.raises(config_resolver.ConfigInconsistency):
         drv.begin(str(tmp_path), str(src), kind="fe_b", apply_fanout_k="200")
 
-    # No side effect: no lock, no sidecar, no journal, no raw artifact written.
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.JOURNAL_DIR).exists()
     assert not (tmp_path / "raw").exists()
 
 
-# --------------------------------------------------------------------------- #
-# sidecar schema: begin writes the documented keys
-# --------------------------------------------------------------------------- #
 def test_sidecar_schema_keys(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("schema check", encoding="utf-8")
     drv.begin(str(tmp_path), str(src), kind="fe_b")
     state = json.loads((tmp_path / drv.SIDECAR_NAME).read_text(encoding="utf-8"))
-    # T4 (S8-b) added `pending_ledger_entries` — the begin->finish on-disk channel
-    # carrying the FE-B' projector's novel turn-content-hash entries (FE-B emits
-    # none, so it is []). The sidecar schema is now 10 keys.
     assert set(state) == {
         "journal_dir", "origin", "doc_type",
         "max_count", "max_bytes", "apply_fanout_k", "fe_hash", "pid",
         "lock_token", "pending_ledger_entries",
     }
-    # FE-B has no projection, so the channel is present-but-empty.
     assert state["pending_ledger_entries"] == []
-    drv.abort(str(tmp_path))   # clean up the lock/sidecar
+    drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# DEC-R1=D: finish/abort refuse a transaction they do not own (token mismatch)
-# --------------------------------------------------------------------------- #
 def test_finish_refuses_on_lock_ownership_mismatch(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("owned by A", encoding="utf-8")
     drv.begin(str(tmp_path), str(src), kind="fe_b")
 
-    # Simulate a DIFFERENT ingest holding the lock: overwrite it with a foreign
-    # token + a live pid (so it is genuinely held, not stale residue).
     (tmp_path / tx.LOCK_NAME).write_text(
         json.dumps({"pid": os.getpid(), "token": "FOREIGN"}), encoding="utf-8")
 
     with pytest.raises(drv.DriverError) as ei:
         drv.finish(str(tmp_path), "success", expected_pages=[], title="x")
     assert "ownership mismatch" in str(ei.value)
-    # Refused WITHOUT touching the foreign lock or our sidecar.
     assert (tmp_path / tx.LOCK_NAME).exists()
     assert (tmp_path / drv.SIDECAR_NAME).exists()
 
 
 def test_abort_refuses_on_lock_ownership_mismatch(tmp_path):
-    # P10: the refusal is a rc2 SENTINEL (raised DriverError), not a rc0
-    # {"aborted": false} no-op — mirrors finish()'s ownership-mismatch DriverError.
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("owned by A", encoding="utf-8")
@@ -718,15 +564,10 @@ def test_abort_refuses_on_lock_ownership_mismatch(tmp_path):
     with pytest.raises(drv.DriverError) as ei:
         drv.abort(str(tmp_path))
     assert "ownership mismatch" in str(ei.value)
-    # Refused WITHOUT touching the foreign lock or our sidecar.
     assert (tmp_path / tx.LOCK_NAME).exists()
     assert (tmp_path / drv.SIDECAR_NAME).exists()
 
 
-# --------------------------------------------------------------------------- #
-# OI-1 S3(a): _resolve_kind / _resolve_projection_kind — fe_pi_log dispatch
-# (duckdb not needed — pure string -> origin table lookups)
-# --------------------------------------------------------------------------- #
 def test_resolve_kind_fe_pi_log():
     assert drv._resolve_kind("fe_pi_log") == drv.ORIGIN_FE_PI_LOG
 
@@ -742,8 +583,6 @@ def test_resolve_projection_kind_auto_defaults_to_fe_b_prime():
 
 
 def test_resolve_projection_kind_fe_b_defaults_to_fe_b_prime():
-    # begin's --kind=fe_b maps to ORIGIN_FE_B; the projection-only verbs remap
-    # that to fe_b_prime (change point 7/9, "auto->fe_b_prime 既定").
     assert drv._resolve_projection_kind("fe_b") == drv.ORIGIN_FE_B_PRIME
 
 
@@ -755,13 +594,6 @@ def test_resolve_projection_kind_fe_pi_log_stays_fe_pi_log():
     assert drv._resolve_projection_kind("fe_pi_log") == drv.ORIGIN_FE_PI_LOG
 
 
-# --------------------------------------------------------------------------- #
-# OI-1 S3(c) Path A: begin(kind=fe_pi_log) -> finish round trip, synthetic
-# pi-log fixture (tmp_path + PI_CODING_AGENT_DIR override, per pi_log_project's
-# _session_dir() override mechanism confirmed in S1). Verifies the sidecar
-# origin is stamped fe_pi_log and the log.md header prefix comes from
-# wiki_log.header_for_fe_pi_log ("file"/"pi-log").
-# --------------------------------------------------------------------------- #
 def _pi_msg(entry_id, parent_id, role, ts, text):
     return {
         "type": "message", "id": entry_id, "parentId": parent_id,
@@ -805,20 +637,12 @@ def test_path_a_begin_finish_fe_pi_log_round_trip(tmp_path, monkeypatch):
     assert res == {"committed": True}
 
     log_text = (wiki_root / "log.md").read_text(encoding="utf-8")
-    # wiki_log.header_for_fe_pi_log() == ("file", "pi-log"); the appended line
-    # carries that op/tag prefix (mirrors S2's smoke: "file|pi-log | ingest").
     assert "file|pi-log" in log_text
     assert not (wiki_root / drv.SIDECAR_NAME).exists()
     assert not (wiki_root / tx.LOCK_NAME).exists()
 
 
-# --------------------------------------------------------------------------- #
-# OI-1 S3(e): F-1 begin --turns origin check (cross-origin mismatch fail-closed
-# / origin-key-absent backward-compat default) — duckdb not needed (turns are
-# fed directly as JSON, no projector scan).
-# --------------------------------------------------------------------------- #
 def test_begin_turns_origin_mismatch_fails_closed(tmp_path):
-    """A fe_pi_log-stamped turns file fed to --kind=fe_b_prime is rejected."""
     _init_wiki(tmp_path)
     bad = tmp_path.parent / "mismatch-turns.json"
     bad.write_text(
@@ -829,7 +653,6 @@ def test_begin_turns_origin_mismatch_fails_closed(tmp_path):
 
 
 def test_begin_turns_origin_mismatch_fails_closed_reverse(tmp_path):
-    """A fe_b_prime-stamped turns file fed to --kind=fe_pi_log is rejected."""
     _init_wiki(tmp_path)
     bad = tmp_path.parent / "mismatch-turns-2.json"
     bad.write_text(
@@ -840,7 +663,6 @@ def test_begin_turns_origin_mismatch_fails_closed_reverse(tmp_path):
 
 
 def test_begin_turns_origin_absent_treated_as_fe_b_prime(tmp_path, monkeypatch):
-    """No "origin" key (older project-batch output) is accepted by fe_b_prime."""
     _init_wiki(tmp_path)
     ok = tmp_path.parent / "no-origin-turns.json"
     ok.write_text(
@@ -859,26 +681,16 @@ def test_begin_turns_origin_absent_treated_as_fe_b_prime(tmp_path, monkeypatch):
 
 
 def test_begin_turns_origin_absent_rejected_by_fe_pi_log(tmp_path):
-    """The SAME origin-key-absent file is rejected when --kind=fe_pi_log
-    (absent-origin defaults to fe_b_prime, which mismatches fe_pi_log)."""
     _init_wiki(tmp_path)
     ok = tmp_path.parent / "no-origin-turns-2.json"
     ok.write_text(
         json.dumps({"sid": "some-sid", "turns": []}), encoding="utf-8")
     with pytest.raises(drv.DriverError, match="origin mismatch"):
         drv.begin(str(tmp_path), "some-sid", kind="fe_pi_log", turns=str(ok))
-    # The mismatch is caught before locking (step 3b, before acquire_lock) —
-    # no lock / sidecar is ever created (fail-closed, no side effects).
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
 
 
-# --------------------------------------------------------------------------- #
-# #19: begin's ledger diff runs INSIDE the lock (no TOCTOU vs a concurrent
-# finish). A ledger append landing AT lock-acquisition time (i.e. after the
-# old pre-lock diff point) MUST be visible to begin's diff: the appended turn
-# is skipped, not re-filed (no duplicate page turn, no first_sid steal).
-# --------------------------------------------------------------------------- #
 def test_begin_ledger_diff_runs_inside_lock(tmp_path, monkeypatch):
     from llmwiki.ingest import ledger as ld
 
@@ -899,8 +711,6 @@ def test_begin_ledger_diff_runs_inside_lock(tmp_path, monkeypatch):
 
     def racing_acquire(root):
         handle = real_acquire(root)
-        # Simulate a concurrent ingest whose finish appended h1 between the OLD
-        # pre-lock diff point and our lock acquisition (the exact TOCTOU window).
         ld.append_entries(tmp_path, [ld.LedgerEntry(
             hash=h1, first_sid="other-sid", first_uuid="ux",
             first_ts="2026-07-06T23:59:59")])
@@ -909,24 +719,19 @@ def test_begin_ledger_diff_runs_inside_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(drv.transaction, "acquire_lock", racing_acquire)
 
     out = drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
-    # The in-lock diff observed the concurrent append: h1 skipped, h2 novel.
-    assert out["ledger_skipped"] == 1
+    assert out["ledger_skipped"] == 1, (
+        "the ledger diff runs inside the lock, so an append landing at "
+        "lock-acquisition time is still seen and its turn is skipped, not re-filed"
+    )
     sidecar = json.loads((tmp_path / drv.SIDECAR_NAME).read_text(
         encoding="utf-8"))
     pending_hashes = [e["hash"] for e in sidecar["pending_ledger_entries"]]
     assert pending_hashes == [h2]
-    # Cleanup: terminal path releases the lock and removes the sidecar.
     drv.finish(str(tmp_path), "fail")
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
 
 
-# --------------------------------------------------------------------------- #
-# D13 — `--cutoff=last-user`: drop the running session's own invocation turn.
-# Deterministic (role + order only), opt-in, projection origins only. The anchor
-# is the last NON-EMPTY user turn, so an unlisted D12 noise shape cannot
-# silently become the cutoff point.
-# --------------------------------------------------------------------------- #
 def _t(role, text, uuid="u"):
     from llmwiki.ingest import ledger as ld
     return {"role": role, "uuid": uuid, "ts": "t",
@@ -937,8 +742,8 @@ def test_cutoff_last_user_drops_invocation_turn_and_everything_after():
     turns = [
         _t("user", "real question", "u1"),
         _t("assistant", "real answer", "a1"),
-        _t("user", "/wiki-file", "u2"),          # the invocation (last user turn)
-        _t("assistant", "active wiki: /w", "a2"),  # narration after it
+        _t("user", "/wiki-file", "u2"),
+        _t("assistant", "active wiki: /w", "a2"),
     ]
     kept = drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER)
     assert [t["uuid"] for t in kept] == ["u1", "a1"]
@@ -951,35 +756,16 @@ def test_cutoff_none_is_the_default_and_keeps_everything():
 
 
 def test_cutoff_anchors_on_an_empty_user_turn_too():
-    """ROLE ONLY — an EMPTY user turn still anchors the cutoff.
-
-    Regression for the review finding: an earlier draft required the anchor's
-    text to be non-empty, so that an unlisted D12 noise record could not become
-    the cutoff point. But D7 strips the `/wiki-file` invocation LINE at
-    extraction, so the invocation turn reaches the cutoff EMPTY — the non-empty
-    rule skipped it and anchored on the user's last real question, deleting the
-    Q&A the run exists to file. See test_cutoff_survives_the_d7_invocation_strip
-    for the end-to-end composition this protects.
-    """
     turns = [
         _t("user", "real question", "u1"),
         _t("assistant", "real answer", "a1"),
-        _t("user", "", "u2"),             # the D7-stripped invocation turn
+        _t("user", "", "u2"),
     ]
     kept = drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER)
     assert [t["uuid"] for t in kept] == ["u1", "a1"]
 
 
 def test_cutoff_survives_the_d7_invocation_strip(tmp_path):
-    """COMPOSITION test: run the real extraction path (boilerplate strip + hash)
-    into the real cutoff, instead of hand-writing already-projected text.
-
-    The unit fixtures above build turn dicts directly, which is exactly how the
-    original defect slipped through: they carried `projected_text="/wiki-file"`,
-    a string the real pipeline can never produce (D7 strips that line before the
-    cutoff ever sees the turn). Anything that changes `_BOILERPLATE_PATTERNS` or
-    the anchor rule must keep this passing.
-    """
     def _projected(role, raw_text):
         t = cc_log_project._Turn(role=role, uuid=f"u-{role}", ts="t")
         t.text_parts = [raw_text]
@@ -996,9 +782,8 @@ def test_cutoff_survives_the_d7_invocation_strip(tmp_path):
             _projected("assistant", "real answer"),
             _projected("user", invocation),
         ]
-        # Precondition the defect turned on: D7 emptied the invocation turn.
         assert turns[-1]["projected_text"] == "", (
-            f"{invocation!r}: expected D7 to strip the invocation line")
+            f"{invocation!r}: extraction is expected to strip the invocation line")
         kept = drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER)
         assert [t["projected_text"] for t in kept] == [
             "real question", "real answer"], (
@@ -1011,12 +796,6 @@ def test_cutoff_with_no_user_turn_drops_nothing():
     assert drv._apply_cutoff(turns, drv._CUTOFF_LAST_USER) == turns
 
 
-# --------------------------------------------------------------------------- #
-# Path A fail-closed: a sid with NO session log is an operational error, not an
-# empty-but-successful ingest. Before the guard, begin opened a transaction and
-# wrote a header-only raw for a sid that does not exist (measured 2026-08-12);
-# pi_log_project has always refused the equivalent input.
-# --------------------------------------------------------------------------- #
 def test_begin_fails_closed_when_the_cc_sid_has_no_session_log(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     empty_corpus = tmp_path.parent / "cc-corpus-without-the-sid"
@@ -1026,15 +805,12 @@ def test_begin_fails_closed_when_the_cc_sid_has_no_session_log(tmp_path, monkeyp
     with pytest.raises(cc_log_project.ProjectionError,
                        match="cc session file not found"):
         drv.begin(str(tmp_path), "no-such-sid", kind="fe_b_prime")
-    # Raised in step 3b, BEFORE acquire_lock — nothing locked, journaled, or written.
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert list((tmp_path / "raw" / "derived").glob("*.md")) == []
 
 
 def test_begin_turns_channel_does_not_require_a_session_log(tmp_path, monkeypatch):
-    """Path B (`--turns`) is UNCHANGED: begin does not re-scan, so the sid's
-    presence in the corpus was already established by `project-batch`."""
     _init_wiki(tmp_path)
     empty_corpus = tmp_path.parent / "cc-corpus-for-the-turns-channel"
     empty_corpus.mkdir()
@@ -1057,8 +833,6 @@ def test_begin_rejects_unknown_cutoff_value(tmp_path):
 
 
 def test_begin_rejects_cutoff_on_fe_b(tmp_path):
-    """A document has no turn list, so a cutoff there would be silently ignored
-    — refuse instead (misuse-resistant), before anything is locked or written."""
     _init_wiki(tmp_path)
     src = tmp_path / "doc.txt"
     src.write_text("a document, not a transcript", encoding="utf-8")
@@ -1070,7 +844,6 @@ def test_begin_rejects_cutoff_on_fe_b(tmp_path):
 
 
 def test_begin_applies_cutoff_on_the_path_a_channel(tmp_path, monkeypatch):
-    """The cutoff must reach Path A (a fresh extract), not just `--turns`."""
     _init_wiki(tmp_path)
     extracted = [
         _t("user", "real question", "u1"),
@@ -1089,7 +862,6 @@ def test_begin_applies_cutoff_on_the_path_a_channel(tmp_path, monkeypatch):
     out = drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime",
                     cutoff=drv._CUTOFF_LAST_USER)
     assert [t["uuid"] for t in seen["turns"]] == ["u1", "a1"]
-    # F-5: the drop is observable on stdout, separately from ledger_skipped.
     assert out["cutoff_dropped"] == 1
     drv.abort(str(tmp_path))
 
@@ -1109,10 +881,6 @@ def test_begin_reports_zero_cutoff_dropped_without_the_flag(tmp_path, monkeypatc
     drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# D14 — `--turns` entries are hash-verified, so the narrowing channel is
-# DROP-ONLY by construction: an entry survives byte-for-byte or begin refuses.
-# --------------------------------------------------------------------------- #
 def _write_turns(tmp_path, turns, sid="sid-a"):
     tf = tmp_path.parent / "narrowed-turns.json"
     tf.write_text(json.dumps({"sid": sid, "origin": drv.ORIGIN_FE_B_PRIME,
@@ -1123,7 +891,7 @@ def _write_turns(tmp_path, turns, sid="sid-a"):
 def test_turns_hash_verify_accepts_a_pure_subset(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     full = [_t("user", "keep me", "u1"), _t("assistant", "drop me", "a1")]
-    tf = _write_turns(tmp_path, [full[0]])          # entry REMOVED, none edited
+    tf = _write_turns(tmp_path, [full[0]])
     seen = {}
 
     def _capture(root, sid, turn_list, *, ledger):
@@ -1137,22 +905,17 @@ def test_turns_hash_verify_accepts_a_pure_subset(tmp_path, monkeypatch):
 
 
 def test_turns_hash_verify_rejects_edited_text(tmp_path):
-    """Editing a turn's text while keeping its hash (or vice versa) fails closed
-    — this is what makes the LLM narrowing channel drop-only."""
     _init_wiki(tmp_path)
     tampered = _t("user", "original", "u1")
     tampered["projected_text"] = "rewritten by the LLM"
     tf = _write_turns(tmp_path, [tampered])
     with pytest.raises(drv.DriverUsageError, match="hash check"):
         drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
-    # fail-closed BEFORE the lock: nothing acquired, nothing written.
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
 
 
 def test_turns_hash_verify_rejects_a_fabricated_entry(tmp_path):
-    """An entry the projector never emitted cannot be smuggled in: its hash
-    would have to match a role+text the LLM chose, which the check recomputes."""
     _init_wiki(tmp_path)
     fabricated = {"role": "user", "uuid": "u9", "ts": "t",
                   "projected_text": "content the projector never produced",
@@ -1169,58 +932,38 @@ def test_turns_hash_verify_rejects_a_non_object_entry(tmp_path):
         drv.begin(str(tmp_path), "sid-a", kind="fe_b_prime", turns=str(tf))
 
 
-# --------------------------------------------------------------------------- #
-# C3: project-batch-cleanup — code owns the temp-dir deletion (two guards), and
-# project-batch prunes stale llmwiki-turns-* dirs as a backstop.
-#
-# Guard 1: basename must start with `_BATCH_TURNS_PREFIX`.
-# Guard 2: parent (resolved) must be `tempfile.gettempdir()`.
-# Either failing => REFUSED DriverError with NO deletion (never trusts the
-# caller-supplied out_dir the way the old bare `rm -rf "$OUT_DIR"` did).
-# --------------------------------------------------------------------------- #
 def test_project_batch_cleanup_refuses_wrong_prefix():
-    """A dir directly under the temp root but WITHOUT the llmwiki-turns- prefix
-    is REFUSED and left untouched (guard 1)."""
     d = Path(tempfile.mkdtemp(prefix="notmine-"))
     try:
         with pytest.raises(drv.DriverError, match="REFUSED"):
             drv.project_batch_cleanup(str(d))
-        assert d.is_dir()        # not deleted
+        assert d.is_dir()
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_project_batch_cleanup_refuses_outside_temp(tmp_path):
-    """A dir with the right prefix but NOT directly under gettempdir (here a
-    nested pytest tmp_path subdir) is REFUSED and left untouched (guard 2)."""
     d = tmp_path / "sub" / f"{drv._BATCH_TURNS_PREFIX}fake"
     d.mkdir(parents=True)
     with pytest.raises(drv.DriverError, match="REFUSED"):
         drv.project_batch_cleanup(str(d))
-    assert d.is_dir()            # not deleted
+    assert d.is_dir()
 
 
 def test_project_batch_cleanup_refuses_a_stage1_dir():
-    """The cleanup verb's guard admits the TURNS prefix only. A per-run Stage1 dir
-    is deliberately NOT one of its targets (it is collected by the backstop prune
-    instead), so the verb must refuse it rather than widen its blast radius."""
     d = Path(tempfile.mkdtemp(prefix=drv._STAGE1_DIR_PREFIX))
     try:
         with pytest.raises(drv.DriverError, match="REFUSED"):
             drv.project_batch_cleanup(str(d))
-        assert d.is_dir()        # not deleted
+        assert d.is_dir()
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
 
 def test_prune_covers_stage1_dirs_too(tmp_path):
-    """The backstop prune is responsible for BOTH driver temp-dir families. A
-    stale `llmwiki-stage1-*` (only strandable by a crash between begin and the
-    closing verb — there is no per-run cleanup verb for it) is collected; a fresh
-    one is retained."""
     stale = Path(tempfile.mkdtemp(prefix=drv._STAGE1_DIR_PREFIX))
     fresh = Path(tempfile.mkdtemp(prefix=drv._STAGE1_DIR_PREFIX))
-    old = time.time() - (drv._BATCH_STALE_PRUNE_SECONDS + 3600)   # ~25h ago
+    old = time.time() - (drv._BATCH_STALE_PRUNE_SECONDS + 3600)
     os.utime(stale, (old, old))
     try:
         drv._prune_stale_batch_dirs()
@@ -1232,10 +975,8 @@ def test_prune_covers_stage1_dirs_too(tmp_path):
 
 
 def test_project_batch_cleanup_deletes_valid_dir():
-    """A genuine project-batch temp dir (llmwiki-turns-* directly under the
-    system temp dir) is deleted by the verb (both guards pass)."""
     d = Path(tempfile.mkdtemp(prefix=drv._BATCH_TURNS_PREFIX))
-    (d / "sid.json").write_text("{}", encoding="utf-8")   # a per-sid turn file
+    (d / "sid.json").write_text("{}", encoding="utf-8")
     assert d.is_dir()
     res = drv.project_batch_cleanup(str(d))
     assert Path(res["cleaned"]) == d
@@ -1243,23 +984,20 @@ def test_project_batch_cleanup_deletes_valid_dir():
 
 
 def test_project_batch_prunes_stale_turn_dirs(tmp_path, monkeypatch):
-    """C3 step 2 backstop: project-batch prunes a stale (>24h) llmwiki-turns-*
-    temp dir at its start, while a fresh one (younger than the threshold) stays."""
     _init_wiki(tmp_path)
     stale = Path(tempfile.mkdtemp(prefix=drv._BATCH_TURNS_PREFIX))
     fresh = Path(tempfile.mkdtemp(prefix=drv._BATCH_TURNS_PREFIX))
-    old = time.time() - (drv._BATCH_STALE_PRUNE_SECONDS + 3600)   # ~25h ago
+    old = time.time() - (drv._BATCH_STALE_PRUNE_SECONDS + 3600)
     os.utime(stale, (old, old))
 
-    # Stub the one expensive scan (default kind=auto -> fe_b_prime -> cc_log_project).
     monkeypatch.setattr(cc_log_project, "extract_turns_batch",
                         lambda sids, *, ledger: {s: [] for s in sids})
 
     out = None
     try:
         out = drv.project_batch(str(tmp_path), ["sidX"])
-        assert not stale.exists()   # pruned (mtime older than the 24h threshold)
-        assert fresh.exists()       # retained (fresh, under the threshold)
+        assert not stale.exists()
+        assert fresh.exists()
     finally:
         shutil.rmtree(fresh, ignore_errors=True)
         if out is not None:
@@ -1267,18 +1005,7 @@ def test_project_batch_prunes_stale_turn_dirs(tmp_path, monkeypatch):
         shutil.rmtree(stale, ignore_errors=True)
 
 
-# --------------------------------------------------------------------------- #
-# C2 (Option C): per-dispatch cluster receipt. `plan-fanout` persists the
-# planned cluster set (0-based ordinal = list index); `ingest-apply` appends a
-# receipt per run (applied_clusters); `finish` (expected_pages OMITTED) checks
-# every planned ordinal has a receipt -> a whole-cluster drop rolls back, while
-# a legitimately empty manifest (receipt present, written empty) is NOT a false
-# positive. Explicit expected_pages keeps the current on-disk page check.
-# --------------------------------------------------------------------------- #
 def _apply_cluster(monkeypatch, root, origin, ordinal, manifest) -> int:
-    """Run the real `ingest-apply` verb (cli) with a cluster ordinal so it writes
-    a dispatch receipt to the sidecar — mirrors the orchestrator's per-cluster
-    apply call (wiki-ingest-docs/SKILL.md Step 4)."""
     import io
     from llmwiki import cli
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(manifest)))
@@ -1286,27 +1013,22 @@ def _apply_cluster(monkeypatch, root, origin, ordinal, manifest) -> int:
 
 
 def test_c2_cluster_drop_finish_rolls_back(tmp_path, monkeypatch):
-    """(1) A cluster that was never dispatched (no ingest-apply receipt) is
-    caught by finish (expected_pages omitted) -> rollback."""
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("c2 cluster drop", encoding="utf-8")
 
     drv.begin(str(tmp_path), str(src), kind="fe_b", apply_fanout_k="1")
-    # k=1 so two touched pages split into two clusters (ordinals 0 and 1).
     out = drv.plan_fanout(str(tmp_path), json.dumps(["wiki/a.md", "wiki/b.md"]))
     assert len(out["clusters"]) == 2
     sidecar = json.loads((tmp_path / drv.SIDECAR_NAME).read_text(encoding="utf-8"))
     assert sidecar["planned_clusters"] == [["wiki/a.md"], ["wiki/b.md"]]
 
-    # Dispatch ONLY cluster 0; cluster 1 is dropped (its apply never runs).
     rc = _apply_cluster(monkeypatch, tmp_path, "fe_b", 0,
                         [{"rel_path": "wiki/a.md", "content": "# A"}])
     assert rc == 0
 
     with pytest.raises(drv.DriverError, match="never dispatched"):
-        drv.finish(str(tmp_path), "success")   # expected_pages OMITTED
-    # Rolled back: sidecar/lock/journal cleared, cluster-0 page removed too.
+        drv.finish(str(tmp_path), "success")
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / tx.JOURNAL_DIR).exists()
@@ -1314,8 +1036,6 @@ def test_c2_cluster_drop_finish_rolls_back(tmp_path, monkeypatch):
 
 
 def test_c2_empty_manifest_cluster_is_not_false_positive(tmp_path, monkeypatch):
-    """(2) A cluster whose apply legitimately wrote nothing still recorded its
-    receipt -> finish(success) commits (no false positive)."""
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("c2 empty manifest", encoding="utf-8")
@@ -1324,29 +1044,26 @@ def test_c2_empty_manifest_cluster_is_not_false_positive(tmp_path, monkeypatch):
     out = drv.plan_fanout(str(tmp_path), json.dumps(["wiki/a.md"]))
     assert len(out["clusters"]) == 1
 
-    # The single cluster's apply commits an EMPTY manifest (written == []).
     rc = _apply_cluster(monkeypatch, tmp_path, "fe_b", 0, [])
     assert rc == 0
     sidecar = json.loads((tmp_path / drv.SIDECAR_NAME).read_text(encoding="utf-8"))
-    assert sidecar["applied_clusters"] == [0]      # receipt present
-    assert sidecar["applied_written"] == []        # but wrote nothing
+    assert sidecar["applied_clusters"] == [0]
+    assert sidecar["applied_written"] == [], (
+        "a cluster that legitimately wrote nothing still recorded its receipt, so "
+        "the dispatch check does not read it as a dropped cluster"
+    )
 
-    res = drv.finish(str(tmp_path), "success")     # expected_pages OMITTED
+    res = drv.finish(str(tmp_path), "success")
     assert res == {"committed": True}
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
 
 
 def test_c2_explicit_expected_pages_backward_compat(tmp_path):
-    """(3) Explicit expected_pages keeps the on-disk page check and BYPASSES the
-    cluster-receipt check (backward compat): planned clusters with NO receipts do
-    not block a finish that supplied an on-disk-satisfied expected_pages."""
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("c2 explicit expected", encoding="utf-8")
 
     drv.begin(str(tmp_path), str(src), kind="fe_b", apply_fanout_k="1")
-    # Two planned clusters, but NEITHER receipt recorded -> the cluster check
-    # WOULD fail; explicit expected_pages must take the on-disk branch instead.
     drv.plan_fanout(str(tmp_path), json.dumps(["wiki/a.md", "wiki/b.md"]))
     (tmp_path / "wiki").mkdir(exist_ok=True)
     (tmp_path / "wiki" / "page.md").write_text("# Page", encoding="utf-8")
@@ -1356,18 +1073,15 @@ def test_c2_explicit_expected_pages_backward_compat(tmp_path):
 
 
 def test_c2_single_cluster_unapplied_rolls_back(tmp_path):
-    """(4) D-COV: even a <= K single cluster (ordinal 0) that was never applied
-    is caught (plan-fanout is called for <= K too) -> finish rolls back."""
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("c2 single cluster drop", encoding="utf-8")
 
-    drv.begin(str(tmp_path), str(src), kind="fe_b")   # k=10 default (<= K path)
+    drv.begin(str(tmp_path), str(src), kind="fe_b")
     out = drv.plan_fanout(str(tmp_path), json.dumps(["wiki/a.md"]))
-    assert len(out["clusters"]) == 1                  # one cluster, ordinal 0
-    # No ingest-apply receipt for ordinal 0.
+    assert len(out["clusters"]) == 1
     with pytest.raises(drv.DriverError, match="never dispatched"):
-        drv.finish(str(tmp_path), "success")          # expected_pages OMITTED
+        drv.finish(str(tmp_path), "success")
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
     assert not (tmp_path / tx.JOURNAL_DIR).exists()

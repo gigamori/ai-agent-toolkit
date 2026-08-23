@@ -1,5 +1,3 @@
-"""Tests for ledger module (turn-level content-hash ledger)."""
-
 import json
 import tempfile
 from pathlib import Path
@@ -10,18 +8,14 @@ from llmwiki.ingest import ledger
 
 
 def test_compute_hash_basic() -> None:
-    """Test basic hash computation with role and text."""
-    # Simple case
     h1 = ledger.compute_hash("user", "hello")
     assert isinstance(h1, str)
-    assert len(h1) == 32  # MD5 hex digest is 32 chars
+    assert len(h1) == 32
     assert h1.islower()
 
-    # Same input should produce same hash (determinism)
     h2 = ledger.compute_hash("user", "hello")
     assert h1 == h2
 
-    # Different role or text should produce different hash
     h3 = ledger.compute_hash("assistant", "hello")
     assert h1 != h3
 
@@ -30,14 +24,8 @@ def test_compute_hash_basic() -> None:
 
 
 def test_compute_hash_nfc_normalization() -> None:
-    """Test that NFC normalization is applied (UTF-8 consistency)."""
-    # Combining character: é can be represented as:
-    # - precomposed: U+00E9 (1 char)
-    # - decomposed: U+0065 U+0301 (2 chars)
-    # Both should hash the same after NFC normalization
-
-    precomposed = "café"  # U+00E9 (precomposed é)
-    decomposed = "café"  # U+0065 + U+0301 (decomposed é)
+    precomposed = "café"
+    decomposed = "café"
 
     h1 = ledger.compute_hash("user", precomposed)
     h2 = ledger.compute_hash("user", decomposed)
@@ -45,16 +33,12 @@ def test_compute_hash_nfc_normalization() -> None:
 
 
 def test_compute_hash_delimiter() -> None:
-    """Test that the 0x1F delimiter is used (not just concatenation)."""
-    # Without the delimiter, "userassistant" might collide with
-    # "user" + "assistant" — verify delimiter prevents this
     h1 = ledger.compute_hash("user", "assistant")
     h2 = ledger.compute_hash("userassistant", "")
     assert h1 != h2, "Delimiter should prevent collisions between role and text"
 
 
 def test_ledger_entry_serialization() -> None:
-    """Test LedgerEntry to/from JSON."""
     entry = ledger.LedgerEntry(
         hash="abc123def456",
         first_sid="sid-12345",
@@ -73,14 +57,11 @@ def test_ledger_entry_serialization() -> None:
 
 
 def test_read_ledger_empty(tmp_path: Path) -> None:
-    """Test reading a non-existent ledger returns empty dict."""
     result = ledger.read_ledger(tmp_path)
     assert result == {}
 
 
 def test_read_ledger_existing(tmp_path: Path) -> None:
-    """Test reading an existing ledger."""
-    # Create a ledger file with entries
     ledger_path = tmp_path / ".cc-turn-ledger.jsonl"
     entries_to_write = [
         ledger.LedgerEntry("hash1", "sid1", "uuid1", "2026-07-02T10:00:00Z"),
@@ -96,58 +77,45 @@ def test_read_ledger_existing(tmp_path: Path) -> None:
 
 
 def test_is_seen(tmp_path: Path) -> None:
-    """Test checking if a hash is in the ledger."""
-    # Initially empty
     assert not ledger.is_seen(tmp_path, "hash1")
 
-    # Add an entry
     entry = ledger.LedgerEntry("hash1", "sid1", "uuid1", "2026-07-02T10:00:00Z")
     ledger.append_entries(tmp_path, [entry])
 
-    # Now it's seen
     assert ledger.is_seen(tmp_path, "hash1")
     assert not ledger.is_seen(tmp_path, "hash2")
 
 
 def test_append_entries(tmp_path: Path) -> None:
-    """Test appending entries to the ledger."""
     entry1 = ledger.LedgerEntry("hash1", "sid1", "uuid1", "2026-07-02T10:00:00Z")
     entry2 = ledger.LedgerEntry("hash2", "sid2", "uuid2", "2026-07-02T11:00:00Z")
 
-    # Append first entry
     ledger.append_entries(tmp_path, [entry1])
     result = ledger.read_ledger(tmp_path)
     assert len(result) == 1
     assert "hash1" in result
 
-    # Append second entry
     ledger.append_entries(tmp_path, [entry2])
     result = ledger.read_ledger(tmp_path)
     assert len(result) == 2
     assert "hash2" in result
 
-    # Append empty list (no-op)
     ledger.append_entries(tmp_path, [])
     result = ledger.read_ledger(tmp_path)
-    assert len(result) == 2  # unchanged
+    assert len(result) == 2
 
 
 def test_read_write_ledger_lines(tmp_path: Path) -> None:
-    """Test reading/writing ledger as raw lines (for rollback)."""
-    # Initially empty
     lines = ledger.read_ledger_lines(tmp_path)
     assert lines == []
 
-    # Write some entries
     entry1 = ledger.LedgerEntry("hash1", "sid1", "uuid1", "2026-07-02T10:00:00Z")
     entry2 = ledger.LedgerEntry("hash2", "sid2", "uuid2", "2026-07-02T11:00:00Z")
     ledger.append_entries(tmp_path, [entry1, entry2])
 
-    # Read lines
     lines = ledger.read_ledger_lines(tmp_path)
     assert len(lines) == 2
 
-    # Remove the first entry by rewriting
     ledger.write_ledger_lines(tmp_path, lines[1:])
     result = ledger.read_ledger(tmp_path)
     assert len(result) == 1
@@ -155,36 +123,29 @@ def test_read_write_ledger_lines(tmp_path: Path) -> None:
 
 
 def test_ledger_path(tmp_path: Path) -> None:
-    """Test ledger_path returns the correct location."""
     path = ledger.ledger_path(tmp_path)
     assert path.name == ".cc-turn-ledger.jsonl"
     assert path.parent == tmp_path
 
 
 def test_append_and_rollback_scenario(tmp_path: Path) -> None:
-    """Integration test: append entries and rollback (F3 absorption scenario)."""
-    # Session A ingests hash1
     entry_a = ledger.LedgerEntry("hash1", "sidA", "uuidA", "2026-07-02T10:00:00Z")
     ledger.append_entries(tmp_path, [entry_a])
 
     result = ledger.read_ledger(tmp_path)
     assert "hash1" in result
 
-    # Session B would append hash2, but fails before append completes
-    # (simulated by reading lines before append, then not appending)
     lines_before = ledger.read_ledger_lines(tmp_path)
     entry_b = ledger.LedgerEntry("hash2", "sidB", "uuidB", "2026-07-02T11:00:00Z")
-    # NOT appended — simulating a failed session
 
-    # Next session C re-ingests and should be able to file hash1 again
-    # (because ledger unchanged from B's failure)
     result = ledger.read_ledger(tmp_path)
     assert "hash1" in result
-    assert "hash2" not in result  # B's entry never made it
+    assert "hash2" not in result, (
+        "a session that fails before its append leaves the ledger unchanged, so a "
+        "later session can still file the same turns"
+    )
 
-    # Now append C's entry
     entry_c = ledger.LedgerEntry("hash1", "sidC", "uuidC", "2026-07-02T12:00:00Z")
-    # C would check is_seen, find hash1, and skip it
     assert ledger.is_seen(tmp_path, "hash1")
 
 

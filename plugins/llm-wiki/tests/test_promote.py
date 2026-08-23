@@ -1,9 +1,3 @@
-"""Tests: promote (D20).
-
-Covers: promote = move (not copy) wiki/derived/X -> wiki/X; inbound path-reference
-link-rewrite; provenance flipped derived -> source; reject derived contamination
-(inline transclusion / explicit derived-inline marker); reject non-derived source.
-"""
 import pytest
 
 from llmwiki.write import promote
@@ -29,13 +23,10 @@ def test_promote_moves_and_rewrites(tmp_path):
     res = promote.promote(tmp_path, "wiki/derived/synth.md")
     assert res.ok
     assert res.dest_rel == "wiki/synth.md"
-    # Move, not copy: source gone, dest present.
     assert not (tmp_path / "wiki" / "derived" / "synth.md").exists()
     dest = tmp_path / "wiki" / "synth.md"
     assert dest.exists()
-    # provenance flipped.
     assert "provenance: source" in dest.read_text(encoding="utf-8")
-    # inbound path-reference rewritten.
     hub = (tmp_path / "wiki" / "hub.md").read_text(encoding="utf-8")
     assert "wiki/synth.md" in hub
     assert "wiki/derived/synth.md" not in hub

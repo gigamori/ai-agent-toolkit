@@ -1,8 +1,3 @@
-"""Tests: marker detection (D8).
-
-Covers: marker present -> detected with version/schema; absent -> None (dormant);
-schema path resolved relative to root.
-"""
 from llmwiki.core import marker
 
 

@@ -1,8 +1,3 @@
-"""Tests: index integrity + tier marker (D22).
-
-Covers: tier assigned from path (wiki/ = source, wiki/derived/ = derived);
-build/regenerate produces a table; integrity detects missing/stale.
-"""
 from llmwiki.core import wiki_index
 
 
@@ -36,7 +31,6 @@ def test_build_and_regenerate_index(tmp_path):
 
 def test_integrity_detects_missing_and_stale(tmp_path):
     _make_wiki(tmp_path)
-    # index references a stale page and omits a real one.
     (tmp_path / "index.md").write_text(
         "| Page | Tier |\n|--|--|\n| wiki/ghost.md | source |\n", encoding="utf-8"
     )

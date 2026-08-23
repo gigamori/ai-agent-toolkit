@@ -1,13 +1,3 @@
-"""Tests: generate_wiki_view — local wiki viewer (plan §1-A / §3 T1).
-
-Covers (traced to plan §/Q):
-  - md -> HTML renders heading/list/code/table         (Q2 full md)
-  - [[X]] becomes an href to the right page URL         (§1-A wikilink, link_lint reuse)
-  - same-name source+derived yields two tier-labelled links (Q3)
-  - a missing [[Y]] is rendered distinct / non-navigable (Q3)
-  - raw/ pages are NOT listed                            (Q4)
-  - server smoke: build_app + bind 127.0.0.1, no long-lived serve (§3 T1)
-"""
 import socket
 
 import pytest
@@ -16,7 +6,6 @@ from llmwiki.core import wiki_index
 from llmwiki.view import generate_wiki_view as gwv
 
 
-# ── fixture builder ──────────────────────────────────────────────────────────
 
 def _make(tmp_path, files, *, marker=True):
     (tmp_path / "wiki").mkdir()
@@ -35,7 +24,6 @@ def _pages(tmp_path):
     return link_lint.build_graph(tmp_path).pages
 
 
-# ── frontmatter ──────────────────────────────────────────────────────────────
 
 def test_split_frontmatter_scalars_and_body():
     text = "---\nprovenance: source\ndoc_type: note\n---\n# Body\n"
@@ -53,7 +41,6 @@ def test_split_frontmatter_none():
     assert body == text
 
 
-# ── md -> HTML rendering (Q2) ────────────────────────────────────────────────
 
 def test_render_markdown_heading_list_code_table(tmp_path):
     md = (
@@ -70,7 +57,6 @@ def test_render_markdown_heading_list_code_table(tmp_path):
     assert "<table>" in html and "<th>a</th>" in html
 
 
-# ── wikilink -> href (link_lint reuse, §1-A) ─────────────────────────────────
 
 def test_wikilink_becomes_href_to_page_url(tmp_path):
     _make(tmp_path, {
@@ -92,7 +78,6 @@ def test_wikilink_alias_label_used(tmp_path):
     assert gwv.page_url("wiki/Target.md") in html
 
 
-# ── same-name source + derived -> two tier-labelled links (Q3) ───────────────
 
 def test_same_name_source_and_derived_dual_links(tmp_path):
     _make(tmp_path, {
@@ -101,33 +86,27 @@ def test_same_name_source_and_derived_dual_links(tmp_path):
         "wiki/derived/synth.md": "derived synth",
     })
     html = gwv.render_page_html(tmp_path, "wiki/index.md", _pages(tmp_path))
-    # BOTH candidate page URLs present
     assert gwv.page_url("wiki/synth.md") in html
     assert gwv.page_url("wiki/derived/synth.md") in html
-    # tier labels surfaced
     assert "(source)" in html
     assert "(derived)" in html
 
 
-# ── missing link rendered distinct / non-navigable (Q3) ──────────────────────
 
 def test_missing_link_is_distinct_and_non_navigable(tmp_path):
     _make(tmp_path, {"wiki/index.md": "dangling [[Ghost]] ref"})
     html = gwv.render_page_html(tmp_path, "wiki/index.md", _pages(tmp_path))
     assert 'class="wikilink missing"' in html
-    # no anchor href to a Ghost page
     assert gwv.page_url("wiki/Ghost.md") not in html
     assert "Ghost" in html
 
 
-# ── raw/ excluded from listing (Q4) ──────────────────────────────────────────
 
 def test_raw_pages_not_listed(tmp_path):
     _make(tmp_path, {
         "wiki/index.md": "hi",
         "wiki/derived/d.md": "derived",
     })
-    # a raw artifact must never be viewable
     (tmp_path / "raw").mkdir()
     (tmp_path / "raw" / "abc.md").write_text("raw secret", encoding="utf-8")
     entries = wiki_index.scan_pages(tmp_path)
@@ -139,7 +118,6 @@ def test_raw_pages_not_listed(tmp_path):
     assert "raw/abc.md" not in html
 
 
-# ── index listing shows tier badges + root page ──────────────────────────────
 
 def test_index_lists_pages_with_tier_badges(tmp_path):
     _make(tmp_path, {
@@ -153,7 +131,6 @@ def test_index_lists_pages_with_tier_badges(tmp_path):
     assert gwv.page_url("wiki/index.md") in html
 
 
-# ── server smoke: build app + bind 127.0.0.1 (no long-lived serve) ───────────
 
 def test_build_app_returns_handler(tmp_path):
     _make(tmp_path, {"wiki/index.md": "hi"})
@@ -167,7 +144,6 @@ def test_server_binds_127_0_0_1(tmp_path):
     _make(tmp_path, {"wiki/index.md": "hi"})
     from http.server import HTTPServer
     handler = gwv.build_app(tmp_path)
-    # bind ephemeral port on the loopback host the script uses; close immediately
     server = HTTPServer((gwv.SERVE_HOST, 0), handler)
     try:
         host, port = server.server_address[:2]
@@ -183,18 +159,15 @@ def test_default_port_is_17330():
 
 
 def test_marker_absent_errors(tmp_path, monkeypatch):
-    # no .llmwiki marker -> main() must refuse with exit code 2 (§1-A wiki-root check)
     (tmp_path / "wiki").mkdir()
     monkeypatch.chdir(tmp_path)
     rc = gwv.main(["--serve", "--no-open"])
     assert rc == 2
 
 
-# ensure socket import is used (avoids unused-import lint in some runners)
 assert socket is not None
 
 
-# ── #21: Host validation (DNS rebinding) + CSP + nh3 sanitize ────────────────
 
 import threading
 from http.client import HTTPConnection
@@ -202,7 +175,6 @@ from http.server import HTTPServer
 
 
 def _serve(tmp_path):
-    """Bind build_app's handler on an ephemeral loopback port in a thread."""
     handler = gwv.build_app(tmp_path)
     server = HTTPServer((gwv.SERVE_HOST, 0), handler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -220,12 +192,11 @@ def test_rebinding_host_refused_403(tmp_path):
         resp = conn.getresponse()
         assert resp.status == 403
         conn.close()
-        # A request WITHOUT a Host header fails closed too.
         conn2 = HTTPConnection("127.0.0.1", port, timeout=10)
         conn2.putrequest("GET", "/", skip_host=True)
         conn2.endheaders()
         resp2 = conn2.getresponse()
-        assert resp2.status == 403
+        assert resp2.status == 403, "a request with no Host header fails closed as well"
         conn2.close()
     finally:
         server.shutdown()
@@ -238,7 +209,7 @@ def test_loopback_host_200_with_csp_header(tmp_path):
     try:
         port = server.server_address[1]
         conn = HTTPConnection("127.0.0.1", port, timeout=10)
-        conn.request("GET", "/")   # Host: 127.0.0.1:<port> (auto)
+        conn.request("GET", "/")
         resp = conn.getresponse()
         assert resp.status == 200
         assert resp.getheader("Content-Security-Policy") == gwv.CSP_POLICY
@@ -266,14 +237,11 @@ def test_script_in_page_body_is_sanitized_but_wikilinks_survive(tmp_path):
         resp = conn.getresponse()
         body = resp.read().decode("utf-8")
         assert resp.status == 200
-        # nh3 stripped active content…
         assert "<script" not in body
         assert "onerror" not in body
         assert "attacker.example" not in body
-        # …while the viewer's own linkify() markup survived the sanitizer.
         assert 'class="wikilink"' in body
         assert gwv.page_url("wiki/Target.md") in body
-        # CSP rides on the page response as the second layer.
         assert resp.getheader("Content-Security-Policy") == gwv.CSP_POLICY
         conn.close()
     finally:
@@ -281,12 +249,8 @@ def test_script_in_page_body_is_sanitized_but_wikilinks_survive(tmp_path):
         server.server_close()
 
 
-# ── exclusive bind: a second viewer must NOT co-bind an in-use port ───────────
 
 def test_exclusive_server_refuses_second_bind_on_same_port(tmp_path):
-    """Two viewers must not silently share 127.0.0.1:PORT (which would serve two
-    different wikis on the same port, browser-routed non-deterministically). The
-    second bind of an in-use port raises OSError."""
     _make(tmp_path, {"wiki/index.md": "hi"})
     handler = gwv.build_app(tmp_path)
     first = gwv.ExclusiveHTTPServer((gwv.SERVE_HOST, 0), handler)
@@ -294,6 +258,10 @@ def test_exclusive_server_refuses_second_bind_on_same_port(tmp_path):
         port = first.server_address[1]
         with pytest.raises(OSError):
             gwv.ExclusiveHTTPServer((gwv.SERVE_HOST, port), handler)
+        assert first.server_address[1] == port, (
+            "two viewers must not co-bind one port: the second would serve a "
+            "different wiki on an address the browser routes to either one"
+        )
     finally:
         first.server_close()
 

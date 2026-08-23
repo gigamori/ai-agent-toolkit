@@ -1,8 +1,3 @@
-"""Tests: link-lint orphan / missing cross-ref detection (design §5).
-
-Covers: extract wikilinks; missing target detected; orphan page detected;
-linked page not flagged orphan.
-"""
 from llmwiki.lint import link_lint
 
 
@@ -23,7 +18,7 @@ def _make(tmp_path, files):
 def test_missing_cross_ref(tmp_path):
     _make(tmp_path, {
         "wiki/index.md": "links to [[Ghost]]",
-        "wiki/index2.md": "no links",   # gives index.md an inbound? no — separate
+        "wiki/index2.md": "no links",
     })
     rep = link_lint.lint(tmp_path)
     assert ("wiki/index.md", "Ghost") in rep.missing
@@ -36,9 +31,7 @@ def test_orphan_detection(tmp_path):
         "wiki/lonely.md": "nobody links to me",
     })
     rep = link_lint.lint(tmp_path)
-    # leaf has an inbound link -> not orphan.
     assert "wiki/leaf.md" not in rep.orphans
-    # hub and lonely have no inbound links -> orphans.
     assert "wiki/hub.md" in rep.orphans
     assert "wiki/lonely.md" in rep.orphans
 
@@ -49,6 +42,5 @@ def test_derived_and_source_share_namespace(tmp_path):
         "wiki/derived/synth.md": "derived page named synth",
     })
     rep = link_lint.lint(tmp_path)
-    # [[synth]] resolves to the derived page (name-based), so no missing ref.
     assert not any(t == "synth" for _, t in rep.missing)
     assert "wiki/derived/synth.md" not in rep.orphans

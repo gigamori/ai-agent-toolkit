@@ -1,20 +1,3 @@
-"""Contract tests: CLI stdio is UTF-8 regardless of the host locale (S1 / #2).
-
-On Windows, PIPED Python stdio defaults to the ANSI codepage (cp932 on Japanese
-systems). The write verbs read page content from STDIN, so without the
-main()-top ``reconfigure`` the write path either dies with UnicodeDecodeError
-or silently mojibakes. These tests FORCE the hostile locale via
-``PYTHONIOENCODING=cp932`` in a real subprocess (deterministic on every host
-OS) and assert the reconfigure wins:
-
-  - ``file`` verb: UTF-8 Japanese incl. a non-BMP char (U+20BB7, impossible in
-    cp932) supplied on STDIN round-trips byte-exactly onto the written page.
-  - ``resolve-root``: a non-ASCII (non-BMP) root path prints back intact.
-
-The subprocess runs the package via ``sys.executable`` with PYTHONPATH set to
-the package root (path-import, no uv needed — the verbs under test are
-dep-free).
-"""
 import json
 import os
 import subprocess
@@ -23,15 +6,13 @@ from pathlib import Path
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent
 
-# U+20BB7 (𠮷): non-BMP, NOT representable in cp932 — any non-UTF-8 hop drops
-# or corrupts it, which is what makes it a discriminating canary.
 _NONBMP = "\U00020BB7"
 _JP_BODY = (
     "# 日本語 UTF-8 契約テスト\n\n"
     f"CANARY: {_NONBMP}野家 の {_NONBMP}、森鷗外 の 鷗\n"
     "ひらがな カタカナ 漢字 ①②③\n"
 )
-_NONBMP_UTF8 = _NONBMP.encode("utf-8")   # F0 A0 AE B7
+_NONBMP_UTF8 = _NONBMP.encode("utf-8")
 
 _SCHEMA = """---
 config:
@@ -58,13 +39,6 @@ def _init_wiki(root: Path) -> None:
 
 
 def _run_cli(args: "list[str]", *, stdin_bytes: "bytes | None" = None):
-    """Run the llmwiki CLI in a subprocess under a FORCED cp932 stdio locale.
-
-    ``PYTHONIOENCODING=cp932`` reproduces the Japanese-Windows piped default on
-    any host; ``PYTHONUTF8=0`` defeats an ambient UTF-8 mode. The main()-top
-    reconfigure must take precedence over both (that precedence IS the
-    contract under test).
-    """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(_PKG_ROOT)
     env["PYTHONIOENCODING"] = "cp932"
@@ -85,15 +59,15 @@ def test_file_verb_utf8_stdin_survives_cp932_locale(tmp_path):
                      "utf8 contract"],
                     stdin_bytes=_JP_BODY.encode("utf-8"))
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
-    # stdout reports the written page without crashing (errors="replace" side).
     assert b"written:" in proc.stdout
 
     page = root / "wiki" / "derived" / "utf8-test.md"
     assert page.is_file()
     page_bytes = page.read_bytes()
-    # Byte-exact survival of the cp932-impossible char on disk (no mojibake,
-    # no replacement char) — proves stdin was decoded as strict UTF-8.
-    assert _NONBMP_UTF8 in page_bytes
+    assert _NONBMP_UTF8 in page_bytes, (
+        "the non-BMP canary survives byte-exactly on disk, so stdin was decoded "
+        "as strict UTF-8 rather than under the forced locale"
+    )
     assert "鷗".encode("utf-8") in page_bytes
 
 
@@ -103,20 +77,16 @@ def test_resolve_root_nonascii_root_round_trips_under_cp932(tmp_path):
 
     proc = _run_cli(["resolve-root", "--root", str(root)])
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
-    # One value per line (root, then scope) since 2026-08-07; was a single
-    # tab-separated line before that.
     lines = proc.stdout.decode("utf-8").splitlines()
     out_root, scope = lines[0].strip(), lines[1].strip()
-    # The non-BMP char comes back intact as UTF-8 (stdout reconfigure wins
-    # over PYTHONIOENCODING=cp932 — cp932 could not encode it at all).
-    assert _NONBMP in out_root
+    assert _NONBMP in out_root, (
+        "the stdout reconfigure wins over the forced locale, which cannot encode "
+        "this character at all"
+    )
     assert scope == "prompt"
 
 
 def test_ingest_apply_utf8_manifest_survives_cp932_locale(tmp_path):
-    """The S1 write path the orchestrator actually uses: `ingest-apply` reads a
-    JSON manifest on STDIN. Requires an open transaction (journal dir) — run
-    the driver's begin first via the same subprocess convention."""
     root = tmp_path / "wiki_root"
     _init_wiki(root)
     src = root / "input.txt"

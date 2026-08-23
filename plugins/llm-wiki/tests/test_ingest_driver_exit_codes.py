@@ -1,13 +1,3 @@
-"""Exit-code contract: ingest_driver.main / apply_finish.run_apply_finish_cli
-(2026-07-16, generalizing the theme1 i:39 cli.py contract to this entrypoint).
-
-  rc 0  = success
-  rc 2  = SENTINEL (state notice — NO-MARKER / no sidecar / REFUSED / zero-match)
-  rc 3  = OPERATIONAL error (runtime/environment/verification failure)
-  rc 64 = EX_USAGE (usage/protocol error: bad argv, unknown verb, bad --kind)
-
-Model-free and dependency-free (no uv / duckdb / network).
-"""
 import json
 
 import pytest
@@ -39,9 +29,6 @@ def _init_wiki(tmp_path):
     (tmp_path / "log.md").write_text("# Log\n", encoding="utf-8")
 
 
-# --------------------------------------------------------------------------- #
-# usage / protocol errors -> EX_USAGE (64)
-# --------------------------------------------------------------------------- #
 def test_missing_verb_is_ex_usage():
     assert drv.main([]) == drv.EX_USAGE
 
@@ -77,16 +64,13 @@ def test_begin_bad_kind_is_ex_usage(tmp_path):
 
 
 def test_apply_finish_usage_is_ex_usage():
-    # too few positional args + no --manifest.
     assert drv.main(["apply-finish"]) == af.EX_USAGE
 
 
-# --- begin strict arg contract (DEC-a; item3) -> EX_USAGE ------------------- #
 def test_begin_unknown_flag_is_ex_usage(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path.parent / "src_uf.txt"
     src.write_text("hello", encoding="utf-8")
-    # `--origin` is not a begin flag (origin is selected via --kind).
     rc = drv.main(["begin", str(tmp_path), str(src), "--origin=fe_b"])
     assert rc == drv.EX_USAGE
 
@@ -95,7 +79,6 @@ def test_begin_empty_value_flag_is_ex_usage(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path.parent / "src_ev.txt"
     src.write_text("hello", encoding="utf-8")
-    # `--kind` with no `=value` (space-form, unsupported for begin) is rejected.
     rc = drv.main(["begin", str(tmp_path), str(src), "--kind"])
     assert rc == drv.EX_USAGE
 
@@ -104,17 +87,11 @@ def test_begin_excess_positional_is_ex_usage(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path.parent / "src_ex.txt"
     src.write_text("hello", encoding="utf-8")
-    # A 3rd positional was silently ignored before strict arity (item3).
     rc = drv.main(["begin", str(tmp_path), str(src), "extra-arg"])
     assert rc == drv.EX_USAGE
 
 
-# --- session-plan space-form --pj must NOT regress (guard is begin-only) ---- #
 def test_session_plan_space_form_pj_not_ex_usage(tmp_path, monkeypatch):
-    # `--pj name` (space form) is intentional for session-plan (L1663-1668); the
-    # begin-only strict-flag guard (item3) must not reach it. Hermetic: pin the
-    # state dir + ts ordering (mirrors test_session_plan.py) so the space-form
-    # `--pj` is proven to resolve to the project name, not an empty-value reject.
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -123,18 +100,13 @@ def test_session_plan_space_form_pj_not_ex_usage(tmp_path, monkeypatch):
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
-    # Direct call proves the space form resolves pj -> the project name.
     out = drv.session_plan(str(tmp_path), pj="my-project", kind="auto")
     assert out["sids"] == ["sid-a"]
-    # Via the CLI entrypoint: `--pj my-project` must NOT be a usage error.
     rc = drv.main(["session-plan", str(tmp_path), "--pj", "my-project"])
     assert rc != drv.EX_USAGE
     assert rc == 0
 
 
-# --------------------------------------------------------------------------- #
-# genuine SENTINELs stay rc2
-# --------------------------------------------------------------------------- #
 def test_begin_no_marker_is_sentinel_rc2(tmp_path):
     src = tmp_path.parent / "src2.txt"
     src.write_text("hello", encoding="utf-8")
@@ -148,8 +120,6 @@ def test_finish_no_sidecar_is_sentinel_rc2(tmp_path):
 
 
 def test_abort_ownership_mismatch_is_sentinel_rc2(tmp_path):
-    """P10: abort's ownership-mismatch refusal is a rc2 SENTINEL (raised
-    DriverError), not a silent rc0 {"aborted": false}."""
     _init_wiki(tmp_path)
     src = tmp_path.parent / "src3.txt"
     src.write_text("owned by A", encoding="utf-8")
@@ -168,28 +138,23 @@ def test_enumerate_zero_match_is_sentinel_rc2(tmp_path):
 
 
 def test_begin_jsonl_auto_kind_is_sentinel_rc2(tmp_path):
-    """A-3 fail-closed kind gate (F-3): bare DriverError -> rc2, NOT EX_USAGE."""
     _init_wiki(tmp_path)
     src = tmp_path.parent / "some-sid.jsonl"
     src.write_text('{"turns": []}\n', encoding="utf-8")
-    rc = drv.main(["begin", str(tmp_path), str(src)])     # no --kind
+    rc = drv.main(["begin", str(tmp_path), str(src)])
     assert rc == 2
     assert rc != drv.EX_USAGE
 
 
 def test_begin_jsonl_explicit_fe_b_is_not_sentinel(tmp_path):
-    """Contrast: an explicit --kind=fe_b on the same jsonl proceeds (rc0)."""
     _init_wiki(tmp_path)
     src = tmp_path.parent / "some-sid.jsonl"
     src.write_text('{"turns": []}\n', encoding="utf-8")
     rc = drv.main(["begin", str(tmp_path), str(src), "--kind=fe_b"])
     assert rc == 0
-    drv.main(["abort", str(tmp_path)])     # file-hygiene cleanup
+    drv.main(["abort", str(tmp_path)])
 
 
-# --------------------------------------------------------------------------- #
-# OPERATIONAL errors -> rc3
-# --------------------------------------------------------------------------- #
 def test_begin_non_utf8_source_is_operational_rc3(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path.parent / "binary.bin"
@@ -199,18 +164,12 @@ def test_begin_non_utf8_source_is_operational_rc3(tmp_path):
 
 
 def test_begin_missing_source_is_operational_rc3(tmp_path):
-    # A non-existent source must be a clean DriverOpError (exit 3), NOT an
-    # uncaught FileNotFoundError traceback (item2 / DEC-b). Returning (not
-    # raising) already proves no traceback escaped.
     _init_wiki(tmp_path)
     missing = tmp_path.parent / "does-not-exist.txt"
     rc = drv.main(["begin", str(tmp_path), str(missing)])
     assert rc == 3
 
 
-# --------------------------------------------------------------------------- #
-# subclass taxonomy: DriverUsageError / DriverOpError are still DriverError
-# --------------------------------------------------------------------------- #
 def test_subclasses_are_driver_error():
     assert issubclass(drv.DriverUsageError, drv.DriverError)
     assert issubclass(drv.DriverOpError, drv.DriverError)

@@ -1,33 +1,19 @@
-"""Tests: config / precedence resolver (D3/D4/D5).
-
-Covers: frontmatter config parsing; 3-tier precedence prompt > wiki > default;
-per-axis independence; empty falls through; one-line declaration; override_scope;
-implicit write_mode flags; budget axes max_count/max_bytes defaults (D-a) and the
-apply_fanout_k <= max_count consistency check (D-c).
-"""
 from pathlib import Path
 
 import pytest
 
 from llmwiki.core import config_resolver as cr
 
-# Resolve SCHEMA.md package-relative so the test is harness-agnostic: parents[1]
-# from tests/ is the package root (the dir holding templates/ and pyproject.toml)
-# in BOTH the CC plugin tree (ai-agent-toolkit/plugins/llm-wiki/) and the pi
-# package tree (pi-extensions/packages/llm-wiki/). Avoids the CC-only parents[3]
-# repo-root assumption.
 _PKG = Path(__file__).resolve().parents[1]
 _SCHEMA = _PKG / "templates" / "SCHEMA.md"
 
 
 def test_load_config_from_template_schema():
     cfg = cr.load_config(_SCHEMA)
-    # The template seeds non-empty defaults for each axis.
     assert cfg.get("activation_scope") == "scoped"
     assert cfg.get("write_mode") == "explicit"
     assert cfg.get("override_scope") == "operation"
-    # doc_type_profiles block keys must NOT leak into config.
-    assert "transcript" not in cfg
+    assert "transcript" not in cfg, "doc_type_profiles block keys do not leak into config"
     assert "paper" not in cfg
 
 
@@ -53,7 +39,7 @@ def test_precedence_default_when_empty():
 
 def test_axes_resolve_independently():
     res = cr.resolve_all(
-        {"write_mode": "implicit"},   # only one axis overridden by prompt
+        {"write_mode": "implicit"},
         {"read_grounding": "explicit"},
     )
     assert res["write_mode"].source == "prompt"
@@ -81,15 +67,11 @@ def test_implicit_write_mode_flags():
     assert cr.autocommit_forced(res) is True
 
 
-# --- budget axes + consistency check (D-a / D-c) ---
 
 def test_resolve_all_returns_all_axes():
     res = cr.resolve_all({}, {})
     assert len(res) == len(cr.AXES) == 11
     assert "max_count" in res and "max_bytes" in res
-    # the 3 opt-in qmd search axes (optional-search-qmd.md D-Q7) are included via
-    # the shared DEFAULTS/AXES machinery, defaulting to the index backend (off)
-    # with source=default (no new check_consistency coupling).
     assert res["search_backend"].value == "index"
     assert res["qmd_bin"].value == "qmd"
     assert res["qmd_page_threshold"].value == "100"
@@ -98,8 +80,6 @@ def test_resolve_all_returns_all_axes():
 
 
 def test_budget_axes_default_values():
-    # D-a: max_count default 100, max_bytes default 10 MiB (10485760), from
-    # built-in defaults when both prompt and wiki-local are empty.
     res = cr.resolve_all({}, {})
     assert res["max_count"].value == "100"
     assert res["max_count"].source == "default"
@@ -108,7 +88,6 @@ def test_budget_axes_default_values():
 
 
 def test_consistency_check_passes_when_k_le_max_count():
-    # apply_fanout_k (10) <= max_count (100) by default -> no raise.
     res = cr.resolve_all({}, {})
     assert cr.check_consistency(res) is None
 
@@ -119,7 +98,6 @@ def test_consistency_check_passes_on_equality():
 
 
 def test_consistency_check_fails_when_k_gt_max_count():
-    # D-c violated: apply_fanout_k (200) > max_count (100) -> raise before lock.
     res = cr.resolve_all({"apply_fanout_k": "200"}, {})
     with pytest.raises(cr.ConfigInconsistency):
         cr.check_consistency(res)

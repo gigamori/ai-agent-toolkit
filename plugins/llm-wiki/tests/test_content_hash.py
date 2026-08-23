@@ -1,8 +1,3 @@
-"""Tests: content-hash dedup (D18).
-
-Covers: same content -> same hash; existing hash -> exists True (no-op);
-new content -> exists False; supersedes link form.
-"""
 from llmwiki.core import content_hash as ch
 
 

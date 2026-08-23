@@ -1,33 +1,3 @@
-"""Tests: cc_log_project — the fork-aware cc-log projector (T2/T9).
-
-Covers the T9 locked spec for the projector:
-  - all-branch adoption (every projected turn is kept, no frontier selection);
-  - LENGTH-INDEPENDENT exact dedup within a sid (short turns collapse too — the
-    >=200-char min-length guard is WITHDRAWN, F4);
-  - a cross-record shared prefix collapses (same (role,text) -> one turn);
-  - thinking blocks are excluded (S8-c);
-  - tool_use/tool_result blocks are excluded from the projection SQL (D5);
-  - isMeta is surfaced as a column, and the meta-noise drop is the AND of that
-    flag with the denylist (D12 — the behavior tests live in
-    test_cc_log_project_batch.py, next to `_group_rows_to_turns`);
-  - a per-turn provenance pointer (sid/uuid/ts) is emitted (F5);
-  - injected boilerplate is stripped BEFORE the hash so turns differing only by
-    boilerplate collapse (F4/U2);
-  - the ledger diff drops already-owned turns (F1-b/T4) and the drop is counted
-    on ProjectionResult.ledger_skipped (F6);
-  - the DuckDB `md5` and Python `hashlib.md5` hashes byte-MATCH for the same
-    input (0x1F delimiter / UTF-8 / NFC — F5).
-
-The DuckDB projection itself (`_fetch_turns`) reads the live cc store, which is
-not hermetic; the projector's PURE logic (grouping -> boilerplate strip -> dedup
--> ledger diff -> markdown) is exercised by monkeypatching `_fetch_turns` to
-return synthetic `_Turn` rows (the sanctioned T2 approach). The real `ledger`
-module is injected so the hash / seen-set are the true single source of truth.
-
-The F5 test opens an in-memory DuckDB and applies the vendored `cc_views.sql`
-schema function (`md5`/`nfc_normalize`), replicating the DuckDB-side hash the
-projection SQL relies on, and asserts byte-parity with `ledger.compute_hash`.
-"""
 import hashlib
 import unicodedata
 from pathlib import Path
@@ -38,11 +8,7 @@ from llmwiki.ingest import cc_log_project as proj
 from llmwiki.ingest import ledger
 
 
-# --------------------------------------------------------------------------- #
-# helpers
-# --------------------------------------------------------------------------- #
 def _turn(role, uuid, ts, texts, order=0):
-    """Build a synthetic projector `_Turn` (post-fetch, pre-dedup)."""
     return proj._Turn(
         role=role, uuid=uuid, ts=ts,
         text_parts=list(texts),
@@ -51,30 +17,16 @@ def _turn(role, uuid, ts, texts, order=0):
 
 
 def _stub_session_file(monkeypatch):
-    """Satisfy Path A's absent-sid gate for the PURE-logic fixtures.
-
-    `project_owned` / `extract_owned` refuse a sid that has no `<sid>.jsonl`
-    anywhere in the corpus (`_require_session_file`). The fixtures below
-    deliberately never touch the filesystem — they synthesize `_Turn`s and
-    monkeypatch `_fetch_turns` (the sanctioned T2 approach; see the module
-    docstring) — so the gate would have nothing to find. Stub it here; the gate's
-    own behavior is covered by the `_require_session_file` tests at the end of
-    this file.
-    """
     monkeypatch.setattr(proj, "_require_session_file",
                         lambda sid: Path(f"{sid}.jsonl"))
 
 
 def _project(monkeypatch, turns, wiki_root):
-    """Project a fixed list of synthetic turns (monkeypatch the DuckDB fetch)."""
     monkeypatch.setattr(proj, "_fetch_turns", lambda sid: list(turns))
     _stub_session_file(monkeypatch)
     return proj.project_owned(wiki_root, "sid-under-test", ledger=ledger)
 
 
-# --------------------------------------------------------------------------- #
-# all-branch adoption: every distinct turn is kept (no frontier selection)
-# --------------------------------------------------------------------------- #
 def test_all_branches_adopted(tmp_path, monkeypatch):
     turns = [
         _turn("user", "u1", "2026-07-02 10:00:00", ["question A"], order=0),
@@ -83,21 +35,16 @@ def test_all_branches_adopted(tmp_path, monkeypatch):
         _turn("assistant", "a3", "2026-07-02 10:00:03", ["branch three"], order=3),
     ]
     res = _project(monkeypatch, turns, tmp_path)
-    # All four distinct turns survive (nothing is a duplicate) -> 4 novel entries.
     assert len(res.novel_entries) == 4
     for body in ("question A", "branch one", "branch two", "branch three"):
         assert body in res.markdown
 
 
-# --------------------------------------------------------------------------- #
-# length-independent exact dedup: identical (role,text) turns collapse to ONE,
-# INCLUDING short turns (the >=200-char guard is withdrawn, F4)
-# --------------------------------------------------------------------------- #
 def test_exact_dedup_collapses_identical_turns(tmp_path, monkeypatch):
-    long_text = "This is a substantial paragraph. " * 12  # > 200 chars
+    long_text = "This is a substantial paragraph. " * 12
     turns = [
         _turn("assistant", "a1", "t1", [long_text], order=0),
-        _turn("assistant", "a2", "t2", [long_text], order=1),   # exact dup -> collapse
+        _turn("assistant", "a2", "t2", [long_text], order=1),
     ]
     res = _project(monkeypatch, turns, tmp_path)
     assert len(res.novel_entries) == 1
@@ -105,48 +52,39 @@ def test_exact_dedup_collapses_identical_turns(tmp_path, monkeypatch):
 
 
 def test_short_turn_exact_dedup_collapses(tmp_path, monkeypatch):
-    """A SHORT affirmation is collapsed too (length-independent, F4). The first
-    copy is retained so the decision signal survives."""
     turns = [
         _turn("user", "u1", "t1", ["ok"], order=0),
-        _turn("user", "u2", "t2", ["ok"], order=1),       # short exact dup
+        _turn("user", "u2", "t2", ["ok"], order=1),
         _turn("assistant", "a1", "t3", ["Sure"], order=2),
-        _turn("assistant", "a2", "t4", ["Sure"], order=3),  # short exact dup
+        _turn("assistant", "a2", "t4", ["Sure"], order=3),
     ]
     res = _project(monkeypatch, turns, tmp_path)
-    # 2 unique short turns survive (one "ok", one "Sure"); the 2 dups collapse.
     assert len(res.novel_entries) == 2
     assert res.markdown.count("## Turn") == 2
-    # first copy retained -> the signal is present exactly once each.
-    assert res.markdown.count("**Human**:") == 1
+    assert res.markdown.count("**Human**:") == 1, (
+        "the first copy of a collapsed turn is retained, so the signal survives dedup"
+    )
     assert res.markdown.count("**Assistant**:") == 1
 
 
 def test_shared_prefix_across_records_collapses(tmp_path, monkeypatch):
-    """A shared prefix appearing in two records (the cross-record collapse case)
-    dedups to one turn regardless of the surrounding record."""
     shared = "shared prefix content that recurs verbatim"
     turns = [
         _turn("assistant", "recA", "t1", [shared], order=0),
-        _turn("assistant", "recB", "t2", [shared], order=1),  # same text, other record
+        _turn("assistant", "recB", "t2", [shared], order=1),
     ]
     res = _project(monkeypatch, turns, tmp_path)
     assert len(res.novel_entries) == 1
 
 
-# --------------------------------------------------------------------------- #
-# boilerplate strip BEFORE hash: turns differing ONLY by injected boilerplate
-# collapse (F4/U2)
-# --------------------------------------------------------------------------- #
 def test_boilerplate_stripped_then_dedup(tmp_path, monkeypatch):
     raw = "login bug in the auth flow"
     with_boiler = f"[Progress Session] session_id=abc sid8=abc12345\n{raw}"
     turns = [
         _turn("user", "u1", "t1", [raw], order=0),
-        _turn("user", "u2", "t2", [with_boiler], order=1),  # only differs by boilerplate
+        _turn("user", "u2", "t2", [with_boiler], order=1),
     ]
     res = _project(monkeypatch, turns, tmp_path)
-    # After the [Progress Session] strip both hash the same -> collapse to one.
     assert len(res.novel_entries) == 1
     assert "[Progress Session]" not in res.markdown
 
@@ -164,8 +102,6 @@ def test_boilerplate_system_reminder_removed(tmp_path, monkeypatch):
 
 
 def test_boilerplate_mode_header_block_removed(tmp_path, monkeypatch):
-    # The real role-mode "Two response axes:" header block (verified against
-    # plugins/role-mode/prompts/modes/_meta.md).
     mode_block = (
         "Two response axes:\n"
         "\n"
@@ -183,9 +119,6 @@ def test_boilerplate_mode_header_block_removed(tmp_path, monkeypatch):
 
 
 def test_boilerplate_mode_header_block_removed_role_less(tmp_path, monkeypatch):
-    # The role-less variant (verified against
-    # plugins/role-mode/prompts/modes/_meta.md, split 2026-07-30): no Role
-    # axis text at all, only the Mode line + narrowed precedence.
     mode_block = (
         "Mode = HOW you process — rules, constraints, procedures.\n"
         "\n"
@@ -200,16 +133,6 @@ def test_boilerplate_mode_header_block_removed_role_less(tmp_path, monkeypatch):
 
 
 def test_boilerplate_mode_active_line_and_body_stripped(tmp_path, monkeypatch):
-    # Regression (2026-08-09): _MODE_TRAILER_KEYWORDS used to carry "Role:" /
-    # "Mode:" (capitalized), but the active declaration line mode_inject.py
-    # actually emits is always lowercase ("role: ", "mode: " -- see
-    # plugins/role-mode/hooks/mode_inject.py's active_lines construction), so
-    # the old keywords never matched it and strip stopped right there,
-    # leaving the active line AND everything bulleted after it (mode body,
-    # _common.md) unstripped. Verified against real hook output before this
-    # fix landed. The header + Precedence lines are consumed as before; this
-    # fixture adds the active line and a representative slice of bulleted
-    # mode-body / _common.md content that must now also be consumed.
     mode_block = (
         "Mode = HOW you process — rules, constraints, procedures.\n"
         "\n"
@@ -235,8 +158,6 @@ def test_boilerplate_mode_active_line_and_body_stripped(tmp_path, monkeypatch):
 
 
 def test_boilerplate_role_and_mode_active_lines_stripped(tmp_path, monkeypatch):
-    # Same regression as above, role-present variant: the "role: <value>"
-    # active line must also be consumed (lowercase, same reasoning).
     mode_block = (
         "Two response axes:\n"
         "\n"
@@ -260,10 +181,6 @@ def test_boilerplate_role_and_mode_active_lines_stripped(tmp_path, monkeypatch):
 
 
 def test_boilerplate_suffixed_mode_and_subagent_block_stripped(tmp_path, monkeypatch):
-    # The mode:<name>/<seg> subagent-delegation suffix (role-mode 0.2.0):
-    # the active line carries the suffix verbatim, and _subagent.md (an
-    # all-bullet file, per its own format constraint) is injected after
-    # _common.md. All of it must strip, same as the unsuffixed case.
     mode_block = (
         "Mode = HOW you process — rules, constraints, procedures.\n"
         "\n"
@@ -287,15 +204,6 @@ def test_boilerplate_suffixed_mode_and_subagent_block_stripped(tmp_path, monkeyp
 
 
 def test_boilerplate_does_not_eat_user_slug_line(tmp_path, monkeypatch):
-    # Regression (2026-08-09, second pass): the injected additionalContext is
-    # PREPENDED to the user's own turn, so the injected block and the user's
-    # typed prompt are adjacent. The user's invocation slug is `mode:survey`
-    # (colon, NO space -- role-mode's MODE_RE accepts no other form), while
-    # the injected active line is `mode: survey` (colon + space). A
-    # space-less "mode:" trailer keyword cannot tell them apart and eats the
-    # user's first line. Measured: this exact fixture lost
-    # "mode:survey investigate the flaky build" before the trailing space was
-    # added to the keyword.
     mode_block = (
         "Mode = HOW you process — rules, constraints, procedures.\n"
         "\n"
@@ -307,17 +215,16 @@ def test_boilerplate_does_not_eat_user_slug_line(tmp_path, monkeypatch):
     text = mode_block + "\nmode:survey investigate the flaky build\nand report the root cause"
     turns = [_turn("user", "u1", "t1", [text], order=0)]
     res = _project(monkeypatch, turns, tmp_path)
-    # The injected active line (colon + space) is gone...
     assert "mode: survey\n" not in res.markdown
     assert "Basic Behavior" not in res.markdown
-    # ...but the user's own slug line (colon, no space) survives intact.
-    assert "mode:survey investigate the flaky build" in res.markdown
+    assert "mode:survey investigate the flaky build" in res.markdown, (
+        "the injected line spells the marker with a trailing space and the user's "
+        "own slug does not, which is what keeps the two apart"
+    )
     assert "and report the root cause" in res.markdown
 
 
 def test_boilerplate_does_not_eat_user_role_slug_line(tmp_path, monkeypatch):
-    # Same distinction on the role axis: injected "role: <value>" (with
-    # space) strips; the user's typed "role:senior engineer" does not.
     mode_block = (
         "Two response axes:\n"
         "\n"
@@ -337,14 +244,6 @@ def test_boilerplate_does_not_eat_user_role_slug_line(tmp_path, monkeypatch):
 
 
 def test_boilerplate_does_not_eat_user_bullet_lines_is_known_gap(tmp_path, monkeypatch):
-    # KNOWN GAP, pinned deliberately rather than asserted as correct
-    # behavior: block consumption has no explicit end-of-injection
-    # terminator, so a user prompt whose leading lines are bullets is
-    # absorbed by the `-` alternative in _RE_MODE_BLOCK. The colon+space
-    # keyword fix does not address this (it is the bullet branch, not the
-    # keyword branch). This test documents the current behavior so a future
-    # change that adds a terminator fails here loudly and gets re-judged,
-    # instead of silently changing projection output.
     mode_block = (
         "Mode = HOW you process — rules, constraints, procedures.\n"
         "\n"
@@ -356,15 +255,15 @@ def test_boilerplate_does_not_eat_user_bullet_lines_is_known_gap(tmp_path, monke
     turns = [_turn("user", "u1", "t1", [text], order=0)]
     res = _project(monkeypatch, turns, tmp_path)
     assert "plain closing line" in res.markdown
-    # Current (imperfect) behavior: the user's leading bullets are consumed.
-    assert "fix the flaky test" not in res.markdown
+    assert "fix the flaky test" not in res.markdown, (
+        "current behaviour is pinned here, not endorsed: block consumption has no "
+        "end-of-injection terminator, so a user prompt opening with bullets is "
+        "absorbed; a change that adds a terminator must fail here and be re-judged"
+    )
     assert "then rerun CI" not in res.markdown
 
 
 def test_boilerplate_local_command_wrappers_removed(tmp_path, monkeypatch):
-    # D7: a locally-handled slash command emits three records; only the caveat
-    # one carries isMeta, so the wrapper ELEMENTS strip here unconditionally
-    # (same class as <system-reminder>).
     text = ("<command-name>/model</command-name>\n"
             "            <command-message>model</command-message>\n"
             "            <command-args>sonnet</command-args>")
@@ -375,14 +274,10 @@ def test_boilerplate_local_command_wrappers_removed(tmp_path, monkeypatch):
     res = _project(monkeypatch, turns, tmp_path)
     assert "<command-name>" not in res.markdown
     assert "<local-command-stdout>" not in res.markdown
-    # Both records were nothing but wrappers -> stripped to empty -> no turns.
     assert "## Turn" not in res.markdown
 
 
 def test_boilerplate_wiki_file_invocation_line_removed(tmp_path, monkeypatch):
-    # D7: D6's cutoff is positional and only protects the CURRENT run; the
-    # invocation line must be excluded by CONTENT so it stays out on every
-    # later run too.
     turns = [
         _turn("user", "u1", "t1", ["/wiki-file"], order=0),
         _turn("user", "u2", "t2", ["/wiki-file 最後の回答だけ"], order=1),
@@ -396,8 +291,6 @@ def test_boilerplate_wiki_file_invocation_line_removed(tmp_path, monkeypatch):
 
 def test_boilerplate_wiki_file_pattern_does_not_eat_surrounding_content(
         tmp_path, monkeypatch):
-    # The strip is line-anchored: a mention of the command inside real prose
-    # must survive, and only the standalone invocation line goes.
     text = ("この設計では /wiki-file を新設する。\n"
             "/wiki-file\n"
             "上の行は起動行なので除去される。")
@@ -408,8 +301,6 @@ def test_boilerplate_wiki_file_pattern_does_not_eat_surrounding_content(
 
 
 def test_boilerplate_mode_header_block_does_not_eat_real_content(tmp_path, monkeypatch):
-    # A user turn that merely starts with the word "Mode" must not be
-    # swallowed by the role-less header's literal match.
     text = "Mode of transport matters here.\nactual user instruction here"
     turns = [_turn("user", "u1", "t1", [text], order=0)]
     res = _project(monkeypatch, turns, tmp_path)
@@ -417,13 +308,7 @@ def test_boilerplate_mode_header_block_does_not_eat_real_content(tmp_path, monke
     assert "actual user instruction here" in res.markdown
 
 
-# --------------------------------------------------------------------------- #
-# thinking exclusion (S8-c) + tool exclusion (D5): the projection SQL selects
-# text blocks only
-# --------------------------------------------------------------------------- #
 def test_thinking_and_tool_blocks_excluded_from_projection_sql():
-    """S8-c + D5 are enforced at the SQL level: block_type = 'text' only —
-    neither 'thinking' nor 'tool_use'/'tool_result' is ever fetched."""
     sql = proj._PROJECT_SQL
     assert "block_type = 'text'" in sql
     assert "thinking" not in sql
@@ -432,79 +317,61 @@ def test_thinking_and_tool_blocks_excluded_from_projection_sql():
 
 
 def test_ismeta_surfaced_as_column_not_filtered_in_sql():
-    """D12: the SQL SURFACES isMeta as a column (read off the L0 cc_record raw
-    JSON); it must NOT filter on it — the drop verdict is the AND of that flag
-    with the Python-side denylist, because the flag alone also marks genuine
-    human steering."""
     sql = proj._PROJECT_SQL
     assert "isMeta" in sql
     assert "cc_record" in sql
     assert "AS is_meta" in sql
-    # no blanket exclusion of meta records at the SQL layer
-    assert "NOT IN" not in sql
+    assert "NOT IN" not in sql, (
+        "the flag is surfaced but never filtered in SQL: on its own it also marks "
+        "genuine human steering"
+    )
 
 
 def test_thinking_leak_absent_in_markdown(tmp_path, monkeypatch):
-    # _fetch_turns already excludes thinking at the SQL layer; a synthetic turn
-    # carries only text_parts, so a thinking string is never introduced. Assert
-    # the rendered markdown carries no thinking marker for a normal turn.
     turns = [_turn("assistant", "a1", "t1", ["a normal answer"], order=0)]
     res = _project(monkeypatch, turns, tmp_path)
     assert "thinking" not in res.markdown.lower()
 
 
-# --------------------------------------------------------------------------- #
-# provenance pointer (sid/uuid/ts) is emitted per surviving turn
-# --------------------------------------------------------------------------- #
 def test_provenance_pointer_present(tmp_path, monkeypatch):
     turns = [_turn("assistant", "uuid-XYZ", "2026-07-02 12:34:56",
                    ["answer body"], order=0)]
     res = _project(monkeypatch, turns, tmp_path)
-    # F5: sid is now part of the pointer (was uuid/ts only).
     assert ("<!-- provenance: sid=sid-under-test uuid=uuid-XYZ "
             "ts=2026-07-02 12:34:56 -->") in res.markdown
-    # novel_entries record the sid + per-turn uuid/ts (first-ingested ownership).
     assert res.novel_entries[0]["first_sid"] == "sid-under-test"
     assert res.novel_entries[0]["first_uuid"] == "uuid-XYZ"
     assert res.novel_entries[0]["first_ts"] == "2026-07-02 12:34:56"
 
 
 def test_novel_entry_hash_is_ledger_compute_hash(tmp_path, monkeypatch):
-    """The novel-entry hash is exactly ledger.compute_hash(role, projected_text)
-    — the single source of truth, NOT a reimplementation (F5 basis)."""
     turns = [_turn("assistant", "a1", "t1", ["deterministic body"], order=0)]
     res = _project(monkeypatch, turns, tmp_path)
     expected = ledger.compute_hash("assistant", "deterministic body")
     assert res.novel_entries[0]["hash"] == expected
 
 
-# --------------------------------------------------------------------------- #
-# ledger diff (F1-b/T4) + ledger_skipped counter (F6)
-# --------------------------------------------------------------------------- #
 def test_ledger_diff_drops_seen_and_counts_skip(tmp_path, monkeypatch):
     owned_text = "already owned by a prior ingest"
     novel_text = "brand new turn"
-    # Pre-seed the ledger so `owned_text` is already seen.
     owned_hash = ledger.compute_hash("assistant", owned_text)
     ledger.append_entries(
         tmp_path,
         [ledger.LedgerEntry(owned_hash, "prior-sid", "prior-uuid", "t0")],
     )
     turns = [
-        _turn("assistant", "a1", "t1", [owned_text], order=0),   # dropped by ledger
-        _turn("assistant", "a2", "t2", [novel_text], order=1),   # novel
+        _turn("assistant", "a1", "t1", [owned_text], order=0),
+        _turn("assistant", "a2", "t2", [novel_text], order=1),
     ]
     res = _project(monkeypatch, turns, tmp_path)
     assert len(res.novel_entries) == 1
     assert res.novel_entries[0]["hash"] == ledger.compute_hash("assistant", novel_text)
-    # F6: the ledger-diff drop is counted (this drop, not the within-sid dedup).
     assert res.ledger_skipped == 1
     assert owned_text not in res.markdown
     assert novel_text in res.markdown
 
 
 def test_ledger_skipped_zero_on_fresh_wiki(tmp_path, monkeypatch):
-    """First ingest into an empty wiki: nothing owned yet -> ledger_skipped == 0."""
     turns = [
         _turn("user", "u1", "t1", ["fresh one"], order=0),
         _turn("assistant", "a1", "t2", ["fresh two"], order=1),
@@ -515,15 +382,12 @@ def test_ledger_skipped_zero_on_fresh_wiki(tmp_path, monkeypatch):
 
 
 def test_ledger_skipped_counts_only_ledger_not_local_dedup(tmp_path, monkeypatch):
-    """F6 precision: ledger_skipped counts ONLY the ledger-diff drop, NOT the
-    within-sid exact-dedup collapse (a different signal)."""
     dup_text = "repeated within this same sid"
     turns = [
         _turn("assistant", "a1", "t1", [dup_text], order=0),
-        _turn("assistant", "a2", "t2", [dup_text], order=1),  # within-sid dup (NOT ledger)
+        _turn("assistant", "a2", "t2", [dup_text], order=1),
     ]
     res = _project(monkeypatch, turns, tmp_path)
-    # The within-sid collapse must NOT inflate ledger_skipped.
     assert res.ledger_skipped == 0
     assert len(res.novel_entries) == 1
 
@@ -538,28 +402,19 @@ def test_all_owned_yields_empty_body_and_no_novel(tmp_path, monkeypatch):
     res = _project(monkeypatch, turns, tmp_path)
     assert res.novel_entries == []
     assert res.ledger_skipped == 1
-    # Header only, no turn body.
     assert "## Turn" not in res.markdown
 
 
-# --------------------------------------------------------------------------- #
-# F5 — DuckDB md5 == Python hashlib.md5 for the SAME input (0x1F / UTF-8 / NFC)
-# --------------------------------------------------------------------------- #
 def test_hash_determinism_duckdb_matches_python():
-    """The turn-content hash must be byte-identical across the DuckDB and Python
-    sides (F5). Python side = ledger.compute_hash. DuckDB side =
-    md5(nfc_normalize(role) || chr(31) || nfc_normalize(text)) — nfc_normalize is
-    REQUIRED for byte-parity when the input is not already NFC (a decomposed
-    combining character otherwise diverges)."""
     duckdb = pytest.importorskip("duckdb")
     con = duckdb.connect()
     cases = [
         ("user", "hello world"),
-        ("assistant", "café"),                      # precomposed (NFC)
-        ("assistant", "café"),                 # decomposed -> needs NFC
-        ("user", "漢字 mixed script"),        # CJK
-        ("assistant", ""),                            # empty text
-        ("user", "line1\nline2\ttab"),                # embedded control chars
+        ("assistant", "café"),
+        ("assistant", "café"),
+        ("user", "漢字 mixed script"),
+        ("assistant", ""),
+        ("user", "line1\nline2\ttab"),
     ]
     for role, text in cases:
         py = ledger.compute_hash(role, text)
@@ -574,23 +429,17 @@ def test_hash_determinism_duckdb_matches_python():
 
 
 def test_hash_determinism_raw_md5_matches_for_nfc_stable_input():
-    """For input that is ALREADY NFC-stable (the common case), the raw DuckDB
-    expression md5(role || chr(31) || text) also byte-matches Python — documents
-    that the vendored views' plain md5 is correct for NFC-stable text, while
-    nfc_normalize is the universally-correct form (see the test above)."""
     duckdb = pytest.importorskip("duckdb")
     con = duckdb.connect()
     for role, text in [("user", "hello"), ("assistant", "plain ascii text"),
-                       ("user", "café")]:  # precomposed é is NFC-stable
-        assert unicodedata.normalize("NFC", text) == text  # precondition: NFC-stable
+                       ("user", "café")]:
+        assert unicodedata.normalize("NFC", text) == text
         py = ledger.compute_hash(role, text)
         ddb_raw = con.execute("SELECT md5(? || chr(31) || ?)", [role, text]).fetchone()[0]
         assert ddb_raw == py
 
 
 def test_compute_hash_uses_0x1f_delimiter_utf8():
-    """Guard the exact Python hash construction (0x1F delimiter, UTF-8, NFC)
-    against drift in ledger.compute_hash."""
     role, text = "assistant", "guard me"
     expected = hashlib.md5(
         unicodedata.normalize("NFC", role).encode("utf-8")
@@ -600,16 +449,6 @@ def test_compute_hash_uses_0x1f_delimiter_utf8():
     assert ledger.compute_hash(role, text) == expected
 
 
-# --------------------------------------------------------------------------- #
-# Path A fails closed on an ABSENT sid (`_require_session_file`).
-#
-# The views read the corpus through a GLOB, so at SQL level "this sid does not
-# exist" and "this sid projects to nothing" are both zero rows. Before this
-# guard, `begin` treated the former as an empty-but-successful ingest: it opened
-# a transaction and wrote a header-only raw for a session that does not exist
-# (measured 2026-08-12). pi_log_project has had the equivalent surface
-# (`_find_session_file`) all along; this restores the symmetry.
-# --------------------------------------------------------------------------- #
 def test_require_session_file_raises_when_no_root_holds_the_sid(tmp_path, monkeypatch):
     monkeypatch.setattr(proj.cc_paths, "cc_projects_roots", lambda: [tmp_path])
     with pytest.raises(proj.ProjectionError, match="cc session file not found"):
@@ -618,8 +457,6 @@ def test_require_session_file_raises_when_no_root_holds_the_sid(tmp_path, monkey
 
 def test_require_session_file_returns_the_match_and_scans_roots_in_order(tmp_path,
                                                                         monkeypatch):
-    """Env universe first, and the lookup is recursive (the sid's project dir is
-    a child of the projects root)."""
     first, second = tmp_path / "env", tmp_path / "default"
     (first / "c--a").mkdir(parents=True)
     (second / "c--a").mkdir(parents=True)
@@ -632,7 +469,6 @@ def test_require_session_file_returns_the_match_and_scans_roots_in_order(tmp_pat
 
 def test_require_session_file_skips_a_root_that_is_not_a_directory(tmp_path,
                                                                   monkeypatch):
-    """A configured-but-absent universe must not mask a hit in the next one."""
     missing = tmp_path / "not-created"
     present = tmp_path / "present"
     present.mkdir()
@@ -666,8 +502,6 @@ def test_extract_owned_proceeds_when_the_session_file_exists(tmp_path, monkeypat
 
 
 def test_extract_turns_batch_keeps_missing_sid_is_empty_list(tmp_path, monkeypatch):
-    """The Path B planner's semantics are UNCHANGED — its sids come from the
-    corpus, so the fail-closed guard is Path A only."""
     pytest.importorskip("duckdb")
     monkeypatch.setattr(proj.cc_paths, "cc_projects_roots", lambda: [tmp_path])
     assert proj.extract_turns_batch([], ledger=ledger) == {}

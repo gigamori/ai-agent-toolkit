@@ -1,11 +1,3 @@
-"""qmd_search wrapper tests (optional-search-qmd.md S3, DD3 B-boundary).
-
-Model-free: these pin the load-bearing correctness boundary (the scan_pages
-post-filter) and the D-Q8 predicate WITHOUT needing qmd installed or its ~GB
-models. The qmd `--json` `file` shape used here is the real qmd 2.5.3 format
-(`qmd://<absolute-path>`), reconstructed from actual on-disk files so
-`relative_to` resolves the same way it does in production.
-"""
 import os
 
 import pytest
@@ -25,13 +17,9 @@ def _make_wiki(tmp_path):
 
 
 def _uri(tmp_path, rel):
-    # Mimic qmd's `--json` `file` field: `qmd://` + absolute native path.
     return "qmd://" + str(tmp_path / rel)
 
 
-# --------------------------------------------------------------------------- #
-# _reconstruct_rel — qmd://<abs> -> wiki-root-relative posix (D-Q5)
-# --------------------------------------------------------------------------- #
 def test_reconstruct_rel_absolute_qmd_uri(tmp_path):
     _make_wiki(tmp_path)
     assert qs._reconstruct_rel(_uri(tmp_path, "wiki/derived/d1.md"), tmp_path) \
@@ -46,18 +34,15 @@ def test_reconstruct_rel_outside_root_is_none(tmp_path):
     assert qs._reconstruct_rel("", tmp_path) is None
 
 
-# --------------------------------------------------------------------------- #
-# _hits_to_pages — DD3 post-filter through scan_pages (the single authority)
-# --------------------------------------------------------------------------- #
 def test_hits_to_pages_drops_non_pages_and_tags_tier(tmp_path):
     _make_wiki(tmp_path)
     hits = [
-        {"file": _uri(tmp_path, "wiki/derived/d1.md")},   # keep (derived)
-        {"file": _uri(tmp_path, "wiki/README.md")},       # DROP: scan_pages skips README
-        {"file": _uri(tmp_path, "raw/secret.md")},        # DROP: raw/ not a page
-        {"file": _uri(tmp_path, "wiki/p1.md")},           # keep (source)
-        {"file": _uri(tmp_path, "wiki/p1.md")},           # DROP: duplicate
-        {"file": _uri(tmp_path, "wiki/p2.md")},           # keep (source)
+        {"file": _uri(tmp_path, "wiki/derived/d1.md")},
+        {"file": _uri(tmp_path, "wiki/README.md")},
+        {"file": _uri(tmp_path, "raw/secret.md")},
+        {"file": _uri(tmp_path, "wiki/p1.md")},
+        {"file": _uri(tmp_path, "wiki/p1.md")},
+        {"file": _uri(tmp_path, "wiki/p2.md")},
     ]
     out = qs._hits_to_pages(hits, tmp_path, k=10)
     assert out == [
@@ -74,13 +59,14 @@ def test_hits_to_pages_trims_to_k_preserving_rank(tmp_path):
     _make_wiki(tmp_path)
     hits = [
         {"file": _uri(tmp_path, "wiki/p2.md")},
-        {"file": _uri(tmp_path, "wiki/README.md")},   # dropped, must not consume a slot
+        {"file": _uri(tmp_path, "wiki/README.md")},
         {"file": _uri(tmp_path, "wiki/p1.md")},
         {"file": _uri(tmp_path, "wiki/derived/d1.md")},
     ]
     out = qs._hits_to_pages(hits, tmp_path, k=2)
-    # README dropped BEFORE trimming, so the 2 kept slots are p2, p1 (rank order).
-    assert out == [("source", "wiki/p2.md"), ("source", "wiki/p1.md")]
+    assert out == [("source", "wiki/p2.md"), ("source", "wiki/p1.md")], (
+        "non-pages are dropped before trimming, so a dropped hit never consumes a slot"
+    )
 
 
 def test_hits_to_pages_tier_matches_tier_of(tmp_path):
@@ -92,9 +78,6 @@ def test_hits_to_pages_tier_matches_tier_of(tmp_path):
         assert tier == wiki_index.tier_of(rel)
 
 
-# --------------------------------------------------------------------------- #
-# should_use — D-Q8 activation predicate
-# --------------------------------------------------------------------------- #
 def _res(backend="qmd", qmd_bin="qmd", threshold="0"):
     return {
         "search_backend": cr.Resolution("search_backend", backend, "wiki"),
@@ -116,10 +99,12 @@ def test_should_use_false_when_bin_absent(tmp_path, monkeypatch):
 
 
 def test_should_use_threshold_boundary(tmp_path, monkeypatch):
-    _make_wiki(tmp_path)  # 3 pages (p1, p2, derived/d1)
+    _make_wiki(tmp_path)
     monkeypatch.setattr(qs, "is_available", lambda b: True)
-    assert qs.should_use(tmp_path, _res(threshold="3")) is False   # 3 > 3 is False
-    assert qs.should_use(tmp_path, _res(threshold="2")) is True    # 3 > 2 is True
+    assert qs.should_use(tmp_path, _res(threshold="3")) is False, (
+        "the fixture holds 3 pages and the predicate is strictly greater-than"
+    )
+    assert qs.should_use(tmp_path, _res(threshold="2")) is True
 
 
 def test_should_use_non_integer_threshold_is_false(tmp_path, monkeypatch):
@@ -128,27 +113,17 @@ def test_should_use_non_integer_threshold_is_false(tmp_path, monkeypatch):
     assert qs.should_use(tmp_path, _res(threshold="lots")) is False
 
 
-# --------------------------------------------------------------------------- #
-# is_available + hard-failure paths raise QmdError (caller degrades to index)
-# --------------------------------------------------------------------------- #
 def test_is_available_false_for_missing_binary():
     assert qs.is_available("llmwiki-no-such-qmd-binary-xyz") is False
 
 
 def test_is_initialized_reflects_dot_qmd_dir(tmp_path):
-    # First lazy activation (D-Q6) is detected by the absence of <root>/.qmd/.
     assert qs.is_initialized(tmp_path) is False
     (tmp_path / ".qmd").mkdir()
     assert qs.is_initialized(tmp_path) is True
 
 
 def test_run_resolves_binary_sets_pwd_and_utf8(tmp_path, monkeypatch):
-    # Regression guard for the 3 Windows portability fixes found in live E2E:
-    #  (1) the binary is resolved via shutil.which (bare `qmd` fails as WinError 2
-    #      because the npm shim is `qmd.CMD`);
-    #  (2) PWD is set to the wiki-root in the child env (qmd locates its project
-    #      index by PWD, which subprocess `cwd=` does not update on the .CMD shim);
-    #  (3) output is decoded as UTF-8 with errors=replace (locale cp932 crashes).
     captured = {}
 
     def fake_run(argv, **kw):
@@ -165,11 +140,13 @@ def test_run_resolves_binary_sets_pwd_and_utf8(tmp_path, monkeypatch):
     monkeypatch.setattr(qs.shutil, "which", lambda b: r"/resolved/qmd.CMD")
     qs._run("qmd", ["init"], tmp_path)
 
-    assert captured["argv"][0] == r"/resolved/qmd.CMD"          # (1) resolved path
-    assert captured["kw"]["env"]["PWD"] == os.path.abspath(str(tmp_path))  # (2) PWD
+    assert captured["argv"][0] == r"/resolved/qmd.CMD"
+    assert captured["kw"]["env"]["PWD"] == os.path.abspath(str(tmp_path)), (
+        "PWD is set explicitly because the child resolves its index from PWD, not cwd"
+    )
     assert captured["kw"]["cwd"] == str(tmp_path)
-    assert captured["kw"]["encoding"] == "utf-8"                # (3) utf-8 ...
-    assert captured["kw"]["errors"] == "replace"               #     ... never crash
+    assert captured["kw"]["encoding"] == "utf-8"
+    assert captured["kw"]["errors"] == "replace"
 
 
 def test_query_raises_qmderror_when_binary_missing(tmp_path):

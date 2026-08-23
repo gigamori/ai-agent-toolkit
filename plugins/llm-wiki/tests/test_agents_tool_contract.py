@@ -1,11 +1,3 @@
-"""Static tool-contract test for the llm-wiki subagent definitions.
-
-Guards the bash-removal design point: the Stage2 apply agent and the lint agent
-are Read-only (no Bash in the frontmatter ``tools:``, no ```bash fence in the
-body) — verb execution lives in the orchestrator commands, where the
-write_tool.WriteSession code gate fires. Also pins the pre-existing Read-only
-state of the Stage1 extract agent as a regression check.
-"""
 import os
 import re
 
@@ -16,7 +8,6 @@ _AGENTS_DIR = os.path.join(_PKG_ROOT, "agents")
 
 
 def _load_agent_md(name):
-    """Return (frontmatter, body) of an agent definition markdown."""
     path = os.path.join(_AGENTS_DIR, name)
     with open(path, encoding="utf-8") as f:
         text = f.read()

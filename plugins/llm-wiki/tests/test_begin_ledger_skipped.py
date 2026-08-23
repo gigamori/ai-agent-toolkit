@@ -1,22 +1,3 @@
-"""Tests: begin's stdout-JSON `ledger_skipped` contract (T7/F6, T9 coverage).
-
-The Path B loop (wiki-ingest-sessions.md) must be able to SUM the per-run
-ledger-skipped TURN count across sids so an incremental re-run is not a silent
-no-op (RS-d). That count flows projector -> begin's stdout JSON. This asserts the
-driver's begin-JSON surface:
-  - FE-B' begin surfaces `ledger_skipped` (0 on first ingest, >0 on a re-run);
-  - FE-B begin surfaces `ledger_skipped == 0` (no projection) — key ALWAYS present
-    for a stable contract;
-  - the key is gated to FE-B' exactly like `pending_ledger_entries`.
-
-The FE-B' projector reads the live cc store (DuckDB), which is not hermetic, so
-the projector seam begin actually uses (#19 two-phase: `extract_owned` before
-the lock, `project_from_turns` inside it) is monkeypatched to return a
-controlled `ProjectionResult` — this test targets the driver's begin-JSON
-plumbing (the F6 wiring point), not the projector's own counting (covered in
-test_cc_log_project.py). frontends.fe_b_prime runs for real over the injected
-markdown (unchanged FE-B' contract).
-"""
 import json
 
 import pytest
@@ -49,8 +30,6 @@ def _init_wiki(tmp_path):
 
 
 def _patch_projection(monkeypatch, markdown, novel_entries, ledger_skipped):
-    """Patch begin's projector seam (#19 two-phase): a no-op pre-lock extract
-    plus an in-lock project_from_turns returning the controlled result."""
     monkeypatch.setattr(cc_log_project, "extract_owned",
                         lambda sid, *, ledger: [])
 
@@ -63,9 +42,6 @@ def _patch_projection(monkeypatch, markdown, novel_entries, ledger_skipped):
     monkeypatch.setattr(cc_log_project, "project_from_turns", _stub)
 
 
-# --------------------------------------------------------------------------- #
-# FE-B': ledger_skipped == 0 on a FIRST ingest (nothing owned yet)
-# --------------------------------------------------------------------------- #
 def test_fe_b_prime_ledger_skipped_zero_first_ingest(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     _patch_projection(
@@ -81,28 +57,24 @@ def test_fe_b_prime_ledger_skipped_zero_first_ingest(tmp_path, monkeypatch):
     drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# FE-B': ledger_skipped > 0 on a RE-RUN (prior ingest already owns the turns)
-# --------------------------------------------------------------------------- #
 def test_fe_b_prime_ledger_skipped_positive_on_rerun(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
-    # Simulate the re-run: the projector dropped 62 already-owned turns.
     _patch_projection(monkeypatch, "# CC Session transcript\n", [], 62)
     out = drv.begin(str(tmp_path), "somesid.jsonl", kind="fe_b_prime")
     assert out["origin"] == drv.ORIGIN_FE_B_PRIME
-    assert out["ledger_skipped"] == 62      # surfaced from ProjectionResult (F6)
+    assert out["ledger_skipped"] == 62
     drv.abort(str(tmp_path))
 
 
-# --------------------------------------------------------------------------- #
-# FE-B: no projection -> ledger_skipped == 0, key ALWAYS present (stable contract)
-# --------------------------------------------------------------------------- #
 def test_fe_b_ledger_skipped_zero_and_key_present(tmp_path):
     _init_wiki(tmp_path)
     src = tmp_path / "input.txt"
     src.write_text("third party content", encoding="utf-8")
     out = drv.begin(str(tmp_path), str(src), kind="fe_b")
     assert out["origin"] == drv.ORIGIN_FE_B
-    assert "ledger_skipped" in out          # key always present
-    assert out["ledger_skipped"] == 0       # gated to 0 for the non-projection origin
+    assert "ledger_skipped" in out, (
+        "the key is present on every origin, so a loop summing it across sids "
+        "never has to distinguish absent from zero"
+    )
+    assert out["ledger_skipped"] == 0
     drv.abort(str(tmp_path))
