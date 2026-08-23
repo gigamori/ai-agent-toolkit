@@ -60,7 +60,6 @@ def test_formats_match() -> None:
 
 
 def test_extract_sessions_mixed_log() -> None:
-    """A single @log block mixing both entry spellings must yield all of them."""
     content = (
         "<!-- @log:begin -->\n"
         "- 2026-07-13T13:45:45 [s:907c0329]: legacy narrative entry\n"

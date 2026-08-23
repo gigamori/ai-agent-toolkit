@@ -37,7 +37,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 def make_task(d: Path, name: str, body: str) -> Path:
-    """Writes `body` verbatim: no trailing-newline normalization."""
     tasks_dir = d / "tasks" / "1_in_progress"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     p = tasks_dir / name

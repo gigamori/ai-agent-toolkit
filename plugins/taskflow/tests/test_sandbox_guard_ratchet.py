@@ -70,8 +70,6 @@ def hook_vars(lines):
 
 
 def invocation_lines(lines):
-    """Counting the `python - "$HOOK"` form too keeps the detector leaning in scope, the
-    safe direction for this invariant."""
     hvars = hook_vars(lines)
     hits = []
     for ln in lines:
@@ -262,6 +260,21 @@ def main():
            % (len(in_scope), len(guarded), len(unguarded)))
     report("  out of scope:    %d" % len(out_scope))
     report("  allowlist size:  %d" % len(ALLOWLIST))
+    report("")
+    report("  not seen by this detector:")
+    report("    * a hook launched through a path built at runtime -- assembled by string")
+    report("      concatenation, read from a file, passed in via $1, or reached through")
+    report("      `bash -c` -- is scored NOT in scope and would slip the ratchet.")
+    report("    * a guard written with a differently-named repo-root variable, or an")
+    report("      ancestor walk unlike the two reference shapes, is scored ABSENT. That")
+    report("      direction fails closed; match the reference shape to clear it.")
+    report("    * only whole-line comments are stripped before matching, and the")
+    report("      `python - \"$HOOK\"` form counts as an invocation, which keeps the")
+    report("      detector leaning IN scope -- the safe direction for this invariant.")
+    report("    * `*.sh` in this directory only. `.py` tests, the hooks themselves,")
+    report("      plugins/taskflow/scripts/, and anything sourced from outside are out.")
+    report("    * this is a presence check on source text: it proves the guard block is")
+    report("      written, never that it runs or aborts correctly.")
 
     sys.stdout.write("\n".join(report_lines) + "\n")
     if failures:

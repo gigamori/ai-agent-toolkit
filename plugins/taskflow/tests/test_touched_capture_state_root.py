@@ -73,14 +73,12 @@ PREFIX_CWD = "    cwd = os.getcwd()"
 
 
 def make_variants(dest: Path) -> tuple[Path, Path]:
-    """Both control hooks are derived from the real source by substitution, each
-    substitution asserted to match exactly once, so a stale copy cannot make a control
-    arm vacuous."""
     src = io.open(HOOK, encoding="utf-8").read()
     for anchor in (FIXED_STATE_ROOT, FIXED_CWD):
         if src.count(anchor) != 1:
             die(f"hook source does not carry {anchor!r} exactly once "
-                f"(count={src.count(anchor)}) -- the fix is not in place")
+                f"(count={src.count(anchor)}) -- the control hook is derived from the real "
+                f"source by substitution, and a stale copy would make its arm vacuous")
     prefix = dest / "prefix.py"
     rootonly = dest / "rootonly.py"
     io.open(prefix, "w", encoding="utf-8").write(

@@ -90,8 +90,6 @@ def run_hook(cwd: Path, payload: dict) -> subprocess.CompletedProcess:
 
 
 def payload_for(ws: Path, key: str, rel: str) -> dict:
-    """`tool_name` is carried for realism only: `main()` never reads it and no arm below
-    is keyed on it."""
     tool = "NotebookEdit" if key == "notebook_path" else "Write"
     return {"session_id": SID, "tool_name": tool,
             "tool_input": {key: str(ws / rel)}}

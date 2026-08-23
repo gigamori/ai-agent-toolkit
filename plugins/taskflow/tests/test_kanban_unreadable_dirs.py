@@ -38,8 +38,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 class _Deny:
-    """Only the listing is refused, so `is_dir()` still reports True and the caller
-    reaches `iterdir()`."""
 
     def __init__(self, *denied: Path):
         self.denied = {os.path.normcase(str(p)) for p in denied}
@@ -62,7 +60,6 @@ class _Deny:
 
 
 class _Env:
-    """Fakes `Path.home()` so the real `~/.claude` stays out of every scan."""
 
     def __init__(self, cfg: str | None, home: Path):
         self.cfg = cfg

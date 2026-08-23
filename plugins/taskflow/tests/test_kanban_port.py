@@ -158,8 +158,6 @@ def test_persist_read_clear_roundtrip() -> None:
 
 
 def test_resolve_finds_displaced_server_after_collision_occupant_leaves() -> None:
-    """Re-deriving `start` and finding it merely free must not be read as "our server
-    isn't running anywhere"."""
     tmp = Path(tempfile.mkdtemp(prefix="kanban-port-test-"))
     try:
         roots = [tmp / "_projects"]
@@ -175,7 +173,7 @@ def test_resolve_finds_displaced_server_after_collision_occupant_leaves() -> Non
         )
         bound_port, state, info = gk.resolve_workspace_port(roots)
         check(state == "free" and bound_port != start,
-              f"F1 setup: collision at start -> bound elsewhere, got ({bound_port}, {state})")
+              f"setup: collision at start -> bound elsewhere, got ({bound_port}, {state})")
 
         gk._persist_port(roots, key, bound_port, 777)
 
@@ -187,8 +185,10 @@ def test_resolve_finds_displaced_server_after_collision_occupant_leaves() -> Non
 
         port2, state2, info2 = gk.resolve_workspace_port(roots)
         check((port2, state2) == (bound_port, "ours"),
-              f"F1 fix: displaced server found via persisted record after collision clears, "
-              f"got ({port2}, {state2}) expected ({bound_port}, 'ours')")
+              f"a displaced server is still found via its persisted record once the "
+              f"collision clears -- re-deriving start and finding it merely free must not "
+              f"read as our server not running anywhere; got ({port2}, {state2}) "
+              f"expected ({bound_port}, 'ours')")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

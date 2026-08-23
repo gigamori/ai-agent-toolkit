@@ -145,8 +145,6 @@ def build_ws(root: Path, name: str) -> Path:
 
 
 def plant(ws: Path, names: list[str]) -> list[Path]:
-    """A `.json` candidate additionally needs a 36-char stem and an empty `project`; a
-    sidecar is collected on mtime alone."""
     old = time.time() - STALE_AGE_S
     out = []
     for i, n in enumerate(names):

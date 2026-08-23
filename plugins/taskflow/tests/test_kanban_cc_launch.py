@@ -159,7 +159,6 @@ def test_launcher_probes_once() -> None:
 
 
 def test_launcher_unknown_not_cached() -> None:
-    """A raising probe must be re-run on the next call, and must say so once."""
     gk._reset_cc_launcher_cache()
     orig_which, orig_run = shutil.which, subprocess.run
     calls = {"n": 0}
@@ -188,7 +187,6 @@ def test_launcher_unknown_not_cached() -> None:
 
 
 def test_launcher_nonzero_returncode() -> None:
-    """A non-zero exit is EXT_UNKNOWN, never EXT_MISSING, even with empty stdout."""
     gk._reset_cc_launcher_cache()
     orig_which, orig_run = shutil.which, subprocess.run
     calls = {"n": 0}
@@ -219,8 +217,6 @@ def test_launcher_nonzero_returncode() -> None:
 
 
 class _StrictAsciiStderr(io.StringIO):
-    """Stand-in for a console whose codec cannot encode the message: it raises at the
-    write, so an unsanitized log line fails here instead of passing silently."""
 
     encoding = "ascii"
 
@@ -230,8 +226,6 @@ class _StrictAsciiStderr(io.StringIO):
 
 
 def test_probe_failure_log_is_sanitized() -> None:
-    """`str(OSError)` carries an OS-localized strerror and `cmd` is a filesystem path, so
-    printing them raw would raise inside the probe's except block and escape into /open."""
     gk._reset_cc_launcher_cache()
     orig_which, orig_run = shutil.which, subprocess.run
 
@@ -252,7 +246,8 @@ def test_probe_failure_log_is_sanitized() -> None:
         shutil.which, subprocess.run = orig_which, orig_run
         gk._reset_cc_launcher_cache()
     check(raised is None,
-          f"_resolve_cc_launcher: an unencodable strerror does not escape the probe, got {raised!r}")
+          f"_resolve_cc_launcher: an OS-localized, unencodable strerror does not escape "
+          f"the probe's except block into /open, got {raised!r}")
     lines = [ln for ln in err.getvalue().splitlines() if ln.strip()]
     check(raised is None and (cmd, status) == ("/x/codium", gk.EXT_UNKNOWN) and len(lines) == 1,
           f"_resolve_cc_launcher: a multi-line strerror still logs exactly one line, got {len(lines)}")

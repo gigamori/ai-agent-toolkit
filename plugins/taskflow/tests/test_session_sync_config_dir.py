@@ -43,8 +43,6 @@ def _encode_cwd(path: str) -> str:
 
 
 def _build_workspace(tmp: Path) -> tuple[Path, Path, Path]:
-    """The fake home carries a decoy `~/.claude`; the env cfg carries the universe the
-    hook must prefer."""
     ws = Path(os.path.realpath(tmp / "ws"))
     (ws / "_projects" / "_state").mkdir(parents=True)
     (ws / "_projects" / PROJECT).mkdir(parents=True)
@@ -107,7 +105,6 @@ def test_env_unset_uses_home() -> None:
 
 
 def test_env_relative_value_is_literal() -> None:
-    """A relative value resolves against the hook's cwd, not the home dir."""
     with tempfile.TemporaryDirectory() as tmp:
         ws, fake_home, _ = _build_workspace(Path(tmp))
         rel_cfg = ws / "~" / "cfgtest"

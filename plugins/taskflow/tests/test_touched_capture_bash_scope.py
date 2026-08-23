@@ -80,19 +80,15 @@ def test_u8a_python_c_control() -> None:
 
 
 def test_u8b_noclobber_control() -> None:
-    """Records a measurement, not a substrate limit: reopen if a genuine `>|` redirection
-    is ever observed."""
-    print("--- echo x >| <path> (D3 control) ---")
+    print("--- echo x >| <path> (control) ---")
     cmd = "echo x >| _projects/p/project-notes/x.md"
     got = tc.extract_bash_paths(cmd)
     check(got == [],
-          "U8b (D3 control -- measurement, not substrate limit; re-open if a "
-          f"genuine `>|` is observed elsewhere; see F7): got {got!r}")
+          "U8b (control -- a measurement, not a substrate limit; re-open if a "
+          f"genuine `>|` redirection is ever observed): got {got!r}")
 
 
 def test_u6_shlex_gate() -> None:
-    """The shlex-failure diagnostic is gated to a stage whose first word is a recognised
-    write verb (mv/cp/rm/tee/sed)."""
     print("--- shlex parse error gate ---")
 
     buf = io.StringIO()
@@ -109,8 +105,8 @@ def test_u6_shlex_gate() -> None:
     err2 = buf2.getvalue()
     check(got2 == [], f"U6c result == [] (got {got2!r})")
     check(err2 == "",
-          f"U6c stderr is empty -- gate suppresses the non-write-verb case "
-          f"(got {err2!r})")
+          f"U6c stderr is empty -- the diagnostic is gated to a stage whose first word "
+          f"is a recognised write verb (mv/cp/rm/tee/sed) (got {err2!r})")
 
 
 def main() -> int:

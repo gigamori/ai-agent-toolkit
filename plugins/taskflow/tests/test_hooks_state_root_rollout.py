@@ -62,7 +62,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 def note(msg: str) -> None:
-    """A measured observation that is reported but does not gate the exit code."""
     NOTES.append(msg)
     print(f"  NOTE: {msg}")
 
@@ -107,9 +106,6 @@ def churn_excluded(names: list[str], live: set[str]) -> list[str]:
 
 
 def live_prefixes(before: list[str], after: list[str]) -> set[str]:
-    """Sessions whose state json is in both snapshots are alive and rewrite their own
-    `.touched`; a dead session's json disappearing is what the guard must still catch, so
-    those prefixes are deliberately excluded here."""
     jb = {n[:8] for n in before if n.endswith(".json") and len(n) == 41}
     ja = {n[:8] for n in after if n.endswith(".json") and len(n) == 41}
     return jb & ja
@@ -132,7 +128,6 @@ def _git_show(rel: str) -> str | None:
 
 
 def make_builds(root: Path) -> dict[str, Path]:
-    """Derived from the real tree with `git show` only: no git write operation of any kind."""
     builds: dict[str, Path] = {}
 
     builds["current"] = _copy_plugin(root / "builds" / "current")
@@ -594,8 +589,9 @@ def main() -> int:
         live = live_prefixes(before, after)
         b_ex, a_ex = churn_excluded(before, live), churn_excluded(after, live)
         check(b_ex == a_ex,
-              f"real _projects/_state unchanged with live-session churn "
-              f"excluded ({len(b_ex)} -> {len(a_ex)}; "
+              f"real _projects/_state unchanged with live-session churn excluded -- only "
+              f"sessions present in both snapshots are excluded, so a dead session's json "
+              f"disappearing is still caught ({len(b_ex)} -> {len(a_ex)}; "
               f"removed={sorted(set(b_ex) - set(a_ex))[:8]}, "
               f"added={sorted(set(a_ex) - set(b_ex))[:8]})")
         strays = [f for f in after if f.startswith(SYNTH_IDS)]

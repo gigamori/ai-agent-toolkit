@@ -180,13 +180,14 @@ def test_exclusions_ac5() -> None:
           "`..` inside a filename is not a segment — still a deliverable")
 
 
-def test_traversal_not_established_t7b(root: Path) -> None:
-    """`@notes` is union-append and never edited, so a rel this function cannot vouch for
-    must be refused before it becomes permanent, whatever the caller already checked."""
-    print("--- T-7b append_note_link refuses an escaping rel ---")
+def test_traversal_not_established(root: Path) -> None:
+    print("--- append_note_link refuses an escaping rel ---")
     task_path, _ = make_project(root)
     res = nl.append_note_link(str(task_path), "project-notes/../../secrets/x.md")
-    check(res is False, "append_note_link returns False for a `..` traversal")
+    check(res is False,
+          "append_note_link refuses a `..` traversal: @notes is union-append and never "
+          "edited, so a rel this function cannot vouch for must be stopped before it "
+          "becomes permanent, whatever the caller already checked")
     content = task_path.read_text(encoding="utf-8")
     check(nl.NOTES_BEGIN not in content, "no @notes block created for a traversal rel")
     check("secrets" not in content, "the escaping rel never reaches the task file")
@@ -197,8 +198,8 @@ def test_traversal_not_established_t7b(root: Path) -> None:
           "no @notes block created for a drive-anchored rel")
 
 
-def test_is_contained_note_rel_t7c() -> None:
-    print("--- T-7c is_contained_note_rel table ---")
+def test_is_contained_note_rel_table() -> None:
+    print("--- is_contained_note_rel table ---")
     for rel in (
         "project-notes/specs/foo.md",
         "project-notes/checks/handoff-x.md",
@@ -237,9 +238,7 @@ def test_no_anchor_fails(root: Path) -> None:
           "no @notes block written without an anchor")
 
 
-def test_spec41_entry_literal_pin(root: Path) -> None:
-    """The exact bytes are the contract: a change to the entry form is a change to both
-    implementations, never a test to relax."""
+def test_entry_literal_pin(root: Path) -> None:
     print("--- entry-literal pin (cross-harness boundary contract) ---")
     task_path, _ = make_project(root)
 
@@ -248,7 +247,9 @@ def test_spec41_entry_literal_pin(root: Path) -> None:
 
     check(nl._AUTO_COMMENT
           == "<!-- auto-managed by taskflow note-link; do not hand-edit -->",
-          f"auto-comment literal is byte-exact (got {nl._AUTO_COMMENT!r})")
+          f"auto-comment literal is byte-exact -- these bytes are a cross-harness "
+          f"contract, so changing the entry form changes both implementations and is "
+          f"never a test to relax (got {nl._AUTO_COMMENT!r})")
 
     _, _, after_begin = content.partition(nl.NOTES_BEGIN + "\n")
     block_inner, _, _ = after_begin.partition(nl.NOTES_END)
@@ -283,14 +284,14 @@ def main() -> int:
             test_pure_reference_ac4,
             test_stale_skip_ac7,
             test_no_anchor_fails,
-            test_spec41_entry_literal_pin,
-            test_traversal_not_established_t7b,
+            test_entry_literal_pin,
+            test_traversal_not_established,
         ):
             sub = Path(d) / fn.__name__
             sub.mkdir()
             fn(sub)
         test_exclusions_ac5()
-        test_is_contained_note_rel_t7c()
+        test_is_contained_note_rel_table()
 
     print()
     if FAIL == 0:

@@ -28,7 +28,6 @@ def check(cond: bool, msg: str) -> None:
 
 
 def test_single_keys() -> None:
-    """Each entry of `WRITE_PATH_KEYS` is returned verbatim, un-normalized."""
     print("--- one write key at a time, returned verbatim ---")
     got = tc.extract_paths({"file_path": "/r/a.md"})
     check(got == ["/r/a.md"],
@@ -39,7 +38,6 @@ def test_single_keys() -> None:
 
 
 def test_non_vacuity_controls() -> None:
-    """Also pins that a non-dict `tool_input` returns [] instead of raising."""
     print("--- nothing to extract -> [] ---")
     got = tc.extract_paths({})
     check(got == [],
@@ -50,13 +48,12 @@ def test_non_vacuity_controls() -> None:
 
 
 def test_both_keys_in_one_input() -> None:
-    """The defect this catches -- a loop that stops at the first hit -- is invisible when
-    each key is tested alone."""
     print("--- both write keys present in one tool_input ---")
     got = tc.extract_paths({"file_path": "/r/a.md",
                             "notebook_path": "/r/n.ipynb"})
     check(got == ["/r/a.md", "/r/n.ipynb"],
-          f"W4 both keys -> both recorded in WRITE_PATH_KEYS order "
+          f"W4 both keys -> both recorded in WRITE_PATH_KEYS order; a loop that stops "
+          f"at the first hit is invisible when each key is tested alone "
           f"(got {got!r}, keys={tc.WRITE_PATH_KEYS!r})")
 
 
