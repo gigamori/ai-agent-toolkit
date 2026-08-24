@@ -58,6 +58,12 @@ bash skills/mode-orchestrator/scripts/execution_profiles_test.sh
 and runs one-edge mutation controls for table shape, mappings, unsupported
 fields, and the no-fallback rule.
 
+Adaptive routing also has an external evidence checker with a registered
+`--self-test`. It is outside this tracked test gate because it reads immutable
+real-child artifacts rather than runtime-distributed files. Before accepting an
+adaptive routing change, run that registry from its evidence tree; temporary
+probes do not replace its real artifacts or one-edge mutations.
+
 Every run prints the number of files scanned, what it excluded and why, the remaining
 allowlist count, and what its patterns cannot see.
 
