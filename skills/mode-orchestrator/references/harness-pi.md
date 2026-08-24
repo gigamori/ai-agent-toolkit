@@ -120,8 +120,8 @@ do not re-derive them per turn:
 MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
    --model <the turn's resolved model> \
    --no-skills --session-dir <run-dir>/sessions "$PROMPT" \
-   < /dev/null > <run-dir>/raw/<NN>.jsonl \
- && node <pi-reply> <run-dir>/raw/<NN>.jsonl
+   < /dev/null > <run-dir>/raw/<turn-key>-<attempt>.jsonl \
+ && node <pi-reply> <run-dir>/raw/<turn-key>-<attempt>.jsonl
 ```
 
 **You do not read the event stream.** It goes to a file; what you read is the
@@ -153,9 +153,9 @@ careful.
   `errorMessage` are named in the stderr line), exit 2 is a usage or read
   error. Its self-tests are `scripts/pi_reply_test.sh`, whose fixtures are
   carved from a real captured stream.
-- **The raw stream stays on disk** as `<run-dir>/raw/<NN>.jsonl`. This is
-  strictly more observable than before, when the same bytes flowed through a
-  tool result and a temp log and were gone.
+- **The raw stream stays on disk** as `<run-dir>/raw/<turn-key>-<attempt>.jsonl`.
+  Append that exact path as the attempt's `delegation_ref`. Its first `session.id`
+  joins the attempt to the child transcript whose first session record has that id.
 
 - `< /dev/null`: **determinism, not diagnostics.** A child `pi -p` inherits this
   turn's stdin, and pi reads it unconditionally whenever stdin is not a TTY —
@@ -202,12 +202,12 @@ careful.
   hypothetical one: a prior incident had a Pi-originated subagent swarm from
   unbounded recursive invocation (see `handoff-phase3-onward.md` /
   `handoff-phase5-onward.md` §7, "Pi の nested 呼び出しに再帰ガードがあるか").
-- `--model <pattern>`: pass the profile-resolved or explicit-step model for
-  **every** autonomous turn. Pi receives no inherited/default-model path.
-  Record effort, model source, resolved model, and the exact override passed.
-  A missing profile mapping is `blocked` before launch. If Pi rejects a mapped
-  model, the `&&` extractor does not run and the missing status follows the
-  shared `aborted` re-run rule; never fall back across efforts.
+- `--model <pattern>`: pass `planned_override` for **every** autonomous turn.
+  Pi receives no inherited/default-model path. Before launch write the turn
+  definition; after launch append the attempt's exact `actual_override` and raw
+  reference. A missing mapping is `blocked`. If Pi rejects a mapped model, the
+  `&&` extractor does not run and the missing status follows the shared aborted
+  retry using the same override; never fall back across efforts.
 - `--mode json`: an **event JSONL stream**, one JSON object per line — not a
   single result object like `claude -p --output-format json`. Measured shape
   (19 lines for a trivial turn): `session`, `agent_start`, `turn_start`, then
@@ -224,11 +224,11 @@ careful.
   anyone reading the saved stream afterwards.
 - **Two harness-only subdirectories of the run directory.** `SKILL.md`'s Run
   directory section is harness-neutral and names neither; both are created
-  with the run directory here: `<run-dir>/raw/` for the delegation streams
-  (`<NN>.jsonl`, the redirect above — it must exist before the first
-  delegation) and `<run-dir>/sessions/` for the children's own transcripts
-  (below). Neither is an artifact the run index has to list; they are
-  evidence, kept for a human.
+  with the run directory here: `<run-dir>/raw/` for delegation streams
+  (`<turn-key>-<attempt>.jsonl`, created before the first delegation) and
+  `<run-dir>/sessions/` for child transcripts. The attempt record names the raw
+  stream; the raw session id joins it to the child transcript, so both are
+  evidence rather than anonymous files.
 - `--session-dir <run-dir>/sessions`: keeps the child's transcript **on disk**
   — `SKILL.md` Execution step 4 tells the orchestrator to discard an aborted
   turn's output and leave "the transcript on disk for a human to read", and

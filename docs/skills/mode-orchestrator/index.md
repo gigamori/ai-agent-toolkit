@@ -5,10 +5,10 @@ execution spec is `SKILL.md` under `skills/mode-orchestrator/` (not here).
 
 | Doc | Audience | Purpose |
 |---|---|---|
-| [USER_GUIDE.md](USER_GUIDE.md) | End users | How to use the skill: flags, modes, model override, failure loop, decision loop (`needs-decision` and `--decider`), turn watchdog and its thresholds, workflow specs, artifacts. |
+| [USER_GUIDE.md](USER_GUIDE.md) | End users | How to use the skill: flags, modes, effort/model selection, explicit workflow-step binding, canonical index JSONL, failure loop, decision loop (`needs-decision` and `--decider`), turn watchdog and its thresholds, workflow specs, artifacts. |
 | [USER_GUIDE_ja.md](USER_GUIDE_ja.md) | End users (JA) | Japanese version of the user guide. |
-| [WORKFLOW_SPEC_AUTHORING.md](WORKFLOW_SPEC_AUTHORING.md) | Spec authors | How to author a `workflows/<name>.md` spec: required sections, weak coupling, model precedence, adding a task type. |
-| [AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md) | Skill maintainers | Dual-harness (Claude Code / Pi) integrity obligations, relationship to xml-wf, `modes/` propagation pointer, and how to actually pin the skill version when measuring a prompt change on Pi. |
+| [WORKFLOW_SPEC_AUTHORING.md](WORKFLOW_SPEC_AUTHORING.md) | Spec authors | How to author a `workflows/<name>.md` spec: required sections, explicit workflow-step binding, effort precedence, and adding a task type. |
+| [AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md) | Skill maintainers | Dual-harness (Claude Code / Pi) integrity obligations, execution-profile gate, relationship to xml-wf, `modes/` propagation pointer, and how to actually pin the skill version when measuring a prompt change on Pi. |
 
 Runtime files (read during execution) live inside the skill dir:
 `SKILL.md`, `modes/`, `workflows/` (e.g. the bundled `dev` spec),
@@ -21,7 +21,9 @@ native `timeout` instead, see `references/harness-pi.md`), and
 line to detect permission denials the turn did not report; Pi has no
 permission layer, so no counterpart exists).
 
-`scripts/watchdog_test.sh` and `scripts/deny_scan_test.sh` ship alongside
-those scripts but are not runtime: run them with `bash scripts/<name>_test.sh`
-after touching the script they cover. Both build their own fake session logs,
-so they need no `claude` CLI and no prior run.
+`scripts/watchdog_test.sh`, `scripts/deny_scan_test.sh`, and
+`scripts/execution_profiles_test.sh` ship alongside those scripts but are not
+runtime. Run them with `bash scripts/<name>_test.sh` after touching the script
+or profile they cover. The profile gate validates the complete execution-profile
+contract and its mutation controls; the watchdog and denial suites build their
+own fake session logs, so they need no `claude` CLI and no prior run.

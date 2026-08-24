@@ -38,7 +38,7 @@ path/to/plan.md に mode-orchestrator を使って
 | _(なし)_ | turn plan を提示し、実行前に承認を待つ。 |
 | `--auto` | 承認ゲートを飛ばし、全ターンを承認なしで実行する。 |
 | `--roles` / `--roles=always` | 各ターンに適合する role を推論して付与する。デフォルト: role は推論しないが、todolist に明示された role は honor する。 |
-| `--workflow=<name>` | workflow spec（`workflows/<name>.md`）を defaults として読み込む。todolist 内で spec 名を宣言しても同様に honor される。デフォルト: spec なし — todolist の指定どおりに実行。 |
+| `--workflow=<name>` | workflow spec（`workflows/<name>.md`）をタスク種別のガイダンスとして読み込む。todolist 内で spec 名を宣言しても同様に honor される。デフォルト: spec なし — todolist の指定どおりに実行。 |
 | `--decider=llm` | `needs-decision` の分岐を挿入されたターンに裁定させる。デフォルトは `human` — run はステップ境界で止まり、質問を提示する。後述の decision ループを参照。 |
 
 フラグは意図的に `--` 形式を使う。`mode:` / `role:` のコロン接頭辞は使わない（role-mode フックに捕捉されるため）。
@@ -54,14 +54,29 @@ mode は hybrid で決定: ステップが mode を名指ししていれば hono
 ## ターンごとの effort と model
 
 `references/execution-profiles.md` は `low`、`middle`、`high` を harness ごとの
-model へ対応付ける。全 autonomous ターンは解決済み model を override として受け取る。
+model へ対応付ける。全 autonomous ターンは解決済み model を planned override として受け取る。
 
-1. todolist の `model:` が最優先。effort は `-`、source は `step-model`。
-2. 次に todolist の `effort:`、次に workflow のステップ effort pin。
-3. それ以外は最終 instruction から effort を推論し、不明なら `middle`。
+番号付き todolist の各ステップには、ordinal の後の最初の物理行のどこかに
+`(model: VALUE)` を最大1つ、`(effort: low|middle|high)` を最大1つ、
+`(workflow-step: ID)` を最大1つ置ける。継続行は task text である。空の値、
+重複キー、不正な effort、active workflow に無い ID は、承認または delegation の前に
+run を `blocked` にする。認識された metadata は残りの instruction を分類する前に除去し、
+そのステップから分割された全ターンへコピーする。分割した責務ごとに異なる明示値が必要なら、
+番号付きステップを分ける。
 
-turn plan と run index は effort、source、解決 model、実際に渡した override を記録する。
-mapping 欠落は `blocked` で停止し、起動拒否は通常の `aborted` 再実行規則に従う。
+1. `(model: VALUE)` が最優先。ターンの effort は `-`、source は `step-model` になる。
+   effort もある場合、plan はそれが無視されたことを警告する。
+2. `(effort: VALUE)` はその effort を source `step-effort` として選ぶ。
+3. `(workflow-step: ID)` は一致する active workflow 行だけを選ぶ。pin された
+   `low`、`middle`、`high` の cell は source `workflow-effort` を使い、`(infer)` は
+   最終 instruction の分類に委ね source `inferred-effort` になる。
+4. 明示 model、effort、bound pin のいずれも無い場合、orchestrator は最終 instruction を
+   `low`、`middle`、`high` に分類する。不明なら `middle` を使う。
+
+workflow 行が sequence position、mode の一致、semantic similarity で自動的に bind されることは
+ない。挿入される debug と llm-decision ターンだけが、policy で選ばれた `high` effort を
+source `policy-effort` として使う。turn plan は effort、source、解決 model、
+`planned_override` を記録する。profile、mapping、pin の欠落または不正は `blocked` で停止し、
 harness default や effort 間 fallback は無い。
 
 ## Failure リカバリループ
@@ -151,7 +166,15 @@ watchdog が縛るのは時間であって正しさではない。「ターン�
 
 ## Workflow spec
 
-workflow spec は1つのタスク種別に対する **defaults とガイダンス**（推奨ステップ列・mode→model 表・failure policy の上限）を、エンジンを変えずに供給する。spec は弱結合: todolist が常に正であり、todolist と spec の不整合は**警告**として表れるだけでリジェクトにはならない。
+workflow spec はタスク種別のガイダンスを供給する。推奨列の columns は安定した
+`id`、`mode`、`effort`、`task` であり、これに failure-policy cap が加わる。effort cell は
+`(infer)` または `low`、`middle`、`high` のいずれかで、model を名指しせず、mode に対する
+一般的な effort default も定めない。
+
+pin が適用されるのは、番号付き todolist ステップが明示的に `(workflow-step: ID)` を持つ場合だけ。
+bound `(infer)` 行も最終 instruction の分類を使う。この metadata が無ければ全 workflow 行は
+ガイダンスまたは警告に留まり、ターンは自身の model または effort metadata が勝たない限り
+inferred effort を使う。明示 model と effort は常に binding より優先する。
 
 本スキルは開発／実装作業向けの spec **`dev`**（`workflows/dev.md`）を同梱する（調査 → 設計 → レビュー → 実装 → クラス名指し → テスト → レビュー → docs 同期）。`--workflow=dev` または todolist 内での名指しで有効化する。別のタスク種別の spec を追加するには `WORKFLOW_SPEC_AUTHORING.md` を参照。
 
@@ -160,7 +183,26 @@ workflow spec は1つのタスク種別に対する **defaults とガイダン�
 起動ごとに workspace に run ディレクトリを1つ作る（例: `mode-orchestrator-runs/<run-slug>/`）:
 
 - `NN-<mode>.md` — ターンごとの deliverable を順に。起点ターン `NN` に対して挿入されたターンは、どちらのループのものでも次の空き接尾辞を取る。両方を通ったターンは `05a-decision.md` → `05b-execute.md` → `05c-debug.md` → `05d-execute.md` と読める。ファイル名に mode が入るので、どのループの成果物かは常に一意。
-- `index.md` — turn plan（各ターンの model: 決定した段と、実際に渡した override（無ければ `none`）の両方）、spec 警告、Failure & decision policy、各ターンの status。加えて、各ターンの decision 挿入回数と採った続行形態、amendment（差し替えた元の plan も併記）、`--decider=human` の待機、`aborted` を受けて再実行したターンとどの検査が捕まえたかも記録する — aborted ターンは deliverable を書かないため、それが起きた事実を残す唯一の場所になる。検査用インデックスであり、再開可能なスケジューラではない。
+- `index.md` — canonical run index。人間が読む plan と、機械可読な JSONL block をちょうど1つ含む。入れ子の、または prose だけの `index.md` は run index ではない。delegation 前にこの block は contract と初期 plan record を書く:
+
+  ```json
+  {"record":"contract","version":"adaptive-effort-v1"}
+  {"record":"plan","id":"r0","replaces":null,"after_turn":null}
+  ```
+
+  続けて次のような planned turn definition を書く:
+
+  ```json
+  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"high","source":"inferred-effort","model":"opus","planned_override":"opus"}
+  ```
+
+  delegation attempt が完了または abort した**後だけ**、実際の call evidence を追記する:
+
+  ```json
+  {"record":"attempt","turn":"03","attempt":1,"actual_override":"opus","delegation_ref":"raw/03-1.jsonl","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
+  ```
+
+  `planned_override` は turn definition だけに属し、`actual_override` は対応する attempt record だけに属する。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録する。検査用インデックスであり、再開可能なスケジューラではない。
 
 これらはランタイム成果物 — コミットしない。
 

@@ -10,21 +10,23 @@ Development / implementation work: investigate → design → build → name the
 
 ## Recommended step sequence
 
-| order | mode | effort | task |
+| id | mode | effort | task |
 |---|---|---|---|
-| 1 | survey | (infer) | Investigate the relevant source |
-| 2 | plan | (infer) | Design — includes unit- and integration-test strategy from the spec |
-| 3 | review-dev | (infer) | Review the design |
-| 4 | execute | (infer) | Implement + unit tests |
-| 5 | execute | (infer) | Class disposition — enumerate sites sharing step 4's shape; assign fix / leave + reason / out of scope + reason; do not fix unsanctioned sites |
-| 6 | execute | (infer) | Run integration tests |
-| 7 | review-dev | (infer) | Review the implementation |
-| 8 | execute | (infer) | Remediate review findings |
-| 9 | survey | high | Docs-sync judgement — enumerate affected surfaces and a drift list, or record no update |
-| 10 | execute | (infer) | Docs-sync apply — apply the drift list; report no-op if empty |
+| investigate | survey | (infer) | Investigate the relevant source |
+| design | plan | (infer) | Design — includes unit- and integration-test strategy from the spec |
+| design-review | review-dev | (infer) | Review the design |
+| implement | execute | (infer) | Implement + unit tests |
+| class-disposition | execute | (infer) | Class disposition — enumerate sites sharing implementation's shape; assign fix / leave + reason / out of scope + reason; do not fix unsanctioned sites |
+| integration-test | execute | (infer) | Run integration tests |
+| implementation-review | review-dev | (infer) | Review the implementation |
+| remediate | execute | (infer) | Remediate review findings |
+| docs-sync-judgement | survey | high | Docs-sync judgement — enumerate affected surfaces and a drift list, or record no update |
+| docs-sync-apply | execute | (infer) | Docs-sync apply — apply the drift list; report no-op if empty |
 
-`(infer)` uses the shared execution profile. Step 9 pins `high` because cross-doc
-consistency and EN/JA equivalence are judgement-heavy.
+`(infer)` is no pin. A pin applies only to a todolist step declaring
+`(workflow-step: ID)`; a matching mode or position does not bind it. Step
+`docs-sync-judgement` pins `high` because cross-doc consistency and EN/JA
+equivalence are judgement-heavy.
 
 ## Failure policy
 

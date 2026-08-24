@@ -60,7 +60,7 @@ ordinary interactive run.
 | _(none)_ | Present the turn plan and wait for your approval before executing. |
 | `--auto` | Skip the approval gate; run all turns without per-plan confirmation. |
 | `--roles` / `--roles=always` | Infer and attach a fitting role to every turn. Default: no inferred roles, but a role explicitly stated in the todolist is honored. |
-| `--workflow=<name>` | Load a workflow spec (`workflows/<name>.md`) as defaults. A spec name declared inside the todolist is honored the same way. Default: no spec — run exactly as the todolist dictates. |
+| `--workflow=<name>` | Load a workflow spec (`workflows/<name>.md`) as task-type guidance. A spec name declared inside the todolist is honored the same way. Default: no spec — run exactly as the todolist dictates. |
 | `--decider=llm` | Delegate `needs-decision` forks to an inserted turn that decides. Default `human` — the run pauses at the step boundary and shows you the question. See the decision loop below. |
 
 Flags use the `--` form on purpose — never `mode:` / `role:` colon-prefixes,
@@ -82,15 +82,32 @@ mode is inferred from the step's content.
 ## Per-turn effort and model
 
 `references/execution-profiles.md` maps `low`, `middle`, and `high` to one model
-per harness. Every autonomous turn receives that resolved model as its override.
+per harness. Every autonomous turn receives the resolved model as its planned
+override.
 
-1. A todolist `model:` wins; effort is `-` and source is `step-model`.
-2. Then todolist `effort:`, then a workflow step effort pin.
-3. Otherwise the orchestrator infers effort from the final instruction; use `middle` when unsure.
+A numbered todolist step may carry at most one `(model: VALUE)`, one
+`(effort: low|middle|high)`, and one `(workflow-step: ID)` anywhere on its first
+physical line after the ordinal. Continuation lines are task text. Empty values,
+duplicate keys, an invalid effort, or an ID absent from the active workflow block
+the run before approval or delegation. Recognized metadata is removed before the
+remaining instruction is classified, and copied to every turn split from that step.
+Write separate numbered steps when split responsibilities need different explicit
+values.
 
-The plan and index record effort, source, resolved model, and the actual override.
-A missing mapping stops as `blocked`; a launch rejection follows the normal
-`aborted` re-run rule. There is no harness-default or cross-effort fallback.
+1. `(model: VALUE)` wins. The turn records effort `-` and source `step-model`; if
+   an effort is also present, the plan warns that it was ignored.
+2. `(effort: VALUE)` selects that effort with source `step-effort`.
+3. `(workflow-step: ID)` selects the matching active workflow row only. A pinned
+   `low`, `middle`, or `high` cell uses source `workflow-effort`; `(infer)` leaves
+   the final instruction to classification with source `inferred-effort`.
+4. Without an explicit model, effort, or bound pin, the orchestrator classifies
+   the final instruction as `low`, `middle`, or `high`; use `middle` when unsure.
+
+A workflow row never binds by sequence position, matching mode, or semantic
+similarity. Inserted debug and llm-decision turns alone use the policy-selected
+`high` effort with source `policy-effort`. The plan records effort, source,
+resolved model, and `planned_override`. A missing or malformed profile, mapping,
+or pin stops as `blocked`; there is no harness-default or cross-effort fallback.
 
 ## Failure recovery loop
 
@@ -283,17 +300,22 @@ it cannot tell you a turn did the wrong thing.
 
 ## Workflow specs
 
-A workflow spec supplies **defaults and guidance** for one task type — a
-recommended step sequence, a mode→model table, and the failure-policy cap —
-without changing the engine. Specs are weakly coupled: the todolist is always
-authoritative, and a mismatch between the todolist and the spec surfaces as a
-**warning**, never a rejection.
+A workflow spec supplies task-type guidance: a recommended sequence with stable
+`id`, `mode`, `effort`, and `task` columns, plus the failure-policy caps. An
+effort cell is either `(infer)` or one of `low`, `middle`, and `high`; it never
+names a model or establishes a general effort default for a mode.
+
+A pin applies only when a numbered todolist step explicitly carries
+`(workflow-step: ID)`. A bound `(infer)` row still uses final-instruction
+classification. Without that metadata, every workflow row is guidance or a
+warning only, and the turn uses inferred effort unless its own model or effort
+metadata wins. Explicit model and effort always outrank a binding.
 
 The skill ships one spec, **`dev`** (`workflows/dev.md`), for development /
 implementation work (investigate → design → review → build → name the class →
 test → review → sync docs). Activate it with `--workflow=dev` or by naming it in
-the todolist. To add
-a spec for another task type, see `WORKFLOW_SPEC_AUTHORING.md`.
+the todolist. To add a spec for another task type, see
+`WORKFLOW_SPEC_AUTHORING.md`.
 
 ## Run directory and artifacts
 
@@ -305,14 +327,35 @@ Each invocation creates one run directory in the workspace, e.g.
   goes through both reads as `05a-decision.md` → `05b-execute.md` →
   `05c-debug.md` → `05d-execute.md`. The mode is in the filename, so which loop
   produced which artifact is never ambiguous.
-- `index.md` — the turn plan (with each turn's model: the deciding tier and the override actually passed, or `none`), the spec warnings,
-  the Failure & decision policy, and each turn's status. Also recorded: each
-  turn's decision insertions and which continuation form was taken, any
-  amendment (alongside the original plan it replaced), any `--decider=human`
-  wait, and any turn re-run after an `aborted` reply along with which check
-  caught it — a missing status line, or the watchdog's `TIMEOUT` or `STALL`. An
-  aborted turn writes no deliverable, so this is the only place that records it
-  happened. It is an inspection index, not a resumable scheduler.
+- `index.md` — the canonical run index. It contains the human-readable plan and
+  exactly one machine-readable JSONL block; nested or prose `index.md` files are
+  not run indexes. Before delegation, that block starts with the contract and
+  initial plan records:
+
+  ```json
+  {"record":"contract","version":"adaptive-effort-v1"}
+  {"record":"plan","id":"r0","replaces":null,"after_turn":null}
+  ```
+
+  It then writes a planned turn definition such as:
+
+  ```json
+  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"high","source":"inferred-effort","model":"opus","planned_override":"opus"}
+  ```
+
+  Only after a delegation attempt finishes or aborts does it append actual call
+  evidence:
+
+  ```json
+  {"record":"attempt","turn":"03","attempt":1,"actual_override":"opus","delegation_ref":"raw/03-1.jsonl","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
+  ```
+
+  `planned_override` belongs only to the turn definition; `actual_override`
+  belongs only to its attempt record. A split step may have several planned turn
+  keys with the same numbered `step`, and an aborted retry adds the next attempt
+  to the same turn. The index also records statuses, decision insertions,
+  amendments, human-decision waits, and the check that caused an aborted retry.
+  It is an inspection index, not a resumable scheduler.
 
 These are runtime artifacts — they are not committed.
 

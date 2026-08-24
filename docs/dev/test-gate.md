@@ -50,7 +50,13 @@ cd skills/xml-wf/scripts && uv run --no-project python -m unittest discover -s t
 bash skills/mode-orchestrator/scripts/watchdog_test.sh
 bash skills/mode-orchestrator/scripts/deny_scan_test.sh
 bash skills/mode-orchestrator/scripts/pi_reply_test.sh
+bash skills/mode-orchestrator/scripts/execution_profiles_test.sh
 ```
+
+`execution_profiles_test.sh` is the profile gate for
+`references/execution-profiles.md`. It validates the exact full profile contract
+and runs one-edge mutation controls for table shape, mappings, unsupported
+fields, and the no-fallback rule.
 
 Every run prints the number of files scanned, what it excluded and why, the remaining
 allowlist count, and what its patterns cannot see.
@@ -65,7 +71,7 @@ other string alone.
 
 The gate unit is `skills/`. It walks the tree and takes every file named `test_*.py`,
 `*_test.py`, `test_*.sh` or `*_test.sh`, so a new skill or a new suite inside one is picked
-up without touching the gate — that is the invariant the unit was chosen for. 24 files are
+up without touching the gate — that is the invariant the unit was chosen for. 25 files are
 in scope today.
 
 Outside this gate, and carrying no assurance from it: `plugins/llm-wiki/tests/` and
@@ -92,7 +98,7 @@ prevent. Migrated 2026-08-24, covering the two skills of the `ai-workflow` proje
   from two harnesses, not a second copy that can drift, so nothing here had to be left to
   another repository to migrate.
 - **In scope:** `skills/xml-wf/scripts/tests/*.py` (13 files) and
-  `skills/mode-orchestrator/scripts/*_test.sh` (3 files). These assert contracts and are
+  `skills/mode-orchestrator/scripts/*_test.sh` (4 files). These assert contracts and are
   re-run whenever the code changes. That they are run by hand rather than by CI does not
   matter; there is no "automated" condition in the rule.
 - **Out of scope, decided rather than missed:** `skills/xml-wf/scripts/evals/`

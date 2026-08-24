@@ -6,15 +6,16 @@ harness-specific primitives that `SKILL.md`'s `## Execution` refers to:
 
 ## P1 — Delegation
 
-Delegate the turn to one general-purpose subagent, passing the resolved profile
-or explicit-step `model` as the delegation-call override. Record its effort,
-model source, resolved model, and the override actually passed. One turn = one
-subagent; never combine turns.
+Delegate one turn to one general-purpose subagent, passing its `planned_override`.
+Before the call, its JSONL `turn` record is already in `index.md`; after it,
+append one `attempt` record with the actual override, unique delegation
+reference/transcript, reported/effective status, and file path. Never use the
+planned value as evidence that the call happened.
 
 Every autonomous turn has an override. A profile setup fault is `blocked`
 before delegation; a launch rejection yields no valid status and follows the
-shared `aborted` handling. Never fall back across efforts or to the session
-model.
+shared aborted retry with the same effort/source/model/override. Never fall
+back across efforts or to the session model.
 
 The subagent writes its deliverable to the run directory as `NN-<mode>.md` and
 returns only a ≤3-line gist followed by the reply-contract status line (see
