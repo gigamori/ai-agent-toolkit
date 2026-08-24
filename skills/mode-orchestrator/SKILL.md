@@ -101,7 +101,7 @@ Build an ordered list of turn records. Each record:
 
 - `order`, `mode`, `role` (optional), `model` (optional), `inputs` (file paths), `instruction`
 
-One mode per record — a record never carries two modes or two roles. A single section or step may expand into multiple records when it needs different modes; split at every mode change. This record shape is what structurally guarantees no mixing.
+One mode per record — a record never carries two modes or two roles. One step, one responsibility. Split on changes to mode, role, model, authority, or deliverable—not files/tool calls. This record shape is what structurally guarantees no mixing.
 
 If a workflow spec is active, compare the todolist against the spec's recommended step sequence; note any mismatch (a step the spec does not anticipate, or a spec step the todolist omits) as a **warning** appended to the turn plan. A warning never blocks — the todolist is authoritative; only the Step 0 gate can reject.
 

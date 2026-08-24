@@ -11,10 +11,12 @@ role-mode `mode:` / `role:` header. The LLM-facing spec lives in this skill's
 ## What it does
 
 - Takes one document holding a todolist + related context.
-- For each step it picks a **mode** (and optionally a **role**), assembles a
-  prompt carrying that mode's NEVER/DO rules, and runs it as **one isolated
-  general-purpose subagent turn**. One mode — and at most one role — per turn;
-  they are never mixed.
+- Each turn has one responsibility: it picks a **mode** (and optionally a
+  **role**), assembles a prompt carrying that mode's NEVER/DO rules, and runs
+  as **one isolated general-purpose subagent turn**. A step is split when its
+  mode, role, model, authority, or deliverable changes; multiple files or tool
+  calls alone do not split it. One mode — and at most one role — per turn; they
+  are never mixed.
 - Only **autonomous** modes are executed. Interactive modes are surfaced as
   suggestions for you to run natively, not executed.
 - Each turn writes a deliverable file; later turns receive earlier files by path.

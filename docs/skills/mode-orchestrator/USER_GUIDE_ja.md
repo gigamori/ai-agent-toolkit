@@ -5,7 +5,7 @@
 ## 何をするか
 
 - todolist + 関連 context を含む1つのドキュメントを受け取る。
-- 各ステップについて **mode**（任意で **role**）を選び、その mode の NEVER/DO ルールを載せたプロンプトを組み立て、**1つの隔離 general-purpose subagent ターン**として実行する。1ターンにつき 1 mode（role は最大1つ）、混在なし。
+- 各ターンは1つの責務だけを担う。**mode**（任意で **role**）を選び、その mode の NEVER/DO ルールを載せたプロンプトを組み立て、**1つの隔離 general-purpose subagent ターン**として実行する。ステップは mode、role、model、authority、deliverable が変わる箇所で分割する。複数ファイルや複数ツール呼び出しだけでは分割しない。1ターンにつき 1 mode（role は最大1つ）、混在なし。
 - 実行されるのは **autonomous** mode のみ。interactive mode は実行せず、ネイティブ実行の提案として提示する。
 - 各ターンは deliverable ファイルを書き、後続ターンは先行ファイルをパスで受け取る。
 
