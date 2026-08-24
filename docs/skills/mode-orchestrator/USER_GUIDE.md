@@ -337,7 +337,8 @@ Each invocation creates one run directory in the workspace, e.g.
   {"record":"plan","id":"r0","replaces":null,"after_turn":null}
   ```
 
-  It then writes a planned turn definition such as:
+  An initial turn always uses literal `"kind":"planned"`; its mode is recorded
+  separately and is never a kind value. It then writes a planned turn definition:
 
   ```json
   {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"high","source":"inferred-effort","model":"opus","planned_override":"opus"}

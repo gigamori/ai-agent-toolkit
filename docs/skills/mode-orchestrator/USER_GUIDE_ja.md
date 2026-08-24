@@ -190,7 +190,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
   {"record":"plan","id":"r0","replaces":null,"after_turn":null}
   ```
 
-  続けて次のような planned turn definition を書く:
+  初期ターンの `"kind":"planned"` は常にこのliteralであり、modeは別に記録してkindにはしない。続けて次のような planned turn definition を書く:
 
   ```json
   {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"high","source":"inferred-effort","model":"opus","planned_override":"opus"}

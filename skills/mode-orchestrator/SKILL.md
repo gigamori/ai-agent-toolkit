@@ -103,7 +103,7 @@ File count, tool-call count, mode name, and deliverable length do not independen
 
 ## Turn plan and index
 
-Build ordered turn definitions: key, plan id, kind, step origin, parent, inherits, inputs, mode, role, effort/source, model, and `planned_override`. Every autonomous turn has a resolved planned override. One mode and at most one role per record.
+Build ordered turn definitions: key, plan id, kind, step origin, parent, inherits, inputs, mode, role, effort/source, model, and `planned_override`. Every initial turn has literal `kind: planned`—never its mode name. Dynamic kinds are only `recovery-debug`, `recovery-reexecute`, `decision-turn`, or `decision-rerun`. Every autonomous turn has a resolved planned override. One mode and at most one role per record.
 
 Before delegation, create the canonical run-directory `index.md` and append exactly one JSONL block whose first records are:
 
@@ -340,7 +340,7 @@ For each turn record, in order:
 ## Run directory (workspace)
 
 - Create one run directory in the workspace per invocation, e.g. `mode-orchestrator-runs/<run-slug>/` — derive the slug from the input document name.
-- Artifacts: `NN-<mode>.md`; dynamic turns take the next suffix on their originating `NN`. `index.md` contains one JSONL block. `turn` records require `key`, `plan`, `kind`, `step`, `parent`, `inherits`, `inputs`, `mode`, `effort`, `source`, `model`, and `planned_override`; an unsuffixed planned turn has null parent/inherits and inputs. `attempt` records require `turn`, `attempt`, `actual_override`, `delegation_ref`, `reported_status`, `effective_status`, and `file`. `decision` records are keyed non-turns. An amendment requires `key`, `plan`, `replaces`, `after_turn`, `parent`, `source_file`, `source_sha256`, complete ordered `supersedes`, and complete ordered `replacements`; each replacement has new key, parent amendment, and `amendment_item`. Reject duplicate/missing references, a partial tail, or an attempt for a superseded turn. This index is inspection evidence, not a resumable scheduler.
+- Artifacts: `NN-<mode>.md`; dynamic turns take the next suffix on their originating `NN`. `index.md` contains one JSONL block. A first-pass `turn` record has `kind: planned` and null parent/inherits; only a listed dynamic kind may have a non-null parent. `turn` records require `key`, `plan`, `kind`, `step`, `parent`, `inherits`, `inputs`, `mode`, `effort`, `source`, `model`, and `planned_override`. `attempt` records require `turn`, `attempt`, `actual_override`, `delegation_ref`, `reported_status`, `effective_status`, and `file`. `decision` records are keyed non-turns. An amendment requires `key`, `plan`, `replaces`, `after_turn`, `parent`, `source_file`, `source_sha256`, complete ordered `supersedes`, and complete ordered `replacements`; each replacement has new key, parent amendment, and `amendment_item`. Reject duplicate/missing references, a partial tail, or an attempt for a superseded turn. This index is inspection evidence, not a resumable scheduler.
 - These are runtime artifacts; do not commit them.
 
 ## Context discipline
