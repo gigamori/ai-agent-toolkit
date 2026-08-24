@@ -51,22 +51,18 @@ path/to/plan.md に mode-orchestrator を使って
 
 mode は hybrid で決定: ステップが mode を名指ししていれば honor、なければステップ内容から適合 mode を推論する。
 
-## ターンごとの model
+## ターンごとの effort と model
 
-各ターンは特定の model で実行できる。model は優先順位で解決され、mode 単独からの推測はしない:
+`references/execution-profiles.md` は `low`、`middle`、`high` を harness ごとの
+model へ対応付ける。全 autonomous ターンは解決済み model を override として受け取る。
 
-1. **ステップ明示** — todolist のステップで名指しされた model（または有効な workflow spec がそのステップに pin した model）。衝突時は todolist が勝つ。
-2. **spec 表** — 有効な workflow spec の mode→model デフォルト。
-3. **継承** — そのターンは自前の model を持たないので、override 無しの委譲を
-   harness が何で走らせるかに従う。Claude Code ではセッションの model。Pi では
-   **pi 自身の設定 default で、Claude 系とは限らない**（実測）。Pi で特定の
-   model が要るなら継承に頼らず、ステップか spec 表で pin すること。
+1. todolist の `model:` が最優先。effort は `-`、source は `step-model`。
+2. 次に todolist の `effort:`、次に workflow のステップ effort pin。
+3. それ以外は最終 instruction から effort を推論し、不明なら `middle`。
 
-run index には「どの段が決めたか」と「実際に渡した override（無ければ `none`）」
-の両方を記録する。後者が無いと、index が `inherit` と主張しながら呼び出しでは
-model を指定していた、という乖離が起きても後から検出できない。
-
-turn plan は各ターンの model と、どの段が決定したかを表示する。
+turn plan と run index は effort、source、解決 model、実際に渡した override を記録する。
+mapping 欠落は `blocked` で停止し、起動拒否は通常の `aborted` 再実行規則に従う。
+harness default や effort 間 fallback は無い。
 
 ## Failure リカバリループ
 

@@ -202,28 +202,12 @@ careful.
   hypothetical one: a prior incident had a Pi-originated subagent swarm from
   unbounded recursive invocation (see `handoff-phase3-onward.md` /
   `handoff-phase5-onward.md` §7, "Pi の nested 呼び出しに再帰ガードがあるか").
-- `--model <pattern>`: the turn's resolved model override (`pi --help`), for
-  tiers 1 and 2. **Tier 3 (`inherit`) has no resolved model, and Pi has no way
-  to inherit yours** — measured 2026-08-12: a `pi -p --mode json` call with no
-  `--model` reported `"model":"gpt-5.4-mini"`, this machine's configured pi
-  default, while the identical call with `--model haiku` reported
-  `"model":"haiku"`. The control arm is what makes the first reading mean
-  something: the field does track the override, so its value with the flag
-  omitted really is pi's own default and not an echo of the caller.
-  So on this harness: omit `--model` for a tier-3 turn and record the override
-  as `none` — but understand that the turn then runs on **pi's configured
-  default, which need not be a Claude model at all**. The mode fragments and
-  the reply contract were written and measured against Claude models; a run
-  that leaves its models to tier 3 here is running them somewhere else. If a
-  run needs a particular model, do not lean on tier 3 — pin it on the step or
-  supply a spec `mode→model` table. (Passing the orchestrator's own model
-  instead would restore true inheritance, but nothing measured says a pi
-  session can read its own model, so that is not specified here.)
-  Canonical names resolve correctly on Pi as-is — `haiku` →
-  `pi-claude-agent-sdk/haiku`, `sonnet` → `pi-claude-agent-sdk/sonnet`,
-  `opus` → `pi-claude-agent-sdk/claude-opus-4-8[1m]` — provided the
-  `pi-claude-agent-sdk` provider is loaded. Do not pass `--no-extensions`: it
-  unloads that provider and every canonical name then fails to resolve.
+- `--model <pattern>`: pass the profile-resolved or explicit-step model for
+  **every** autonomous turn. Pi receives no inherited/default-model path.
+  Record effort, model source, resolved model, and the exact override passed.
+  A missing profile mapping is `blocked` before launch. If Pi rejects a mapped
+  model, the `&&` extractor does not run and the missing status follows the
+  shared `aborted` re-run rule; never fall back across efforts.
 - `--mode json`: an **event JSONL stream**, one JSON object per line — not a
   single result object like `claude -p --output-format json`. Measured shape
   (19 lines for a trivial turn): `session`, `agent_start`, `turn_start`, then

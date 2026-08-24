@@ -6,18 +6,15 @@ harness-specific primitives that `SKILL.md`'s `## Execution` refers to:
 
 ## P1 — Delegation
 
-Delegate the turn to one general-purpose subagent, requesting the turn's
-resolved `model` as the delegation-call model override when the platform
-supports it; otherwise proceed with the inherited model and record that in the
-run index. One turn = one subagent; never combine turns.
+Delegate the turn to one general-purpose subagent, passing the resolved profile
+or explicit-step `model` as the delegation-call override. Record its effort,
+model source, resolved model, and the override actually passed. One turn = one
+subagent; never combine turns.
 
-**Tier 3 (`inherit`) means passing no model override at all** — a subagent
-started without one already runs on the session's model, so that is how
-`SKILL.md`'s "the session model is used" is realised here. Naming the session's
-model explicitly is *not* equivalent: it produces a run index that records tier
-`inherit` beside a call that specified a model, and once tier and call can
-disagree, neither can be used later to check whether a spec's table took
-effect. Record `none` as the override for these turns.
+Every autonomous turn has an override. A profile setup fault is `blocked`
+before delegation; a launch rejection yields no valid status and follows the
+shared `aborted` handling. Never fall back across efforts or to the session
+model.
 
 The subagent writes its deliverable to the run directory as `NN-<mode>.md` and
 returns only a ≤3-line gist followed by the reply-contract status line (see

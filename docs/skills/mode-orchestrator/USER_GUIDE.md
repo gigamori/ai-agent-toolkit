@@ -79,26 +79,18 @@ autonomous subagent cannot provide.
 Mode is chosen hybrid: if a step names a mode it is honored; otherwise the fitting
 mode is inferred from the step's content.
 
-## Per-turn model
+## Per-turn effort and model
 
-Each turn can run at a specific model. The model is resolved by precedence, with
-no guessing from the mode alone:
+`references/execution-profiles.md` maps `low`, `middle`, and `high` to one model
+per harness. Every autonomous turn receives that resolved model as its override.
 
-1. **Per-step explicit** — a model named on the todolist step (or pinned by an
-   active workflow spec for that step); the todolist wins on conflict.
-2. **Spec table** — an active workflow spec's mode→model default.
-3. **Inherit** — the turn adds no model of its own, so it runs on whatever the
-   harness uses for an un-overridden delegation. On Claude Code that is your
-   session's model. On Pi it is **pi's own configured default, which need not
-   be a Claude model** (measured), so pin a model per step or via a spec table
-   there rather than relying on inherit.
+1. A todolist `model:` wins; effort is `-` and source is `step-model`.
+2. Then todolist `effort:`, then a workflow step effort pin.
+3. Otherwise the orchestrator infers effort from the final instruction; use `middle` when unsure.
 
-The run index records both the tier that decided and the model override
-actually passed (or `none`) — without the second, an index can claim `inherit`
-beside a call that named a model, and nothing later can tell whether a spec
-table took effect.
-
-The turn plan shows each turn's model and which tier decided it.
+The plan and index record effort, source, resolved model, and the actual override.
+A missing mapping stops as `blocked`; a launch rejection follows the normal
+`aborted` re-run rule. There is no harness-default or cross-effort fallback.
 
 ## Failure recovery loop
 
