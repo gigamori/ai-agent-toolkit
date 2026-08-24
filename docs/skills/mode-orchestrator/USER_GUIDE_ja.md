@@ -59,7 +59,7 @@ model へ対応付ける。全 autonomous ターンは解決済み model を pla
 番号付き todolist の各ステップには、ordinal の後の最初の物理行のどこかに
 `(model: VALUE)` を最大1つ、`(effort: low|middle|high)` を最大1つ、
 `(workflow-step: ID)` を最大1つ置ける。継続行は task text である。空の値、
-重複キー、不正な effort、active workflow に無い ID は、承認または delegation の前に
+重複キー、不正な effort、active workflow に無い ID、または active workflow 内の重複 ID は、承認または delegation の前に
 run を `blocked` にする。認識された metadata は残りの instruction を分類する前に除去し、
 そのステップから分割された全ターンへコピーする。分割した責務ごとに異なる明示値が必要なら、
 番号付きステップを分ける。
@@ -67,7 +67,7 @@ run を `blocked` にする。認識された metadata は残りの instruction 
 1. `(model: VALUE)` が最優先。ターンの effort は `-`、source は `step-model` になる。
    effort もある場合、plan はそれが無視されたことを警告する。
 2. `(effort: VALUE)` はその effort を source `step-effort` として選ぶ。
-3. `(workflow-step: ID)` は一致する active workflow 行だけを選ぶ。pin された
+3. `(workflow-step: ID)` はちょうど1つの一致する active workflow 行だけを選ぶ。重複 ID は block する。pin された
    `low`、`middle`、`high` の cell は source `workflow-effort` を使い、`(infer)` は
    最終 instruction の分類に委ね source `inferred-effort` になる。
 4. 明示 model、effort、bound pin のいずれも無い場合、orchestrator は最終 instruction を
@@ -122,7 +122,7 @@ harness default や effort 間 fallback は無い。
 - **`llm`** — 裁定用に `review-dev` ターンを1つ挿入する。フォークを申告したターンの deliverable（それが挿入された debug ターンならその deliverable）、plan があればそれ、そして**入力ドキュメント**（分岐を「何に向けて」決めるかは run の目的であり、それは入力ドキュメントにしか無い）を受け取り、ちょうど1つの選択肢を理由付きで記録する。request に列挙されていない選択肢を採ってもよい（その旨を明記する）。ただし不可逆・外向きの作用を伴う決定、run の目的自体を変える決定は**裁定してはならない** — それらは `needs-human` として利用者に戻る。
 - **`human`（デフォルト）** — ターンは挿入しない。run はステップ境界で止まり、質問と deliverable のパスを提示する。あなたの回答が decision record に書かれ、run が続く。非対話実行（`claude -p` など）では回答する主体が居ないので run はそのまま終わる — request はディスク上に残るので、それを読んで再開できる。
 
-続行は2形態のいずれかで、`Work state` フィールドから読み取る（推測しない）: **`complete`** かつ列挙内の選択肢 → deliverable は有効なまま、decision record を後続ターンの inputs に追加する。**`stopped`** または列挙外の選択肢の採用 → 起点ターンを decision record 付きで再実行する。
+続行は2形態のいずれかで、`Work state` フィールドから読み取る（推測しない）: **`complete`** かつ列挙内の選択肢 → deliverable は有効なまま、decision evidence を後続ターンの inputs に追加する。**`stopped`** または列挙外の選択肢の採用 → フォークを申告したターンを再実行する。`llm` では親は挿入された decision turn、`human` では親は human decision record であり、いずれも raising turn の model routing を保持する。
 
 決定が **amendment** を伴う場合、再生成されるのは**未実行部分の turn plan だけ**（完了済みターンは不変）で、改訂後の残りは改めて Step 0 ゲートを通す。元の plan は run index に残るので、承認した内容からの drift は常に見える。
 

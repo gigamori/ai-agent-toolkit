@@ -32,11 +32,11 @@ classification or an explicit bound pin.
 A numbered todolist step may carry at most one `(model: VALUE)`, one
 `(effort: low|middle|high)`, and one `(workflow-step: ID)` anywhere on its first
 physical line after the ordinal. Metadata on continuation lines is ordinary task
-text. Empty values, duplicate keys, invalid effort, and an ID absent from the
-active workflow are setup faults. Recognized metadata is removed before the
+text. Empty values, duplicate keys, invalid effort, an ID absent from the
+active workflow, and duplicate workflow row IDs are setup faults. Recognized metadata is removed before the
 instruction is classified and applies to every turn split from that numbered step.
 
-A workflow effort pin applies only when its row's `id` is named by
+A workflow effort pin applies only when exactly one row's `id` is named by
 `(workflow-step: ID)`. A bound `(infer)` row does not pin effort: the final turn
 is classified and records `inferred-effort`. An unbound row is guidance only;
 position, matching mode, and semantic similarity never create a binding.
@@ -57,6 +57,6 @@ fallback.
 
 1. Add `workflows/<name>.md` with the four sections above.
 2. Give every recommended-sequence row a stable unique `id` and a valid effort
-   cell; keep model routing out of the spec.
+   cell; duplicate IDs are a blocking invalid spec. Keep model routing out of the spec.
 3. Generate a turn plan and confirm explicit bindings, inferred rows, effort
    sources, failure policy, and planned overrides.

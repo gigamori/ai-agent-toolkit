@@ -88,8 +88,8 @@ override.
 A numbered todolist step may carry at most one `(model: VALUE)`, one
 `(effort: low|middle|high)`, and one `(workflow-step: ID)` anywhere on its first
 physical line after the ordinal. Continuation lines are task text. Empty values,
-duplicate keys, an invalid effort, or an ID absent from the active workflow block
-the run before approval or delegation. Recognized metadata is removed before the
+duplicate keys, an invalid effort, an ID absent from the active workflow block,
+or a duplicate active workflow ID block the run before approval or delegation. Recognized metadata is removed before the
 remaining instruction is classified, and copied to every turn split from that step.
 Write separate numbered steps when split responsibilities need different explicit
 values.
@@ -97,8 +97,8 @@ values.
 1. `(model: VALUE)` wins. The turn records effort `-` and source `step-model`; if
    an effort is also present, the plan warns that it was ignored.
 2. `(effort: VALUE)` selects that effort with source `step-effort`.
-3. `(workflow-step: ID)` selects the matching active workflow row only. A pinned
-   `low`, `middle`, or `high` cell uses source `workflow-effort`; `(infer)` leaves
+3. `(workflow-step: ID)` selects exactly one matching active workflow row only. A
+   duplicate ID blocks. A pinned `low`, `middle`, or `high` cell uses source `workflow-effort`; `(infer)` leaves
    the final instruction to classification with source `inferred-effort`.
 4. Without an explicit model, effort, or bound pin, the orchestrator classifies
    the final instruction as `low`, `middle`, or `high`; use `middle` when unsure.
@@ -202,9 +202,10 @@ What happens next depends on `--decider`:
 
 Then the run continues one of two ways, read off the `Work state` field rather
 than guessed: **`complete`** with a listed option → the deliverable stands and
-the decision record is added to the following turns' inputs; **`stopped`**, or
-an unlisted option was adopted → the originating turn is re-run with the
-decision record as an extra input.
+the decision evidence is added to the following turns' inputs; **`stopped`**, or
+an unlisted option was adopted → the raising turn is re-run. Under `llm` its
+parent is the inserted decision turn; under `human` its parent is the human
+decision record. In both cases it retains the raising turn's model routing.
 
 If the decision carries an **amendment**, only the not-yet-run part of the turn
 plan is regenerated — finished turns are untouched — and the revised remainder
