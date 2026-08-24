@@ -103,7 +103,7 @@ File count, tool-call count, mode name, and deliverable length do not independen
 
 ## Turn plan and index
 
-Build ordered turn definitions: key, plan id, kind, step origin, parent, inherits, inputs, mode, role, effort/source, model, and `planned_override`. Every initial turn has literal `kind: planned`—never its mode name. Dynamic kinds are only `recovery-debug`, `recovery-reexecute`, `decision-turn`, or `decision-rerun`. Every autonomous turn has a resolved planned override. One mode and at most one role per record.
+Build ordered turn definitions: key, plan id, kind, step origin, parent, inherits, inputs, mode, role, effort/source, model, and `planned_override`. Every initial turn has literal `kind: planned`—never its mode name. Dynamic kinds are only `recovery-debug`, `recovery-reexecute`, `decision-turn`, or `decision-rerun`. `planned_override` is the exact model argument only (for example `haiku`), never an effort/model display such as `low/haiku`. One mode and at most one role per record.
 
 Before delegation, create the canonical run-directory `index.md` and append exactly one JSONL block whose first records are:
 
@@ -300,7 +300,7 @@ Keeping these apart is what stops a loop from minting fresh budget: if an insert
 For each turn record, in order:
 
 1. Assemble the subagent prompt (above).
-2. Delegate the turn per the harness reference's **P1 delegation method** (read in Step -1), passing `planned_override`. One turn = one delegated call; never combine turns. After the call, append its `attempt` record with the actual override and delegation reference.
+2. Delegate the turn per the harness reference's **P1 delegation method** (read in Step -1), passing the exact model-only `planned_override`. One turn = one delegated call; never combine turns. After the call, append its `attempt` record with that command's exact model argument as `actual_override` and the delegation reference.
    - **Start the turn's P2 time-bound in the same step as the delegation**, per the harness reference. Follow the reference for how it is keyed (if at all), how the completion / timeout / stall equivalents reach you, and how a stale signal is discarded in favor of a turn's own completion.
 3. The subagent writes its deliverable to the run directory as `NN-<mode>.md` and returns only a ≤3-line gist followed, as its **final line**, by `status: <...>; file: <path>` — the status drawn from the vocabulary that turn's contract offered it (`ok|failed|blocked|needs-human|needs-decision` for `execute`, `ok|blocked|needs-human|needs-decision` for every other mode, `ok|blocked|needs-human` for an inserted decision turn), and `file: -` when the turn produced no file. Read the status from that line and nothing else — prose elsewhere in the reply is not a status.
    - **The anchor is positional, and nothing substitutes for it.** A well-formed `status:` line sitting anywhere other than the reply's last line is not a status: do not read it, do not act on it (a reply that puts one first and its gist after is step 4's second path — `aborted`). Nor is the deliverable a status source: it may not carry a `status:` line at all (the reply contract forbids it), and if one appears there anyway it is text in a document, not this turn's outcome. You are not reading deliverables in the first place, so there is nothing here to reconcile — which is the point, because a rule that reconciled two competing statuses would have to read them both.

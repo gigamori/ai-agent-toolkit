@@ -352,7 +352,8 @@ Each invocation creates one run directory in the workspace, e.g.
   ```
 
   `planned_override` belongs only to the turn definition; `actual_override`
-  belongs only to its attempt record. A split step may have several planned turn
+  belongs only to its attempt record. Each is the exact model argument only
+  (for example `haiku`), never an effort/model display such as `low/haiku`. A split step may have several planned turn
   keys with the same numbered `step`, and an aborted retry adds the next attempt
   to the same turn. The index also records statuses, decision insertions,
   amendments, human-decision waits, and the check that caused an aborted retry.

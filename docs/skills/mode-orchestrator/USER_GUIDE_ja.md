@@ -202,7 +202,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
   {"record":"attempt","turn":"03","attempt":1,"actual_override":"opus","delegation_ref":"raw/03-1.jsonl","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
   ```
 
-  `planned_override` は turn definition だけに属し、`actual_override` は対応する attempt record だけに属する。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録する。検査用インデックスであり、再開可能なスケジューラではない。
+  `planned_override` は turn definition だけに属し、`actual_override` は対応する attempt record だけに属する。どちらも `haiku` のような exact model argument だけであり、`low/haiku` のような effort/model 表示ではない。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録する。検査用インデックスであり、再開可能なスケジューラではない。
 
 これらはランタイム成果物 — コミットしない。
 
