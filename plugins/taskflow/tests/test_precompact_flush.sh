@@ -15,7 +15,7 @@ STATE="$PROJECTS/_state"
 PROJ="_test-precompact-$$"
 PDIR="$PROJECTS/$PROJ"
 SID="precomp$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"; SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
 OUTF="$TMP/pc.out"
 
@@ -92,7 +92,7 @@ stop() {
 }
 
 sidlines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -113,7 +113,7 @@ PY
 }
 
 agent_log_line() {
-  uv run --no-project python - "$1" "$SID8" "$2" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" "$2" << 'PY'
 import sys
 path, sid8, note = sys.argv[1], sys.argv[2], sys.argv[3]
 c = open(path, encoding="utf-8").read()
@@ -127,7 +127,7 @@ PLACE="(auto) unflushed at compaction; summary pending"
 STDOUT_PREFIX="Preserve verbatim in the summary: unwritten per-task progress (results, decisions, remaining steps) for:"
 
 echo "=== PreCompact flush ==="
-echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
+echo "  project=$PROJ  tag=$SID_TAG  (isolated tempdir: $TMP)"
   echo ""
 
 echo "[A] pending non-empty -> placeholder (r1) + exactly one stdout line"
@@ -137,11 +137,11 @@ write_touched "$T1"
 FP0=$(bind_fp)
 precompact manual
 [ "$(sidlines "$T1")" = "1" ] \
-  && pass "the flush appended exactly one [s:$SID8] line" \
+  && pass "the flush appended exactly one [s:$SID_TAG] line" \
   || fail "line count: $(sidlines "$T1")"
-grep -qF "[s:$SID8]: $PLACE (r1)" "$T1" \
+grep -qF "[s:$SID_TAG]: $PLACE (r1)" "$T1" \
   && pass "the placeholder note is '$PLACE (r1)' (N = capture.round+1 = 1)" \
-  || fail "note wrong: $(grep -F "[s:$SID8]" "$T1")"
+  || fail "note wrong: $(grep -F "[s:$SID_TAG]" "$T1")"
 [ "$(wc -l < "$OUTF")" = "1" ] \
   && pass "stdout is exactly one line" || fail "stdout lines: $(wc -l < "$OUTF")"
 grep -qF "$STDOUT_PREFIX $PROJ/2026-08-09_precompact.md" "$OUTF" \
@@ -177,9 +177,9 @@ echo "$OE1" | grep -q '"decision": *"block"' \
 [ "$(bindq 'c.get("round")')" = "1" ] \
   && pass ".bind capture.round advanced to 1" || fail "round: $(bindq 'c.get("round")')"
 stop 0 >/dev/null
-grep -qF "[s:$SID8]: (auto) touched; summary pending (r1)" "$T1" \
+grep -qF "[s:$SID_TAG]: (auto) touched; summary pending (r1)" "$T1" \
   && pass "the round's own backstop line coexists with the compaction placeholder" \
-  || fail "backstop missing: $(grep -F "[s:$SID8]" "$T1")"
+  || fail "backstop missing: $(grep -F "[s:$SID_TAG]" "$T1")"
 [ "$(sidlines "$T1")" = "2" ] \
   && pass "task now carries 2 lines (compaction placeholder + r1 backstop)" \
   || fail "line count: $(sidlines "$T1")"
@@ -203,7 +203,7 @@ echo "[F] a flush after round 1 tags the placeholder (r2)"
 FPF=$(bind_fp)
 write_touched "$T1"
 precompact manual
-grep -qF "[s:$SID8]: $PLACE (r2)" "$T1" \
+grep -qF "[s:$SID_TAG]: $PLACE (r2)" "$T1" \
   && pass "the new placeholder is tagged (r2) = capture.round+1" \
   || fail "note wrong: $(grep -F "$PLACE" "$T1")"
 [ "$(sidlines "$T1")" = "3" ] \

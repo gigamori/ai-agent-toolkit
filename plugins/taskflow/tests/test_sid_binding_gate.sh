@@ -18,7 +18,8 @@ STATE_DIR="$PROJECTS_DIR/_state"
 PROJECT_NAME="_test-sid-gate-$$"
 PROJECT_DIR="$PROJECTS_DIR/$PROJECT_NAME"
 SID="sidbind$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"
+SID_TAG="${SID_CLEAN: -12}"
 STATE_FILE="$STATE_DIR/$SID.json"
 BIND_FILE="$STATE_DIR/$SID.bind"
 TOUCHED_FILE="$STATE_DIR/$SID.touched"
@@ -48,7 +49,7 @@ trap cleanup EXIT
 
 echo "=== Test: sid-binding gate (PostToolUse .touched + exec-binding) ==="
 echo "  project:  $PROJECT_DIR"
-echo "  session:  $SID  (sid8=$SID8)"
+echo "  session:  $SID  (tag=$SID_TAG)"
 echo "  isolated tempdir: $TMP"
   echo ""
 
@@ -143,16 +144,16 @@ invoke_hook_stderr() {
 }
 
 count_sid_lines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
-path, sid8 = sys.argv[1], sys.argv[2]
+path, sid_tag = sys.argv[1], sys.argv[2]
 try:
     content = open(path, encoding="utf-8").read()
 except OSError:
     print(-1); raise SystemExit
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", content, re.DOTALL)
 block = m.group(1) if m else ""
-print(block.count("[s:%s]" % sid8))
+print(block.count("[s:%s]" % sid_tag))
 PY
 }
 
@@ -166,25 +167,25 @@ print("INTACT" if (b == 1 and e == 1 and ib != -1 and ie != -1 and ib < ie) else
 PY
 }
 
-echo "append_auto_binding unit: code-append guarantees [s:sid8]"
+echo "append_auto_binding unit: code-append guarantees [s:tag]"
 UNIT_TASK="$PROJECT_DIR/tasks/0_todo/2026-06-26_ac1-unit.md"
 make_task "$UNIT_TASK"
-AC1A=$(uv run --no-project python - "$(to_win "$HOOK")" "$(to_win "$UNIT_TASK")" "$SID8" << 'PY'
+AC1A=$(uv run --no-project python - "$(to_win "$HOOK")" "$(to_win "$UNIT_TASK")" "$SID_TAG" << 'PY'
 import importlib.util, sys, os
-hook_path, task, sid8 = sys.argv[1], sys.argv[2], sys.argv[3]
+hook_path, task, sid_tag = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, os.path.dirname(hook_path))
 spec = importlib.util.spec_from_file_location("cap", hook_path)
 mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
-before = mod.log_block_has_sid(task, sid8)
-ok = mod.append_auto_binding(task, sid8, "2026-06-26T14:30:00")
-after = mod.log_block_has_sid(task, sid8)
+before = mod.log_block_has_sid(task, sid_tag)
+ok = mod.append_auto_binding(task, sid_tag, "2026-06-26T14:30:00")
+after = mod.log_block_has_sid(task, sid_tag)
 print("BEFORE=%s OK=%s AFTER=%s" % (before, ok, after))
 PY
 )
 echo "$AC1A" | grep -q "BEFORE=False OK=True AFTER=True" \
-  && pass "append_auto_binding adds [s:$SID8] when absent: $AC1A" \
-  || fail "append_auto_binding did not guarantee [s:$SID8]: $AC1A"
-grep -q "\[s:$SID8\]: (auto) touched; summary pending" "$UNIT_TASK" \
+  && pass "append_auto_binding adds [s:$SID_TAG] when absent: $AC1A" \
+  || fail "append_auto_binding did not guarantee [s:$SID_TAG]: $AC1A"
+grep -q "\[s:$SID_TAG\]: (auto) touched; summary pending" "$UNIT_TASK" \
   && pass "auto line has the default '(auto) touched; summary pending' form" \
   || fail "auto line form wrong"
 [ "$(assert_block_intact "$UNIT_TASK")" = "INTACT" ] \
@@ -209,16 +210,16 @@ echo "$OUT1" | grep -q '"decision": *"block"' \
 
 OUT2=$(invoke_hook)
 [ "$(count_sid_lines "$R2_TASK")" = "1" ] \
-  && pass "Round2 backstop auto-appended exactly one [s:$SID8] line" \
+  && pass "Round2 backstop auto-appended exactly one [s:$SID_TAG] line" \
   || fail "Round2 did not bind: got $(count_sid_lines "$R2_TASK")"
-echo "$OUT2" | grep -q "auto-bound: .*\[s:$SID8\]" \
+echo "$OUT2" | grep -q "auto-bound: .*\[s:$SID_TAG\]" \
   && pass "Round2 reports F5 auto-bound line" || fail "Round2 missing auto-bound F5: $OUT2"
 
   echo ""
-echo "idempotency: existing [s:sid8] is not duplicate-appended"
+echo "idempotency: existing [s:tag] is not duplicate-appended"
 invoke_hook >/dev/null
 [ "$(count_sid_lines "$R2_TASK")" = "1" ] \
-  && pass "re-running hook leaves exactly one [s:$SID8] line" \
+  && pass "re-running hook leaves exactly one [s:$SID_TAG] line" \
   || fail "duplicate append: $(count_sid_lines "$R2_TASK")"
 
   echo ""
@@ -258,7 +259,7 @@ write_touched "$OTHER"
 invoke_hook >/dev/null
 invoke_hook >/dev/null
 [ "$(count_sid_lines "$UNTOUCHED")" = "0" ] \
-  && pass "untouched task has 0 [s:$SID8] (no auto-stamp)" \
+  && pass "untouched task has 0 [s:$SID_TAG] (no auto-stamp)" \
   || fail "untouched task was stamped: $(count_sid_lines "$UNTOUCHED")"
 [ "$(count_sid_lines "$OTHER")" = "1" ] \
   && pass "touched OTHER task bound (control)" || fail "control OTHER not bound"
@@ -273,9 +274,9 @@ OUT_EXEC=$(invoke_hook "[pj:$PROJECT_NAME] [tasks: 2026-06-26_exec-owner.md] did
 [ "$(count_sid_lines "$EXEC_TASK")" = "1" ] \
   && pass "exec owning task bound via [tasks:] carry (not in .touched)" \
   || fail "exec-bind did not bind: $(count_sid_lines "$EXEC_TASK")"
-echo "$OUT_EXEC" | grep -q "auto-bound: .*exec-owner.*\[s:$SID8\]" \
+echo "$OUT_EXEC" | grep -q "auto-bound: .*exec-owner.*\[s:$SID_TAG\]" \
   && pass "exec-bind reports F5 auto-bound line" || fail "exec-bind missing F5: $OUT_EXEC"
-grep -q "\[s:$SID8\]: (auto) executed via \[tasks:\] carry" "$EXEC_TASK" \
+grep -q "\[s:$SID_TAG\]: (auto) executed via \[tasks:\] carry" "$EXEC_TASK" \
   && pass "exec-bind line carries the executed-via provenance note" \
   || fail "exec-bind provenance note wrong"
 invoke_hook "[tasks: 2026-06-26_exec-owner.md]" >/dev/null
@@ -340,12 +341,12 @@ make_task "$LOCK_TASK"
 appender() {
   uv run --no-project python - "$(to_win "$HOOK")" "$(to_win "$LOCK_TASK")" "$1" << 'PY'
 import importlib.util, sys, os, time
-hook_path, task, sid8 = sys.argv[1], sys.argv[2], sys.argv[3]
+hook_path, task, sid_tag = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, os.path.dirname(hook_path))
 spec = importlib.util.spec_from_file_location("cap", hook_path)
 mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 time.sleep(0.05)
-mod.append_auto_binding(task, sid8, "2026-06-26T15:00:00")
+mod.append_auto_binding(task, sid_tag, "2026-06-26T15:00:00")
 PY
 }
 appender "aaaaaaaa" & P1=$!

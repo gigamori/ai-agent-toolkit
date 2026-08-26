@@ -330,8 +330,8 @@ session end
         not the scan, is what `items` bounds: an owner the scan reaches for a note this round
         never touched gets no line.
         Placeholder / `referenced` notes carry an `(r{N})` round tag, which is
-        also their idempotency key: binding is now keyed on the text `[s:<sid8>]: <note>`
-        rather than on the bare presence of a `[s:<sid8>]` line, so one session binds one task
+        also their idempotency key: binding is now keyed on the text `[s:<sid>]: <note>`
+        rather than on the bare presence of a `[s:<sid>]` line, so one session binds one task
         once per ROUND instead of once per session (§1.5). A round already satisfied by a real
         summary, a `referenced` over-bind, or the agent's own `@log` line gets no placeholder —
         judged against `round_base`, the count FROZEN when the round was requested, falling
@@ -498,7 +498,7 @@ The router subagent is intentionally lightweight: per-turn reads + decisions onl
 
 ### Fork inheritance
 
-When a session is forked, Claude Code copies the parent's JSONL transcript, rewriting `sessionId` **and** — in current Claude Code — each message `uuid`, so uuid comparison cannot identify the parent. On the first turn of a new session, `session_init.py` (`detect_parent_session`) instead relies on two signals that survive the copy: (1) **primary** — the parent's injected `[Progress Session] session_id=<parent>` marker, preserved verbatim: it scans the transcript head (`PARENT_MARKER_RE`, first `PARENT_SCAN_LINES` lines) for a `session_id` other than its own; (2) **fallback** — the first `type=user` entry's `(timestamp, message content)` pair, matched against the head of recent sibling JSONLs in the same directory. The child then inherits the parent's `project` from the parent state file, and scans the project's `1_in_progress/` tasks for the parent session's `[s:<sid>]` log tag (an `sid8` substring match) to populate `inherited_tasks`. A `[Forked Session]` block is injected on that first turn so the LLM continues the inherited tasks (logging under the new `session_id`).
+When a session is forked, Claude Code copies the parent's JSONL transcript, rewriting `sessionId` **and** — in current Claude Code — each message `uuid`, so uuid comparison cannot identify the parent. On the first turn of a new session, `session_init.py` (`detect_parent_session`) instead relies on two signals that survive the copy: (1) **primary** — the parent's injected `[Progress Session] session_id=<parent>` marker, preserved verbatim: it scans the transcript head (`PARENT_MARKER_RE`, first `PARENT_SCAN_LINES` lines) for a `session_id` other than its own; (2) **fallback** — the first `type=user` entry's `(timestamp, message content)` pair, matched against the head of recent sibling JSONLs in the same directory. The child then inherits the parent's `project` from the parent state file, and scans the project's `1_in_progress/` tasks for the parent session's `[s:<sid>]` log tag. The scan first tries the 12-char tail tag (new format); if that yields zero matches, it falls back to the first-8 prefix (legacy format for sessions before the tail-12 migration). A `[Forked Session]` block is injected on that first turn so the LLM continues the inherited tasks (logging under the new `session_id`).
 
 ### `origin` field
 

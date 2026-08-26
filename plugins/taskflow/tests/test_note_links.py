@@ -269,7 +269,7 @@ def test_entry_literal_pin(root: Path) -> None:
 
     entry_lines = [ln for ln in lines if ln.startswith("- ")]
     check(all(re.fullmatch(r"- \S+", ln) for ln in entry_lines),
-          f"every entry is exactly `- <note_rel>`: no [s:<sid8>], no timestamp "
+          f"every entry is exactly `- <note_rel>`: no [s:<tag>], no timestamp "
           f"(got {entry_lines!r})")
 
 

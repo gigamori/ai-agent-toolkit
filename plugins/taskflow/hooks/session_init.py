@@ -293,7 +293,15 @@ if is_new_session:
             try:
               with open(fpath, 'r', encoding='utf-8') as tf:
                 content = tf.read()
-              if parent_id[:8] in content:
+              # Fork inheritance: first try tail-12 tag, fallback to first-8
+              # (legacy parent sessions before tail-12 migration). See spec 04-spec.md §3.1.
+              parent_tag = parent_id.replace('-', '')[-12:]
+              if parent_tag in content:
+                parent_tasks.append(fname)
+              elif parent_id[:8] in content:
+                # Legacy fallback: parent session only has first-8 tags.
+                # Mixed parent (some tasks have old format, some new) will
+                # inherit only the tasks that match the format it finds.
                 parent_tasks.append(fname)
             except OSError:
               continue
@@ -502,7 +510,7 @@ else:
   result = {
     'hookSpecificOutput': {
       'hookEventName': 'UserPromptSubmit',
-      'additionalContext': f'[Progress Session] session_id={session_id} sid8={session_id[:8]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}{rules_content}'
+      'additionalContext': f'[Progress Session] session_id={session_id} sid={session_id.replace("-", "")[-12:]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}{rules_content}'
     }
   }
 

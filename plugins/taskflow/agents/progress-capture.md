@@ -37,7 +37,7 @@ Write, stop and write the sidecar with whatever judgment you have.
 You are summarizing ONE ROUND of the session, not the whole session. A round is
 the work recorded since the Stop hook last requested a capture; a long session
 produces several, and each one gets its own `@log` line per task. So a task you
-are asked about may already carry earlier `[s:<sid8>]` lines from the SAME
+are asked about may already carry earlier `[s:<sid>]` lines from the SAME
 session — that is expected, and it is not a reason to skip it. Summarize what
 changed in THIS round; do not restate or re-summarize an earlier round's line.
 
@@ -47,7 +47,7 @@ or read, whether new task-worthy work appeared). Context block shape:
 
 ```json
 {
-  "sid8": "<8-char session id>",
+  "sid": "<12-char session tag>",
   "iso_ts": "<ISO8601 T-separated timestamp>",
   "round": <the round number you are summarizing>,
   "sidecar_path": "<absolute path to THIS round's .capture sidecar, forward-slashed>",

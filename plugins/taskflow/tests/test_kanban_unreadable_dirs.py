@@ -151,11 +151,13 @@ def test_state_dir_unreadable() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "_projects"
         state = _seed_state(root)
-        control, _ = _capture(lambda: gk.build_uuid_index(state))
-        check(sorted(control) == [UUID_STATE[:8]],
-              f"_state control: the seeded sidecar is indexed, got {sorted(control)}")
+        result, _ = _capture(lambda: gk.build_uuid_index(state))
+        prefix_index, _tail_index = result
+        check(sorted(prefix_index.keys()) == [UUID_STATE[:8]],
+              f"_state control: the seeded sidecar is indexed, got {sorted(prefix_index.keys())}")
         with _Deny(state):
-            index, err = _capture(lambda: gk.build_uuid_index(state))
+            result, err = _capture(lambda: gk.build_uuid_index(state))
+            index, _tail_index = result
         check(index == {}, f"_state unreadable -> empty index, no raise, got {index}")
         check(str(state) in err, f"_state unreadable -> warned with its path, got {err!r}")
 
@@ -166,11 +168,13 @@ def test_task_status_dir_unreadable() -> None:
         proj = Path(tmp) / "_projects" / "demo-a"
         todo = _seed_task(proj, "0_todo", "2026-08-12_todo-one", "Todo one")
         _seed_task(proj, "1_in_progress", "2026-08-12_wip-one", "Wip one")
-        control, _ = _capture(lambda: gk.load_tasks(proj, "demo-a", {}))
+        empty_prefix_index: dict[str, list[gk.StateEntry]] = {}
+        empty_tail_index: dict[str, list[gk.StateEntry]] = {}
+        control, _ = _capture(lambda: gk.load_tasks(proj, "demo-a", empty_prefix_index, empty_tail_index))
         check(sorted(t.h1 for t in control) == ["Todo one", "Wip one"],
               f"tasks control: both status dirs load, got {[t.h1 for t in control]}")
         with _Deny(todo):
-            tasks, err = _capture(lambda: gk.load_tasks(proj, "demo-a", {}))
+            tasks, err = _capture(lambda: gk.load_tasks(proj, "demo-a", empty_prefix_index, empty_tail_index))
         check([t.h1 for t in tasks] == ["Wip one"],
               f"unreadable 0_todo/ is skipped; the other status dir still loads, got "
               f"{[t.h1 for t in tasks]}")
@@ -206,12 +210,12 @@ def test_board_survives_one_unreadable_project() -> None:
         todo_a = _seed_task(root / "demo-a", "0_todo", "2026-08-12_a-one", "A one")
         _seed_task(root / "demo-b", "0_todo", "2026-08-12_b-one", "B one")
         with _Env(None, home):
-            control, _ = _capture(lambda: gk.load_projects([root], {}))
+            control, _ = _capture(lambda: gk.load_projects([root], {}, {}))
             counts = {p.name: len(p.tasks) for p in control[0]}
             check(counts == {"demo-a": 1, "demo-b": 1},
                   f"board control: both projects load one task each, got {counts}")
             with _Deny(todo_a):
-                (projects, _np, _npt), err = _capture(lambda: gk.load_projects([root], {}))
+                (projects, _np, _npt), err = _capture(lambda: gk.load_projects([root], {}, {}))
         counts = {p.name: len(p.tasks) for p in projects}
         check(counts == {"demo-a": 0, "demo-b": 1},
               f"one unreadable task dir costs only that dir; the board still builds, got {counts}")

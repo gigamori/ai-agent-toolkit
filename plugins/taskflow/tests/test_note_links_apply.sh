@@ -14,7 +14,7 @@ STATE="$PROJECTS/_state"
 PROJ="_e2e-apply-$$"
 PDIR="$PROJECTS/$PROJ"
 SID="e2eaply$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"; SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
 . "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
@@ -108,7 +108,7 @@ stop() {
 }
 
 sidlines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -127,7 +127,7 @@ PY
 }
 
 echo "=== E2E: async capture apply-path (note-task-link Phase B) ==="
-echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
+echo "  project=$PROJ  tag=$SID_TAG  (isolated tempdir: $TMP)"
   echo ""
 
 echo "in-flight: requested capture does not double-spawn (pending, no bind)"
@@ -175,8 +175,8 @@ PY
   || fail "sidecar write changed the task file"
 
 O1B=$(stop 999)
-[ "$(sidlines "$T1")" = "1" ] && pass "Stop applies one [s:$SID8] @log line" || fail "apply did not bind: $(sidlines "$T1")"
-grep -q "\[s:$SID8\]: REALSUMMARYAC1" "$T1" \
+[ "$(sidlines "$T1")" = "1" ] && pass "Stop applies one [s:$SID_TAG] @log line" || fail "apply did not bind: $(sidlines "$T1")"
+grep -q "\[s:$SID_TAG\]: REALSUMMARYAC1" "$T1" \
   && pass "real capture summary wins (not a placeholder)" || fail "real summary not applied"
 ! grep -q "(auto) touched; summary pending" "$T1" \
   && pass "no placeholder pre-empted the real summary (apply-order)" || fail "placeholder leaked before apply"
@@ -203,16 +203,16 @@ echo "$O10A" | grep -q '"decision": *"block"' \
   && pass "Stop#1 requests capture (A10 missing + NY unlinked)" || fail "Stop#1 no request: $O10A"
 O10B=$(stop 0)
 [ "$(sidlines "$A10")" = "1" ] && pass "expired → A10 placeholder-bound (G backstop)" || fail "A10 not placeholdered: $(sidlines "$A10")"
-grep -qF "[s:$SID8]: (auto) touched; summary pending (r1)" "$A10" \
+grep -qF "[s:$SID_TAG]: (auto) touched; summary pending (r1)" "$A10" \
   && pass "A10 carries the placeholder provenance with its round tag" \
-  || fail "A10 placeholder note wrong: $(grep -F "[s:$SID8]" "$A10")"
+  || fail "A10 placeholder note wrong: $(grep -F "[s:$SID_TAG]" "$A10")"
 [ "$(sidlines "$B10")" = "1" ] && pass "NX owner B10 referenced over-bound (reverse-index hit)" || fail "B10 not referenced: $(sidlines "$B10")"
-grep -qF "[s:$SID8]: (referenced) owner of $NXREL via reverse-index; capture expired (r1)" "$B10" \
+grep -qF "[s:$SID_TAG]: (referenced) owner of $NXREL via reverse-index; capture expired (r1)" "$B10" \
   && pass "B10 carries the referenced provenance + round tag" \
-  || fail "B10 referenced note wrong: $(grep -F "[s:$SID8]" "$B10")"
+  || fail "B10 referenced note wrong: $(grep -F "[s:$SID_TAG]" "$B10")"
 [ "$(notecount "$A10" "$NYREL")" = "0" ] && pass "unlinked note NY NOT established on expiry (judgment-absent)" || fail "NY wrongly established"
 [ "$(notecount "$B10" "$NXREL")" = "1" ] && pass "pre-existing NX link unchanged (no duplicate)" || fail "NX link disturbed"
-echo "$O10B" | grep -q "auto-bound: .*ac10b.md \[s:$SID8\]" \
+echo "$O10B" | grep -q "auto-bound: .*ac10b.md \[s:$SID_TAG\]" \
   && pass "referenced over-bind surfaced in F5" || fail "no referenced F5: $O10B"
 
   echo ""

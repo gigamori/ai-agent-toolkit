@@ -18,7 +18,8 @@ STATE_DIR="$PROJECTS_DIR/_state"
 PROJECT_NAME="_test-bindskip-$$"
 PROJECT_DIR="$PROJECTS_DIR/$PROJECT_NAME"
 SID="bndskip$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"
+SID_TAG="${SID_CLEAN: -12}"
 STATE_FILE="$STATE_DIR/$SID.json"
 BIND_FILE="$STATE_DIR/$SID.bind"
 TOUCHED_FILE="$STATE_DIR/$SID.touched"
@@ -54,7 +55,7 @@ trap cleanup EXIT
 
 echo "=== bind-skip(no-anchor) visibility for ambiguous @log damage ==="
 echo "  project:  $PROJECT_DIR"
-echo "  session:  $SID  (sid8=$SID8)"
+echo "  session:  $SID  (tag=$SID_TAG)"
 echo "  isolated tempdir: $TMP"
   echo ""
 
@@ -114,12 +115,12 @@ ERR2="$(cat "$ERR_FILE")"
 [ "$(sha "$TASK")" = "$BEFORE_HASH" ] \
   && pass "ambiguous task md left byte-for-byte unmodified (no block generated)" \
   || fail "ambiguous task md was modified by the hook"
-grep -q "\[s:$SID8\]" "$TASK" \
-  && fail "an [s:$SID8] line leaked into the ambiguous task" \
-  || pass "no [s:$SID8] line written (bind genuinely failed)"
+grep -q "\[s:$SID_TAG\]" "$TASK" \
+  && fail "an [s:$SID_TAG] line leaked into the ambiguous task" \
+  || pass "no [s:$SID_TAG] line written (bind genuinely failed)"
 
-echo "$ERR2" | grep -qF "[progress capture] bind-skip(no-anchor): $TASK_REL [s:$SID8]" \
-  && pass "stderr carries the bind-skip(no-anchor) line with rel path + sid8" \
+echo "$ERR2" | grep -qF "[progress capture] bind-skip(no-anchor): $TASK_REL [s:$SID_TAG]" \
+  && pass "stderr carries the bind-skip(no-anchor) line with rel path + tag" \
   || fail "stderr bind-skip line missing/wrong: $ERR2"
 echo "$ERR2" | grep -qF "no writable <!-- @log:begin/end --> block; left unbound." \
   && pass "stderr line explains the cause (no writable @log block)" \

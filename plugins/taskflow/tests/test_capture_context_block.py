@@ -36,7 +36,7 @@ def test_single_entry_is_valid_json_and_absolute() -> None:
         os.path.join(os.getcwd(), "_projects", "_state"), "abc123", 7)
     project_root = os.path.join(os.getcwd(), "_projects", "harness-taskflow")
     ctx = spc.build_capture_context(
-        "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
+        "abc123456789012", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
         {"harness-taskflow": project_root},
         ["harness-taskflow/2026-07-28_capture-sidecar-abs-path.md"],
         ["project-notes/specs/capture-context-abs-path.md"],
@@ -52,7 +52,7 @@ def test_single_entry_is_valid_json_and_absolute() -> None:
     check(os.path.isabs(obj["project_root"]), f"project_root is absolute: {obj['project_root']}")
     check("\\" not in obj["sidecar_path"], "sidecar_path has no backslash")
     check("\\" not in obj["project_root"], "project_root has no backslash")
-    check(obj["sid8"] == "abc12345", "sid8 round-trips")
+    check(obj["sid"] == "abc123456789012", "sid (12-char tag) round-trips")
     check(obj["round"] == 7, f"round is emitted in the context block: {obj.get('round')}")
     check(obj["sidecar_path"].endswith("/abc123.r7.capture"),
           f"sidecar_path is the per-round name: {obj['sidecar_path']}")
@@ -74,7 +74,7 @@ def test_multi_entry_is_valid_json_d6_regression() -> None:
     tasks = ["harness-taskflow/a.md", "harness-taskflow/b.md", "pi-studio-dev/c.md"]
     notes = ["project-notes/specs/x.md", "project-notes/checks/y.md"]
     ctx = spc.build_capture_context(
-        "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
+        "abc123456789012", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
         roots, tasks, notes, 2,
     )
     try:
@@ -95,7 +95,7 @@ def test_empty_arrays_are_valid_json() -> None:
     sidecar_path = os.path.join(os.getcwd(), "_projects", "_state", "abc123.capture")
     project_root = os.path.join(os.getcwd(), "_projects", "harness-taskflow")
     ctx = spc.build_capture_context(
-        "abc12345", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
+        "abc123456789012", "2026-07-30T01:00:00+09:00", sidecar_path, project_root,
         {"harness-taskflow": project_root}, [], [], 1,
     )
     try:

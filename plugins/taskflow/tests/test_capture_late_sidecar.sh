@@ -14,7 +14,8 @@ STATE="$PROJECTS/_state"
 PROJ="_test-late-$$"
 PDIR="$PROJECTS/$PROJ"
 SID="latesid$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"
+SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
 
 to_win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
@@ -122,7 +123,7 @@ stop() {
 }
 
 sidlines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -131,18 +132,18 @@ PY
 }
 
 agent_log_line() {
-  uv run --no-project python - "$1" "$SID8" "$2" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" "$2" << 'PY'
 import sys
-path, sid8, note = sys.argv[1], sys.argv[2], sys.argv[3]
+path, sid_tag, note = sys.argv[1], sys.argv[2], sys.argv[3]
 c = open(path, encoding="utf-8").read()
 at = c.index("<!-- @log:end -->")
-line = "- 2026-08-09T10:00:00+09:00 [s:%s]: %s\n" % (sid8, note)
+line = "- 2026-08-09T10:00:00+09:00 [s:%s]: %s\n" % (sid_tag, note)
 open(path, "w", encoding="utf-8").write(c[:at] + line + c[at:])
 PY
 }
 
 echo "=== late capture sidecar ==="
-echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
+echo "  project=$PROJ  tag=$SID_TAG  (isolated tempdir: $TMP)"
   echo ""
 
 echo "a sidecar delivered after the expiry Stop still applies"
@@ -172,7 +173,7 @@ echo "$O13" | grep -q "applied summary: $PROJ/2026-08-09_late.md" \
   && pass "the late summary was applied and reported" || fail "no applied summary: $O13"
 grep -qF "LATESUMMARY the round's real work" "$T1" \
   && pass "the rich summary text landed in the task @log" \
-  || fail "summary text missing: $(grep -F "[s:$SID8]" "$T1")"
+  || fail "summary text missing: $(grep -F "[s:$SID_TAG]" "$T1")"
 echo "$O13" | grep -qF "linked note: $N1REL -> $PROJ/2026-08-09_late.md" \
   && pass "note link 1 established and reported" || fail "link 1 missing: $O13"
 echo "$O13" | grep -qF "linked note: $N2REL -> $PROJ/2026-08-09_late.md" \
@@ -181,7 +182,7 @@ grep -qF -- "- $N1REL" "$T1" && grep -qF -- "- $N2REL" "$T1" \
   && pass "both note links are present in the task @notes block" \
   || fail "@notes block: $(sed -n '/@notes:begin/,/@notes:end/p' "$T1")"
 [ "$(sidlines "$T1")" = "2" ] \
-  && pass "placeholder + late summary = exactly 2 [s:$SID8] lines" \
+  && pass "placeholder + late summary = exactly 2 [s:$SID_TAG] lines" \
   || fail "line count after late apply: $(sidlines "$T1")"
 [ ! -e "$(rcap 1)" ] \
   && pass "the late sidecar was consumed (unlinked)" || fail "sidecar not consumed"
@@ -204,7 +205,7 @@ echo "$O22" | grep -q "auto-bound" \
   && pass "note owner got exactly one (referenced) line" || fail "TB lines: $(sidlines "$TB")"
 grep -qF "(referenced) owner of $NBREL via reverse-index; capture expired (r1)" "$TB" \
   && pass "the (referenced) line carries the reverse-index provenance" \
-  || fail "TB note wrong: $(grep -F "[s:$SID8]" "$TB")"
+  || fail "TB note wrong: $(grep -F "[s:$SID_TAG]" "$TB")"
 LOOP_FAIL=0
 for n in 3 4 5 6; do
   ON=$(stop 0)
@@ -235,7 +236,7 @@ agent_log_line "$TD" "the agent summarized this round itself"
 O33=$(stop 0)
 [ "$(sidlines "$TD")" = "1" ] \
   && pass "the self-logged owner carries exactly its OWN line" \
-  || fail "redundant line(s): $(grep -F "[s:$SID8]" "$TD")"
+  || fail "redundant line(s): $(grep -F "[s:$SID_TAG]" "$TD")"
 grep -qF "(referenced) owner of" "$TD" \
   && fail "a redundant (referenced) line was written next to the agent's own" \
   || pass "no (referenced) line was written over the agent's own summary"
@@ -260,14 +261,14 @@ write_touched "$NE"
   || fail "TE after r1: $(sidlines "$TE")"
 grep -qF "(referenced) owner of $NEREL via reverse-index; capture expired (r1)" "$TE" \
   && pass "the r1 line keeps the reverse-index provenance" \
-  || fail "TE note wrong: $(grep -F "[s:$SID8]" "$TE")"
+  || fail "TE note wrong: $(grep -F "[s:$SID_TAG]" "$TE")"
 GROW_FAIL=0
 for r in 2 3 4; do
   write_touched "$TOTHER"
   stop 999 >/dev/null
   stop 0   >/dev/null
   if [ "$(sidlines "$TE")" != "1" ]; then
-    fail "r$r bound an owner for a note it never touched: $(grep -F "[s:$SID8]" "$TE")"
+    fail "r$r bound an owner for a note it never touched: $(grep -F "[s:$SID_TAG]" "$TE")"
     GROW_FAIL=1
   fi
 done
@@ -288,10 +289,10 @@ write_touched "$TE"
   stop 0   >/dev/null
 [ "$(sidlines "$TE")" = "2" ] \
   && pass "r5 over-bound TE again (TE is in r5's items)" \
-  || fail "TE after r5: $(grep -F "[s:$SID8]" "$TE")"
+  || fail "TE after r5: $(grep -F "[s:$SID_TAG]" "$TE")"
 grep -qF "capture expired (r5)" "$TE" \
   && pass "the later round's line carries its own round tag" \
-  || fail "no r5 line: $(grep -F "[s:$SID8]" "$TE")"
+  || fail "no r5 line: $(grep -F "[s:$SID_TAG]" "$TE")"
 
   echo ""
 echo "a round-1 sidecar landing AFTER round 2 committed still applies"
@@ -321,7 +322,7 @@ echo "$OR11" | grep -q "applied summary: $PROJ/2026-08-19_r1-main.md" \
   && pass "the round-1 summary was applied and reported" || fail "no applied summary: $OR11"
 grep -qF "R1LATE the round-1 judgement" "$TR1" \
   && pass "the round-1 summary text landed in the task @log" \
-  || fail "summary text missing: $(grep -F "[s:$SID8]" "$TR1")"
+  || fail "summary text missing: $(grep -F "[s:$SID_TAG]" "$TR1")"
 echo "$OR11" | grep -qF "linked note: $NR1REL -> $PROJ/2026-08-19_r1-main.md" \
   && pass "the round-1 note link was established" || fail "link missing: $OR11"
 [ ! -e "$(rcap 1)" ] \
@@ -376,10 +377,10 @@ echo "$OR13" | grep -q "membership-skip" \
   || pass "neither sidecar was membership-skipped"
 grep -qF "BOTHSUMA round one" "$TA3" \
   && pass "round 1's summary landed on its own task" \
-  || fail "r1 summary missing: $(grep -F "[s:$SID8]" "$TA3")"
+  || fail "r1 summary missing: $(grep -F "[s:$SID_TAG]" "$TA3")"
 grep -qF "BOTHSUMB round two" "$TB3" \
   && pass "round 2's summary landed on its own task" \
-  || fail "r2 summary missing: $(grep -F "[s:$SID8]" "$TB3")"
+  || fail "r2 summary missing: $(grep -F "[s:$SID_TAG]" "$TB3")"
 [ "$(bind_get status)" = "done" ] \
   && pass "the CURRENT round transitioned to done" || fail "status: $(bind_get status)"
 [ ! -e "$(rcap 1)" ] && [ ! -e "$(rcap 2)" ] \
@@ -417,13 +418,13 @@ EOF
 OR16=$(stop 0)
 grep -qF "FASUM the old round's judgement" "$TA6" \
   && pass "the old round's summary was applied" \
-  || fail "old-round summary missing: $(grep -F "[s:$SID8]" "$TA6")"
+  || fail "old-round summary missing: $(grep -F "[s:$SID_TAG]" "$TA6")"
 [ "$(bind_get status)" = "expired" ] \
  && pass "the in-flight round still expired on schedule" \
   || fail "status after the old-round apply: $(bind_get status)"
 grep -qF "(auto) touched; summary pending (r2)" "$TB6" \
   && pass "the current round's backstop ran on the same Stop" \
-  || fail "no r2 placeholder: $(grep -F "[s:$SID8]" "$TB6")"
+  || fail "no r2 placeholder: $(grep -F "[s:$SID_TAG]" "$TB6")"
 echo "$OR16" | grep -q "membership-skip" \
   && fail "the old-round apply was membership-skipped: $OR16" \
   || pass "no membership-skip on the old-round apply"
@@ -437,7 +438,7 @@ write_touched "$TS7"
   stop 0   >/dev/null
 grep -qF "(auto) touched; summary pending (r1)" "$TS7" \
   && pass "setup: the shared task carries r1's placeholder" \
-  || fail "setup broken, no r1 placeholder: $(grep -F "[s:$SID8]" "$TS7")"
+  || fail "setup broken, no r1 placeholder: $(grep -F "[s:$SID_TAG]" "$TS7")"
 write_touched "$TS7"
   stop 999 >/dev/null
 cat > "$(rcap 1)" << EOF
@@ -447,10 +448,10 @@ EOF
 OR17=$(stop 0)
 grep -qF "SHAREDSUM round 1's judgement" "$TS7" \
   && pass "the old round's summary was applied to the shared task" \
-  || fail "old-round summary missing: $(grep -F "[s:$SID8]" "$TS7")"
+  || fail "old-round summary missing: $(grep -F "[s:$SID_TAG]" "$TS7")"
 grep -qF "(auto) touched; summary pending (r2)" "$TS7" \
   && pass "the shared task still got the CURRENT round's placeholder" \
-  || fail "no r2 placeholder on the shared task: $(grep -F "[s:$SID8]" "$TS7")"
+  || fail "no r2 placeholder on the shared task: $(grep -F "[s:$SID_TAG]" "$TS7")"
 echo "$OR17" | grep -q "membership-skip" \
   && fail "the old-round apply was membership-skipped: $OR17" \
   || pass "no membership-skip on the shared-task old-round apply"
@@ -472,9 +473,9 @@ EOF
 OR17B=$(stop 0)
 grep -qF "SELFSUM round 1's judgement" "$TS7B" \
   && pass "the old round's summary was applied alongside the self-log" \
-  || fail "old-round summary missing: $(grep -F "[s:$SID8]" "$TS7B")"
+  || fail "old-round summary missing: $(grep -F "[s:$SID_TAG]" "$TS7B")"
 grep -qF "(auto) touched; summary pending (r2)" "$TS7B" \
-  && fail "spurious r2 placeholder despite the self-log: $(grep -F "[s:$SID8]" "$TS7B")" \
+  && fail "spurious r2 placeholder despite the self-log: $(grep -F "[s:$SID_TAG]" "$TS7B")" \
   || pass "the self-logged round got NO placeholder (delta re-baseline)"
 echo "$OR17B" | grep -q "applied summary: $PROJ/2026-08-19_r1-fa-selflog.md (r1)" \
   && pass "the late apply's report line carries its own round tag (r1)" \
@@ -499,7 +500,7 @@ echo "$OR18" | grep -q "membership-skip: $PROJ/2026-08-19_r1-excl-b.md" \
   && pass "the wrong-round entry was membership-skipped by name" \
   || fail "no membership-skip for B: $OR18"
 grep -qF "EXCLSUM must never land" "$TB8" \
-  && fail "the r1 sidecar reached a task only r2 froze: $(grep -F "[s:$SID8]" "$TB8")" \
+  && fail "the r1 sidecar reached a task only r2 froze: $(grep -F "[s:$SID_TAG]" "$TB8")" \
   || pass "nothing from the r1 sidecar landed in B's @log"
 
   echo ""
@@ -512,7 +513,7 @@ cat > "$(rcap 0)" << EOF
 EOF
 OR19=$(stop 999)
 grep -qF "ZEROSUM must never land" "$TA9" \
-  && fail "the r0 sidecar bypassed the gate: $(grep -F "[s:$SID8]" "$TA9")" \
+  && fail "the r0 sidecar bypassed the gate: $(grep -F "[s:$SID_TAG]" "$TA9")" \
   || pass "nothing from the r0 sidecar landed in the task @log"
 echo "$OR19" | grep -q "round-mismatch: sidecar r0" \
   && pass "the r0 sidecar was reported as round-mismatch" \

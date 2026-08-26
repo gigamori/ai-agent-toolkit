@@ -43,7 +43,7 @@ Common subsections:
 A task file has TWO regions:
 
 1. **Body region** (from frontmatter close `---` to `<!-- @log:begin -->`): **mutable**. Replace fully when content changes.
-2. **Log region** (`<!-- @log:begin -->` ↔ `<!-- @log:end -->`): **append-only**. Never edit, reorder, or delete existing entries. Each entry is `- <YYYY-MM-DD>T<HH:MM:SS>±HH:MM [s:<sid8>]: <summary>` — an offset-aware ISO8601 `T`-separated timestamp plus the 8-char session id tag `[s:<sid8>]`. Copy both verbatim from the Progress Session context (`iso_ts=` and `sid8=`) — never compute or guess the timestamp yourself; doing so drops the timezone offset and produces entries that cannot be told apart from ones written under a different local timezone. Status-transition lines (start / approve / unstart) may omit the `[s:<sid8>]` tag.
+2. **Log region** (`<!-- @log:begin -->` ↔ `<!-- @log:end -->`): **append-only**. Never edit, reorder, or delete existing entries. Each entry is `- <YYYY-MM-DD>T<HH:MM:SS>±HH:MM [s:<sid>]: <summary>` — an offset-aware ISO8601 `T`-separated timestamp plus the 12-char session id tag `[s:<sid>]`. Copy both verbatim from the Progress Session context (`iso_ts=` and `sid=`) — never compute or guess the timestamp yourself; doing so drops the timezone offset and produces entries that cannot be told apart from ones written under a different local timezone. Status-transition lines (start / approve / unstart) may omit the `[s:<sid>]` tag.
 
 When you modify the body or append to the log, you MUST also update `updated:` in frontmatter to today's date.
 

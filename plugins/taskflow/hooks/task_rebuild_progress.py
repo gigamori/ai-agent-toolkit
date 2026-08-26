@@ -70,7 +70,8 @@ if not project_dirs:
         # directory — a silently stale progress.md is exactly the defect
         # class this hook exists to prevent (see the rebuild loop below).
         session_id = data.get('session_id', '')
-        session_tag = f" session={session_id[:8]}" if session_id else ""
+        # 12-char session id tail tag (spec 04-spec.md §1)
+        session_tag = f" session={session_id.replace('-', '')[-12:]}" if session_id else ""
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
@@ -120,7 +121,8 @@ for project_dir in project_dirs:
 
 if outputs:
     session_id = data.get('session_id', '')
-    session_tag = f" session={session_id[:8]}" if session_id else ""
+    # 12-char session id tail tag (spec 04-spec.md §1)
+    session_tag = f" session={session_id.replace('-', '')[-12:]}" if session_id else ""
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",

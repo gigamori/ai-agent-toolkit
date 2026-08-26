@@ -84,9 +84,11 @@ echo ""
 echo "--- fork inheritance: a transcript with the parent marker plus parent state yields the inherited project and inherited_tasks ---"
 printf '{"session_id":"%s","project":"testpj","rules_loaded":true,"guidelines_loaded":true,"indexed_project":"testpj"}' "$PARENT" \
   > "_projects/_state/${PARENT}.json"
-printf -- '---\npriority: MID\ncreated: 2026-07-18\nupdated: 2026-07-18\n---\n\n# 親タスク\n\n<!-- @log:begin -->\n- 2026-07-18T00:00:00+09:00 [s:%s]: parent work\n<!-- @log:end -->\n' "${PARENT:0:8}" \
+PARENT_CLEAN="${PARENT//-/}"
+PARENT_TAG="${PARENT_CLEAN: -12}"
+printf -- '---\npriority: MID\ncreated: 2026-07-18\nupdated: 2026-07-18\n---\n\n# 親タスク\n\n<!-- @log:begin -->\n- 2026-07-18T00:00:00+09:00 [s:%s]: parent work\n<!-- @log:end -->\n' "$PARENT_TAG" \
   > "_projects/testpj/tasks/1_in_progress/2026-07-18_ptask.md"
-printf '{"type":"user","message":{"role":"user","content":"[Progress Session] session_id=%s sid8=%s current_project=testpj"}}\n' "$PARENT" "${PARENT:0:8}" \
+printf '{"type":"user","message":{"role":"user","content":"[Progress Session] session_id=%s sid=%s current_project=testpj"}}\n' "$PARENT" "$PARENT_TAG" \
   > "$TMP/fork.jsonl"
 WIN_TR="$(to_win "$TMP/fork.jsonl")"
 OUT3=$(run_si "{\"session_id\":\"$CHILD\",\"transcript_path\":\"$WIN_TR\",\"prompt\":\"続き\"}")

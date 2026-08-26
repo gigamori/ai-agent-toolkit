@@ -231,7 +231,7 @@ def test_allowset_survives_stops() -> None:
         ws = Path(d)
         proj = "_test-allowset"
         sid = "a115e700-0000-0000-0000-00000000ac05"
-        sid8 = sid[:8]
+        sid_tag = sid.replace('-', '')[-12:]
         projects = ws / "_projects"
         state_dir = projects / "_state"
         pdir = projects / proj
@@ -255,7 +255,7 @@ def test_allowset_survives_stops() -> None:
             c = path.read_text(encoding="utf-8")
             at = c.index("<!-- @log:end -->")
             path.write_text(
-                c[:at] + f"- 2026-08-19T10:00:00+09:00 [s:{sid8}]: agent's own line\n" + c[at:],
+                c[:at] + f"- 2026-08-19T10:00:00+09:00 [s:{sid_tag}]: agent's own line\n" + c[at:],
                 encoding="utf-8")
 
         a = task("2026-08-19_a.md")
@@ -297,7 +297,7 @@ def test_allowset_survives_stops() -> None:
               f"(got {cap3.get('items', {}).get('allow_tasks')})")
         check(cap3.get("history", {}).get("2", {}).get("allow_tasks") == sorted([key_b, key_c]),
               "the round-2 history entry carries the same allow-set")
-        check(c_task.read_text(encoding="utf-8").count(f"[s:{sid8}]") == 0,
+        check(c_task.read_text(encoding="utf-8").count(f"[s:{sid_tag}]") == 0,
               "no line written to the round-2 task yet (its round is still open)")
 
 

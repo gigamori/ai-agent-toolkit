@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Stop hook: bind this session's task work to each owning task's `@log` block as
-a `- <ISO8601 T> [s:<sid8>]: <summary>` line. Owner judgment (touched-task
+a `- <ISO8601 T> [s:<sid_tag>]: <summary>` line. Owner judgment (touched-task
 summaries, note→task links) is delegated to an async capture subagent and
 applied deterministically here; a deterministic hook backstop guarantees a
 binding when the subagent is absent.
@@ -18,7 +18,7 @@ Agent-tool subagent / fork internal writes with the PARENT session_id
 The `.touched` read is tolerant: a torn trailing line is dropped.
 
 Round binding (capture-detection-gaps.md §1 / D1): the ledger is NOT "does the
-task carry a `[s:sid8]` line" (that capped a session at one line per task and
+task carry a `[s:sid_tag]` line" (that capped a session at one line per task and
 silently dropped every later round's work). `.touched` is append-only and one
 line per write event, so its RAW line count is a cursor: `raw[touch_cursor:]`
 is exactly the activity since the last committed round. Each Stop computes the
@@ -62,7 +62,7 @@ Invariants (§2 / §10):
     the raw "task is missing" condition.
   - INV-2 (no-deadlock): `@log` / `@notes` writes use the bounded `log_lock`.
   - INV-3 (idempotent): the ledger is the actual presence of the text key
-    `[s:<sid8>]: <note>` inside a task md's `<!-- @log:begin/end -->` block,
+    `[s:<sid_tag>]: <note>` inside a task md's `<!-- @log:begin/end -->` block,
     recomputed every Stop (§1.5 — generalized from bare sid presence once a
     session may bind a task once per round); apply / backstop are idempotent
     and eventual (AC-11).
@@ -578,16 +578,16 @@ def _log_block_of(path):
     return m.group(1) if m else ''
 
 
-def log_block_has_sid(path, sid8):
-    """True if the task md at `path` already holds a `[s:<sid8>]` line inside its
+def log_block_has_sid(path, sid_tag):
+    """True if the task md at `path` already holds a `[s:<sid_tag>]` line inside its
     `<!-- @log:begin/end -->` block. Session-scoped presence: still the ledger
     for the once-per-session deterministic exec-bind (§3.4); the per-ROUND
     ledger is `count_sid_lines` (§1.4)."""
-    return f'[s:{sid8}]' in _log_block_of(path)
+    return f'[s:{sid_tag}]' in _log_block_of(path)
 
 
-def count_sid_lines(path, sid8):
-    """Number of `[s:<sid8>]` lines inside the `@log` block — the per-round
+def count_sid_lines(path, sid_tag):
+    """Number of `[s:<sid_tag>]` lines inside the `@log` block — the per-round
     ledger (§1.4). Compared against `log_seen[task]` (the count at round open)
     it answers "did anything get logged for this task this round".
 
@@ -598,7 +598,7 @@ def count_sid_lines(path, sid8):
     self-logged" and silently drop the round. Transition lines carry no
     `[s:...]` tag and so never enter this count."""
     n = 0
-    tag = f'[s:{sid8}]'
+    tag = f'[s:{sid_tag}]'
     for line in _log_block_of(path).splitlines():
         at = line.find(tag)
         if at == -1:
@@ -612,14 +612,14 @@ def count_sid_lines(path, sid8):
     return n
 
 
-def log_block_has_note(path, sid8, note):
+def log_block_has_note(path, sid_tag, note):
     """True if the `@log` block already holds the exact text key
-    `[s:<sid8>]: <note>` (§1.5). INV-3 generalized: once a session may bind a
+    `[s:<sid_tag>]: <note>` (§1.5). INV-3 generalized: once a session may bind a
     task more than once, "a sid line exists" no longer identifies an entry, so
     idempotency keys on the sid + note TEXT. The timestamp is deliberately not
     part of the key — a sidecar whose unlink failed is re-applied on a later
     Stop with a fresh `iso_ts`, and that re-apply must be a no-op."""
-    return f'[s:{sid8}]: {note}' in _log_block_of(path)
+    return f'[s:{sid_tag}]: {note}' in _log_block_of(path)
 
 
 def repair_log_markers(content):
@@ -669,7 +669,8 @@ def _clip_note(s, cap=NOTE_CAP):
     of the `@log` could not tell a truncated summary from a short one — and
     `@log` is append-only, so the line cannot be corrected afterwards (measured
     2026-08-20: two applied lines, both exactly 242 chars = the 42-char
-    `- <iso_ts> [s:<sid8>]: ` prefix + 200, both cut mid-word).
+    `- <iso_ts> [s:<sid8>]: ` prefix + 200, both cut mid-word.
+    After 12-char tag migration (2026-08-26): 46-char prefix + 200 = 246).
 
     Rules: normalize whitespace; return as-is when it fits; otherwise cut at the
     last space within `[cap - _CLIP_WINDOW, cap)` — falling back to a hard cut at
@@ -690,14 +691,14 @@ def _clip_note(s, cap=NOTE_CAP):
     return s[:cut].rstrip() + '…'
 
 
-def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pending'):
-    """Code-append a `- <iso_ts> [s:<sid8>]: <note>` line immediately before the
+def append_auto_binding(path, sid_tag, iso_ts, note='(auto) touched; summary pending'):
+    """Code-append a `- <iso_ts> [s:<sid_tag>]: <note>` line immediately before the
     `<!-- @log:end -->` marker. Append-only; never edits existing lines.
     Returns True on success.
 
     Idempotency (§1.5): if the block already holds the text key
-    `[s:<sid8>]: <note>` this is a no-op that returns True. A session may now
-    bind the same task once per round, so "a `[s:sid8]` line exists" cannot be
+    `[s:<sid_tag>]: <note>` this is a no-op that returns True. A session may now
+    bind the same task once per round, so "a `[s:sid_tag]` line exists" cannot be
     the guard; the note text separates rounds (placeholders carry an `(r{N})`
     tag) while a re-applied identical summary collapses to one line.
 
@@ -720,7 +721,7 @@ def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pendin
         except OSError:
             return False
         m_blk = _LOG_BLOCK_RE.search(content)
-        if m_blk and f'[s:{sid8}]: {note}' in m_blk.group(1):
+        if m_blk and f'[s:{sid_tag}]: {note}' in m_blk.group(1):
             return True  # text-key idempotency (§1.5) — already recorded
         m = _LOG_END_RE.search(content)
         if not m:
@@ -744,7 +745,7 @@ def append_auto_binding(path, sid8, iso_ts, note='(auto) touched; summary pendin
             m = _LOG_END_RE.search(content)
             if not m:
                 return False
-        line = f'- {iso_ts} [s:{sid8}]: {note}\n'
+        line = f'- {iso_ts} [s:{sid_tag}]: {note}\n'
         insert_at = m.start()
         prefix = content[:insert_at]
         if prefix and not prefix.endswith('\n'):
@@ -834,7 +835,7 @@ def _scan_note_writes(touched, project, project_root, reverse_index):
 # implementation would drift; these two functions are the single source of
 # truth for "what has this round touched that is not logged yet" (§2.2).
 
-def resolve_touch_cursor(capture, bind_existed, raw_lines, resolved, sid8,
+def resolve_touch_cursor(capture, bind_existed, raw_lines, resolved, sid_tag,
                          log_seen):
     """Return this session's `.touched` round cursor, clamped to the ledger.
 
@@ -846,7 +847,7 @@ def resolve_touch_cursor(capture, bind_existed, raw_lines, resolved, sid8,
     re-capture the whole session history (upgrade storm). No `.bind` at all = no
     earlier Stop ran, so nothing was consumed and the cursor starts at 0 (this
     session's first round must still see its own work), with `log_seen` left
-    EMPTY: every `[s:sid8]` line in a task md belongs to this session by
+    EMPTY: every `[s:sid_tag]` line in a task md belongs to this session by
     construction, so seeding here would read the agent's own round-1 log line as
     the baseline and request a capture it does not need.
 
@@ -857,13 +858,13 @@ def resolve_touch_cursor(capture, bind_existed, raw_lines, resolved, sid8,
         if bind_existed:
             touch_cursor = len(raw_lines)
             for key, path in resolved.items():  # `key` is qualified (§3.3)
-                log_seen[key] = count_sid_lines(path, sid8)
+                log_seen[key] = count_sid_lines(path, sid_tag)
         else:
             touch_cursor = 0
     return min(touch_cursor, len(raw_lines))
 
 
-def compute_round_active(new_slice, project_roots, reverse_indexes, sid8,
+def compute_round_active(new_slice, project_roots, reverse_indexes, sid_tag,
                          log_seen, tried_tasks, extra=None, hook_appended=None,
                          pre_selflog_out=None):
     """Round-active set A_r (§1.3) as {"<project>/<basename>": absolute_path}.
@@ -924,11 +925,11 @@ def compute_round_active(new_slice, project_roots, reverse_indexes, sid8,
     # return statement, which is a different filter from the self-log pass.
     if isinstance(pre_selflog_out, dict):
         pre_selflog_out.update(active)
-    # self-log detection (§1.4): a `[s:sid8]` count that grew beyond the round's
+    # self-log detection (§1.4): a `[s:sid_tag]` count that grew beyond the round's
     # opening baseline by something OTHER than this hook's own writes means the
     # agent logged the work itself (guidelines followed) — no capture needed.
     for key, path in list(active.items()):
-        n_now = count_sid_lines(path, sid8) - hook_appended.get(path, 0)
+        n_now = count_sid_lines(path, sid_tag) - hook_appended.get(path, 0)
         if n_now > log_seen.get(key, 0):
             log_seen[key] = n_now
             active.pop(key, None)
@@ -1023,7 +1024,7 @@ def _resolve_task_ref(ref, project_roots, primary, current_index, explicit=''):
     return primary_key, False
 
 
-def _apply_capture(sidecar, current_index, project, project_roots, sid8, iso_ts, items=None):
+def _apply_capture(sidecar, current_index, project, project_roots, sid_tag, iso_ts, items=None):
     """Apply a validated capture sidecar deterministically (§10.3). All writes
     are idempotent (`log_block_has_sid` / `append_note_link` union). Returns
     (summaries, links, proposals, link_skipped, membership_skipped) for
@@ -1110,9 +1111,9 @@ def _apply_capture(sidecar, current_index, project, project_roots, sid8, iso_ts,
             # a later Stop) must be suppressed. Checked here as well as inside
             # `append_auto_binding` so the caller does not report a no-op append
             # as an applied summary and block on it every Stop (INV-1).
-            if log_block_has_note(path, sid8, note):
+            if log_block_has_note(path, sid_tag, note):
                 continue
-            if append_auto_binding(path, sid8, iso_ts, note):
+            if append_auto_binding(path, sid_tag, iso_ts, note):
                 summaries.append(key)
 
     note_links = sidecar.get('note_links')
@@ -1158,12 +1159,12 @@ def _apply_capture(sidecar, current_index, project, project_roots, sid8, iso_ts,
             # checked as a second, separately reported invariant (F-2).
             if not note_rel.startswith('project-notes/'):
                 print(f'[progress capture] note-path-reject: {note!r} '
-                      f'(not project-relative under project-notes/) [s:{sid8}]',
+                      f'(not project-relative under project-notes/) [s:{sid_tag}]',
                       file=sys.stderr)
                 continue
             if not is_contained_note_rel(note_rel):
                 print(f'[progress capture] note-path-reject: {note!r} '
-                      f'(escapes the project root) [s:{sid8}]',
+                      f'(escapes the project root) [s:{sid_tag}]',
                       file=sys.stderr)
                 continue
             if not is_note_deliverable(note_rel):
@@ -1239,7 +1240,7 @@ def _to_forward_slash(path):
     return path.replace('\\', '/')
 
 
-def build_capture_context(sid8, iso_ts, capture_path, project_root,
+def build_capture_context(sid_tag, iso_ts, capture_path, project_root,
                            project_roots, task_keys, note_writes, round_n):
     """Build the JSON context block handed to the capture subagent (§10.5).
 
@@ -1265,7 +1266,7 @@ def build_capture_context(sid8, iso_ts, capture_path, project_root,
     """
     return json.dumps(
         {
-            'sid8': sid8,
+            'sid': sid_tag,
             'iso_ts': iso_ts,
             'round': round_n,
             'sidecar_path': _to_forward_slash(capture_path),
@@ -1336,7 +1337,11 @@ def main() -> int:
 
     project_root = os.path.join(PROGRESS_ROOT, project)
     cwd = STATE_ROOT
-    sid8 = session_id[:8]
+    # 12-char session id tail tag (spec 04-spec.md §1)
+    sid_tag = session_id.replace('-', '')[-12:]
+    # Legacy 8-char prefix for precompact_flush.py compatibility (it passes sid_tag
+    # but the variable name in its import from this module is still sid8)
+    sid8 = sid_tag  # type: ignore[assignment]
     # Offset-aware ISO8601 with `T` separator (second resolution). Shared
     # generation point with session_init.py's `iso_ts=` header field (tstamp.py)
     # so channel A and channel B never diverge on timezone again.
@@ -1375,7 +1380,7 @@ def main() -> int:
     # the commit below persists the normalized form, so the bare keys vanish
     # after one Stop without losing or replaying a round.
     log_seen = {qualify_legacy(k, project): v for k, v in log_seen.items()}
-    # `round_base`: the `[s:sid8]` count of each item at the moment the OPEN
+    # `round_base`: the `[s:sid_tag]` count of each item at the moment the OPEN
     # round was requested. `log_seen` cannot serve here: F-1 resyncs it from the
     # hook's own writes at the END of every Stop, and a round spans Stops, so by
     # the time the backstop runs `log_seen` may already include a line written
@@ -1402,7 +1407,7 @@ def main() -> int:
                if str(k).isdigit() and isinstance(v, dict)}
     # M-1 bootstrap (§1.8) + F-7 clamp, shared with `precompact_flush.py`.
     touch_cursor = resolve_touch_cursor(
-        capture, bind_existed, raw_lines, resolved, sid8, log_seen)
+        capture, bind_existed, raw_lines, resolved, sid_tag, log_seen)
     new_slice = raw_lines[touch_cursor:]
     slice_display: list[str] = []
     for _r in new_slice:
@@ -1431,7 +1436,7 @@ def main() -> int:
     bind_skipped: list[str] = []
     # `hook_appended`: {task-path: n} — `@log` lines THIS hook appended during
     # THIS Stop. F-1 integrity rule (§1.4): the hook's own appends raise the
-    # `[s:sid8]` count exactly like an agent-written log line would, so without
+    # `[s:sid_tag]` count exactly like an agent-written log line would, so without
     # subtracting them from the self-log comparison AND resyncing `log_seen`
     # from them at the end of the Stop, the next round reads "the agent already
     # logged this" and its real work is never summarized — the same silent-loss
@@ -1452,7 +1457,7 @@ def main() -> int:
         hook_appended_keys[path] = key
 
     # --- exec-binding bind (deterministic; §3.4) ----------------------------
-    # Each resolved owning task missing its [s:sid8] line is bound directly by
+    # Each resolved owning task missing its [s:sid_tag] line is bound directly by
     # the hook. Fork → skip (W2 delegation; guard inert per U3 but kept). On
     # bind failure (no @log:end / write fail) → skip+log + record in exec_tried
     # so we do not retry every Stop (打止め). INV-1: never blocks on missing.
@@ -1463,12 +1468,12 @@ def main() -> int:
     if not is_fork:
         for base, path in exec_resolved.items():
             rel = _rel(path, cwd)
-            if log_block_has_sid(path, sid8):
+            if log_block_has_sid(path, sid_tag):
                 continue  # idempotent
             if rel in exec_tried:
                 continue  # already tried and failed
             if append_auto_binding(
-                path, sid8, iso_ts,
+                path, sid_tag, iso_ts,
                 '(auto) executed via [tasks:] carry; summary pending',
             ):
                 auto_bound.append(rel)
@@ -1574,9 +1579,9 @@ def main() -> int:
             for _bk in round_base:
                 _bp = current_index.get(_bk)
                 if _bp:
-                    _before[_bk] = count_sid_lines(_bp, sid8)
+                    _before[_bk] = count_sid_lines(_bp, sid_tag)
         _s, _l, _p, _ls, _ms = _apply_capture(
-            sidecar, current_index, project, project_roots, sid8, iso_ts, items)
+            sidecar, current_index, project, project_roots, sid_tag, iso_ts, items)
         applied_summaries.extend(_s)
         applied_summary_labels.extend(
             f'{_k} (r{round_of})' if round_of else _k for _k in _s)
@@ -1607,7 +1612,7 @@ def main() -> int:
                 # `round_base` falls back to `log_seen_at_entry` and is not
                 # this round's to adjust.
                 if foreign_round and _k in _before:
-                    _delta = count_sid_lines(_pk, sid8) - _before[_k]
+                    _delta = count_sid_lines(_pk, sid_tag) - _before[_k]
                     if _delta > 0:
                         round_base[_k] += _delta
 
@@ -1637,7 +1642,7 @@ def main() -> int:
                     _msg = (f'round-mismatch: sidecar r{_round_of} unreadable '
                             f'and outside history ({_span}); discarded')
                     round_mismatched.append(_msg)
-                    print(f'[progress capture] {_msg} [s:{sid8}]',
+                    print(f'[progress capture] {_msg} [s:{sid_tag}]',
                           file=sys.stderr)
             continue
         # F-5: `round_n > 0` keeps an `r0` sidecar out of row 1. A `.bind`
@@ -1812,7 +1817,7 @@ def main() -> int:
             hint = f' (exists in: {", ".join(elsewhere)})' if elsewhere else ''
             exec_unresolved.append((base, hint))
             print(f'[progress capture] exec-skip(unresolved): {base} '
-                  f'[s:{sid8}] — [tasks:] carry names no task md under '
+                  f'[s:{sid_tag}] — [tasks:] carry names no task md under '
                   f'_projects/{project}/tasks/; nothing bound.{hint}',
                   file=sys.stderr)
     # B-m1: `pre_selflog` is filled in place with A_r as it stands before the
@@ -1821,7 +1826,7 @@ def main() -> int:
     # `round_task_set`, `log_seen` and `round_base` (04-plan §0.2 U-1 / U-2).
     pre_selflog: dict = {}
     active = compute_round_active(
-        new_slice, project_roots, reverse_indexes, sid8,
+        new_slice, project_roots, reverse_indexes, sid_tag,
         log_seen, tried_tasks, extra=exec_carry, hook_appended=hook_appended,
         pre_selflog_out=pre_selflog)
 
@@ -1834,7 +1839,7 @@ def main() -> int:
     # (real summary / over-bind / the agent itself) is skipped via
     # `count_sid_lines > log_seen`.
     def _round_base(key):
-        """This round's opening `[s:sid8]` count for the qualified `key` (§1.6).
+        """This round's opening `[s:sid_tag]` count for the qualified `key` (§1.6).
 
         Falls back to `log_seen_at_entry` — the Stop-entry snapshot, NOT the
         live `log_seen` (W5, §1.9) — for a key the open round never froze: a
@@ -1884,11 +1889,11 @@ def main() -> int:
                     # WITHIN the round (a text key, once written, is never
                     # removed). Across rounds the tag changes — that is the
                     # round bound's job, not this guard's.
-                    if log_block_has_note(owner_path, sid8, ref_note):
+                    if log_block_has_note(owner_path, sid_tag, ref_note):
                         continue
-                    if count_sid_lines(owner_path, sid8) > _round_base(okey):
+                    if count_sid_lines(owner_path, sid_tag) > _round_base(okey):
                         continue  # this round already recorded a line for it
-                    if append_auto_binding(owner_path, sid8, iso_ts, ref_note):
+                    if append_auto_binding(owner_path, sid_tag, iso_ts, ref_note):
                         auto_bound.append(_rel(owner_path, cwd))
                         _record_append(owner_path, okey)
     if status in ('done', 'expired'):
@@ -1898,9 +1903,9 @@ def main() -> int:
         else:
             # Legacy `.bind` predating `items` — same fail-open shape as
             # `_apply_capture`: fall back to the pre-round rule (every touched
-            # task still carrying no `[s:sid8]` line at all).
+            # task still carrying no `[s:sid_tag]` line at all).
             backstop = [(k, p) for k, p in resolved.items()
-                        if not log_block_has_sid(p, sid8)]
+                        if not log_block_has_sid(p, sid_tag)]
         placeholder = f'(auto) touched; summary pending (r{round_n})'
         for key, path in backstop:
             if not path or key in tried_tasks:
@@ -1909,11 +1914,11 @@ def main() -> int:
             # `referenced` loop above: `items` is no longer retired, so this
             # backstop is re-entered for the same closed set on every later
             # Stop, and a no-op re-append must never be reported as an action.
-            if log_block_has_note(path, sid8, placeholder):
+            if log_block_has_note(path, sid_tag, placeholder):
                 continue
-            if count_sid_lines(path, sid8) > _round_base(key):
+            if count_sid_lines(path, sid_tag) > _round_base(key):
                 continue  # this round already has a line — no placeholder
-            if append_auto_binding(path, sid8, iso_ts, placeholder):
+            if append_auto_binding(path, sid_tag, iso_ts, placeholder):
                 auto_bound.append(_rel(path, cwd))
                 _record_append(path, key)
             else:
@@ -1925,7 +1930,7 @@ def main() -> int:
                 skip_rel = _rel(path, cwd)
                 bind_skipped.append(skip_rel)
                 print(f'[progress capture] bind-skip(no-anchor): {skip_rel} '
-                      f'[s:{sid8}] — no writable <!-- @log:begin/end --> block; '
+                      f'[s:{sid_tag}] — no writable <!-- @log:begin/end --> block; '
                       f'left unbound.', file=sys.stderr)
 
     # --- F-1 integrity rule (§1.4 (a)) --------------------------------------
@@ -1938,7 +1943,7 @@ def main() -> int:
     for _path in hook_appended:
         _key = hook_appended_keys.get(_path)
         if _key:
-            log_seen[_key] = count_sid_lines(_path, sid8)
+            log_seen[_key] = count_sid_lines(_path, sid_tag)
 
     # --- (E) request capture when this round still has unlogged activity ----
     # Novelty is bounded by the 打止め sets and by the cursor: a slice is
@@ -1952,7 +1957,7 @@ def main() -> int:
         for key, path in active.items():
             # Round-open baseline (§1.6): the count as it stands NOW, so any
             # line that lands before this round closes counts as this round's.
-            n = count_sid_lines(path, sid8)
+            n = count_sid_lines(path, sid_tag)
             log_seen[key] = n
             round_base[key] = n
         # §4.4.1 D2: this round's closed set also goes into `history`, keyed by
@@ -2051,12 +2056,12 @@ def main() -> int:
 
     # --- F5 observability: one line per deterministic action this Stop. -----
     auto_lines = ''.join(
-        f'[progress capture] auto-bound: {rel} [s:{sid8}]\n' for rel in auto_bound
+        f'[progress capture] auto-bound: {rel} [s:{sid_tag}]\n' for rel in auto_bound
     )
     auto_lines += ''.join(
         # F-9: `b` carries the ` (r{N})` round tag for round-named sidecars
         # (report line only — the `@log` body stays round-free).
-        f'[progress capture] applied summary: {b} [s:{sid8}]\n'
+        f'[progress capture] applied summary: {b} [s:{sid_tag}]\n'
         for b in applied_summary_labels
     )
     auto_lines += ''.join(
@@ -2097,12 +2102,12 @@ def main() -> int:
         round_capture_path = capture_sidecar_path(STATE_DIR, session_id, round_n)
         sidecar_path_display = _to_forward_slash(round_capture_path)
         context = build_capture_context(
-            sid8, iso_ts, round_capture_path, project_root, project_roots,
+            sid_tag, iso_ts, round_capture_path, project_root, project_roots,
             sorted(active.keys()), novel_notes, round_n,
         )
         reason = (
             f'{auto_lines}'
-            f'[progress capture] session={sid8} date={date}\n'
+            f'[progress capture] session={sid_tag} date={date}\n'
             f'round ledger entries (unclassified; diagnostic only): {display}{tail}\n\n'
             f'Spawn the async capture subagent to summarize this round\'s task '
             f'work and map note deliverables to owning tasks. Do NOT update '
@@ -2157,7 +2162,7 @@ def main() -> int:
             )
         reason = (
             f'{auto_lines}'
-            f'[progress capture] session={sid8} date={date}\n'
+            f'[progress capture] session={sid_tag} date={date}\n'
             f'{note}{prop_lines}'
         )
 

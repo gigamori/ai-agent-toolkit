@@ -17,7 +17,8 @@ ADIR="$PROJECTS/$PROJA"
 BDIR="$PROJECTS/$PROJB"
 NOPROJ="_test-d2-noproj-$$"
 SID="d2cross$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"
+SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
 
 to_win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
@@ -111,7 +112,7 @@ stop() {
 }
 
 sidlines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -132,7 +133,7 @@ PY
 }
 
 echo "=== cross-project touched resolution ==="
-echo "  state project=$PROJA  other project=$PROJB  sid8=$SID8  (isolated tempdir: $TMP)"
+echo "  state project=$PROJA  other project=$PROJB  tag=$SID_TAG  (isolated tempdir: $TMP)"
   echo ""
 
 echo "a touched task outside state['project'] binds in ITS OWN project"
@@ -161,7 +162,7 @@ echo "$O11" | grep -qF "\\\"$PROJB\\\":" \
 
 O12=$(stop 0)
 [ "$(sidlines "$TB")" = "1" ] \
-  && pass "the cross-project task got its [s:$SID8] line" \
+  && pass "the cross-project task got its [s:$SID_TAG] line" \
   || fail "cross-project task not bound: $(sidlines "$TB")"
 [ "$(sidlines "$TA")" = "1" ] \
   && pass "the primary project's own task is unaffected (still exactly one line)" \
@@ -169,9 +170,9 @@ O12=$(stop 0)
 [ "$(sidlines "$TBN")" = "1" ] \
   && pass "the OTHER project's note owner was reached via ITS reverse index" \
   || fail "cross-project note owner not bound: $(sidlines "$TBN")"
-grep -qF "[s:$SID8]: (auto) touched; summary pending (r1)" "$TB" \
+grep -qF "[s:$SID_TAG]: (auto) touched; summary pending (r1)" "$TB" \
   && pass "the cross-project line is the normal round-1 placeholder" \
-  || fail "cross-project note wrong: $(grep -F "[s:$SID8]" "$TB")"
+  || fail "cross-project note wrong: $(grep -F "[s:$SID_TAG]" "$TB")"
 
   echo ""
 echo "_projects/_state/... and a tasks-less directory are NOT projects"
@@ -211,9 +212,9 @@ O21=$(stop 0)
 [ "$(sidlines "$L1")" = "1" ] \
   && pass "a bare items.tasks key still backstops (read as the primary project)" \
   || fail "legacy item not bound: $(sidlines "$L1")"
-grep -qF "[s:$SID8]: (auto) touched; summary pending (r1)" "$L1" \
+grep -qF "[s:$SID_TAG]: (auto) touched; summary pending (r1)" "$L1" \
   && pass "the legacy round keeps its own round tag (r1) — nothing replayed" \
-  || fail "legacy placeholder wrong: $(grep -F "[s:$SID8]" "$L1")"
+  || fail "legacy placeholder wrong: $(grep -F "[s:$SID_TAG]" "$L1")"
 [ "$(sidlines "$L2")" = "0" ] \
   && pass "a bare tried_tasks key still 打止め (no placeholder written)" \
   || fail "打止め lost across the migration: $(sidlines "$L2")"

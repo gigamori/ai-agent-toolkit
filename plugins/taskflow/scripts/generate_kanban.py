@@ -231,15 +231,20 @@ class StateEntry:
     project: str = ""
 
 
-def build_uuid_index(state_dir: Path) -> dict[str, StateEntry]:
-    """Map short_id (first 8 hex chars) → StateEntry(uuid, origin, project).
+def build_uuid_index(state_dir: Path) -> tuple[dict[str, list[StateEntry]], dict[str, list[StateEntry]]]:
+    """Build prefix (first-8) and tail (last-12) multi-maps for session tag resolution.
+
+    Returns (prefix_index, tail_index) where each is a dict mapping a tag string
+    to a list of StateEntry objects. This multi-map form allows detecting ambiguous
+    tags (≥2 candidates) per spec 04-spec.md §3.2.
 
     ``origin`` / ``project`` are read from the ``_state/*.json`` sidecar so the
     kanban can attribute unreferenced CC sessions to their project (§7).
     """
-    index: dict[str, StateEntry] = {}
+    prefix_index: dict[str, list[StateEntry]] = {}
+    tail_index: dict[str, list[StateEntry]] = {}
     if not state_dir.is_dir():
-        return index
+        return prefix_index, tail_index
     for f in iter_dir(state_dir):
         if f.suffix == ".json" and len(f.stem) == 36:
             origin = ""
@@ -253,8 +258,65 @@ def build_uuid_index(state_dir: Path) -> dict[str, StateEntry]:
                         project = str(data.get("project", "") or "")
                 except ValueError:
                     pass
-            index[f.stem[:8]] = StateEntry(uuid=f.stem, origin=origin, project=project)
-    return index
+            entry = StateEntry(uuid=f.stem, origin=origin, project=project)
+            # Legacy first-8 prefix index (for resolving old 8-char tags)
+            prefix_key = f.stem[:8]
+            prefix_index.setdefault(prefix_key, []).append(entry)
+            # Tail-12 index (for resolving new 12-char tags)
+            tail_key = f.stem.replace('-', '')[-12:]
+            tail_index.setdefault(tail_key, []).append(entry)
+    return prefix_index, tail_index
+
+
+def resolve_tag(
+    tag: str,
+    prefix_index: dict[str, list[StateEntry]],
+    tail_index: dict[str, list[StateEntry]],
+) -> StateEntry | None:
+    """Resolve a session tag to a StateEntry.
+
+    Tags are either 8-char (legacy first-8) or 12-char (tail-12). The namespace
+    is disjoint by length, so we select the index based on tag length.
+
+    - If len(tag) == 8: look up in prefix_index (legacy resolution).
+    - If len(tag) == 12: look up in tail_index (tail-12 resolution).
+    - Returns the StateEntry if exactly 1 candidate matches.
+    - Returns None if 0 candidates OR ≥2 candidates (ambiguous).
+
+    Per spec 04-spec.md §3.2: ambiguous tags are NOT resolved and are
+    displayed as-is (no fallback to stem search or glob).
+    """
+    if len(tag) == 8:
+        candidates = prefix_index.get(tag, [])
+        if len(candidates) == 1:
+            return candidates[0]
+        return None  # 0 or ≥2 candidates → unresolved
+    elif len(tag) == 12:
+        candidates = tail_index.get(tag, [])
+        if len(candidates) == 1:
+            return candidates[0]
+        return None  # 0 or ≥2 candidates → unresolved
+    return None  # unrecognized tag length
+
+
+def iter_entries(
+    prefix_index: dict[str, list[StateEntry]],
+    tail_index: dict[str, list[StateEntry]],
+) -> list[StateEntry]:
+    """Flatten the two multi-maps into a deduplicated list of StateEntry objects.
+
+    Each StateEntry appears in both indexes (by prefix and by tail), so we
+    deduplicate by uuid before returning. Used by consumers that need to
+    iterate over all sessions.
+    """
+    seen: set[str] = set()
+    result: list[StateEntry] = []
+    for entries in prefix_index.values():
+        for entry in entries:
+            if entry.uuid not in seen:
+                seen.add(entry.uuid)
+                result.append(entry)
+    return result
 
 
 def find_project_dir(name: str, roots: list[Path]) -> Path | None:
@@ -268,7 +330,8 @@ def find_project_dir(name: str, roots: list[Path]) -> Path | None:
 def load_tasks(
     project_dir: Path,
     project_name: str,
-    uuid_index: dict[str, StateEntry],
+    prefix_index: dict[str, list[StateEntry]],
+    tail_index: dict[str, list[StateEntry]],
 ) -> list[Task]:
     tasks: list[Task] = []
     tasks_dir = project_dir / "tasks"
@@ -306,7 +369,7 @@ def load_tasks(
                 )
             sessions = extract_sessions(content)
             for s in sessions:
-                entry = uuid_index.get(s.short_id)
+                entry = resolve_tag(s.short_id, prefix_index, tail_index)
                 s.full_uuid = entry.uuid if entry else ""
             tasks.append(Task(
                 status=status,
@@ -1973,7 +2036,8 @@ NO_PROJECT_CAP = 50
 
 def load_projects(
     roots: list[Path],
-    uuid_index: dict[str, StateEntry],
+    prefix_index: dict[str, list[StateEntry]],
+    tail_index: dict[str, list[StateEntry]],
 ) -> tuple[list[Project], list[SessionRef], int]:
     """Return ``(projects, no_project_sessions, no_project_total)``."""
     seen: set[str] = set()
@@ -1990,7 +2054,7 @@ def load_projects(
         if proj_dir is None:
             print(f"[kanban] warn: directory not found for project '{name}'", file=sys.stderr)
             continue
-        tasks = load_tasks(proj_dir, name, uuid_index)
+        tasks = load_tasks(proj_dir, name, prefix_index, tail_index)
         projects.append(Project(name=name, description=desc, tasks=tasks))
         print(f"[kanban] {name}: {len(tasks)} tasks", file=sys.stderr)
 
@@ -2001,14 +2065,15 @@ def load_projects(
                 if s.full_uuid:
                     referenced.add(s.full_uuid)
     cc_index = build_cc_session_index()
-    attach_unassigned_sessions(projects, uuid_index, referenced, cc_index)
-    no_project, no_project_total = collect_no_project_sessions(uuid_index, referenced, cc_index)
+    attach_unassigned_sessions(projects, prefix_index, tail_index, referenced, cc_index)
+    no_project, no_project_total = collect_no_project_sessions(prefix_index, tail_index, referenced, cc_index)
     return projects, no_project, no_project_total
 
 
 def attach_unassigned_sessions(
     projects: list[Project],
-    uuid_index: dict[str, StateEntry],
+    prefix_index: dict[str, list[StateEntry]],
+    tail_index: dict[str, list[StateEntry]],
     referenced: set[str],
     cc_index: dict[str, Path],
 ) -> None:
@@ -2018,7 +2083,7 @@ def attach_unassigned_sessions(
     reopened from the browser, so they are intentionally excluded.
     """
     proj_map = {p.name: p for p in projects}
-    for entry in uuid_index.values():
+    for entry in iter_entries(prefix_index, tail_index):
         if entry.origin != "cc" or not entry.project or entry.uuid in referenced:
             continue
         proj = proj_map.get(entry.project)
@@ -2029,14 +2094,15 @@ def attach_unassigned_sessions(
         if jsonl:
             date, summary = read_cc_session_first_message(jsonl)
         proj.unassigned_sessions.append(SessionRef(
-            date=date, short_id=entry.uuid[:8], summary=summary, full_uuid=entry.uuid,
+            date=date, short_id=entry.uuid.replace('-', '')[-12:], summary=summary, full_uuid=entry.uuid,
         ))
     for proj in projects:
         proj.unassigned_sessions.sort(key=lambda s: s.date, reverse=True)
 
 
 def collect_no_project_sessions(
-    uuid_index: dict[str, StateEntry],
+    prefix_index: dict[str, list[StateEntry]],
+    tail_index: dict[str, list[StateEntry]],
     referenced: set[str],
     cc_index: dict[str, Path],
     cap: int = NO_PROJECT_CAP,
@@ -2048,7 +2114,7 @@ def collect_no_project_sessions(
     Returns the capped list plus the full candidate count.
     """
     cands = [
-        e for e in uuid_index.values()
+        e for e in iter_entries(prefix_index, tail_index)
         if e.origin == "cc" and not e.project and e.uuid not in referenced
     ]
     total = len(cands)
@@ -2072,7 +2138,7 @@ def collect_no_project_sessions(
         if p:
             date, summary = read_cc_session_first_message(p)
         out.append(SessionRef(
-            date=date, short_id=e.uuid[:8], summary=summary, full_uuid=e.uuid,
+            date=date, short_id=e.uuid.replace('-', '')[-12:], summary=summary, full_uuid=e.uuid,
         ))
     out.sort(key=lambda s: s.date, reverse=True)
     return out, total
@@ -2122,12 +2188,23 @@ def main(argv: list[str] | None = None) -> int:
         print("error: no _projects/ directory found", file=sys.stderr)
         return 2
 
-    uuid_index: dict[str, StateEntry] = {}
+    # Merge prefix/tail indexes from all roots
+    merged_prefix: dict[str, list[StateEntry]] = {}
+    merged_tail: dict[str, list[StateEntry]] = {}
     for root in roots:
-        uuid_index.update(build_uuid_index(root / "_state"))
-    print(f"[kanban] sessions indexed: {len(uuid_index)}", file=sys.stderr)
+        p_idx, t_idx = build_uuid_index(root / "_state")
+        for key, entries in p_idx.items():
+            merged_prefix.setdefault(key, []).extend(entries)
+        for key, entries in t_idx.items():
+            merged_tail.setdefault(key, []).extend(entries)
+    # Deduplicate count for display
+    seen_uuids: set[str] = set()
+    for entries in merged_prefix.values():
+        for e in entries:
+            seen_uuids.add(e.uuid)
+    print(f"[kanban] sessions indexed: {len(seen_uuids)}", file=sys.stderr)
 
-    projects, no_project, no_project_total = load_projects(roots, uuid_index)
+    projects, no_project, no_project_total = load_projects(roots, merged_prefix, merged_tail)
     total = sum(len(p.tasks) for p in projects)
 
     if args.serve:
@@ -2156,10 +2233,16 @@ def main(argv: list[str] | None = None) -> int:
         open_token = secrets.token_urlsafe(16)
 
         def build_html():
-            uuid_idx: dict[str, StateEntry] = {}
+            # Merge prefix/tail indexes from all roots (same as above)
+            p_idx: dict[str, list[StateEntry]] = {}
+            t_idx: dict[str, list[StateEntry]] = {}
             for r in roots:
-                uuid_idx.update(build_uuid_index(r / "_state"))
-            projs, np, npt = load_projects(roots, uuid_idx)
+                p, t = build_uuid_index(r / "_state")
+                for key, entries in p.items():
+                    p_idx.setdefault(key, []).extend(entries)
+                for key, entries in t.items():
+                    t_idx.setdefault(key, []).extend(entries)
+            projs, np, npt = load_projects(roots, p_idx, t_idx)
             return render_html(projs, scheme, serve=True, no_project=np, no_project_total=npt, open_token=open_token)
         handler = make_handler(build_html, scheme, roots, open_token, key=key, port=port)
         try:

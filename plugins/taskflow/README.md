@@ -239,14 +239,14 @@ Body (mutable region — replace freely).
 - remaining item 2
 
 <!-- @log:begin -->
-- 2026-05-13 [s:abc12345]: started
-- 2026-05-14 [s:def67890]: phase A complete | next: write tests
+- 2026-05-13 [s:abc123456789]: started
+- 2026-05-14 [s:def678901234]: phase A complete | next: write tests
 <!-- @log:end -->
 ```
 
 - The body region is mutable; the log block is **append-only**.
 - `## Next Steps` non-empty = pending; empty in `1_in_progress/` = completion candidate. The guidelines instruct the agent to maintain `## Next Steps` at the end of each turn that advances a task; `/progress audit` verifies it in code (see [How it works](#how-it-works)).
-- Log lines carry a `[s:<session-id-prefix>]` tag for downstream audit lookup.
+- Log lines carry a `[s:<session-id-tail-12>]` tag for downstream audit lookup.
 - A task may also carry an auto-managed `<!-- @notes:begin/end -->` block (placed right after `@log:end`) that lists related `project-notes/` paths. It is written by the note↔task link mechanism (see [How it works](#how-it-works)); never hand-edit it.
 
 Status transitions are performed via `/progress start`, `/progress approve`, and `/progress unstart` (see above).

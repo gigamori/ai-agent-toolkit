@@ -14,7 +14,7 @@ STATE="$PROJECTS/_state"
 PROJ="_test-round-$$"
 PDIR="$PROJECTS/$PROJ"
 SID="rndbind$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"; SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
 . "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
@@ -102,7 +102,7 @@ stop() {
 }
 
 sidlines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -123,7 +123,7 @@ PY
 }
 
 agent_log_line() {
-  uv run --no-project python - "$1" "$SID8" "$2" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" "$2" << 'PY'
 import sys
 path, sid8, note = sys.argv[1], sys.argv[2], sys.argv[3]
 c = open(path, encoding="utf-8").read()
@@ -134,7 +134,7 @@ PY
 }
 
 echo "=== round-based binding ==="
-echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
+echo "  project=$PROJ  tag=$SID_TAG  (isolated tempdir: $TMP)"
   echo ""
 
 echo "two rounds in one session -> two placeholder lines (r1 / r2)"
@@ -145,9 +145,9 @@ stop 0 >/dev/null
 O12=$(stop 0)
 [ "$(sidlines "$T1")" = "1" ] \
   && pass "round 1 bound exactly one line" || fail "round 1 lines: $(sidlines "$T1")"
-grep -qF "[s:$SID8]: (auto) touched; summary pending (r1)" "$T1" \
+grep -qF "[s:$SID_TAG]: (auto) touched; summary pending (r1)" "$T1" \
   && pass "round 1 placeholder carries the (r1) round tag" \
-  || fail "round 1 note wrong: $(grep -F "[s:$SID8]" "$T1")"
+  || fail "round 1 note wrong: $(grep -F "[s:$SID_TAG]" "$T1")"
 echo "$O12" | grep -q "auto-bound: .*2026-08-09_round1.md" \
   && pass "round 1 backstop reported on the block channel" || fail "no r1 F5: $O12"
 
@@ -160,11 +160,11 @@ echo "$O13" | grep -q '"decision": *"block"' \
   && pass ".bind capture.round advanced to 2" || fail "round counter: $(bindq 'c.get("round")')"
 stop 0 >/dev/null
 [ "$(sidlines "$T1")" = "2" ] \
-  && pass "round 2 appended a SECOND [s:$SID8] line (2 total)" \
+  && pass "round 2 appended a SECOND [s:$SID_TAG] line (2 total)" \
   || fail "round 2 line count: $(sidlines "$T1")"
-grep -qF "[s:$SID8]: (auto) touched; summary pending (r2)" "$T1" \
+grep -qF "[s:$SID_TAG]: (auto) touched; summary pending (r2)" "$T1" \
   && pass "round 2 placeholder carries the (r2) round tag (distinct text key)" \
-  || fail "round 2 note wrong: $(grep -F "[s:$SID8]" "$T1")"
+  || fail "round 2 note wrong: $(grep -F "[s:$SID_TAG]" "$T1")"
 
   echo ""
 echo "self-logged round: no spawn, no placeholder, cursor still advances"

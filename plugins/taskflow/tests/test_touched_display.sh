@@ -39,7 +39,7 @@ STATE="$PROJECTS/_state"
 PROJ="_test-touched-display-$$"
 PDIR="$PROJECTS/$PROJ"
 SID="d15a1a7e-0000-4000-8000-000000000001"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"; SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"
 TF="$STATE/$SID.touched"
 BF="$STATE/$SID.bind"
@@ -100,7 +100,7 @@ stop() {
 reason() { printf '%s' "$1" | uv run --no-project python -c 'import json,sys;sys.stdout.write(json.load(sys.stdin)["reason"])'; }
 decision() { printf '%s' "$1" | uv run --no-project python -c 'import json,sys;print(json.load(sys.stdin)["decision"])'; }
 display_line() { reason "$1" | uv run --no-project python -c 'import sys;print(next(line for line in sys.stdin if line.startswith("round ledger entries")),end="")'; }
-context_json() { reason "$1" | uv run --no-project python -c 'import sys;print(next(line.strip() for line in sys.stdin if line.lstrip().startswith("{\"sid8\"")))'; }
+context_json() { reason "$1" | uv run --no-project python -c 'import sys;print(next(line.strip() for line in sys.stdin if line.lstrip().startswith("{\"sid\"")))'; }
 context_tasks() { context_json "$1" | uv run --no-project python -c 'import json,sys;print(",".join(json.load(sys.stdin)["touched_tasks"]))'; }
 context_task_count() { context_json "$1" | uv run --no-project python -c 'import json,sys;print(len(json.load(sys.stdin)["touched_tasks"]))'; }
 bindq() { uv run --no-project python - "$BF" "$1" <<'PY'
@@ -109,7 +109,7 @@ c = json.load(open(sys.argv[1], encoding="utf-8")).get("capture") or {}
 print(eval(sys.argv[2]))
 PY
 }
-sid_lines() { grep -cF "[s:$SID8]" "$1" || true; }
+sid_lines() { grep -cF "[s:$SID_TAG]" "$1" || true; }
 
 printf '=== touched display contract ===\n'
 

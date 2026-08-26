@@ -121,7 +121,11 @@ def main() -> int:
     # subdir-launched session), and every ledger line would silently fail to
     # match. 02-plan.md §6.2.
     cwd = STATE_ROOT
-    sid8 = session_id[:8]
+    # 12-char session id tail tag (spec 04-spec.md §1)
+    sid_tag = session_id.replace('-', '')[-12:]
+    # Pass sid_tag to session_progress_capture functions (they now expect sid_tag
+    # as the parameter name; sid8 legacy name is kept for compatibility in imports)
+    sid8 = sid_tag
     touched_path = os.path.join(STATE_DIR, f'{session_id}.touched')
     raw_lines = read_touched_raw(touched_path, cwd)
     if not raw_lines:

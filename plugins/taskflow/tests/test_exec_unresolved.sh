@@ -21,7 +21,7 @@ PROJECT_DIR="$PROJECTS_DIR/$PROJECT_NAME"
 OTHER_NAME="_test-execother-$$"
 OTHER_DIR="$PROJECTS_DIR/$OTHER_NAME"
 SID="execunr$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"; SID_TAG="${SID_CLEAN: -12}"
 STATE_FILE="$STATE_DIR/$SID.json"
 BIND_FILE="$STATE_DIR/$SID.bind"
 TOUCHED_FILE="$STATE_DIR/$SID.touched"
@@ -58,7 +58,7 @@ trap cleanup EXIT
 echo "=== exec-skip(unresolved) — an unresolvable [tasks:] carry is reported ==="
 echo "  project:  $PROJECT_DIR"
 echo "  other:    $OTHER_DIR"
-echo "  session:  $SID  (sid8=$SID8)"
+echo "  session:  $SID  (tag=$SID_TAG)"
 echo "  isolated tempdir: $TMP"
   echo ""
 
@@ -111,7 +111,7 @@ invoke_hook() {
 }
 
 count_sid_lines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 path, sid8 = sys.argv[1], sys.argv[2]
 try:
@@ -153,7 +153,7 @@ echo "$OUT1" | grep -q "Spawn the async capture subagent" \
   && fail "Stop#1 blocked to SPAWN, so the gate term is not pinned: $OUT1" \
   || pass "Stop#1 block is report-only (no spawn) — the unresolved carry IS the reason"
 
-echo "$ERR1" | grep -qF "[progress capture] exec-skip(unresolved): $TYPO_BASE [s:$SID8]" \
+echo "$ERR1" | grep -qF "[progress capture] exec-skip(unresolved): $TYPO_BASE [s:$SID_TAG]" \
   && pass "stderr carries the exec-skip(unresolved) line with basename + sid8" \
   || fail "stderr exec-skip line missing/wrong: $ERR1"
 echo "$ERR1" | grep -qF "[tasks:] carry names no task md under _projects/$PROJECT_NAME/tasks/" \
@@ -172,7 +172,7 @@ echo "$OUT1" | grep -qF "the carry resolves in the PRIMARY project only" \
   || fail "explainer clause missing: $OUT1"
 
 [ "$(count_sid_lines "$REAL_TASK")" = "0" ] \
-  && pass "no phantom bind: the real task got no [s:$SID8] line" \
+  && pass "no phantom bind: the real task got no [s:$SID_TAG] line" \
   || fail "a line leaked into the real task: $(count_sid_lines "$REAL_TASK")"
 
   echo ""
@@ -218,7 +218,7 @@ ERR4="$(cat "$ERR_FILE")"
 [ "$(count_sid_lines "$TYPO_TASK")" = "1" ] \
   && pass "the once-unresolvable carry bound the task after it was created" \
   || fail "resolution was suppressed: $(count_sid_lines "$TYPO_TASK")"
-grep -q "\[s:$SID8\]: (auto) executed via \[tasks:\] carry" "$TYPO_TASK" \
+grep -q "\[s:$SID_TAG\]: (auto) executed via \[tasks:\] carry" "$TYPO_TASK" \
   && pass "the bind carries the executed-via provenance note" \
   || fail "provenance note wrong in $TYPO_TASK"
 echo "$OUT4" | grep -q "exec-skip(unresolved)" \
@@ -240,7 +240,7 @@ write_touched "$OTHER_TOUCHED"
 OUT5=$(invoke_hook "[tasks: $SHARED_BASE] worked on the shared task by reference")
 ERR5="$(cat "$ERR_FILE")"
 
-echo "$ERR5" | grep -qF "[progress capture] exec-skip(unresolved): $SHARED_BASE [s:$SID8]" \
+echo "$ERR5" | grep -qF "[progress capture] exec-skip(unresolved): $SHARED_BASE [s:$SID_TAG]" \
   && pass "stderr reports the cross-project basename as unresolved" \
   || fail "stderr exec-skip line missing for the shared basename: $ERR5"
 echo "$ERR5" | grep -qF "(exists in: $OTHER_NAME)" \

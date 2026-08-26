@@ -14,7 +14,7 @@ STATE="$PROJECTS/_state"
 PROJ="_test-f1-$$"
 PDIR="$PROJECTS/$PROJ"
 SID="f1integ$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"; SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
 . "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
 
@@ -79,7 +79,7 @@ stop() {
 }
 
 sidlines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -100,7 +100,7 @@ PY
 }
 
 precompact_line() {
-  uv run --no-project python - "$(to_win "$HOOK")" "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$(to_win "$HOOK")" "$1" "$SID_TAG" << 'PY'
 import importlib.util, os, sys
 hook, path, sid8 = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, os.path.dirname(hook))
@@ -115,7 +115,7 @@ PY
 }
 
 count_helper() {
-  uv run --no-project python - "$(to_win "$HOOK")" "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$(to_win "$HOOK")" "$1" "$SID_TAG" << 'PY'
 import importlib.util, os, sys
 hook, path, sid8 = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, os.path.dirname(hook))
@@ -126,7 +126,7 @@ PY
 }
 
 echo "=== integrity — the hook's own appends must not read as self-log ==="
-echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
+echo "  project=$PROJ  tag=$SID_TAG  (isolated tempdir: $TMP)"
   echo ""
 
 echo "after a backstop placeholder, new touches still form a round"
@@ -219,9 +219,9 @@ echo "$OD" | grep -q '"decision": *"block"' \
   && pass "round counter advanced to 2 across the compaction" \
   || fail "round: $(bindq 'c.get("round")')"
 stop 0 >/dev/null
-grep -qF "[s:$SID8]: (auto) touched; summary pending (r2)" "$TD" \
+grep -qF "[s:$SID_TAG]: (auto) touched; summary pending (r2)" "$TD" \
   && pass "round 2 landed its own placeholder next to the PreCompact line" \
-  || fail "round 2 placeholder missing: $(grep -F "[s:$SID8]" "$TD")"
+  || fail "round 2 placeholder missing: $(grep -F "[s:$SID_TAG]" "$TD")"
 
   echo ""
 echo "=== Done ==="

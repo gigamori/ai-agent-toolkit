@@ -238,14 +238,14 @@ updated: 2026-05-14
 - 残作業項目 2
 
 <!-- @log:begin -->
-- 2026-05-13 [s:abc12345]: 着手
-- 2026-05-14 [s:def67890]: phase A 完了 | next: テスト追加
+- 2026-05-13 [s:abc123456789]: 着手
+- 2026-05-14 [s:def678901234]: phase A 完了 | next: テスト追加
 <!-- @log:end -->
 ```
 
 - 本文領域は自由編集、`<!-- @log -->` ブロックは **append-only**。
 - `## Next Steps` が非空 = pending、`1_in_progress/` で空 = 完了候補。ガイドラインがエージェントにタスクを前進させたターンの終わりに `## Next Steps` を維持するよう指示し、`/progress audit` がコードで検査する（[仕組み](#仕組み) 参照）。
-- log 行には `[s:<session-id 先頭>]` タグが付き、audit の参照用 index になる。
+- log 行には `[s:<session-id 末尾12桁>]` タグが付き、audit の参照用 index になる。
 - task には、関連する `project-notes/` パスを列挙する自動管理ブロック `<!-- @notes:begin/end -->`（`@log:end` の直後に配置）が付くことがある。note↔task link 機構が書き込む（[仕組み](#仕組み) 参照）ため手編集禁止。
 
 status 遷移は `/progress start` / `/progress approve` / `/progress unstart` で行う（上記参照）。

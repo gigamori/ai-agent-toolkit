@@ -47,6 +47,9 @@ CASES = [
     ("new offset-aware timestamp, Z (UTC)",
      "- 2026-07-14T01:17:28Z [s:bf72387a]: note",
      ("2026-07-14T01:17:28Z", "bf72387a")),
+    ("12-char tail tag",
+     "- 2026-08-25T10:30:00 [s:0058a66e62c5]: new tail-12 tag",
+     ("2026-08-25T10:30:00", "0058a66e62c5")),
 ]
 
 

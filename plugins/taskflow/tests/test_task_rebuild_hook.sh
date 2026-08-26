@@ -77,7 +77,7 @@ if echo "$OUTPUT" | grep -q 'auto-rebuild'; then
   fail "hook did not return auto-rebuild output: $OUTPUT"
   fi
 
-if echo "$OUTPUT" | grep -q 'session=test0000'; then
+if echo "$OUTPUT" | grep -q 'session=000000000000'; then
   pass "hook output includes session ID"
   else
   fail "hook output missing session ID: $OUTPUT"

@@ -33,7 +33,7 @@ STATE="$PROJECTS/_state"
 PROJ="_test-selflog-$$"
 PDIR="$PROJECTS/$PROJ"
 SID="selflog$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"; SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"; CF="$STATE/$SID.capture"
 PLACEHOLDER='(auto) touched; summary pending'
 
@@ -100,7 +100,7 @@ stop() {
 }
 
 sidlines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -121,7 +121,7 @@ PY
 }
 
 agent_log_line() {
-  uv run --no-project python - "$1" "$SID8" "$2" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" "$2" << 'PY'
 import sys
 path, sid8, note = sys.argv[1], sys.argv[2], sys.argv[3]
 c = open(path, encoding="utf-8").read()
@@ -132,7 +132,7 @@ PY
 }
 
 echo "=== self-logged task gets NO expiry placeholder (04-plan) ==="
-echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
+echo "  project=$PROJ  tag=$SID_TAG  (isolated tempdir: $TMP)"
 
   echo ""
 echo "[defect arm] self-logged task: in allow_tasks, out of items.tasks, no placeholder"

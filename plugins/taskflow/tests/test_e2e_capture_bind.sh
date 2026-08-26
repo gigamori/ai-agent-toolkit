@@ -15,7 +15,7 @@ STATE="$PROJECTS/_state"
 PROJ="_e2e-cap-$$"
 PDIR="$PROJECTS/$PROJ"
 SID="e2ecap$$-0000-0000-0000-000000000000"
-SID8="${SID:0:8}"
+SID_CLEAN="${SID//-/}"; SID_TAG="${SID_CLEAN: -12}"
 SF="$STATE/$SID.json"; TF="$STATE/$SID.touched"; BF="$STATE/$SID.bind"
 
 . "$REPO_ROOT/plugins/taskflow/tests/capture_paths.sh"
@@ -70,7 +70,7 @@ stop() {
     | uv run --no-project python "$(to_win "$STOP")"
 }
 sidlines() {
-  uv run --no-project python - "$1" "$SID8" << 'PY'
+  uv run --no-project python - "$1" "$SID_TAG" << 'PY'
 import re, sys
 c = open(sys.argv[1], encoding="utf-8").read()
 m = re.search(r"<!--\s*@log:begin\s*-->(.*?)<!--\s*@log:end\s*-->", c, re.DOTALL)
@@ -79,7 +79,7 @@ PY
 }
 
 echo "=== E2E: touched_capture.py → <sid>.touched → session_progress_capture.py ==="
-echo "  project=$PROJ  sid8=$SID8  (isolated tempdir: $TMP)"
+echo "  project=$PROJ  tag=$SID_TAG  (isolated tempdir: $TMP)"
   echo ""
 
 TASK="$PDIR/tasks/1_in_progress/2026-06-29_e2e.md"
@@ -127,8 +127,8 @@ echo "$O1" | grep -q '`_projects/_state/' \
 
 echo "[Stage 3] Stop Round2 → bind"
 O2=$(stop)
-[ "$(sidlines "$TASK")" = "1" ] && pass "Round2 bound [s:$SID8] end-to-end" || fail "not bound: $(sidlines "$TASK")"
-echo "$O2" | grep -q "auto-bound: .*2026-06-29_e2e.md \[s:$SID8\]" \
+[ "$(sidlines "$TASK")" = "1" ] && pass "Round2 bound [s:$SID_TAG] end-to-end" || fail "not bound: $(sidlines "$TASK")"
+echo "$O2" | grep -q "auto-bound: .*2026-06-29_e2e.md \[s:$SID_TAG\]" \
   && pass "F5 auto-bound reported" || fail "no F5 auto-bound: $O2"
 
 echo "[Stage 4] exec-binding via [tasks:] carry"
@@ -136,7 +136,7 @@ ET="$PDIR/tasks/1_in_progress/2026-06-29_exec.md"
 mk "$ET"
 O3=$(stop "[pj:$PROJ] [tasks: 2026-06-29_exec.md] produced the result off-task")
 [ "$(sidlines "$ET")" = "1" ] && pass "exec owning task bound via [tasks:] e2e" || fail "exec not bound: $(sidlines "$ET")"
-echo "$O3" | grep -q "auto-bound: .*2026-06-29_exec.md \[s:$SID8\]" \
+echo "$O3" | grep -q "auto-bound: .*2026-06-29_exec.md \[s:$SID_TAG\]" \
   && pass "exec F5 auto-bound reported" || fail "no exec F5: $O3"
 
 echo "[Stage 5] capture membership containment (F7a)"
