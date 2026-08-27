@@ -79,6 +79,24 @@ point you stop the watchdog task** — that is now the only way a well-behaved
 turn's watchdog ends. A verdict that lands after the turn already has a readable
 status is stale and must be ignored, never re-classified.
 
+**The reverse ordering also exists, and it is not the same case.** The watchdog
+is a separate process racing the turn, so a verdict can fire *before* the reply
+and the reply still arrive. **Grace window for SKILL.md Execution step 4's
+late-reply clause on this harness: 120 s past the deadline.** A well-formed
+`status:` line already in hand within that window classifies the turn, and the
+verdict is recorded as superseded; past it, or with no reply, the turn is
+`aborted` and re-run once. The window is not permission to wait — you classify
+with what you have when you classify.
+
+Measured 2026-08-27: a `middle`/sonnet documentation turn wrote its deliverable
+at 1393 s of the 1500 s `DEADLINE_EXECUTE` budget — a 7 % margin — and replied
+`ok` at ~1546 s, 46 s past the deadline. Two things follow and should not be
+merged. The ordering needed a rule, which is the clause above. Separately, a
+deliverable consuming 93 % of budget is evidence the deadline is tight for
+turns of that scale; that is a threshold-tuning question, still open, and
+**raising the deadline would not have defined the ordering** — it would only
+have made the same undefined case rarer with a longer fuse.
+
 ## `aborted` handling (Execution step 4)
 
 **The watchdog wakes first with `TIMEOUT` or `STALL`.** The turn is over its

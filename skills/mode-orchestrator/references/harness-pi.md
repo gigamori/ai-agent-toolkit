@@ -304,6 +304,15 @@ This single mechanism covers what CC's watchdog splits into `TIMEOUT` and
   CC the completion notification is what ends the normal path, and the
   orchestrator must stop the watchdog there; here there is no background process
   to stop.
+- **SKILL.md Execution step 4's late-reply clause never fires on this harness,
+  and needs no grace window here.** That clause covers a P2 verdict firing and
+  the turn's reply arriving anyway — a race that requires P2 to run as a process
+  separate from the turn. Here P2 *is* the `bash` call: it returns either the
+  turn's output or the timeout error, never both, so the two outcomes are
+  mutually exclusive by construction and the ordering cannot occur. Stated
+  explicitly because the clause's absence would otherwise read as an omission
+  rather than as a property of this mechanism. (Judged 2026-08-27, when the
+  ordering was observed on the CC facet.)
 
 **Verified end-to-end, 2026-08-13** (pi v0.84.1, the Pi facet E2E — closing
 what `handoff-phase5-onward.md` §7 listed as "bash timeout の kill がターン分類に
