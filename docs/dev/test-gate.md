@@ -77,7 +77,7 @@ other string alone.
 
 The gate unit is `skills/`. It walks the tree and takes every file named `test_*.py`,
 `*_test.py`, `test_*.sh` or `*_test.sh`, so a new skill or a new suite inside one is picked
-up without touching the gate — that is the invariant the unit was chosen for. 25 files are
+up without touching the gate — that is the invariant the unit was chosen for. 26 files are
 in scope today.
 
 Outside this gate, and carrying no assurance from it: `plugins/llm-wiki/tests/` and

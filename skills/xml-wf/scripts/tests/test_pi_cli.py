@@ -118,7 +118,7 @@ class AskLlmPiTests(unittest.TestCase):
         self.assertFalse(any(str(a).startswith("@") for a in cmd),
                          f"no argv entry may use @file include syntax: {cmd}")
         self.assertIn("is the sky blue?", cmd[-1])
-        self.assertEqual(cmd[-2], "basic")
+        self.assertEqual(cmd[-2], "haiku")
 
     def test_first_attempt_malformed_second_succeeds(self):
         bad = _fake_completed(0, "not json at all")

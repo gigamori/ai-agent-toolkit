@@ -175,9 +175,13 @@ def resolve_decider(wf: Workflow, step=None) -> tuple[str, str]:
     """(decider, decider-model) actually in force: step attribute, else
     workflow attribute, else the defaults (xml-wf-decision-request.md §4).
 
-    Resolution lives here, not at the display sites, so `wfrun plan` and
-    `wfrun viz` cannot disagree with what a run would do — plan output is the
-    run-llm orchestrator's only view of the workflow, so a divergence there is
+    Only attribute-precedence resolution lives here, not at the display
+    sites -- step attr > workflow attr > default. The decider-model
+    returned is still a tier name: turning it into the concrete name a run
+    would dispatch is `modelmap.resolve(..., "llm")`'s job, applied
+    separately at `wfrun plan` and `wfrun viz` themselves, so that they do
+    not disagree with what a run would do -- plan output is the run-llm
+    orchestrator's only view of the workflow, so a divergence there is
     invisible rather than merely wrong.
     """
     decider = (getattr(step, "decider", None) if step is not None else None) \

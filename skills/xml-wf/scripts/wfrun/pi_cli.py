@@ -128,7 +128,8 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-def ask_llm_pi(question: str, *, model: str = "basic", cwd: str | None = None,
+# model= takes a post-resolution concrete CLI model name, never a tier.
+def ask_llm_pi(question: str, *, model: str = "haiku", cwd: str | None = None,
               timeout: int = 300) -> tuple[bool | None, str, float]:
     """Pi-backed counterpart to claude_cli.ask_llm(). Same contract: returns
     (answer, reason, cost) with answer=None on failure after one retry.

@@ -11,7 +11,7 @@ the output is safe to surface even around run-llm's content firewall.
 """
 from __future__ import annotations
 
-from . import model
+from . import model, modelmap
 
 _MAX_LABEL = 48
 
@@ -178,9 +178,10 @@ def mermaid(wf: model.Workflow) -> str:
     # resolves it (spec §11: plan AND viz must show it; step labels only carry
     # their override). Model shown only for llm — human never calls one.
     decider, decider_model = model.resolve_decider(wf)
+    resolved_decider_model = modelmap.resolve(decider_model, "llm")
     start_label = f"start<br/>{_esc(wf.name)}<br/>decider={decider}"
     if decider == "llm":
-        start_label += f" ({_esc(decider_model)})"
+        start_label += f" ({_esc(resolved_decider_model)})"
     b.emit(f'S(("{start_label}"))')
     entry, exits = b.walk(wf.body)
     b.emit('E((end))')

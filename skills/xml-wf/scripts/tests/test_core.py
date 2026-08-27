@@ -204,6 +204,18 @@ class TestModelMap(unittest.TestCase):
                               f"every canonical tier must be bound on runner {runner!r}")
                 self.assertEqual(modelmap.resolve(name, runner), tables[runner][name])
 
+    def test_allow_legacy_redirects_via_alias_but_plain_resolve_passes_through(self):
+        import json as _json
+        import tempfile
+        from wfrun import modelmap
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "mm.json"
+            path.write_text(_json.dumps({"llm": {"ultra": "fable"}}),
+                            encoding="utf-8")
+            self.assertEqual(
+                modelmap.resolve("opus", "llm", path, allow_legacy=True), "fable")
+            self.assertEqual(modelmap.resolve("opus", "llm", path), "opus")
+
 
 class TestViz(unittest.TestCase):
     XML = """
@@ -442,6 +454,17 @@ class TestLint(unittest.TestCase):
             catalog=None)
         self.assertNotIn("pi-model-unavailable", self.codes(findings))
         self.assertIn("pi-model-unverified", self.codes(findings))
+
+    def test_legacy_model_name_warns_on_both_backends(self):
+        step = '<step id="s1" role="w" model="opus"><task>x</task></step>'
+        self.assertIn("model-legacy-name", self.codes(self.lint(self.wrap(step))))
+        self.assertIn("model-legacy-name",
+                      self.codes(self.lint_pi(self.wrap(step))))
+
+    def test_legacy_model_name_never_checks_decider_model(self):
+        step = ('<step id="s1" role="w" model="ultra" decider="llm" '
+                'decider-model="opus"><task>x</task></step>')
+        self.assertNotIn("model-legacy-name", self.codes(self.lint(self.wrap(step))))
 
     def test_mode_write_tools_warns(self):
         findings = self.lint(self.wrap(

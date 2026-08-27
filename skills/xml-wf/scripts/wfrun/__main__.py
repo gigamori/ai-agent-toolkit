@@ -659,7 +659,7 @@ def cmd_prompt(args) -> int:
     kind = "replan" if isinstance(step, model.Replan) else "step"
     dispatch_model, dispatch_tools = stepio.dispatch_for(step, agents_cache)
     try:  # the dispatch line carries the runner-resolved name ("llm" table)
-        resolved = modelmap.resolve(dispatch_model, "llm")
+        resolved = modelmap.resolve(dispatch_model, "llm", allow_legacy=True)
     except modelmap.ModelMapError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -1199,8 +1199,9 @@ def cmd_plan(args) -> int:
     # unreadable without knowing which policy is in force
     # (xml-wf-decision-request.md §11).
     decider, decider_model = model.resolve_decider(wf)
+    resolved_decider_model = modelmap.resolve(decider_model, "llm")
     print(f"decider:  {decider}"
-          + (f" (model={decider_model})" if decider == "llm" else ""))
+          + (f" (model={resolved_decider_model})" if decider == "llm" else ""))
     for p in wf.params:
         flag = "required" if p.required else f"default={p.default!r}"
         print(f"param:    {p.name} ({flag})")
