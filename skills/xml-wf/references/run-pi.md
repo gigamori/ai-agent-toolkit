@@ -27,7 +27,7 @@ this was tracked has no `backend.json` and resumes as `cc`.
 
 `--inherit-model <model>` should also be given, with the model this session
 is currently running as (a concrete identifier, not a canonical difficulty
-class such as `haiku`/`opus` — it bypasses `model_map.json` and is used
+class such as `basic`/`ultra` — it bypasses `model_map.json` and is used
 as-is). Without it, a step with no `model=` of its own (no step attribute, no
 role-frontmatter default) does not fall back to any documented default — pi
 picks from whatever providers happen to be enabled in the local config, which
@@ -109,12 +109,15 @@ every adjudicator an `llm` decider would actually be sent is matched against
 `pi --list-models`, and a name matching nothing fails validation
 (`pi-model-unavailable`) instead of failing when the process launches. The
 match mirrors pi's own resolver — exact on `id` or `provider/id`, else
-substring on `id`, which is why the canonical `opus` reaches `opus[1m]`. Two
+substring on `id`, which is why the default adjudicator — `ultra`, resolved
+through the `llm` table to `opus` — reaches `opus[1m]`. Two
 things it cannot see: pi also matches a model's display name, which
 `--list-models` does not print, and the catalog does not reflect pi's
 authenticated-only filter. Both make the check narrower than pi, so it never
 rejects a name pi could resolve by id. An unreadable catalog is reported as
-`pi-model-unverified`, not as a pass.
+`pi-model-unverified`, not as a pass. A step still on a legacy name
+(`haiku`/`sonnet`/`opus`) also surfaces here as `model-legacy-name` — that
+check runs on every backend, not only pi.
 
 **This is prompt adherence, not an enforced format.** Without a schema to force
 the shape, how often a given model produces a usable ruling is a measured
@@ -228,7 +231,8 @@ so know them before relying on them.
 ## Model names
 
 `model=` resolves through `model_map.json`'s **`llm`** table (run-cc uses
-`cc`). The bundled map is the identity and the canonical names — `haiku`,
-`sonnet`, `opus` — resolve correctly on pi as they are, so no configuration is
-needed. A map hand-edited to hold claude CLI names for some other purpose will
-not resolve here; keep the identity map, or put names pi accepts in `llm`.
+`cc`). The bundled map binds the canonical names — `basic`, `pro`, `ultra` —
+to real pi-resolvable models, so no configuration is needed by default. A map
+hand-edited to hold claude CLI names for some other purpose will not resolve
+here; leave the bundled bindings as they are, or put names pi accepts in
+`llm`.

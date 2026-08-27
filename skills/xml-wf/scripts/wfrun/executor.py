@@ -539,7 +539,7 @@ class Executor:
                 self.state.event("model-map", key=where, canonical=None,
                                  resolved=self._inherit_model, source="inherit")
             return self._inherit_model
-        resolved = modelmap.resolve(name, self._model_runner)
+        resolved = modelmap.resolve(name, self._model_runner, allow_legacy=True)
         if resolved != name:
             self.state.event("model-map", key=where,
                              canonical=name, resolved=resolved)

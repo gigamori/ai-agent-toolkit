@@ -28,11 +28,11 @@ DEFAULT_RETRY = 0
 DEFAULT_TIMEOUT = 600
 DEFAULT_ON_ERROR = "fail"
 DEFAULT_OUTPUT_TYPE = "file"
-DEFAULT_ASK_MODEL = "haiku"
+DEFAULT_ASK_MODEL = "basic"
 DEFAULT_PARALLEL_WORKERS = 2
 DEFAULT_REPLAN_MAX_STEPS = 20
 DEFAULT_DECIDER = "human"
-DEFAULT_DECIDER_MODEL = "opus"
+DEFAULT_DECIDER_MODEL = "ultra"
 DEBUG_ROLE = "debug"
 
 # Tools that can mutate the filesystem (directly or by delegation). Used to

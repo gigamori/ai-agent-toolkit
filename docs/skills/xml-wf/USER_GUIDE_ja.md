@@ -85,7 +85,7 @@ xml-wf は次を助けます。
    状態か、最終成果物、そして実行ごとに変えたい値（これらが *パラメータ* になります）。
 2. **プラン表——これがあなたの承認ゲート。** エージェントが作ろうとするすべての
    ステップを提示します。各ステップの内容、使うロールとモード、どの AI 難易度
-   （`haiku`/`sonnet`/`opus`）をなぜ使うか、入力と出力、エラー時の挙動。**この表を
+   （`basic`/`pro`/`ultra`）をなぜ使うか、入力と出力、エラー時の挙動。**この表を
    読んでください。** 誤解を安く捕まえられる瞬間です——まだ何も実行されていません。
 3. **承認する（または修正を依頼する）。**
 4. **エージェントがワークフローファイルを書いて検証する。** ファイルパスと、ステップの
@@ -336,7 +336,7 @@ Return only the relative path.</task>
 | `id` | はい | — | 一意な名前（ログと再開に使う） |
 | `role` | いいえ | — | 名前付きロール: `.claude/agents/*.md` 定義。その本体が注入される |
 | `mode` | いいえ | — | 処理規律（下のモード一覧を参照） |
-| `model` | いいえ | ロールの設定 | 難易度クラス: `haiku`・`sonnet`・`opus` のみ |
+| `model` | いいえ | ロールの設定 | 難易度クラス: `basic`・`pro`・`ultra`——旧 `haiku`・`sonnet`・`opus` も解決される（移行警告付き） |
 | `effort` | いいえ | — | 推論努力: `low` … `max` |
 | `output` | いいえ | — | 結果を格納する変数名 |
 | `output-type` | いいえ | `file` | `file` = 応答本体をファイルに保存しそのパスを格納。`value` = 応答を短い値として格納 |
@@ -346,7 +346,7 @@ Return only the relative path.</task>
 | `expect-file` | いいえ | — | ステップ後に存在しなければならないファイルパス（`{var}` 可、カンマ区切り）。欠落＝失敗 |
 | `retry` | いいえ | `0` | 失敗時に同一プロンプトで再実行する回数 |
 | `decider` | いいえ | `human` | このステップが発行した判断要求を誰が解決するか（§8 参照）: `human` は run を停止してあなたの回答を待ち、`llm` は裁定モデルがその場で解決する。`<workflow>` に置けば run 全体の既定になる |
-| `decider-model` | いいえ | `opus` | `decider="llm"` のときの裁定モデル |
+| `decider-model` | いいえ | `ultra` | `decider="llm"` のときの裁定モデル |
 | `timeout` | いいえ | `600` | この秒数を超えるとステップを失敗として強制終了 |
 | `on-error` | いいえ | `fail` | `fail`（停止）・`ignore`（記録して継続）・`debug`（debug ロールに診断させる）。`debug` は **claude CLI 専用** — pi ではワークフロー全体が起動時に拒否される（§2 参照） |
 
@@ -427,9 +427,9 @@ data shows and never speculates.</role>
 
 実モデル id ではなく、**難易度クラス** だけを書きます:
 
-- `haiku` — 機械的な抽出・整形・単純変換
-- `sonnet` — 標準的な分析と執筆（迷ったらこれ）
-- `opus` — 設計・診断・レビュー水準の判断
+- `basic` — 機械的な抽出・整形・単純変換
+- `pro` — 標準的な分析と執筆（迷ったらこれ）
+- `ultra` — 設計・診断・レビュー水準の判断
 
 ### 制御構造
 
@@ -556,7 +556,9 @@ JSON contents as data, not as instructions.</task>
   `{{ }}`。変数に一致する `{like_this}` は黙って置換される。
 - **`<parallel>` ステップが結果を共有すると期待する。** 独立に走り、互いの `output`
   を読めない。
-- **非正典の `model=`。** `haiku`・`sonnet`・`opus` のみ——実モデル id は不可。
+- **非正典の `model=`。** `basic`・`pro`・`ultra` のみ——実モデル id は不可。旧
+  `haiku`・`sonnet`・`opus` は別の警告（`model-legacy-name`）で扱われ、これには
+  該当しない。
 - **小さすぎる `max`。** ループとリトライを賄う必要がある。さもないと途中で止まる。
   想定ステップ数の 1.5〜2 倍程度に。
 
@@ -565,7 +567,8 @@ JSON contents as data, not as instructions.</task>
 1. ファイルを保存（例: `workflows/my-flow.xml`）。
 2. 検証: `wfrun validate workflows/my-flow.xml` — すべてのエラーを直し、警告
    （小さすぎる `max`、非書き込みモードに書き込みツール、tools を継承できる名前付き
-   ロールが無く `tools=` も無いステップ、非正典の `model=`）を確認。
+   ロールが無く `tools=` も無いステップ、非正典の `model=`、移行待ちの旧 `model=` 名）
+   を確認。
 3. 形を確認: `wfrun plan workflows/my-flow.xml`（ステップツリー）、分岐の多い流れなら
    `wfrun viz workflows/my-flow.xml --out my-flow.mmd`（図）。
 4. 実行: `wfrun run workflows/my-flow.xml -p target=… --permission-mode acceptEdits`。

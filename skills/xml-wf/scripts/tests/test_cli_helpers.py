@@ -53,7 +53,7 @@ class TestPromptRecord(unittest.TestCase):
     XML = """
 <workflow name="t" version="2" max="10">
   <rules id="r1">RULE-BODY</rules>
-  <step id="s1" rules="r1" mode="execute" model="opus" output="report_path">
+  <step id="s1" rules="r1" mode="execute" model="ultra" output="report_path">
     <role>ROLE-W</role>
     <task>Analyze {src} and write output/report.md.</task>
   </step>
@@ -110,7 +110,7 @@ class TestPromptRecord(unittest.TestCase):
     def test_prompt_dispatch_line_maps_model(self):
         from wfrun import modelmap
         map_path = self.dir / "mm.json"
-        map_path.write_text(json.dumps({"llm": {"opus": "gpt-5-high"}}), encoding="utf-8")
+        map_path.write_text(json.dumps({"llm": {"ultra": "gpt-5-high"}}), encoding="utf-8")
         old = modelmap.MAP_PATH
         modelmap.MAP_PATH = map_path
         try:
@@ -120,7 +120,7 @@ class TestPromptRecord(unittest.TestCase):
         finally:
             modelmap.MAP_PATH = old
         self.assertEqual(code, 0)
-        self.assertIn("model=gpt-5-high (mapped from opus)", out)
+        self.assertIn("model=gpt-5-high (mapped from ultra)", out)
 
     def test_prompt_undefined_var(self):
         Path(self.vars_path).write_text("{}", encoding="utf-8")

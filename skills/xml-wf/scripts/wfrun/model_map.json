@@ -1,13 +1,17 @@
 {
-  "_doc": "Per-runner binding for the canonical model= vocabulary (haiku/sonnet/opus = difficulty classes). 'cc' feeds claude -p --model (must stay claude CLI names); 'llm' feeds the run-llm dispatch line (must be names the orchestrator's subagent facility accepts). Unmapped names pass through. Edit values, keep keys canonical.",
+  "_doc": "Per-runner binding for the canonical model= vocabulary (basic/pro/ultra = difficulty classes). 'cc' feeds claude -p --model (must stay claude CLI names); 'llm' feeds the run-llm dispatch line (must be names the orchestrator's subagent facility accepts). Unmapped names pass through, except a legacy name ('haiku'/'sonnet'/'opus') on the model= path, which is redirected to its 'basic'/'pro'/'ultra' replacement first (warns 'model-legacy-name') — on decider-model= it is a literal id and still passes through. Edit values, keep keys canonical. build.md's Model selection section approved-candidates list does not constrain these cc/llm values: they are a delegated child's binding, not the run driver's.",
+  "_floor": {
+    "note": "A raising/ruling floor is a property of the bound MODEL, not the tier key — see build.md's Model selection section, Measured floors table, for the actual numbers; this note points at that table rather than copying it, so re-check it whenever a value in 'cc' or 'llm' changes here. 'pro' currently binds to sonnet, which build.md's table marks as the raising floor; 'ultra' currently binds to opus, which has no row in that table at all — no floor measurement is on file for it. Meeting or missing a floor is never a reason to add the bound model to build.md's approved-candidates layer list — that list governs the run driver, not a delegated child; binding 'ultra' to 'fable', for example, needs no list edit.",
+    "measured": "2026-08-12 — sonnet's raising floor, per build.md's Measured floors table"
+  },
   "cc": {
-    "haiku": "haiku",
-    "sonnet": "sonnet",
-    "opus": "opus"
+    "basic": "haiku",
+    "pro": "sonnet",
+    "ultra": "opus"
   },
   "llm": {
-    "haiku": "haiku",
-    "sonnet": "sonnet",
-    "opus": "opus"
+    "basic": "haiku",
+    "pro": "sonnet",
+    "ultra": "opus"
   }
 }

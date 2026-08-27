@@ -29,7 +29,7 @@ NO_MODEL_XML = """\
 
 HAS_MODEL_XML = """\
 <workflow name="t" version="2" max="5">
-  <step id="s1" model="opus"><role>W</role><task>do it</task></step>
+  <step id="s1" model="ultra"><role>W</role><task>do it</task></step>
 </workflow>
 """
 

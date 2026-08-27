@@ -54,7 +54,7 @@ Return only the relative path of the CSV as your final response.</task>
     </else>
   </if>
 
-  <step id="s7_report" role="data-explainer" rules="no_fabrication" model="opus">
+  <step id="s7_report" role="data-explainer" rules="no_fabrication" model="ultra">
     <task>Integrate the analysis results below and write the final report (Markdown) to {report_path}.
 - Monthly sales data: {data_csv}
 - Anomaly detection results: output/anomalies.csv (detection count {anomaly_count})

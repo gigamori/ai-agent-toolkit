@@ -72,7 +72,7 @@ class ExecutorTestCase(unittest.TestCase):
                 f"---\nname: {name}\ndescription: test\n---\nROLE-BODY-{name}",
                 encoding="utf-8")
         (agents_dir / "coder.md").write_text(
-            "---\nname: coder\ndescription: test\nmodel: haiku\ntools: Read\n---\n"
+            "---\nname: coder\ndescription: test\nmodel: basic\ntools: Read\n---\n"
             "ROLE-BODY-coder", encoding="utf-8")
 
     def tearDown(self):
@@ -176,7 +176,7 @@ class TestBasics(ExecutorTestCase):
 
     def test_step_flags_forwarded(self):
         ex = self.execute(self.wrap(
-            '<step id="s1" role="coder" model="opus" effort="high" tools="Read,Write">'
+            '<step id="s1" role="coder" model="ultra" effort="high" tools="Read,Write">'
             '<task>x</task></step>'))
         ex.run()
         call = self.fake.calls[0]
@@ -220,36 +220,36 @@ class TestBasics(ExecutorTestCase):
     def test_model_map_applied_and_recorded(self):
         from wfrun import modelmap
         map_path = Path(self.tmp.name) / "mm.json"
-        map_path.write_text(json.dumps({"cc": {"opus": "mapped-opus"}}), encoding="utf-8")
+        map_path.write_text(json.dumps({"cc": {"ultra": "mapped-ultra"}}), encoding="utf-8")
         old = modelmap.MAP_PATH
         modelmap.MAP_PATH = map_path
         try:
             ex = self.execute(self.wrap(
-                '<step id="s1" role="w" model="opus"><task>x</task></step>'))
+                '<step id="s1" role="w" model="ultra"><task>x</task></step>'))
             ex.run()
         finally:
             modelmap.MAP_PATH = old
-        self.assertEqual(self.fake.calls[0]["model"], "mapped-opus")
+        self.assertEqual(self.fake.calls[0]["model"], "mapped-ultra")
         mapped = [e for e in load_events(self.run_dir) if e["kind"] == "model-map"]
         self.assertEqual((mapped[0]["canonical"], mapped[0]["resolved"]),
-                         ("opus", "mapped-opus"))
+                         ("ultra", "mapped-ultra"))
 
     def test_model_runner_selects_the_llm_table(self):
         from wfrun import modelmap
         map_path = Path(self.tmp.name) / "mm.json"
         map_path.write_text(
-            json.dumps({"cc": {"opus": "cc-opus"}, "llm": {"opus": "llm-opus"}}),
+            json.dumps({"cc": {"ultra": "cc-ultra"}, "llm": {"ultra": "llm-ultra"}}),
             encoding="utf-8")
         old = modelmap.MAP_PATH
         modelmap.MAP_PATH = map_path
         try:
             ex = self.execute(self.wrap(
-                '<step id="s1" role="w" model="opus"><task>x</task></step>'),
+                '<step id="s1" role="w" model="ultra"><task>x</task></step>'),
                 model_runner="llm")
             ex.run()
         finally:
             modelmap.MAP_PATH = old
-        self.assertEqual(self.fake.calls[0]["model"], "llm-opus")
+        self.assertEqual(self.fake.calls[0]["model"], "llm-ultra")
 
     def test_inherit_model_used_when_step_has_no_model(self):
         ex = self.execute(self.wrap(
@@ -264,7 +264,7 @@ class TestBasics(ExecutorTestCase):
 
     def test_inherit_model_ignored_when_step_has_its_own_model(self):
         ex = self.execute(self.wrap(
-            '<step id="s1" model="opus"><role>W</role><task>x</task></step>'),
+            '<step id="s1" model="ultra"><role>W</role><task>x</task></step>'),
             inherit_model="session-model")
         ex.run()
         self.assertNotEqual(self.fake.calls[0]["model"], "session-model")
@@ -278,7 +278,7 @@ class TestBasics(ExecutorTestCase):
     def test_model_inherit_warnings_lists_steps_with_no_model(self):
         ex = self.execute(self.wrap(
             '<step id="s1"><role>W</role><task>x</task></step>'
-            '<step id="s2" model="opus"><role>W</role><task>y</task></step>'))
+            '<step id="s2" model="ultra"><role>W</role><task>y</task></step>'))
         warnings = ex.model_inherit_warnings()
         self.assertEqual(len(warnings), 1)
         self.assertIn("s1", warnings[0])
@@ -287,7 +287,7 @@ class TestBasics(ExecutorTestCase):
 
     def test_model_inherit_warnings_empty_when_every_step_has_a_model(self):
         ex = self.execute(self.wrap(
-            '<step id="s1" model="opus"><role>W</role><task>x</task></step>'))
+            '<step id="s1" model="ultra"><role>W</role><task>x</task></step>'))
         self.assertEqual(ex.model_inherit_warnings(), [])
 
     def test_permission_mode_reaches_only_write_capable_steps(self):

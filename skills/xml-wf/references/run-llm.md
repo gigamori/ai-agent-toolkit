@@ -132,7 +132,10 @@ move 1 before delegating any of them.
 #    The dispatch line shows resolved values: role=<name>|inline, mode=<name>,
 #    model=..., tools=... — model is already runner-resolved through
 #    model_map.json ("model=X (mapped from Y)" when a mapping applied): pass
-#    the resolved name verbatim, never translate it yourself.
+#    the resolved name verbatim, never translate it yourself. A step still
+#    carrying a legacy name (haiku/sonnet/opus) is NOT rebound here -- it
+#    prints unresolved, since only the model= dispatch path aliases legacy
+#    names (model-legacy-name warns); migrate the step's model= instead.
 #    The prompt file already contains the full role and
 #    mode text (joined into one file: the Agent tool has no system-prompt
 #    input, unlike run-cc's --append-system-prompt), so any generic subagent

@@ -183,29 +183,32 @@ class TestModelMap(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "mm.json"
             path.write_text(_json.dumps(
-                {"cc": {"opus": "big-local"}, "llm": {"opus": "gpt-5-high"}}),
+                {"cc": {"ultra": "big-local"}, "llm": {"ultra": "gpt-5-high"}}),
                 encoding="utf-8")
-            self.assertEqual(modelmap.resolve("opus", "cc", path), "big-local")
-            self.assertEqual(modelmap.resolve("opus", "llm", path), "gpt-5-high")
-            self.assertEqual(modelmap.resolve("sonnet", "cc", path), "sonnet")
+            self.assertEqual(modelmap.resolve("ultra", "cc", path), "big-local")
+            self.assertEqual(modelmap.resolve("ultra", "llm", path), "gpt-5-high")
+            self.assertEqual(modelmap.resolve("pro", "cc", path), "pro")
             self.assertIsNone(modelmap.resolve(None, "cc", path))
             self.assertEqual(
-                modelmap.resolve("opus", "cc", Path(d) / "absent.json"), "opus")
+                modelmap.resolve("ultra", "cc", Path(d) / "absent.json"), "ultra")
             path.write_text("{broken", encoding="utf-8")
             with self.assertRaises(modelmap.ModelMapError):
-                modelmap.resolve("opus", "cc", path)
+                modelmap.resolve("ultra", "cc", path)
 
-    def test_bundled_map_is_identity(self):
+    def test_bundled_map_binds_every_canonical_name(self):
         from wfrun import modelmap
+        tables = modelmap.load_map()
         for name in modelmap.CANONICAL_MODELS:
             for runner in modelmap.RUNNERS:
-                self.assertEqual(modelmap.resolve(name, runner), name)
+                self.assertIn(name, tables[runner],
+                              f"every canonical tier must be bound on runner {runner!r}")
+                self.assertEqual(modelmap.resolve(name, runner), tables[runner][name])
 
 
 class TestViz(unittest.TestCase):
     XML = """
 <workflow name="t" version="2" max="20">
-  <step id="s1" role="w" mode="survey" model="haiku" output="p" expect-file="out.csv">
+  <step id="s1" role="w" mode="survey" model="basic" output="p" expect-file="out.csv">
     <task>SECRET-TASK-TEXT make data</task>
   </step>
   <if test="int({p}) > 3">
@@ -231,7 +234,7 @@ class TestViz(unittest.TestCase):
         wf = parser.parse_string(self.XML)
         out = viz.mermaid(wf)
         self.assertTrue(out.startswith("flowchart TD"))
-        for token in ("<b>s1</b>", "mode=survey", "model=haiku",
+        for token in ("<b>s1</b>", "mode=survey", "model=basic",
                       "expect: out.csv",
                       "|yes|", "|no|",
                       "while", "|done|",

@@ -182,9 +182,9 @@ file path.</task>
   自律モードのみ: `debug`・`execute`・`plan`・`review`・`review-dev`・`survey`、
   さらにエイリアス `verify` → debug、`implement` → execute。
 - **モデル**（`model=`）: デプロイ名ではなく **難易度クラス**。正典の名前は
-  `haiku`（機械的）・`sonnet`（標準・既定）・`opus`（設計/診断/レビュー）。
+  `basic`（機械的）・`pro`（標準・既定）・`ultra`（設計/診断/レビュー）。
   `scripts/wfrun/model_map.json` がディスパッチ時に実モデルへ束縛する。同梱の
-  マップは恒等（設定ゼロ）。
+  束縛は設定不要で使える（各難易度クラスが既定で実モデルに束縛済み）。
 
 ステップ内のプロンプト優先度: **Mode > Rules > Task > Role**。ロールを宣言しない
 ステップでは **Mode > Rules > Task**。
@@ -250,7 +250,7 @@ wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
 ```
 wfrun interp <text> --vars V            # {var} 参照を補間
 wfrun eval   <expr> --vars V            # test= 式を評価 → true/false
-wfrun ask    <question> [--vars V] [--model haiku] [--backend auto|cc|pi] [--quiet] [--log LOG]
+wfrun ask    <question> [--vars V] [--model basic] [--backend auto|cc|pi] [--quiet] [--log LOG]
 ```
 
 `--backend`（既定 `auto`）: 判定を `claude` CLI（`cc`）または `pi` CLI（`pi`）の
@@ -311,7 +311,7 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 推測する代わりに `DECISION:`（選択肢・推奨・作業状態）を発行します。既定の
 `decider="human"` では run が停止し（`awaiting-decision`、exit 4）、
 `wfrun resume <dir> --answer <step>=<file>` で継続します。`decider="llm"` なら
-裁定モデル（`decider-model`、既定 `opus`）がその場でフォークを解決します——
+裁定モデル（`decider-model`、既定 `ultra`）がその場でフォークを解決します——
 1 ステップ訪問につき裁定は最大 2 回、不可逆・外向き・目的変更のフォークは human へ
 エスカレーションされます。両 backend で動きます（claude では schema 強制の裁定、
 pi ではテキスト裁定）。`references/spec.md` の "Decision requests" を参照。

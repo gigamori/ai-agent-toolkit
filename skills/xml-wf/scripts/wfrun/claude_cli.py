@@ -600,7 +600,7 @@ def run_claude(prompt: str, *, system_prompt: str | None = None,
     return classify_result(returncode, stdout, stderr, schema=schema)
 
 
-def ask_llm(question: str, *, model: str = "haiku", cwd: str | None = None,
+def ask_llm(question: str, *, model: str = "basic", cwd: str | None = None,
             timeout: int = 300) -> tuple[bool | None, str, float]:
     """LLM condition judgment. Returns (answer, reason, cost).
 

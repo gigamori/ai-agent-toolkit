@@ -41,7 +41,7 @@ $WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eva
   `resume` inherits the backend recorded in the run dir and never re-detects
 - **Pass `--inherit-model <model>` with the model this session is currently
   running as** (a concrete identifier, not a canonical difficulty class like
-  `haiku`/`opus` -- it is used as-is, not resolved through `model_map.json`).
+  `basic`/`ultra` -- it is used as-is, not resolved through `model_map.json`).
   wfrun runs as an independent process with no way to detect the invoking
   session's own model, so a step with no `model=` of its own (no step
   attribute, no role-frontmatter default) needs this to avoid silently

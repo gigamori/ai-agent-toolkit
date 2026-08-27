@@ -71,7 +71,13 @@ def _lint_pi_models(wf: model.Workflow, steps, backend: str) -> list[Finding]:
 
     for step in steps:
         if step.model:
-            if step.model not in modelmap.CANONICAL_MODELS:
+            # A legacy name (haiku/sonnet/opus) is excluded here: it does NOT
+            # bypass model_map.json -- lint()'s backend-agnostic
+            # model-legacy-name check already covers it with an accurate
+            # message, and this warning's "it bypasses model_map.json" would
+            # be false for a name the D4 alias resolves.
+            if (step.model not in modelmap.CANONICAL_MODELS
+                    and step.model not in modelmap.LEGACY_ALIASES):
                 findings.append(Finding(
                     "warn", "model-not-canonical",
                     f"step '{step.id}': model='{step.model}' is not a canonical "
@@ -208,6 +214,18 @@ def lint(wf: model.Workflow, base_dir: str | Path = ".",
         if step.on_error == "ignore":
             warn("on-error-ignore",
                  f"step '{step.id}': failures will be silently ignored")
+        # D4 migration layer, model= only -- never decider_model (a raw model
+        # id there, e.g. "opus", is meant to reach the runner literally).
+        # Backend-agnostic on purpose: model-not-canonical above only checks
+        # under backend="pi", but a legacy name reaches the alias on every
+        # backend, so the nudge to rewrite it must be visible on every backend
+        # too.
+        if step.model in modelmap.LEGACY_ALIASES:
+            warn("model-legacy-name",
+                 f"step '{step.id}': model='{step.model}' is the pre-rename "
+                 "difficulty name; it still resolves via a temporary alias, "
+                 f"but should be rewritten to "
+                 f"'{modelmap.LEGACY_ALIASES[step.model]}'")
         if (isinstance(step, model.Step)
                 and not step.role and not step.tools):
             warn("tools-not-inherited",

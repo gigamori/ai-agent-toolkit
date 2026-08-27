@@ -87,7 +87,7 @@ When you ask the skill to build a workflow, expect this flow:
    should change each time you run it (these become *parameters*).
 2. **A plan table — this is your approval gate.** The agent shows every step it
    intends to create: what each does, which role and mode it uses, which AI tier
-   (`haiku`/`sonnet`/`opus`) and why, its inputs and outputs, and what happens on
+   (`basic`/`pro`/`ultra`) and why, its inputs and outputs, and what happens on
    error. **Read this table.** It is the moment to catch a misunderstanding
    cheaply — nothing has run yet.
 3. **You approve (or ask for changes).**
@@ -348,7 +348,7 @@ optional — at most one form (either a `role=` attribute **or** an inline
 | `id` | yes | — | Unique name (used in logs and for resume) |
 | `role` | no | — | Named role: a `.claude/agents/*.md` definition whose body is injected |
 | `mode` | no | — | Processing discipline (see the mode list below) |
-| `model` | no | role's setting | Difficulty class: `haiku`, `sonnet`, or `opus` only |
+| `model` | no | role's setting | Difficulty class: `basic`, `pro`, `ultra` — a legacy `haiku`/`sonnet`/`opus` name still resolves (migration warning) |
 | `effort` | no | — | Reasoning effort: `low` … `max` |
 | `output` | no | — | Variable name to store the result in |
 | `output-type` | no | `file` | `file` = save the response body to a file and store its path; `value` = store the response as a short value |
@@ -358,7 +358,7 @@ optional — at most one form (either a `role=` attribute **or** an inline
 | `expect-file` | no | — | Comma-separated file paths (with `{var}`) that must exist after the step; missing = failure |
 | `retry` | no | `0` | Times to re-run the identical prompt on failure |
 | `decider` | no | `human` | Who settles a decision request this step raises (see §8): `human` stops the run for your answer, `llm` lets an adjudicator model settle it on the spot. Also valid on `<workflow>` for the whole run |
-| `decider-model` | no | `opus` | The adjudicator's model when `decider="llm"` |
+| `decider-model` | no | `ultra` | The adjudicator's model when `decider="llm"` |
 | `timeout` | no | `600` | Seconds before the step is killed as a failure |
 | `on-error` | no | `fail` | `fail` (stop), `ignore` (record and continue), or `debug` (let the debug role diagnose). `debug` is **claude CLI only** — on pi the whole workflow is refused at startup (see §2) |
 
@@ -444,9 +444,9 @@ validation error.
 
 Write only the **difficulty class**, never a real model id:
 
-- `haiku` — mechanical extraction, formatting, simple transforms
-- `sonnet` — standard analysis and writing (use this when unsure)
-- `opus` — design, diagnosis, review-grade judgment
+- `basic` — mechanical extraction, formatting, simple transforms
+- `pro` — standard analysis and writing (use this when unsure)
+- `ultra` — design, diagnosis, review-grade judgment
 
 ### Control structures
 
@@ -576,8 +576,9 @@ What each piece does:
   `{{ }}`. A `{like_this}` matching a variable is substituted silently.
 - **Expecting `<parallel>` steps to share results.** They run independently and
   cannot read each other's `output`.
-- **Non-canonical `model=`.** Only `haiku`, `sonnet`, `opus` — never a real model
-  id.
+- **Non-canonical `model=`.** Only `basic`, `pro`, `ultra` — never a real model
+  id. A legacy `haiku`/`sonnet`/`opus` name is flagged separately
+  (`model-legacy-name`), not by this warning.
 - **An undersized `max`.** It must cover loops and retries, or the run stops
   early. Set it to roughly 1.5–2× your expected step count.
 
@@ -587,7 +588,7 @@ What each piece does:
 2. Validate: `wfrun validate workflows/my-flow.xml` — fix every error, and
    review warnings (undersized `max`, a non-writing mode given write tools, a
    step with no named role to inherit tools from and no `tools=` of its own, a
-   non-canonical `model=`).
+   non-canonical `model=`, or a legacy `model=` name pending migration).
 3. See the shape: `wfrun plan workflows/my-flow.xml` (step tree) and, for
    branchy flows, `wfrun viz workflows/my-flow.xml --out my-flow.mmd` (diagram).
 4. Run it: `wfrun run workflows/my-flow.xml -p target=… --permission-mode acceptEdits`.

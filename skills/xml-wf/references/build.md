@@ -60,9 +60,9 @@ approval gate meaningful when starting from a sketch rather than a blank slate.
 Design principles (follow "Workflow authoring guidelines" in spec.md):
 - One step = one single-responsibility task completable by one agent.
   Split at every boundary where the role, mode, or rules change
-- **Assign `model=` by difficulty, canonical names only**: `haiku` =
-  mechanical extraction / formatting / simple transforms; `sonnet` = standard
-  analysis and writing (the default when unsure); `opus` = design, diagnosis,
+- **Assign `model=` by difficulty, canonical names only**: `basic` =
+  mechanical extraction / formatting / simple transforms; `pro` = standard
+  analysis and writing (the default when unsure); `ultra` = design, diagnosis,
   review-grade judgment. State the reason in the plan table's model column;
   the user approves the tier judgments together with the plan. The rules that
   constrain this choice — why these are classes and not models, which concrete
@@ -74,7 +74,7 @@ Design principles (follow "Workflow authoring guidelines" in spec.md):
   predicted the fork). What IS the builder's call:
   - **`decider=`** (workflow or per-step): default `human` stops the run at a
     fork for a `resume --answer`; `llm` lets an adjudicator (`decider-model=`,
-    default `opus`) settle it unattended — capped at 2 rulings per step visit,
+    default `ultra`) settle it unattended — capped at 2 rulings per step visit,
     with irreversible / outward-facing / goal-changing forks escalated to a
     human regardless. Declare `llm` only where unattended operation is worth
     a ruling made under the same contract the work was produced under
@@ -173,14 +173,17 @@ place such an ID belongs in a workflow.
 **What `wfrun validate` checks depends on the backend.** Under `--backend pi`
 it resolves every `model=` and every adjudicator an `llm` decider would
 actually be sent, then matches each against `pi --list-models`: a name matching
-nothing is an **error** (`pi-model-unavailable`), a non-canonical `model=` is a
-warning (`model-not-canonical`), and an unreadable catalog is the warning
-`pi-model-unverified` rather than a pass. The match mirrors pi's own resolver —
+nothing is an **error** (`pi-model-unavailable`), a `model=` that is neither
+canonical nor a legacy name is a warning (`model-not-canonical`), a legacy
+`model=` (`haiku`/`sonnet`/`opus`) is instead the warning `model-legacy-name`,
+and an unreadable catalog is the warning `pi-model-unverified` rather than a
+pass. The match mirrors pi's own resolver —
 exact on `id`/`provider/id`, else substring on `id` — so `opus` reaches
-`opus[1m]` and the default adjudicator is not flagged. Under `cc` **no model
-name is checked**: those runs stay inside the canonical vocabulary, which
-`model_map.json` binds to claude CLI names, so there is no catalog for a name
-to be missing from.
+`opus[1m]` and the default adjudicator is not flagged. Under `cc` no model is
+matched against a catalog — there is no catalog for a name to be missing from,
+since `model_map.json` binds `cc` to claude CLI names directly — but a legacy
+`model=` still warns `model-legacy-name` there: that check is backend-agnostic
+on purpose, so the migration nudge is visible under the default backend too.
 
 **Approved candidates per layer (2026-08-17).** The split records which role
 each model was measured in — it is not a cost ranking, and fitness for one
@@ -188,12 +191,57 @@ layer never transfers to the other.
 
 | Layer | What runs on it | Candidates |
 |---|---|---|
-| Orchestrator | a step, a delegated turn, an adjudication | `opus`, `gpt-5.6-terra`, `gemini-3.6-flash` |
+| Orchestrator | the agent that drives a run, by following `SKILL.md` and a harness reference | `opus`, `gpt-5.6-terra`, `gemini-3.6-flash` |
 | Measurement | an eval or sampling harness, where per-sample cost decides how large N can be | `sonnet`, `gpt-5.6-luna`, `gemini-3.5-flash-lite` |
 
-Both tables in `model_map.json` currently bind all three classes to the
-identity (Anthropic) names, so choosing a non-Anthropic candidate means editing
-that table's values.
+**This list does not constrain:**
+
+- `execution-profiles.md`'s CC and Pi cells — these are delegated children.
+- `model_map.json`'s `cc` and `llm` values — same.
+- `model=` on an xml-wf step — a delegated child, and after this rename a tier
+  name rather than a model name at all.
+- an `ask=` judge model or a `decider-model=` adjudicator. An adjudicator is a
+  delegated call, not a driver. The row above used to call this "an
+  adjudication" — the single most misleading phrase in it — and that wording
+  has been removed.
+
+**What the list DOES constrain — the positive set, enumerated per skill and
+per backend:**
+
+| Site | Constrained by the Orchestrator list? |
+|---|---|
+| mode-orchestrator's own orchestrating agent, CC facet | **yes** |
+| mode-orchestrator's own orchestrating agent, Pi facet | **yes** |
+| xml-wf under `run-llm` — the hosting session that executes the dispatch lines | **yes**, though xml-wf does not select it; the host does |
+| xml-wf under `run-cc` / `run-pi` | **no — nothing at all**. `wfrun` is Python; there is no LLM driver in the run, so every model is a delegated child |
+| any delegated child turn, either skill | **no** |
+
+The third and fourth rows are the ones that surprise: the list lives in this
+very document — xml-wf's own canonical reference — yet under xml-wf's two
+batch backends it governs nothing in that skill. That is not an oversight — a
+deterministic runner has no driver to constrain.
+
+**Honest note on adjudicators.** Removing "an adjudication" from the
+Orchestrator row leaves adjudicator selection ungoverned by this list, and
+this section will not pretend otherwise. The natural redirect is the Measured
+floors table's "Ruling on one" column below, but that column has exactly
+**one** populated cell (`google/gemini-3.1-flash-lite`, 40/40, 2026-08-13):
+`haiku` and `sonnet` carry dashes, and `opus` — the model `model.py`'s
+`DEFAULT_DECIDER_MODEL` (`ultra`) resolves to by default — has no row in that
+table at all. The redirect therefore points at an instrument that has never
+measured the default.
+
+- Adjudicator selection is currently governed by a single measurement of a
+  non-default model, not by the layer list above and not by a floor. Naming
+  the gap is what this note does; closing it is not in scope here.
+- What would close it is a ruling-rate measurement of the models actually used
+  as `decider-model=` — `opus` first. That is a separate task, not undertaken
+  in this pass.
+
+Both tables in `model_map.json` currently bind all three classes to Anthropic
+model names (the same `haiku`/`sonnet`/`opus` values used before the rename —
+no longer identity, since the keys are now `basic`/`pro`/`ultra`), so choosing
+a non-Anthropic candidate means editing that table's values.
 
 **Measured floors.** Two capabilities are separate and must be chosen
 separately: *raising* a `DECISION:` fork (noticing the task is under-specified
@@ -225,6 +273,15 @@ Reading these numbers:
 - `adjudicator_smoke.py`'s default moved to `3.5-flash-lite` on 2026-08-17 to
   match the measurement-layer list, so the 40/40 above belongs to
   `3.1-flash-lite` and a re-run is a new sample, not a continuation of it.
+- **The tier vocabulary itself carries no floor guarantee.** A tier value is
+  a difficulty label a builder assigns, not a model; the floor above belongs
+  to whichever model that tier currently resolves to in `model_map.json`
+  (or, for mode-orchestrator, `execution-profiles.md`'s cells), and must be
+  re-checked whenever that binding changes — a rebound tier does not inherit
+  the floor status of what it used to resolve to. Meeting or missing this
+  floor is never a reason to add the bound model to the Approved candidates
+  per layer table above (see "This list does not constrain" above) — that
+  list governs the run driver, not a delegated child.
 
 ## Backend compatibility
 

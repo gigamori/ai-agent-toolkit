@@ -40,17 +40,25 @@ What an editor of this skill has to do:
 
 ## Relationship to mode-orchestrator
 
-xml-wf and `skills/mode-orchestrator/` are separate products that independently reimplement the same idea — running an isolated, mode-tagged turn per step — over different substrates (xml-wf: `wfrun`'s deterministic Python control flow over `<step>` elements; mode-orchestrator: one subagent call per todolist step). Neither is canonical for the other; there is no shared file, and — with the one exception below — no propagation obligation between them.
+xml-wf and `skills/mode-orchestrator/` are separate products that independently reimplement the same idea — running an isolated, mode-tagged turn per step — over different substrates (xml-wf: `wfrun`'s deterministic Python control flow over `<step>` elements; mode-orchestrator: one subagent call per todolist step). Neither is canonical for the other; there is no shared file, and — with the exceptions below — no propagation obligation between them.
 
 When a change here alters step-execution semantics in a way that looks generally useful (e.g. how a stale completion signal is discarded, how the harness/model resolution works, retry/escalation policy), consider whether `skills/mode-orchestrator/` would benefit from the same idea and note it for its maintainer — a suggestion to evaluate, not an obligation to port.
 
-## Decision contract (aligned with mode-orchestrator — the one propagation obligation)
+## Decision contract (aligned with mode-orchestrator)
 
 The demand-driven decision channel (`DECISION:` requests, `references/spec.md` "Decision requests") shares a **deliberately aligned user-facing contract** with mode-orchestrator's decision loop: the decider vocabulary (`human`/`llm`, default `human`), the cap semantics (llm rulings only — human answers never consume it), and the escalation grounds (irreversible / outward-facing / goal-changing → human). The alignment exists because users move between the two skills, and defaults that disagree tax every unattended run's post-mortem.
 
 The implementations are independent (xml-wf enforces the contract in `wfrun` code; mode-orchestrator enforces it as prompt contract in `SKILL.md`) and some divergences are **deliberate** — e.g. xml-wf's run-llm orchestrator never reads a request body while mode-orchestrator permits a scoped read of its `## Decision request` section; xml-wf has continuation forms (a)/(b), mode-orchestrator has amend-plan. Do not "fix" those toward each other.
 
 When editing either side's decider vocabulary, defaults, cap semantics, or escalation grounds, the `generate-sibling-handoff` registry (`references/families.md`, **decision-contract** family) owns the propagation trigger and the consumer list — consult it before landing the change, and do not duplicate its content here. Precedent: the cap-scope alignment landed as P3 (`9168a52`).
+
+## Model-tier contract (aligned with mode-orchestrator)
+
+`references/build.md` § Model selection declares its tier vocabulary (`basic`/`pro`/`ultra`) canonical for both this skill and mode-orchestrator, so the three tier NAMES must not drift between them — the concrete model each tier BINDS to is a deliberate exception: bindings are independent per skill (`model_map.json` here, `execution-profiles.md` there) and are expected to differ. **Known, accepted inconsistency, not a missed edit** (same class as `build.md:70`'s own pointer into its still-old §3, logged 2026-08-28): the sentence above points at `build.md` § Model selection, but that section's own tier-defining sentence (lines 163-164) still reads `` `haiku` / `sonnet` / `opus` are difficulty *classes* `` — it cannot be rewritten truthfully until the deferred mode-orchestrator session unifies the vocabulary. See `references/families.md`'s `model-tier` family for the dated tracking.
+
+The implementations are independent (xml-wf enforces the vocabulary in code — `modelmap.py`'s `CANONICAL_MODELS`, `lint.py`'s `model-not-canonical`/`model-legacy-name` checks; mode-orchestrator's `execution-profiles.md` is prompt-read only, enforced by its own shape gate). As of 2026-08-28 the two sides are mid-rename: `execution-profiles.md` still carries the pre-rename `low`/`middle`/`high` values, a dated, temporary condition recorded in the registry row, not a defect.
+
+When editing the tier vocabulary, the approved-candidates-per-layer lists, or the measured floors, the `generate-sibling-handoff` registry (`references/families.md`, **model-tier** family) owns the propagation trigger and the consumer list — consult it before landing the change, and do not duplicate its content here.
 
 ## Model choice for evals
 

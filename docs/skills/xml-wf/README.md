@@ -190,9 +190,10 @@ file path.</task>
   `review-dev`, `survey`, plus aliases `verify` → debug and
   `implement` → execute.
 - **Model** (`model=`): a **difficulty class**, not a deployment — canonical
-  names are `haiku` (mechanical), `sonnet` (standard, the default), `opus`
+  names are `basic` (mechanical), `pro` (standard, the default), `ultra`
   (design/diagnosis/review). `scripts/wfrun/model_map.json` binds these to the
-  actual models at dispatch. The bundled map is the identity (zero-config).
+  actual models at dispatch. The bundled bindings need no configuration to
+  start (each tier resolves to a real model out of the box).
 
 Prompt precedence within a step: **Mode > Rules > Task > Role** — or
 **Mode > Rules > Task** when the step declares no role.
@@ -265,7 +266,7 @@ wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
 ```
 wfrun interp <text> --vars V            # interpolate {var} references
 wfrun eval   <expr> --vars V            # evaluate a test= expression → true/false
-wfrun ask    <question> [--vars V] [--model haiku] [--backend auto|cc|pi] [--quiet] [--log LOG]
+wfrun ask    <question> [--vars V] [--model basic] [--backend auto|cc|pi] [--quiet] [--log LOG]
 ```
 
 `--backend` (default `auto`): dispatches the judgment through the `claude` CLI
@@ -327,7 +328,7 @@ deliverable itself.
 `DECISION:` (options, recommendation, work state) instead of guessing. Under
 the default `decider="human"` the run stops (`awaiting-decision`, exit 4) and
 `wfrun resume <dir> --answer <step>=<file>` continues it; with
-`decider="llm"` an adjudicator model (`decider-model`, default `opus`)
+`decider="llm"` an adjudicator model (`decider-model`, default `ultra`)
 settles the fork in-process — capped at 2 rulings per step visit, with
 irreversible / outward-facing / goal-changing forks escalated to a human.
 Works on both backends (schema-forced ruling on claude, text ruling on pi).
