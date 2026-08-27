@@ -160,8 +160,8 @@ Canonical for both this skill and `mode-orchestrator` — that skill's
 `AUTHORING_CONTRACT.md` points here rather than restating the lists, so they
 cannot drift.
 
-**The rule: a concrete model ID is never written at runtime.** `haiku` /
-`sonnet` / `opus` are difficulty *classes*, not models. wfrun binds a class to
+**The rule: a concrete model ID is never written at runtime.** `basic` /
+`pro` / `ultra` are difficulty *classes*, not models. wfrun binds a class to
 an actual model per runner at dispatch via `model_map.json`, so the
 provider-qualified name belongs in that table (config) or in this section
 (documentation) — never in a step. `decider-model=` may name a

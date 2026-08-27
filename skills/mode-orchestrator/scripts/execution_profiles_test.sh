@@ -3,27 +3,23 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 file="$root/references/execution-profiles.md"
-expected_profile=$(cat <<'EOF'
-# Execution profiles
-
-| effort | use | CC | Pi |
-|---|---|---|---|
-| low | mechanical, unambiguous | haiku | gpt-5.6-luna |
-| middle | normal; default if unsure | sonnet | gpt-5.6-terra |
-| high | design, diagnosis, critical review, replanning | opus | gpt-5.6-sol |
-
-No cross-effort fallback.
-EOF
-)
 
 fail() {
   printf 'FAIL %s\n' "$1" >&2
   exit 1
 }
 
+check_bare_token() {
+  local cell=$1
+  [[ -n "$cell" ]] || fail "each effort row's CC and Pi cells must be a single bare token"
+  [[ "$cell" =~ [[:space:],] ]] && fail "each effort row's CC and Pi cells must be a single bare token"
+  return 0
+}
+
 validate_profile() {
   local profile=$1 line lower index
   local -a lines=() table_rows=()
+  local fallback_index=-1
 
   [[ -f "$profile" ]] || fail "profile is missing"
   mapfile -t lines < "$profile"
@@ -31,7 +27,8 @@ validate_profile() {
     lines[$index]=${lines[$index]%$'\r'}
   done
 
-  for line in "${lines[@]}"; do
+  for index in "${!lines[@]}"; do
+    line="${lines[$index]}"
     lower=${line,,}
     if [[ "$lower" == *provider* || "$lower" == *vendor* || "$lower" == *thinking* || "$lower" == *candidate* ]]; then
       fail "profile contains an unsupported field"
@@ -39,24 +36,35 @@ validate_profile() {
     if [[ "$lower" == *fallback* && "$line" != 'No cross-effort fallback.' ]]; then
       fail "profile contains a contradictory fallback rule"
     fi
+    if [[ "$line" == 'No cross-effort fallback.' ]]; then
+      fallback_index=$index
+    fi
     if [[ "$line" == \|* ]]; then
       table_rows+=("$line")
     fi
   done
 
   (( ${#table_rows[@]} == 5 )) || fail "table must contain a header, divider, and exactly three effort rows"
-  [[ "${lines[*]}" == *'No cross-effort fallback.'* ]] || fail "profile must contain the required no-fallback rule"
-  (( ${#lines[@]} == 9 )) || fail "profile must have exactly nine lines"
-  [[ "${lines[0]}" == '# Execution profiles' ]] || fail "profile title is invalid"
-  [[ -z "${lines[1]}" && -z "${lines[7]}" ]] || fail "profile spacing is invalid"
-  [[ "${lines[2]}" == '| effort | use | CC | Pi |' ]] || fail "header must be exactly effort, use, CC, Pi"
-  [[ "${lines[3]}" == '|---|---|---|---|' ]] || fail "table divider is invalid"
-  [[ "${lines[4]}" == '| low | mechanical, unambiguous | haiku | gpt-5.6-luna |' ]] || fail "low row must match the required mapping"
-  [[ "${lines[5]}" == '| middle | normal; default if unsure | sonnet | gpt-5.6-terra |' ]] || fail "middle row must match the required mapping"
-  [[ "${lines[6]}" == '| high | design, diagnosis, critical review, replanning | opus | gpt-5.6-sol |' ]] || fail "high row must match the required mapping"
-  [[ "${lines[8]}" == 'No cross-effort fallback.' ]] || fail "profile must end with the required no-fallback rule"
-  actual=$(tr -d '\r' < "$profile")
-  [[ "$actual" == "$expected_profile" ]] || fail "profile content differs from the full required contract"
+  [[ "${lines[0]:-}" == '# Execution profiles' ]] || fail "profile title is invalid"
+  [[ -z "${lines[1]:-}" && -z "${lines[7]:-}" ]] || fail "profile spacing is invalid"
+  [[ "${lines[2]:-}" == '| effort | use | CC | Pi |' ]] || fail "header must be exactly effort, use, CC, Pi"
+  [[ "${lines[3]:-}" == '|---|---|---|---|' ]] || fail "table divider is invalid"
+  [[ "${lines[4]:-}" == '| basic |'* ]] || fail "effort rows must appear in order basic, pro, ultra"
+  [[ "${lines[5]:-}" == '| pro |'* ]] || fail "effort rows must appear in order basic, pro, ultra"
+  [[ "${lines[6]:-}" == '| ultra |'* ]] || fail "effort rows must appear in order basic, pro, ultra"
+
+  local idx nf cc pi
+  for idx in 4 5 6; do
+    nf=$(awk -F'|' '{print NF}' <<< "${lines[$idx]}")
+    (( nf == 6 )) || fail "each effort row must have exactly four columns"
+    cc=$(awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $4); print $4}' <<< "${lines[$idx]}")
+    pi=$(awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $5); print $5}' <<< "${lines[$idx]}")
+    check_bare_token "$cc"
+    check_bare_token "$pi"
+  done
+
+  (( fallback_index >= 0 )) || fail "profile must contain the required no-fallback rule"
+  (( fallback_index == ${#lines[@]} - 1 )) || fail "no-fallback rule must be the final line"
 }
 
 expect_rejection() {
@@ -77,37 +85,49 @@ validate_profile "$file"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+candidate="$tmp/title-invalid.md"
+sed '1s/.*/# execution profiles/' "$file" > "$candidate"
+expect_rejection "title" "profile title is invalid" "$candidate"
+
+candidate="$tmp/blank-spacing-after-title.md"
+sed '2s/^$/NOTE/' "$file" > "$candidate"
+expect_rejection "blank spacing after title" "profile spacing is invalid" "$candidate"
+
+candidate="$tmp/blank-spacing-before-fallback.md"
+sed '8s/^$/NOTE/' "$file" > "$candidate"
+expect_rejection "blank spacing before fallback" "profile spacing is invalid" "$candidate"
+
 candidate="$tmp/header-reorder.md"
 sed 's/| effort | use | CC | Pi |/| effort | use | Pi | CC |/' "$file" > "$candidate"
 expect_rejection "header reorder" "header must be exactly effort, use, CC, Pi" "$candidate"
 
-candidate="$tmp/cc-pi-swap.md"
-sed \
-  -e 's/| low | mechanical, unambiguous | haiku | gpt-5.6-luna |/| low | mechanical, unambiguous | gpt-5.6-luna | haiku |/' \
-  -e 's/| middle | normal; default if unsure | sonnet | gpt-5.6-terra |/| middle | normal; default if unsure | gpt-5.6-terra | sonnet |/' \
-  -e 's/| high | design, diagnosis, critical review, replanning | opus | gpt-5.6-sol |/| high | design, diagnosis, critical review, replanning | gpt-5.6-sol | opus |/' \
-  "$file" > "$candidate"
-expect_rejection "CC/Pi cell swap" "low row must match the required mapping" "$candidate"
+candidate="$tmp/divider-invalid.md"
+sed '4s/.*/|----|---|---|---|/' "$file" > "$candidate"
+expect_rejection "divider" "table divider is invalid" "$candidate"
 
 candidate="$tmp/missing-effort-row.md"
-sed '/^| middle |/d' "$file" > "$candidate"
+sed '/^| pro |/d' "$file" > "$candidate"
 expect_rejection "missing effort row" "table must contain a header, divider, and exactly three effort rows" "$candidate"
 
 candidate="$tmp/extra-effort-row.md"
-awk '{ print } /^\| high \|/ { print "| extra | unsupported | unsupported | unsupported |" }' "$file" > "$candidate"
+awk '{ print } /^\| ultra \|/ { print "| extra | unsupported | unsupported | unsupported |" }' "$file" > "$candidate"
 expect_rejection "extra effort row" "table must contain a header, divider, and exactly three effort rows" "$candidate"
 
-candidate="$tmp/extra-column.md"
-awk 'NR >= 3 && NR <= 7 { sub(/\r$/, ""); sub(/\|$/, "| extra |") } { print }' "$file" > "$candidate"
-expect_rejection "extra column" "header must be exactly effort, use, CC, Pi" "$candidate"
+candidate="$tmp/row-order.md"
+awk '{lines[NR]=$0} END{tmp=lines[6]; lines[6]=lines[7]; lines[7]=tmp; for(i=1;i<=NR;i++) print lines[i]}' "$file" > "$candidate"
+expect_rejection "row order" "effort rows must appear in order basic, pro, ultra" "$candidate"
 
-candidate="$tmp/wrong-mapping.md"
-sed 's/| low | mechanical, unambiguous | haiku | gpt-5.6-luna |/| low | mechanical, unambiguous | sonnet | gpt-5.6-luna |/' "$file" > "$candidate"
-expect_rejection "wrong mapping" "low row must match the required mapping" "$candidate"
+candidate="$tmp/extra-column.md"
+sed '7s/|$/| extra |/' "$file" > "$candidate"
+expect_rejection "extra column" "each effort row must have exactly four columns" "$candidate"
 
 candidate="$tmp/candidate-list.md"
-sed 's/| low | mechanical, unambiguous | haiku | gpt-5.6-luna |/| low | mechanical, unambiguous | haiku, sonnet | gpt-5.6-luna |/' "$file" > "$candidate"
-expect_rejection "candidate list" "low row must match the required mapping" "$candidate"
+sed '5s/haiku/haiku, sonnet/' "$file" > "$candidate"
+expect_rejection "candidate list" "each effort row's CC and Pi cells must be a single bare token" "$candidate"
+
+candidate="$tmp/whitespace-token.md"
+sed '6s/gpt-5.6-terra/gpt 5.6 terra/' "$file" > "$candidate"
+expect_rejection "whitespace token" "each effort row's CC and Pi cells must be a single bare token" "$candidate"
 
 candidate="$tmp/provider-field.md"
 sed 's/| effort | use | CC | Pi |/| effort | use | CC | Pi | provider |/' "$file" > "$candidate"
@@ -124,5 +144,9 @@ expect_rejection "missing no-fallback rule" "profile must contain the required n
 candidate="$tmp/contradictory-fallback.md"
 printf '%s\nCross-effort fallback is allowed.\n' "$(<"$file")" > "$candidate"
 expect_rejection "contradictory fallback text" "profile contains a contradictory fallback rule" "$candidate"
+
+candidate="$tmp/fallback-not-terminal.md"
+printf '%s\nExtra trailing line.\n' "$(<"$file")" > "$candidate"
+expect_rejection "fallback not terminal" "no-fallback rule must be the final line" "$candidate"
 
 printf '%s\n' "passed execution profile gate"

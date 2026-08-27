@@ -53,11 +53,11 @@ mode は hybrid で決定: ステップが mode を名指ししていれば hono
 
 ## ターンごとの effort と model
 
-`references/execution-profiles.md` は `low`、`middle`、`high` を harness ごとの
+`references/execution-profiles.md` は `basic`、`pro`、`ultra` を harness ごとの
 model へ対応付ける。全 autonomous ターンは解決済み model を planned override として受け取る。
 
 番号付き todolist の各ステップには、ordinal の後の最初の物理行のどこかに
-`(model: VALUE)` を最大1つ、`(effort: low|middle|high)` を最大1つ、
+`(model: VALUE)` を最大1つ、`(effort: basic|pro|ultra)` を最大1つ、
 `(workflow-step: ID)` を最大1つ置ける。継続行は task text である。空の値、
 重複キー、不正な effort、active workflow に無い ID、または active workflow 内の重複 ID は、承認または delegation の前に
 run を `blocked` にする。認識された metadata は残りの instruction を分類する前に除去し、
@@ -68,13 +68,13 @@ run を `blocked` にする。認識された metadata は残りの instruction 
    effort もある場合、plan はそれが無視されたことを警告する。
 2. `(effort: VALUE)` はその effort を source `step-effort` として選ぶ。
 3. `(workflow-step: ID)` はちょうど1つの一致する active workflow 行だけを選ぶ。重複 ID は block する。pin された
-   `low`、`middle`、`high` の cell は source `workflow-effort` を使い、`(infer)` は
+   `basic`、`pro`、`ultra` の cell は source `workflow-effort` を使い、`(infer)` は
    最終 instruction の分類に委ね source `inferred-effort` になる。
 4. 明示 model、effort、bound pin のいずれも無い場合、orchestrator は最終 instruction を
-   `low`、`middle`、`high` に分類する。不明なら `middle` を使う。
+   `basic`、`pro`、`ultra` に分類する。不明なら `pro` を使う。
 
 workflow 行が sequence position、mode の一致、semantic similarity で自動的に bind されることは
-ない。挿入される debug と llm-decision ターンだけが、policy で選ばれた `high` effort を
+ない。挿入される debug と llm-decision ターンだけが、policy で選ばれた `ultra` effort を
 source `policy-effort` として使う。turn plan は effort、source、解決 model、
 `planned_override` を記録する。profile、mapping、pin の欠落または不正は `blocked` で停止し、
 harness default や effort 間 fallback は無い。
@@ -168,7 +168,7 @@ watchdog が縛るのは時間であって正しさではない。「ターン�
 
 workflow spec はタスク種別のガイダンスを供給する。推奨列の columns は安定した
 `id`、`mode`、`effort`、`task` であり、これに failure-policy cap が加わる。effort cell は
-`(infer)` または `low`、`middle`、`high` のいずれかで、model を名指しせず、mode に対する
+`(infer)` または `basic`、`pro`、`ultra` のいずれかで、model を名指しせず、mode に対する
 一般的な effort default も定めない。
 
 pin が適用されるのは、番号付き todolist ステップが明示的に `(workflow-step: ID)` を持つ場合だけ。
@@ -193,7 +193,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
   初期ターンの `"kind":"planned"` は常にこのliteralであり、modeは別に記録してkindにはしない。続けて次のような planned turn definition を書く:
 
   ```json
-  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"high","source":"inferred-effort","model":"opus","planned_override":"opus"}
+  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"ultra","source":"inferred-effort","model":"opus","planned_override":"opus"}
   ```
 
   delegation attempt が完了または abort した**後だけ**、実際の call evidence を追記する:
@@ -202,7 +202,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
   {"record":"attempt","turn":"03","attempt":1,"actual_override":"opus","delegation_ref":"raw/03-1.jsonl","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
   ```
 
-  `planned_override` は turn definition だけに属し、`actual_override` は対応する attempt record だけに属する。どちらも `haiku` のような exact model argument だけであり、`low/haiku` のような effort/model 表示ではない。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録する。検査用インデックスであり、再開可能なスケジューラではない。
+  `planned_override` は turn definition だけに属し、`actual_override` は対応する attempt record だけに属する。どちらも `haiku` のような exact model argument だけであり、`basic/haiku` のような effort/model 表示ではない。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録する。検査用インデックスであり、再開可能なスケジューラではない。
 
 これらはランタイム成果物 — コミットしない。
 

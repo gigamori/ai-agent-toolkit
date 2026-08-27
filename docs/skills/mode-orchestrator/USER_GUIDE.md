@@ -81,12 +81,12 @@ mode is inferred from the step's content.
 
 ## Per-turn effort and model
 
-`references/execution-profiles.md` maps `low`, `middle`, and `high` to one model
+`references/execution-profiles.md` maps `basic`, `pro`, and `ultra` to one model
 per harness. Every autonomous turn receives the resolved model as its planned
 override.
 
 A numbered todolist step may carry at most one `(model: VALUE)`, one
-`(effort: low|middle|high)`, and one `(workflow-step: ID)` anywhere on its first
+`(effort: basic|pro|ultra)`, and one `(workflow-step: ID)` anywhere on its first
 physical line after the ordinal. Continuation lines are task text. Empty values,
 duplicate keys, an invalid effort, an ID absent from the active workflow block,
 or a duplicate active workflow ID block the run before approval or delegation. Recognized metadata is removed before the
@@ -98,14 +98,14 @@ values.
    an effort is also present, the plan warns that it was ignored.
 2. `(effort: VALUE)` selects that effort with source `step-effort`.
 3. `(workflow-step: ID)` selects exactly one matching active workflow row only. A
-   duplicate ID blocks. A pinned `low`, `middle`, or `high` cell uses source `workflow-effort`; `(infer)` leaves
+   duplicate ID blocks. A pinned `basic`, `pro`, or `ultra` cell uses source `workflow-effort`; `(infer)` leaves
    the final instruction to classification with source `inferred-effort`.
 4. Without an explicit model, effort, or bound pin, the orchestrator classifies
-   the final instruction as `low`, `middle`, or `high`; use `middle` when unsure.
+   the final instruction as `basic`, `pro`, or `ultra`; use `pro` when unsure.
 
 A workflow row never binds by sequence position, matching mode, or semantic
 similarity. Inserted debug and llm-decision turns alone use the policy-selected
-`high` effort with source `policy-effort`. The plan records effort, source,
+`ultra` effort with source `policy-effort`. The plan records effort, source,
 resolved model, and `planned_override`. A missing or malformed profile, mapping,
 or pin stops as `blocked`; there is no harness-default or cross-effort fallback.
 
@@ -303,7 +303,7 @@ it cannot tell you a turn did the wrong thing.
 
 A workflow spec supplies task-type guidance: a recommended sequence with stable
 `id`, `mode`, `effort`, and `task` columns, plus the failure-policy caps. An
-effort cell is either `(infer)` or one of `low`, `middle`, and `high`; it never
+effort cell is either `(infer)` or one of `basic`, `pro`, and `ultra`; it never
 names a model or establishes a general effort default for a mode.
 
 A pin applies only when a numbered todolist step explicitly carries
@@ -342,7 +342,7 @@ Each invocation creates one run directory in the workspace, e.g.
   separately and is never a kind value. It then writes a planned turn definition:
 
   ```json
-  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"high","source":"inferred-effort","model":"opus","planned_override":"opus"}
+  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"ultra","source":"inferred-effort","model":"opus","planned_override":"opus"}
   ```
 
   Only after a delegation attempt finishes or aborts does it append actual call
@@ -354,7 +354,7 @@ Each invocation creates one run directory in the workspace, e.g.
 
   `planned_override` belongs only to the turn definition; `actual_override`
   belongs only to its attempt record. Each is the exact model argument only
-  (for example `haiku`), never an effort/model display such as `low/haiku`. A split step may have several planned turn
+  (for example `haiku`), never an effort/model display such as `basic/haiku`. A split step may have several planned turn
   keys with the same numbered `step`, and an aborted retry adds the next attempt
   to the same turn. The index also records statuses, decision insertions,
   amendments, human-decision waits, and the check that caused an aborted retry.

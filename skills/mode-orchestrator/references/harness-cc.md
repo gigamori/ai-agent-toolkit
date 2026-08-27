@@ -88,7 +88,7 @@ verdict is recorded as superseded; past it, or with no reply, the turn is
 `aborted` and re-run once. The window is not permission to wait — you classify
 with what you have when you classify.
 
-Measured 2026-08-27: a `middle`/sonnet documentation turn wrote its deliverable
+Measured 2026-08-27: a `pro`/sonnet documentation turn wrote its deliverable
 at 1393 s of the 1500 s `DEADLINE_EXECUTE` budget — a 7 % margin — and replied
 `ok` at ~1546 s, 46 s past the deadline. Two things follow and should not be
 merged. The ordering needed a rule, which is the clause above. Separately, a

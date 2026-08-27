@@ -24,8 +24,8 @@ permission layer, so no counterpart exists).
 `scripts/watchdog_test.sh`, `scripts/deny_scan_test.sh`, and
 `scripts/execution_profiles_test.sh` ship alongside those scripts but are not
 runtime. Run them with `bash scripts/<name>_test.sh` after touching the script
-or profile they cover. The profile gate validates the complete execution-profile
-contract and its mutation controls; the watchdog and denial suites build their
-own fake session logs, so they need no `claude` CLI and no prior run. Adaptive
-routing additionally requires the external evidence checker's registered
-`--self-test`; see `AUTHORING_CONTRACT.md`.
+or profile they cover. The profile gate validates execution-profile **shape**,
+not content — bound models are freely editable; the watchdog and denial suites
+build their own fake session logs, so they need no `claude` CLI and no prior
+run. Adaptive routing additionally requires the external evidence checker's
+registered `--self-test`; see `AUTHORING_CONTRACT.md`.

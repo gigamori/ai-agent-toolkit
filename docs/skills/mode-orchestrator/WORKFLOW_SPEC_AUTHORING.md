@@ -22,7 +22,7 @@ The todolist is authoritative. A spec supplies guidance and failure-policy caps:
 3. **Failure policy** — recovery cap and optional llm-decision insertion cap.
 4. **Authoring guidance** — task-type-specific todolist rules.
 
-Each effort cell is exactly `(infer)`, `low`, `middle`, or `high`. A spec must
+Each effort cell is exactly `(infer)`, `basic`, `pro`, or `ultra`. A spec must
 not name models or establish a general effort default keyed by mode. The shared
 profile resolves a selected effort to the harness model only after final-turn
 classification or an explicit bound pin.
@@ -30,7 +30,7 @@ classification or an explicit bound pin.
 ## Binding and precedence
 
 A numbered todolist step may carry at most one `(model: VALUE)`, one
-`(effort: low|middle|high)`, and one `(workflow-step: ID)` anywhere on its first
+`(effort: basic|pro|ultra)`, and one `(workflow-step: ID)` anywhere on its first
 physical line after the ordinal. Metadata on continuation lines is ordinary task
 text. Empty values, duplicate keys, invalid effort, an ID absent from the
 active workflow, and duplicate workflow row IDs are setup faults. Recognized metadata is removed before the

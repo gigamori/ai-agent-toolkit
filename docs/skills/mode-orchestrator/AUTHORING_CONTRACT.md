@@ -11,7 +11,7 @@ Because both facets live in one skill and Pi loads it via a symlink into `~/.pi/
 - Before landing a change to `SKILL.md`'s Execution steps, `references/execution-profiles.md`, or anything a harness reference file governs (delegation method, model override, time-bound signaling, the denial check), read BOTH `references/harness-cc.md` and `references/harness-pi.md` and judge explicitly whether each still holds.
 - A change scoped to one harness reference (e.g. a Claude Code watchdog fix) needs no edit to the other — but state that scoping decision, don't leave it implicit.
 - Re-run `scripts/watchdog_test.sh`, `scripts/deny_scan_test.sh` and `scripts/pi_reply_test.sh` after touching any of those scripts; all three are self-contained (they build their own fake session logs, or read committed fixtures) so this costs nothing to skip accidentally — don't. `pi_reply_test.sh` additionally guards a Pi-side contract: its `fixtures/*.jsonl` are carved from a real `pi -p --mode json` stream, so if a pi version bump changes that stream's shape, re-carve the fixtures from a fresh capture rather than editing them to match the extractor.
-- Run `scripts/execution_profiles_test.sh` after changing it or `references/execution-profiles.md`. It validates the full profile contract and its one-edge mutation controls: header order, CC/Pi mapping cells, exact effort-row count, column count, mappings, unsupported fields, and the no-fallback rule.
+- Run `scripts/execution_profiles_test.sh` after changing it or `references/execution-profiles.md`. It validates the profile's **shape**, not its content — bound models are freely editable — via one-edge mutation controls on: the title line, blank-line positions, the exact header, the exact divider, exactly three effort rows in order `basic`/`pro`/`ultra`, exactly four columns, each CC/Pi model cell being a single bare token (no comma, no whitespace), the absence of a `provider`/`vendor`/`thinking`/`candidate` field, and the no-fallback rule being present and terminal. **Abandoned, not replaced**: a CC/Pi cell swap and a wrong-but-well-formed model name in a cell are both unpinnable now that cell values are freely bound; no mechanical successor exists, and that class is covered by review only.
 - For adaptive routing changes, run the external evidence checker's `--self-test` from its evidence tree before accepting E2E evidence. Its registered immutable real-child artifacts and one-edge mutations cover adaptive/legacy selection, profile capture, planned/actual override separation, keyed command/raw/session/child correlation, dynamic lineage, amendment graphs, and provider identity. The tracked runtime does not load this checker; do not replace the registry with a temporary script.
 
 ### Re-carving `scripts/fixtures/` — scrub the captured machine paths
@@ -47,17 +47,25 @@ What an editor of this skill has to do:
 
 ## Relationship to xml-wf
 
-mode-orchestrator and `skills/xml-wf/` are separate products that independently reimplement the same idea — running an isolated, mode-tagged turn per step — over different substrates (mode-orchestrator: one subagent call per todolist step; xml-wf: `wfrun`'s deterministic Python control flow over `<step>` elements). Neither is canonical for the other; there is no shared file, and — with the one exception below — no propagation obligation between them.
+mode-orchestrator and `skills/xml-wf/` are separate products that independently reimplement the same idea — running an isolated, mode-tagged turn per step — over different substrates (mode-orchestrator: one subagent call per todolist step; xml-wf: `wfrun`'s deterministic Python control flow over `<step>` elements). Neither is canonical for the other; there is no shared file, and — with the exceptions below — no propagation obligation between them.
 
 When a change here alters step-execution semantics in a way that looks generally useful (e.g. how failures escalate to a debug turn, how a stale completion signal is discarded, how the harness/model resolution works), consider whether `skills/xml-wf/` would benefit from the same idea and note it for the xml-wf maintainer — a suggestion to evaluate, not an obligation to port.
 
-## Decision contract (aligned with xml-wf — the one propagation obligation)
+## Decision contract (aligned with xml-wf)
 
 The decision loop (`needs-decision`, `SKILL.md` step 7) shares a **deliberately aligned user-facing contract** with xml-wf's `DECISION:` channel: the decider vocabulary (`--decider human|llm`, default `human`), the cap semantics (inserted llm-decider turns only — human decisions never consume it), and the escalation grounds (irreversible / outward-facing / goal-changing → human). The alignment exists because users move between the two skills, and defaults that disagree tax every unattended run's post-mortem.
 
 The implementations are independent (this skill enforces the contract as prompt contract in `SKILL.md`; xml-wf enforces it in `wfrun` code) and some divergences are **deliberate** — e.g. this skill permits a scoped read of a turn's `## Decision request` section while xml-wf's run-llm orchestrator never reads a request body; this skill has amend-plan, xml-wf has continuation forms (a)/(b). Do not "fix" those toward each other.
 
 When editing either side's decider vocabulary, defaults, cap semantics, or escalation grounds, the `generate-sibling-handoff` registry (`references/families.md`, **decision-contract** family) owns the propagation trigger and the consumer list — consult it before landing the change, and do not duplicate its content here. Precedent: the cap-scope alignment landed as P3 (`9168a52`).
+
+## Model-tier contract (aligned with xml-wf)
+
+`skills/xml-wf/references/build.md` § Model selection declares its tier vocabulary (`basic`/`pro`/`ultra`) canonical for both this skill and xml-wf, so the three tier NAMES must not drift between them — the concrete model each tier BINDS to is a deliberate exception: bindings are independent per skill (`execution-profiles.md` here, `model_map.json` there) and are expected to differ.
+
+The implementations are independent (this skill's `execution-profiles.md` is prompt-read only, enforced by its own shape gate, `scripts/execution_profiles_test.sh`; xml-wf enforces the vocabulary in code — `modelmap.py`'s `CANONICAL_MODELS`, `lint.py`'s `model-not-canonical`/`model-legacy-name` checks). Both sides carry the renamed `basic`/`pro`/`ultra` vocabulary as of 2026-08-28.
+
+When editing the tier vocabulary, the approved-candidates-per-layer lists, or the measured floors, the `generate-sibling-handoff` registry (`references/families.md`, **model-tier** family) owns the propagation trigger and the consumer list — consult it before landing the change, and do not duplicate its content here.
 
 ## Mode prompt fragments
 

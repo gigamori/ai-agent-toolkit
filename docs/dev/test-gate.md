@@ -54,9 +54,15 @@ bash skills/mode-orchestrator/scripts/execution_profiles_test.sh
 ```
 
 `execution_profiles_test.sh` is the profile gate for
-`references/execution-profiles.md`. It validates the exact full profile contract
-and runs one-edge mutation controls for table shape, mappings, unsupported
-fields, and the no-fallback rule.
+`references/execution-profiles.md`. It validates the profile's **shape**, not
+its content — bound models are freely editable — via one-edge mutation
+controls on the title line, blank-line positions, the exact header and
+divider, exactly three effort rows in order `basic`/`pro`/`ultra`, exactly
+four columns, each CC/Pi cell being a single bare token, the absence of an
+unsupported field, and the no-fallback rule being present and terminal. A
+CC/Pi cell swap and a wrong-but-well-formed model name in a cell are both
+unpinnable once cell values are freely bound; that class is abandoned, not
+replaced, and is covered by review only.
 
 Adaptive routing also has an external evidence checker with a registered
 `--self-test`. It is outside this tracked test gate because it reads immutable

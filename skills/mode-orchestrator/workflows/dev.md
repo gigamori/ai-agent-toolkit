@@ -20,12 +20,12 @@ Development / implementation work: investigate → design → build → name the
 | integration-test | execute | (infer) | Run integration tests |
 | implementation-review | review-dev | (infer) | Review the implementation |
 | remediate | execute | (infer) | Remediate review findings |
-| docs-sync-judgement | survey | high | Docs-sync judgement — enumerate affected surfaces and a drift list, or record no update |
+| docs-sync-judgement | survey | ultra | Docs-sync judgement — enumerate affected surfaces and a drift list, or record no update |
 | docs-sync-apply | execute | (infer) | Docs-sync apply — apply the drift list; report no-op if empty |
 
 `(infer)` is no pin. A pin applies only to a todolist step declaring
 `(workflow-step: ID)`; a matching mode or position does not bind it. Step
-`docs-sync-judgement` pins `high` because cross-doc consistency and EN/JA
+`docs-sync-judgement` pins `ultra` because cross-doc consistency and EN/JA
 equivalence are judgement-heavy.
 
 ## Failure policy
@@ -37,4 +37,4 @@ equivalence are judgement-heavy.
 - Test design belongs in step 2, derived from the spec.
 - A `review-dev` finding needs a following `execute` remediation turn.
 - Class disposition is unconditional and names sites; it does not bulk-fix them.
-- Docs judgement and application stay separate; pin `high` only when a specific step needs it.
+- Docs judgement and application stay separate; pin `ultra` only when a specific step needs it.
