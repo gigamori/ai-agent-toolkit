@@ -59,7 +59,7 @@ file shows.
 | `max` | ✔ | Cap on total step executions (including loops, branches, and post-retry re-runs). Runaway protection |
 | `budget-usd` | - | Cumulative cost ceiling (USD). When exceeded, execution stops before the next step starts. Adjudication calls under `decider="llm"` count toward it |
 | `decider` | - | Who settles a `DECISION:` request a step raises (see "Decision requests"). Default `human`: the run stops and a person answers via `resume --answer`. `llm`: an adjudicator model settles it in-process and the run continues — capped at 2 rulings per step visit, and escalated forks still stop for a human. A step-level `decider=` overrides this |
-| `decider-model` | - | Model for the `llm` adjudicator (default `opus`; a canonical class, or any name the runner's model table accepts). Step attribute > workflow attribute > default |
+| `decider-model` | - | Model for the `llm` adjudicator (default `ultra`; a canonical class, or any name the runner's model table accepts). Step attribute > workflow attribute > default |
 
 ### `<param>` (direct child of workflow)
 

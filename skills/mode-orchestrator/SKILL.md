@@ -153,8 +153,8 @@ list — say so explicitly, write the revised remaining sequence yourself
 (the request's Impact field assumed a listed option and no longer
 holds), and expect the originating turn to be re-run.
 Do NOT adjudicate a decision that carries an irreversible or
-outward-facing effect, or that changes what this run is for. Return
-`needs-human` for those.
+outward-facing effect, that changes what this run is for, or that you
+are unsure of. Return `needs-human` for those.
 ```
 
 That escalation clause is not optional wording: without it, an `llm` decider collapses into deciding everything, which is exactly the failure the two-value `needs-decision` / `needs-human` split exists to prevent.
