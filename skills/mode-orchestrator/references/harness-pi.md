@@ -111,8 +111,9 @@ unchanged, with a control arm.**
   start with header text, not a slash token, so delegations measured to date
   were unaffected.
 
-Recommended invocation shape (write it to a shell variable first so the
-multi-line prompt is quoted exactly once). Both `<pi-cli-entry>` and
+Recommended invocation shape. **Assign the prompt to a shell variable on its
+own command first and reference it as `"$PROMPT"`** — an inline multi-line
+prompt has twice died at bash parse time before launching anything. Both `<pi-cli-entry>` and
 `<pi-reply>` are the values P0 already resolved and recorded — substitute them,
 do not re-derive them per turn:
 
@@ -350,6 +351,16 @@ again, same prompt file, same output path for the turn's deliverable. No
 distinct description is needed, since nothing keys off one. The child's own
 session file is named by a pi-generated UUID, so a re-run does not overwrite
 its aborted predecessor's transcript.
+
+**A command that dies before a child session exists is not an attempt.** It
+launched nothing and wrote nothing, so it takes no `attempt` record and
+consumes no retry: re-issue under the **same** `<turn-key>-<attempt>` and note
+the lost command in prose above the index's JSONL block. Numbering it as a
+second attempt would spend the single identical re-run Execution step 4 allows
+on the orchestrator's own quoting mistake, leaving nothing for the abort that
+rule exists to cover. Measured twice, 2026-08-28: both times the audit flagged
+`U-COMMAND-ATTEMPT` for two commands naming one attempt's raw path, and the
+second time that blocked a fixture registration.
 
 ## `--decider=human` waiting
 
