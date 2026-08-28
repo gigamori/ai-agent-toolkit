@@ -268,6 +268,12 @@ class TestModelMap(unittest.TestCase):
                     "allow_legacy", m.group(0),
                     f"{fname}: decider-model path must never opt in -- a raw pi "
                     f"model id like opus would be silently redirected: {m.group(0)}")
+        for fname in ("adjudicate.py", "viz.py"):
+            self.assertNotIn(
+                "allow_legacy", src[fname],
+                f"{fname}: every resolve here is a decider-model path, so the "
+                "whole file must stay free of the opt-in -- the per-site list "
+                "above cannot see one added at a site it does not name")
 
 
 class TestViz(unittest.TestCase):

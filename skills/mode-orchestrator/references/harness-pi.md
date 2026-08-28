@@ -359,7 +359,7 @@ attempt that was made: record it with `reported_status: null`,
 attempt number. That is what Execution step 4's identical re-run is for, and a
 run of 2026-08-24 did exactly this — `03-1` aborted at `unexpected EOF`, `03-2`
 returned `ok`, the run completed, and the adaptive audit passes that shape (it
-is the frozen `profile-attempt-failed` fixture). Re-issuing under the SAME key
+is the frozen `pi-real-child` fixture). Re-issuing under the SAME key
 instead makes two commands name one attempt, which the audit reports as
 `U-COMMAND-ATTEMPT`: measured twice on 2026-08-28, and the second time it cost
 the run its fixture registration.
