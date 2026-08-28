@@ -205,11 +205,20 @@ system, the status is `blocked` — never `failed`, never `needs-decision`,
 and never `ok`: this holds even if you judged the denied call inessential
 and finished the task without it. Whether a denial matters is not yours
 to decide.
+Use `failed` only when your deliverable also carries a `## Failure
+report` section with all five fields, under these exact names: Error
+(one sentence) / Reproduction (the exact command) / Error output /
+Target file(s) / Context (language / framework / OS / deps). Use these
+five names literally; no other way of structuring a failure substitutes
+for them. A section missing any of these is read as `needs-human`, not
+as a failure to diagnose.
 <the `## Decision request` clause above, verbatim>
 <the placement rules above, verbatim>
 Never write a bare mode:<name> or role:<value> token anywhere in your
 reply; when you must mention one, wrap it in backticks.
 ```
+
+The `## Failure report` clause is in the prompt for the same reason the `## Decision request` one is: Execution step 3 states the five fields, but a turn never reads that file section — it acts on what was injected, and until 2026-08-29 nothing about the five fields was. Measured that day: an `execute` turn returned `failed` and wrote its failure as Cause / Evidence / Scope-Impact / Unknowns / Remedy — the neighbourhood of `_common.md`'s `reason`, which *is* injected verbatim — matching none of the five names and omitting `Context` entirely. The inserted `recovery-debug` turn then did exactly what step 6.1 says and returned `needs-human` on the missing fields, so the gate held and the run stopped correctly; what was lost was the diagnosis, and one recovery cycle spent on a report nothing could read.
 
 For every other autonomous mode, the same block without `failed`:
 
@@ -376,7 +385,7 @@ For each turn record, in order:
 - **The self-judged half of `blocked` is unevenly effective across harnesses.** On Claude Code the permission layer stops most irreversible calls physically and `deny_scan.sh` catches what the turn then misreports, so the in-prompt clause is a second line behind a real one. On Pi there is no permission layer and no denial check, so the clause is the *only* line — enforcement there is a subagent reading a sentence. The same asymmetry applies to its "unless a rule permits it" half: on Claude Code the settings allowlist decides mechanically, on Pi the subagent decides by reading.
 - **A `--decider=human` run degrades to a stop when nothing can answer.** Under `claude -p` or any non-interactive launch, ending the turn ends the run. This is intended and the `## Decision request` survives on disk, but it means the same flags produce a completed run interactively and a stopped one headlessly — the difference is in how it was launched, not in the plan.
 - **An `llm` decider is judging work produced under the same contract it runs under.** It is a different turn with a clean context, not an independent reviewer, and nothing prevents it from finding the originating turn's framing persuasive because it shares the framing. The escalation clause (irreversible, outward-facing, or purpose-changing decisions go to a human) bounds the damage rather than removing the bias.
-- **Each clause added to the injected prompt dilutes the ones already there.** The reply contract, the deliverable-write note, the recommendation rule, the irreversible-effect clause and the `## Decision request` fields now share one prefix, and prompt-level rules decay with length. The status line is the one invariant the whole design rests on, so watch ordinary turns' contract compliance — not just the malformed-request fallback — when judging whether this has gone too far.
+- **Each clause added to the injected prompt dilutes the ones already there.** The reply contract, the deliverable-write note, the recommendation rule, the irreversible-effect clause, the `## Decision request` fields and — on an `execute` turn — the `## Failure report` fields now share one prefix, and prompt-level rules decay with length. The status line is the one invariant the whole design rests on, so watch ordinary turns' contract compliance — not just the malformed-request fallback — when judging whether this has gone too far.
 - A `debug` turn's quality depends on the failed turn's Failure report being complete; the five-field contract (and the `needs-human` fallback when fields are missing) mitigates but does not eliminate this.
 - A change-report is self-attested: an `execute` turn's account of which file it edited (and whether it edited at all) is not independently guaranteed. Trust the run's end state (re-run the planned check), not the report's authorship claims.
 - The status line is prompt-level, not machine-enforced — a subagent can omit or malform it. The design is deliberately fail-safe in one direction: an absent line reads as `aborted` (abnormal), never as success, so the cost of non-compliance is one extra re-run rather than a silently accepted turn. It gives no protection in the other direction — a subagent that emits `status: ok` without doing the work is indistinguishable from one that did (same limitation as the self-attestation risk above). Forbidding a `status:` line in the deliverable removes only the case where one turn contradicts *itself*; it does nothing about a turn that is simply wrong in its reply.
