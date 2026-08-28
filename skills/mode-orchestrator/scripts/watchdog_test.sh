@@ -4,6 +4,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WATCHDOG="$HERE/watchdog.sh"
+HARNESS_CC="$HERE/../references/harness-cc.md"
 
 [ -f "$WATCHDOG" ] || { echo "watchdog.sh not found next to this script" >&2; exit 2; }
 
@@ -219,6 +220,7 @@ expect_grep "DEADLINE_REVIEW is 900" '^DEADLINE_REVIEW=900$' "$WATCHDOG"
 expect_grep "DEADLINE_REVIEW_DEV is 1800" '^DEADLINE_REVIEW_DEV=1800$' "$WATCHDOG"
 expect_grep "DEADLINE_DEFAULT is 900" '^DEADLINE_DEFAULT=900$' "$WATCHDOG"
 expect_grep "POLL is 15" '^POLL=15$' "$WATCHDOG"
+expect_grep "the P2 launch line execs, so stopping the task reaches the watchdog" '^exec bash <this skill.s dir>/scripts/watchdog\.sh ' "$HARNESS_CC"
 
 echo
 printf '%d passed, %d failed (%d total)\n' "$PASS" "$FAIL" "$N"

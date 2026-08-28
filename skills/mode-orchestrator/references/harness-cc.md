@@ -27,8 +27,16 @@ returns only a ≤3-line gist followed by the reply-contract status line (see
 background command:
 
 ```
-bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable path> --desc "<the description given on the delegation call, verbatim>" --mode <the turn's mode>
+exec bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable path> --desc "<the description given on the delegation call, verbatim>" --mode <the turn's mode>
 ```
+
+**The `exec` is load-bearing — do not drop it.** Without it the background
+command runs the watchdog as a child of a wrapper shell, and stopping the task
+kills only the wrapper: the stop reports success while the watchdog keeps
+polling to its full deadline and fires a stale verdict into a run that has
+already ended. Measured both arms 2026-08-28 — without `exec` the trace kept
+growing after the stop returned success; with it the process was gone and the
+trace frozen. `watchdog_test.sh` pins the `exec`.
 
 `<this skill's dir>` is the directory this reference file was read from, so
 Step -1 already put it in hand — there is nothing to derive and no Claude Code
