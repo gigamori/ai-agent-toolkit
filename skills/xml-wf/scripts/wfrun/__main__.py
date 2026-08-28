@@ -544,8 +544,11 @@ def cmd_ask(args) -> int:
 
     backend = _resolve_backend(args.backend)
 
-    try:  # "cc" table for the claude CLI, "llm" table for everything else
-        ask_model = modelmap.resolve(args.model, "cc" if backend == "cc" else "llm")
+    try:  # "cc" table for the claude CLI, "llm" table for everything else.
+        # allow_legacy mirrors the ask-model attribute path (_map_model): the
+        # flag's default is a tier, so this is a tier-vocabulary interface.
+        ask_model = modelmap.resolve(args.model, "cc" if backend == "cc" else "llm",
+                                     allow_legacy=True)
     except modelmap.ModelMapError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -965,7 +968,7 @@ def cmd_dispatch(args) -> int:
 
     dispatch_model, dispatch_tools = stepio.dispatch_for(step, agents_cache)
     try:  # a broken hand-edited model map is a startup error, not silently ignored
-        dispatch_model = modelmap.resolve(dispatch_model, "cc")
+        dispatch_model = modelmap.resolve(dispatch_model, "cc", allow_legacy=True)
     except modelmap.ModelMapError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

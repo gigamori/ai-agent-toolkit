@@ -216,6 +216,45 @@ class TestModelMap(unittest.TestCase):
                 modelmap.resolve("opus", "llm", path, allow_legacy=True), "fable")
             self.assertEqual(modelmap.resolve("opus", "llm", path), "opus")
 
+    def test_allow_legacy_applies_on_the_cc_table_too(self):
+        import json as _json
+        import tempfile
+        from wfrun import modelmap
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "mm.json"
+            path.write_text(_json.dumps({"cc": {"ultra": "fable"}}),
+                            encoding="utf-8")
+            self.assertEqual(
+                modelmap.resolve("opus", "cc", path, allow_legacy=True), "fable",
+                "cc dispatchers opting in must reach the alias, same as llm")
+            self.assertEqual(modelmap.resolve("opus", "cc", path), "opus")
+
+    def test_every_model_path_resolve_site_opts_into_the_alias(self):
+        import re
+        src = {name: (Path(__file__).resolve().parents[1] / "wfrun" / name)
+               .read_text(encoding="utf-8")
+               for name in ("__main__.py", "adp.py", "lint.py", "executor.py",
+                            "adjudicate.py", "viz.py")}
+        model_path_sites = [
+            ("executor.py", r"modelmap\.resolve\(name, self\._model_runner"),
+            ("__main__.py", r"modelmap\.resolve\(dispatch_model, \"llm\""),
+            ("__main__.py", r"modelmap\.resolve\(dispatch_model, \"cc\""),
+            ("__main__.py", r"modelmap\.resolve\(args\.model"),
+            ("adp.py", r"modelmap\.resolve\(debug_def\.model"),
+            ("lint.py", r"modelmap\.resolve\(step\.model"),
+        ]
+        for fname, pat in model_path_sites:
+            for m in re.finditer(pat + r"[^)]*\)", src[fname]):
+                self.assertIn(
+                    "allow_legacy=True", m.group(0),
+                    f"{fname}: model=-path site must opt into LEGACY_ALIASES "
+                    f"or two dispatchers diverge on a legacy name: {m.group(0)}")
+        for fname in ("adjudicate.py", "viz.py"):
+            self.assertNotIn(
+                "allow_legacy", src[fname],
+                f"{fname}: decider-model path must never opt in -- a raw pi "
+                "model id like opus would be silently redirected")
+
 
 class TestViz(unittest.TestCase):
     XML = """

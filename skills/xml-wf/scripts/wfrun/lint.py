@@ -83,7 +83,8 @@ def _lint_pi_models(wf: model.Workflow, steps, backend: str) -> list[Finding]:
                     f"step '{step.id}': model='{step.model}' is not a canonical "
                     f"difficulty name ({'/'.join(modelmap.CANONICAL_MODELS)}); "
                     "it bypasses model_map.json"))
-            note(f"step '{step.id}' model=", modelmap.resolve(step.model, "llm"))
+            note(f"step '{step.id}' model=",
+                 modelmap.resolve(step.model, "llm", allow_legacy=True))
         decider, decider_model = model.resolve_decider(wf, step)
         if decider == "llm":
             note(f"step '{step.id}' decider-model=",

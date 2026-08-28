@@ -48,7 +48,7 @@ def diagnose(step: model.Step, prompt: str, failure: CliResult, *,
     )
     res = run_claude(debug_prompt,
                      system_prompt=f"<role>\n{debug_def.prompt}\n</role>",
-                     model=modelmap.resolve(debug_def.model, "cc"),
+                     model=modelmap.resolve(debug_def.model, "cc", allow_legacy=True),
                      tools=debug_def.tools,
                      schema=DEBUG_SCHEMA, timeout=timeout, cwd=cwd)
     if not res.ok or not isinstance(res.structured, dict):
