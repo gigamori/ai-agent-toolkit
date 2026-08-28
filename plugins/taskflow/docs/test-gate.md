@@ -1,4 +1,4 @@
-# taskflow test knowledge gate (v0.2.8)
+# taskflow test knowledge gate (v0.2.9)
 
 Two mechanical rules over `plugins/taskflow/tests/`, the command that enforces them, and the
 scope decisions taken when they were introduced.

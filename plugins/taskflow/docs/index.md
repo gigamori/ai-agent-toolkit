@@ -1,4 +1,4 @@
-# taskflow internal docs (v0.2.8)
+# taskflow internal docs (v0.2.9)
 
 Design and maintenance documents for developers working on the plugin. User-facing documents
 live at the plugin root: [README](../README.md) / [README_ja](../README_ja.md),

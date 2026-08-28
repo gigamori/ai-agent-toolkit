@@ -1,4 +1,4 @@
-# taskflow test constraints (v0.2.8)
+# taskflow test constraints (v0.2.9)
 
 Facts about the world outside this repository that `plugins/taskflow/tests/` depends on.
 A test file cannot state these: it is read by agents that have only this checkout, and a
