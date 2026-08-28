@@ -26,10 +26,12 @@ The real, detectable corruption is a TORN FILE:
   `Path.write_text` truncates, then writes. If racer A reads while racer B is
   mid-write, A reads truncated content that no longer contains
   `<!-- @table:begin -->`. `replace_or_append_region` then falls into its
-  no-marker branch (rebuild_progress.py:180-181, Risk R7) and APPENDS a second
-  table region at the end. The result is a progress.md with two
-  `@table:begin` markers -- which taskflow explicitly forbids -- and/or free
-  text sections that the truncation ate.
+  no-marker branch (rebuild_progress.py::replace_or_append_region, Risk R7)
+  and APPENDS a second table region at the end. The result is a progress.md
+  with two `@table:begin` markers -- which taskflow explicitly forbids --
+  and/or free text sections that the truncation ate. The next rebuild collapses
+  the extra region; the eaten free text it cannot restore, which is why this
+  harness classifies both.
 
 So every trial is classified by the STRUCTURAL INTEGRITY of the final file,
 not by "whose write won".

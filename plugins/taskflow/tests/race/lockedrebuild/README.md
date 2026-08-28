@@ -23,7 +23,9 @@ The real, detectable corruption is a **torn file**:
 > `replace_or_append_region` then takes its no-marker branch (Risk R7) and
 > **appends a second table region** at the end. The result is a `progress.md`
 > with two `@table:begin` markers — which taskflow explicitly forbids — and/or
-> free-text sections that the truncation ate.
+> free-text sections that the truncation ate. The next rebuild collapses the
+> extra region; the eaten free text it cannot restore, which is why both are
+> classified.
 
 Each trial is therefore classified by the **structural integrity of the final
 file**, not by "whose write won":
