@@ -103,8 +103,8 @@ and the reply still arrive. **Grace window for SKILL.md Execution step 4's
 late-reply clause on this harness: 120 s past the deadline.** A well-formed
 `status:` line already in hand within that window classifies the turn, and the
 verdict is recorded as superseded; past it, or with no reply, the turn is
-`aborted` and re-run once. The window is not permission to wait — you classify
-with what you have when you classify.
+`aborted` and re-run once — subject to the one exception below. The window is
+not permission to wait — you classify with what you have when you classify.
 
 Measured 2026-08-27: a `pro`/sonnet documentation turn wrote its deliverable
 at 1393 s of the 1500 s `DEADLINE_EXECUTE` budget — a 7 % margin — and replied
@@ -114,6 +114,31 @@ deliverable consuming 93 % of budget is evidence the deadline is tight for
 turns of that scale; that is a threshold-tuning question, still open, and
 **raising the deadline would not have defined the ordering** — it would only
 have made the same undefined case rarer with a longer fuse.
+
+**Past the window, a reply classifies the turn only on independently verified
+same-turn provenance.** The window is an evidence rule, not a wait budget: what
+it buys cheaply is the assurance that the reply came from this turn's own live
+subagent and not a confused or dead one. That assurance can be bought directly
+instead, from evidence outside the reply, and needs both halves — (1) the
+subagent confirmed still live at reply time (`ListAgents`), and (2) the turn's
+end state verified against the run itself: the deliverable newer than this
+attempt's delegation — not merely present, since a re-run reuses the path — and
+the planned check re-run. Never the report's own account of itself, which is
+self-attested. With one half or neither, the verdict stands and the turn is
+`aborted`. Record which path applied.
+
+Measured 2026-08-29: an `execute` turn ending in `pnpm build && pnpm package`
+wrote its deliverable at 1327 s of the same 1500 s budget and replied `ok`
+~223 s past the deadline — outside the window, and classified by that second
+path. Discarding it would have re-run a non-idempotent `execute` turn whose
+full gate, build and package had all passed.
+
+That same turn is the tuning question's second point: 1327 s of 1500 s, 88 %,
+for a turn whose tail was a build and a package. Two points, one turn each, do
+not fix a new value — what would is a handful of build-bearing `execute` turns
+measured under the same budget. Until then `DEADLINE_EXECUTE` stands at 1500 s
+and the window stands at 120 s, because re-setting a threshold off two samples
+is the same move that put the first one here.
 
 ## `aborted` handling (Execution step 4)
 
