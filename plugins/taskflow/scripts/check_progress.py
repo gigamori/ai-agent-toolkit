@@ -20,6 +20,7 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
   10. duplicate basename — same task-md basename in >=2 locations under tasks/ (whole-tree walk)
   11. notes index arity  — project-notes/index.md data rows must have exactly 4
                            columns (File | Description | Tags | Updated)
+  12. duplicate @table   — progress.md must hold exactly 1 @table region
 
 Note: progress.md's Completed table lists every task in tasks/2_done/ — the
 file is never truncated (context-side truncation is view_progress.py's job and
@@ -57,6 +58,7 @@ H1_RE = re.compile(r"^# (.+)$", re.MULTILINE)
 TASK_REF_RE = re.compile(r"@tasks/([012]_(?:todo|in_progress|done))/[^\s)|`\]*]+")
 NOTES_REF_RE = re.compile(r"@(?:project-notes|notes)/([^\s)|`\]*]+)")
 
+TABLE_BEGIN = "<!-- @table:begin -->"
 TASK_STATUSES = ("0_todo", "1_in_progress", "2_done")
 SECTION_TO_STATUS = {
     "TODO": "0_todo",
@@ -564,6 +566,32 @@ def check_duplicate_basename(project_dir: Path, result: Result) -> None:
         )
 
 
+def check_duplicate_table_region(project_dir: Path, result: Result) -> None:
+    """#12 — progress.md must hold exactly one @table region.
+
+    A second region is never authored by hand: it is what a writer leaves
+    behind when it misses the markers and appends instead of replacing. The
+    damage is silent, because view_progress.py caps the FIRST region only —
+    every extra Completed table then reaches an agent's context uncapped.
+    `/progress rebuild` collapses them.
+    """
+    progress = project_dir / "progress.md"
+    content = read_text(progress)
+    if content is None:
+        return
+    count = content.count(TABLE_BEGIN)
+    if count < 2:
+        return
+    result.add(
+        "duplicate_table_region",
+        "violation",
+        str(progress),
+        f"progress.md holds {count} @table regions; exactly 1 is allowed — "
+        "view_progress.py caps only the first, so the others reach context "
+        "uncapped; run /progress rebuild to collapse them",
+    )
+
+
 # ============================================================================
 # Output
 # ============================================================================
@@ -637,6 +665,7 @@ def main(argv: list[str] | None = None) -> int:
     check_pending_approval(project_dir, result, args.stale_days)
     check_orphan_lock(project_dir, result)
     check_duplicate_basename(project_dir, result)
+    check_duplicate_table_region(project_dir, result)
 
     print_findings(result)
     return 1 if result.findings else 0

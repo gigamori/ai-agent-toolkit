@@ -71,6 +71,15 @@ no check fails when it drifts.
   Changing the entry form means changing both implementations and the shared spec, not
   relaxing the byte-exact assertion on either side. The mirror assertion lives in that
   repository's `binding.test.ts`. Verified 2026-08-08.
+- The two runtimes disagree about line endings on win32, and the shared files (`progress.md`,
+  the task markdown) are where it shows. CPython's text mode translates `\n` to the platform
+  separator on write unless `newline=` is passed, so a Python writer emits CRLF here; Node's
+  `readFileSync(p, "utf-8")` performs no translation, so the Pi side sees those `\r` bytes
+  while Python's own `read_text` hides them behind universal newlines. A `\n`-literal regex
+  on the Pi side therefore stops matching what this side wrote. An assertion that a writer
+  emits LF is only discriminating on win32; it passes vacuously on Linux and macOS, where
+  the untranslated and translated forms coincide. Observed 2026-08-29 against
+  `packages/taskflow` at `dist/task-rebuild.js`.
 
 ## The live machine — `_projects/_state/`
 

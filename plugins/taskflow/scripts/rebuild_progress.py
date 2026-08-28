@@ -12,6 +12,10 @@ tables (TODO / In Progress / Completed) into the <!-- @table:begin --> ...
 
 If progress.md does not exist, creates a minimal scaffold first.
 If the @table markers are absent, appends them at the end (Risk R7).
+If the file holds more than one region, keeps the first and drops the rest.
+Every write uses LF endings explicitly: progress.md and the task files are
+shared with the Pi taskflow extension, which reads them raw and matches `\n`,
+so a platform-translated CRLF write makes its markers unmatchable.
 The Completed table lists EVERY task in tasks/2_done/ — this file is never
 truncated. Bounding how many Completed rows reach an agent's context is
 view_progress.py's job, and it never writes to progress.md.
@@ -47,6 +51,7 @@ except (AttributeError, OSError):
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 H1_RE = re.compile(r"^# (.+)$", re.MULTILINE)
 
+LF = "\n"
 TABLE_BEGIN = "<!-- @table:begin -->"
 TABLE_END = "<!-- @table:end -->"
 TASK_STATUSES = ("0_todo", "1_in_progress", "2_done")
@@ -180,10 +185,29 @@ def replace_or_append_region(content: str, new_region: str) -> str:
         re.DOTALL,
     )
     replacement = f"{TABLE_BEGIN}\n{new_region}\n{TABLE_END}"
-    if pattern.search(content):
-        return pattern.sub(replacement, content)
-    sep = "" if content.endswith("\n") else "\n"
-    return f"{content}{sep}\n{replacement}\n"
+    matches = list(pattern.finditer(content))
+    if not matches:
+        sep = "" if content.endswith("\n") else "\n"
+        return f"{content}{sep}\n{replacement}\n"
+
+    # Exactly one region is legal. Keep the first, drop the rest — a duplicate
+    # is the visible residue of a writer that missed the markers and appended
+    # (a torn concurrent write, or a Pi-side rebuild that read the file raw
+    # while it still had CRLF endings). Replacing every match instead would
+    # preserve the duplicates forever, and only the first one is ever capped
+    # for context by view_progress.py.
+    parts: list[str] = []
+    prev = 0
+    for i, m in enumerate(matches):
+        gap = content[prev:m.start()]
+        if i == 0:
+            parts.append(gap)
+            parts.append(replacement)
+        elif gap.strip():
+            parts.append(gap)
+        prev = m.end()
+    parts.append(content[prev:])
+    return "".join(parts)
 
 
 def ensure_progress_md(project_dir: Path) -> Path:
@@ -196,7 +220,11 @@ def ensure_progress_md(project_dir: Path) -> Path:
     progress = project_dir / "progress.md"
     with write_lock(str(progress)):
         if not progress.exists():
-            progress.write_text(SCAFFOLD.format(name=project_dir.name), encoding="utf-8")
+            progress.write_text(
+                SCAFFOLD.format(name=project_dir.name),
+                encoding="utf-8",
+                newline=LF,
+            )
             return progress
         # File exists; ensure it has an H1 at the top (migration may have stripped it)
         content = read_text(progress) or ""
@@ -204,6 +232,7 @@ def ensure_progress_md(project_dir: Path) -> Path:
             progress.write_text(
                 f"# Progress: {project_dir.name}\n\n{content}",
                 encoding="utf-8",
+                newline=LF,
             )
     return progress
 
@@ -233,7 +262,9 @@ def write_region(progress: Path, region: str) -> bool:
     it writes, so a racing reader can observe a progress.md with no
     `@table:begin` marker, fall into `replace_or_append_region`'s append branch,
     and leave the file with TWO table regions plus whatever free text the
-    truncation ate.
+    truncation ate. The extra region is self-healed by the next rebuild (that
+    function keeps the first match and drops the rest); the eaten free text is
+    not, which is why the lock stays.
 
     Not covered, by design: an LLM/hand Edit-tool write, which cannot take this
     lock (the R-lock gap). See docs/architecture.md.
@@ -243,7 +274,7 @@ def write_region(progress: Path, region: str) -> bool:
         new_content = replace_or_append_region(content, region)
         if new_content == content:
             return False
-        progress.write_text(new_content, encoding="utf-8")
+        progress.write_text(new_content, encoding="utf-8", newline=LF)
         return True
 
 
