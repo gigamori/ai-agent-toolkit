@@ -50,8 +50,8 @@ Identical to `/progress` Step 2 (same `[Progress Session]` header parsing,
 same `state_file` read, same `$TASKFLOW_PROJECT_ROOTS` resolution).
 
 1. Scan the current conversation context for the most recent line matching
-   `[Progress Session] session_id=<uuid> sid8=<8chars> state_file=<path> current_project=<name>`.
-2. Extract `state_file`, `session_id`, `sid8`, and `current_project`.
+   `[Progress Session] session_id=<uuid> sid=<12chars> state_file=<path> current_project=<name>`.
+2. Extract `state_file`, `session_id`, `sid`, and `current_project`.
 
 If no `[Progress Session]` header is found, reply `no project; set with pj:<project> first` and stop.
 

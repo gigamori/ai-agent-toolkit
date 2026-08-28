@@ -46,8 +46,8 @@ first line). Omit it only when no project is assigned.
 ## Step 2 — Resolve the project
 
 1. Scan the current conversation context for the most recent line matching the
-   pattern `[Progress Session] session_id=<uuid> sid8=<8chars> state_file=<path> current_project=<name>`.
-2. Extract `state_file`, `session_id`, `sid8`, and `current_project` from that
+   pattern `[Progress Session] session_id=<uuid> sid=<12chars> state_file=<path> current_project=<name>`.
+2. Extract `state_file`, `session_id`, `sid`, and `current_project` from that
    header.
 
 If no `[Progress Session]` header is found in context, reply:
@@ -68,7 +68,10 @@ no project; set with pj:<project> first
 
 and stop.
 
-Use `sid8` from the header as the session identifier (for router context).
+Use `sid` from the header as the session identifier (for router context). It is
+the session UUID's last 12 hex digits with dashes removed, and it is the form
+the `@log` lines carry — the router greps for `[s:<sid>]`, so an 8-char value
+matches nothing.
 
 Then locate the project root. Split the environment variable
 `$TASKFLOW_PROJECT_ROOTS` by `;` into a list of root directories. Check each
@@ -87,7 +90,7 @@ it. Pass only the JSON context block as the prompt.
 1. Construct the prompt as the JSON context block:
 
    ```json
-   {"project_root": "<absolute project root from Step 2>", "raw_input": "<raw_input from Step 1>", "session_id": "<first 8 chars of state filename from Step 2>"}
+   {"project_root": "<absolute project root from Step 2>", "raw_input": "<raw_input from Step 1>", "session_id": "<sid from the header in Step 2>"}
    ```
 
 2. Invoke the Agent tool with `subagent_type: taskflow:progress-router` and
