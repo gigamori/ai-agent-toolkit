@@ -79,6 +79,16 @@ point you stop the watchdog task** — that is now the only way a well-behaved
 turn's watchdog ends. A verdict that lands after the turn already has a readable
 status is stale and must be ignored, never re-classified.
 
+**Starting is unconditional, and a launch that never happened still had a
+watchdog.** At compose time you cannot know whether the call will launch, and
+guessing wrong leaves a real subagent unwatched. When the call instead returns
+synchronously with no subagent, no transcript and no status — measured
+2026-08-28, an out-of-enum `model` refused at the tool boundary — **stop the
+watchdog on reading that error**: with nothing to resolve it degrades to
+deadline-only and fires `TIMEOUT` at the full mode budget, waking a run that has
+already stopped. The re-run starts its own under this same rule, since it exists
+to find out whether the rejection was transient.
+
 **The reverse ordering also exists, and it is not the same case.** The watchdog
 is a separate process racing the turn, so a verdict can fire *before* the reply
 and the reply still arrive. **Grace window for SKILL.md Execution step 4's
