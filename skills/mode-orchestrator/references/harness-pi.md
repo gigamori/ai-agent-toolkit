@@ -352,15 +352,17 @@ distinct description is needed, since nothing keys off one. The child's own
 session file is named by a pi-generated UUID, so a re-run does not overwrite
 its aborted predecessor's transcript.
 
-**A command that dies before a child session exists is not an attempt.** It
-launched nothing and wrote nothing, so it takes no `attempt` record and
-consumes no retry: re-issue under the **same** `<turn-key>-<attempt>` and note
-the lost command in prose above the index's JSONL block. Numbering it as a
-second attempt would spend the single identical re-run Execution step 4 allows
-on the orchestrator's own quoting mistake, leaving nothing for the abort that
-rule exists to cover. Measured twice, 2026-08-28: both times the audit flagged
-`U-COMMAND-ATTEMPT` for two commands naming one attempt's raw path, and the
-second time that blocked a fixture registration.
+**A command the shell rejected is still an attempt — number it.** A delegation
+lost at bash parse time launched nothing and wrote nothing, but it is the
+attempt that was made: record it with `reported_status: null`,
+`effective_status: "aborted"` and `file: "-"`, then issue the retry as the next
+attempt number. That is what Execution step 4's identical re-run is for, and a
+run of 2026-08-24 did exactly this — `03-1` aborted at `unexpected EOF`, `03-2`
+returned `ok`, the run completed, and the adaptive audit passes that shape (it
+is the frozen `profile-attempt-failed` fixture). Re-issuing under the SAME key
+instead makes two commands name one attempt, which the audit reports as
+`U-COMMAND-ATTEMPT`: measured twice on 2026-08-28, and the second time it cost
+the run its fixture registration.
 
 ## `--decider=human` waiting
 

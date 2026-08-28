@@ -243,17 +243,31 @@ class TestModelMap(unittest.TestCase):
             ("adp.py", r"modelmap\.resolve\(debug_def\.model"),
             ("lint.py", r"modelmap\.resolve\(step\.model"),
         ]
+        decider_path_sites = [
+            ("__main__.py", r"modelmap\.resolve\(decider_model, \"llm\""),
+            ("lint.py", r"modelmap\.resolve\(decider_model, \"llm\""),
+            ("viz.py", r"modelmap\.resolve\(decider_model, \"llm\""),
+            ("adjudicate.py", r"modelmap\.resolve\(model, \"cc\""),
+            ("adjudicate.py", r"modelmap\.resolve\(model, runner_table"),
+        ]
         for fname, pat in model_path_sites:
-            for m in re.finditer(pat + r"[^)]*\)", src[fname]):
+            hits = list(re.finditer(pat + r"[^)]*\)", src[fname]))
+            self.assertTrue(hits, f"{fname}: pattern matched no site, so this "
+                                  f"guard proves nothing about it: {pat}")
+            for m in hits:
                 self.assertIn(
                     "allow_legacy=True", m.group(0),
                     f"{fname}: model=-path site must opt into LEGACY_ALIASES "
                     f"or two dispatchers diverge on a legacy name: {m.group(0)}")
-        for fname in ("adjudicate.py", "viz.py"):
-            self.assertNotIn(
-                "allow_legacy", src[fname],
-                f"{fname}: decider-model path must never opt in -- a raw pi "
-                "model id like opus would be silently redirected")
+        for fname, pat in decider_path_sites:
+            hits = list(re.finditer(pat + r"[^)]*\)", src[fname]))
+            self.assertTrue(hits, f"{fname}: pattern matched no site, so this "
+                                  f"guard proves nothing about it: {pat}")
+            for m in hits:
+                self.assertNotIn(
+                    "allow_legacy", m.group(0),
+                    f"{fname}: decider-model path must never opt in -- a raw pi "
+                    f"model id like opus would be silently redirected: {m.group(0)}")
 
 
 class TestViz(unittest.TestCase):
