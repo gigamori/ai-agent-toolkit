@@ -218,6 +218,7 @@ expect_grep "DEADLINE_DEBUG is 900" '^DEADLINE_DEBUG=900$' "$WATCHDOG"
 expect_grep "DEADLINE_REVIEW is 900" '^DEADLINE_REVIEW=900$' "$WATCHDOG"
 expect_grep "DEADLINE_REVIEW_DEV is 1800" '^DEADLINE_REVIEW_DEV=1800$' "$WATCHDOG"
 expect_grep "DEADLINE_DEFAULT is 900" '^DEADLINE_DEFAULT=900$' "$WATCHDOG"
+expect_grep "POLL is 15" '^POLL=15$' "$WATCHDOG"
 
 echo
 printf '%d passed, %d failed (%d total)\n' "$PASS" "$FAIL" "$N"
