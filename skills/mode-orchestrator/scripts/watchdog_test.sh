@@ -214,8 +214,10 @@ expect_grep "STALL is configured at the top of the script" '^STALL=600$' "$WATCH
 expect_grep "DEADLINE_SURVEY is 3600" '^DEADLINE_SURVEY=3600$' "$WATCHDOG"
 expect_grep "DEADLINE_PLAN is 2400" '^DEADLINE_PLAN=2400$' "$WATCHDOG"
 expect_grep "DEADLINE_EXECUTE is 1500" '^DEADLINE_EXECUTE=1500$' "$WATCHDOG"
+expect_grep "DEADLINE_DEBUG is 900" '^DEADLINE_DEBUG=900$' "$WATCHDOG"
 expect_grep "DEADLINE_REVIEW is 900" '^DEADLINE_REVIEW=900$' "$WATCHDOG"
 expect_grep "DEADLINE_REVIEW_DEV is 1800" '^DEADLINE_REVIEW_DEV=1800$' "$WATCHDOG"
+expect_grep "DEADLINE_DEFAULT is 900" '^DEADLINE_DEFAULT=900$' "$WATCHDOG"
 
 echo
 printf '%d passed, %d failed (%d total)\n' "$PASS" "$FAIL" "$N"
