@@ -36,9 +36,9 @@ deck-spec の 6 原型を pptx 上のどこに置くかの固定表。**レン�
 |------|---|---|------|------|
 | 見出し（原型名の訳語ではなく `trace` の節名） | 0.95cm | 1.64cm | 26pt | true |
 | `message` | 3.14cm | 2.2cm | 16pt | false |
-| `findings` のラベル | 5.6cm | 1.0cm | 14pt | true |
+| `findings` のラベル（`主要な発見`） | 5.6cm | 1.0cm | 14pt | true |
 | `findings` | 6.65cm | 5.6cm | 16pt | false |
-| `limits` のラベル | 12.5cm | 1.0cm | 14pt | true |
+| `limits` のラベル（`主な限界`） | 12.5cm | 1.0cm | 14pt | true |
 | `limits` | 13.55cm | 3.6cm | 14pt | false |
 
 ### section
@@ -70,11 +70,24 @@ deck-spec の 6 原型を pptx 上のどこに置くかの固定表。**レン�
 
 | 要素 | y | h | size | bold |
 |------|---|---|------|------|
-| 見出し（`trace` の `F-n` + 「根拠」） | 0.95cm | 1.0cm | 14pt | true |
+| 見出し（`<trace> 根拠`） | 0.95cm | 1.0cm | 14pt | true |
 | チャート | 2.2cm | 7.6cm | — | — |
 | source 表 | 10.2cm | 6.8cm | 12pt | false |
 
 チャートアノテーションが無いスライドでは、source 表の y を 2.2cm、h を 14.8cm にする。
+
+## スライド面に置いてよい、deck-spec 由来でない文字列
+
+hop2 の文言一致検査（`scripts/check_pptx_text.py`）は、スライド上の全テキストが deck-spec に由来することを要求する。例外はここに列挙した 3 語のラベルとページ番号だけであり、[R] はこれ以外の語を足せない。
+
+| 追加してよい文字列 | 置き場所 |
+|-------------------|---------|
+| `主要な発見` | `exec-summary` の `findings` ラベル |
+| `主な限界` | `exec-summary` の `limits` ラベル |
+| `根拠` | `evidence` の見出しで `<trace> 根拠` の形に限る |
+| スライド番号（数字のみ） | ページ番号 |
+
+見出しに使う節名・`F-n` は deck-spec の `trace` 値そのもの、表紙のタイトルと副題は frontmatter の `title` / `source` そのものであり、いずれも「足した文字列」ではない。
 
 ### appendix
 
