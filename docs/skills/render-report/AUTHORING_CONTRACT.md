@@ -58,6 +58,12 @@ An LLM judge's `PASS` is not evidence until its detection rate has been measured
 
 The measurement is one deck-spec fixture per class, each carrying a single planted deviation, judged once, with the rate recorded here alongside the model and date. **Not yet run** — see the repository's own rules on probabilistic verification before running it: a zero-hit result is inconclusive without a control arm at a non-zero rate.
 
+## What has not been run end to end
+
+The full sequence `[A] → G-A → [G-B] → human → [R] → G-R` on a real report has **not** been executed. What exists is each piece verified in isolation: `validate_deck.py` and `check_pptx_text.py` against their control arms, and a hand-authored deck-spec of a 342-line report passing G-A.
+
+Running it for real needs three separately launched subagents; doing all three roles in one context is not evidence, because two of the design's guarantees are context boundaries — the judge must not grade what it wrote, and the renderer must not have read the report. When it is run, record here: the slide count against the 77 slides a verbatim transcription of the same report produced, the number of loop iterations consumed, and whether G-R found overflow. Those three numbers are also the input to the deferred decision on building a deterministic renderer.
+
 ## Test suite
 
 ```bash
