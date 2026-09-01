@@ -269,7 +269,13 @@ session end
         with no terminal state (F-4). The `applied summary:` report line carries the round
         the summary was gated on (`{key} (r{N})`), so a late apply is attributable from the
         stderr/block report; the `@log` body stays round-free — its text is the idempotency
-        key and part of the agent contract (F-9). The pre-R-1 un-suffixed
+        key and part of the agent contract (F-9). Whenever a real summary applies for a key
+        (capture-detection-gaps.md §1.12, W8), this step also re-hashes that task's
+        `## Next Steps` section (LF-normalized, trailing whitespace and surrounding blank
+        lines stripped — a raw-byte hash would falsely clear the debt on this host, whose
+        own `@log` append re-encodes the whole file to CRLF) and compares it against
+        `ns_hash`: unchanged → `ns_debt` for that key increments; changed → `ns_debt` resets
+        to 0 and `ns_hash` is re-frozen on the new text. The pre-R-1 un-suffixed
         `{session_id}.capture` name is **no longer read at all** — its compatibility branch was
         retired once nothing could produce it (the hook only ever hands out the per-round name
         and the agent contract forbids constructing another), so the apply path scans
@@ -302,12 +308,36 @@ session end
         allow-set ONLY — `_apply_capture` gates `confirmed` on the UNION of `items.tasks` and
         `items.allow_tasks`, so a summary naming a task the agent had already logged itself this
         round is applied instead of being skipped as out-of-membership, while `items.tasks` stays
-        the sole driver of the expiry backstop, of the `referenced` over-bind boundary
-        (`round_task_set`) and of the `log_seen` / `round_base` baselines — which is what keeps a
-        self-logged task free of placeholders. The `note_links` membership set (`items.notes`) is
-        unaffected. A `.bind` or `history` entry written before this key existed carries no
-        `allow_tasks`, so the union degenerates to `items.tasks` and the pre-existing behaviour
+        the sole driver of the expiry backstop and of the `log_seen` / `round_base` baselines —
+        which is what keeps a self-logged task free of placeholders. The `referenced` over-bind
+        boundary (`round_task_set`) is driven by `items.note_owners` instead (capture-detection-
+        gaps.md §1.11, W7) — the subset of `items.tasks` that came from resolving a note owner
+        out of THIS round's slice, so a task that entered the round only through a `[tasks:]` exec
+        carry (or, as `items.tasks` itself does, a direct task-md write) does not also pick up a
+        stray `(referenced)` line for some unrelated note it happens to own from an earlier round.
+        The round additionally freezes `items.carry_only`: true when the round's slice contributed
+        no task write and no note owner of its own, i.e. it was opened SOLELY by exec carry — the
+        expiry backstop skips such a round wholesale rather than placeholder-binding a round that
+        did no real work (§1.11 residual: a round mixing carry with real slice writes is NOT
+        carry-only, and the carry-derived task still gets a placeholder in that case). The
+        `note_links` membership set (`items.notes`) is unaffected. A `.bind` or `history` entry
+        written before `allow_tasks` existed carries no `allow_tasks`, so the union degenerates to
+        `items.tasks` and the pre-existing behaviour
         holds (fail-open).
+        The commit also freezes `ns_hash` for any key in this round's `active` set that does
+        not already carry one — the FIRST time a task enters an open round, before any of
+        its `## Next Steps` accounting can happen (capture-detection-gaps.md §1.12, W8); a
+        task with no `## Next Steps` section is never frozen and stays outside ns tracking
+        entirely. The context block handed to the subagent carries `next_steps_stale` — every
+        qualified key whose `ns_debt` has reached the threshold (1) and that has not already
+        had its rewrite proposal presented (`tried_ns`) — but ONLY when that set is non-empty;
+        the key is OMITTED, not emitted as `[]`, when nothing is stale, so a round with no
+        staleness produces byte-identical context JSON to before W8. The subagent's own `next_steps`
+        response is never written back to the task file — it is folded into the SAME
+        `proposals` channel the Stop block already uses for genesis-task suggestions (no new
+        notification channel, §1.12 user ruling), and the key is added to `tried_ns` the
+        instant its proposal is folded in, capping it at one presentation per task per
+        session.
         The context block handed to it carries ABSOLUTE, forward-slashed `sidecar_path` /
         `project_root` (the same values this hook reads), so the subagent's write/read basis
         cannot drift from the hook's regardless of its cwd
@@ -326,10 +356,16 @@ session end
         backstop takes over for THAT ROUND's closed `items` set — `referenced` over-bind of the
         note-write owners resolvable via the reverse index first (so an owner keeps the more
         specific provenance), then a placeholder for every item the round has not produced a
-        line for yet. The note scan behind that over-bind is whole-session by necessity — the
+        line for yet. **Exception (capture-detection-gaps.md §1.11, W7)**: a round whose
+        `items.carry_only` is true skips the placeholder step wholesale — such a round was opened
+        SOLELY by a `[tasks:]` exec carry, its slice is empty, and "touched; summary pending"
+        would be false for it. A real summary still applies normally if a sidecar lands for it.
+        The note scan behind the `referenced` over-bind is whole-session by necessity — the
         requesting round consumed its own ledger slice when it committed — so the owner set,
-        not the scan, is what `items` bounds: an owner the scan reaches for a note this round
-        never touched gets no line.
+        not the scan, is what bounds it: an owner the scan reaches for a note this round never
+        touched gets no line. That owner set is `items.note_owners`, not `items.tasks` — a
+        basename that entered `items.tasks` only via exec carry (or a direct task-md write) is not
+        thereby entitled to a `(referenced)` line for some other note it happens to own.
         Placeholder / `referenced` notes carry an `(r{N})` round tag, which is
         also their idempotency key: binding is now keyed on the text `[s:<sid>]: <note>`
         rather than on the bare presence of a `[s:<sid>]` line, so one session binds one task
@@ -432,7 +468,7 @@ protection, none.
 
 Path: `_projects/_state/{session_id}.json`
 
-The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` — `items` being that round's frozen closed set `{tasks, notes, allow_tasks}`, where `allow_tasks` is the pre-self-log-subtraction task set that widens the `confirmed` membership gate only, and is absent from a `.bind` written before the key existed (the gate then falls back to `tasks` alone) — plus the round state `{touch_cursor, round, log_seen, round_base, history}` — `history` being the frozen `items` (`tasks` / `notes` / `allow_tasks`) of the last 3 rounds, keyed by round number, which is what lets a sidecar delivered after its round closed still be membership-checked against its own round (R-1) — and `exec_tried` skip records — the exec-carry 打止め set, holding BOTH `_rel()` repo-relative paths of resolved-but-unbindable tasks AND bare basenames of carries that resolved to no task at all, two shapes that are disjoint because a `_rel()` value always starts `_projects/`; writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.r{N}.capture` (the async judgment sidecar for round `N`; writer = the `taskflow:progress-capture` subagent only, at the absolute path the hook handed it, consumed and unlinked by the hook after a successful apply — the un-suffixed `{session_id}.capture` is the pre-R-1 name; its compat branch has been retired, so such a file is never read and only the 7-day sweep collects it). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
+The hook (`session_init.py`) writes the full schema below. The project-router subagent is read-only and does not write state. Capture round-state is NOT a JSON field — it lives in sidecar files (to avoid clobbering by concurrent state rewrites): `{session_id}.bind` (the `capture` lifecycle `{status, items, requested_ts, tried_notes, tried_tasks}` — `items` being that round's frozen closed set `{tasks, notes, allow_tasks, note_owners, carry_only}`, where `allow_tasks` is the pre-self-log-subtraction task set that widens the `confirmed` membership gate only, and is absent from a `.bind` written before the key existed (the gate then falls back to `tasks` alone); `note_owners` (capture-detection-gaps.md §1.11, W7) is the post-self-log-subtraction subset of `tasks` that came from resolving a note owner out of THIS round's slice — it drives the `referenced` over-bind boundary, falling back to `tasks` when absent — and `carry_only` is a bool, true when the round's slice contributed no task write and no note owner of its own (opened solely by `[tasks:]` exec carry), which skips the expiry placeholder backstop for the round wholesale — plus the round state `{touch_cursor, round, log_seen, round_base, history}` — `history` being the frozen `items` (`tasks` / `notes` / `allow_tasks` / `note_owners` / `carry_only`) of the last 3 rounds, keyed by round number, which is what lets a sidecar delivered after its round closed still be membership-checked against its own round (R-1) — and `exec_tried` skip records — the exec-carry 打止め set, holding BOTH `_rel()` repo-relative paths of resolved-but-unbindable tasks AND bare basenames of carries that resolved to no task at all, two shapes that are disjoint because a `_rel()` value always starts `_projects/` — plus `## Next Steps` freshness debt (capture-detection-gaps.md §1.12, W8): `ns_hash` (`{qualified key: digest}`, the section's normalized content hash frozen the first time a task enters an open round), `ns_debt` (`{qualified key: int}`, rounds a real summary has applied while that digest stayed unchanged), and `tried_ns` (qualified keys whose rewrite proposal has already been surfaced once, 打止め) — all three sit directly under `capture`, not inside `items`, because their only consumer is `main()` itself (`_apply_capture` never receives them); writer = this hook only — `precompact_flush.py` reads it but never writes), `{session_id}.touched` (the append-only touched-path ledger written by `touched_capture.py`), and `{session_id}.r{N}.capture` (the async judgment sidecar for round `N`; writer = the `taskflow:progress-capture` subagent only, at the absolute path the hook handed it, consumed and unlinked by the hook after a successful apply — the un-suffixed `{session_id}.capture` is the pre-R-1 name; its compat branch has been retired, so such a file is never read and only the 7-day sweep collects it). (`{session_id}.captured` is a legacy marker, no longer written — only swept by the 7-day cleanup.)
 
 ```json
 {
@@ -542,7 +578,7 @@ The session's project (`_state/<session_id>.json` → `project`) selects **one**
 | Extract | `_projects/<name>/...` → `<name>`; a line that does not start with `_projects/` (an absolute path from another repository, a cwd-external write) is out of scope — cross-**repo** binding is not attempted. |
 | Validate | `<name>` counts as a project only if `_projects/<name>/tasks/` is a directory. This is what rejects `_projects/_state/...` lines, which match the pattern but name the sidecar directory. |
 | Resolve | Each accepted project gets its own basename index, its own note reverse index, and its own boundary guard, so a basename that exists in two projects binds the copy the ledger actually named. |
-| Key | Every internal task key — `capture.items.tasks`, `capture.items.allow_tasks`, `tried_tasks`, `log_seen`, `round_base` — is the qualified `"<project>/<basename>"`, as are the capture-context `touched_tasks`, the `@log`-related stderr/block report lines, and the PreCompact stdout list. A `.bind` predating this change holds bare basenames; they are read as the primary project's keys and rewritten qualified on the next Stop. |
+| Key | Every internal task key — `capture.items.tasks`, `capture.items.allow_tasks`, `capture.items.note_owners`, `tried_tasks`, `log_seen`, `round_base` — is the qualified `"<project>/<basename>"`, as are the capture-context `touched_tasks`, the `@log`-related stderr/block report lines, and the PreCompact stdout list. A `.bind` predating this change holds bare basenames; they are read as the primary project's keys and rewritten qualified on the next Stop. `capture.items.carry_only` is a bool, not a key, and needs no such qualification. |
 
 The capture subagent's context block carries `project_roots` (`{name: absolute root}`) alongside the primary `project_root` so it can resolve a qualified task, and its sidecar entries may carry an optional `project` field (absent = primary). Note paths in that sidecar stay project-relative under `project-notes/`, read against the entry's own project root. Design: `project-notes/specs/capture-detection-gaps.md` §3.
 

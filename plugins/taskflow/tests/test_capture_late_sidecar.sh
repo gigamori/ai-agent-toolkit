@@ -284,12 +284,12 @@ pass "further Stops silent (same-round text-key bound retained)"
 
   echo ""
 echo "an owner inside a LATER round's closed set still gets its line"
-write_touched "$TE"
+write_touched "$NE"
   stop 999 >/dev/null
   stop 0   >/dev/null
 [ "$(sidlines "$TE")" = "2" ] \
-  && pass "r5 over-bound TE again (TE is in r5's items)" \
-  || fail "TE after r5: $(grep -F "[s:$SID_TAG]" "$TE")"
+  && pass "r5 over-bound TE again (TE is in r5's note_owners)" \
+  || fail "r5 must be re-opened by a NOTE rewrite, not by a direct task write — only slice-note-resolved owners enter note_owners; TE after r5: $(grep -F "[s:$SID_TAG]" "$TE")"
 grep -qF "capture expired (r5)" "$TE" \
   && pass "the later round's line carries its own round tag" \
   || fail "no r5 line: $(grep -F "[s:$SID_TAG]" "$TE")"

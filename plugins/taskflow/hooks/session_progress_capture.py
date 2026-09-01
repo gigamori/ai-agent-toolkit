@@ -92,6 +92,7 @@ older than 7 days; a `.json` with a non-empty `project` is kept indefinitely
 (generate_kanban.py resolves past task `@log` session links from it).
 """
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -175,6 +176,13 @@ except ValueError:
 # fixed CONSTANT, not an env knob: the value has no per-environment meaning.
 _ROUND_HISTORY_K = 3
 
+# `## Next Steps` freshness debt threshold (capture-detection-gaps.md §1.12,
+# W8). User ruling: 1 — the first round whose real summary applies while the
+# section's digest stayed unchanged is already enough to surface
+# `next_steps_stale`. Named so the comparison below reads as a threshold, not
+# a magic `1`.
+_NS_DEBT_THRESHOLD = 1
+
 # Sweep blast-cap (project-notes/specs/capture-hook-sweep-sandbox.md): the
 # combined (json + sidecar) per-Stop delete budget for _cleanup_stale_markers.
 # Default 50 sits between the empirically observed healthy-steady-state count
@@ -231,6 +239,17 @@ _TASKS_RE = re.compile(r'\[tasks:\s*([^\]]+)\]')
 # (`_projects/<project>/...`, repo-relative and forward-slashed by
 # `normalize_path`) rather than from `state['project']`.
 _PROJECT_RE = re.compile(r'^_projects/([^/]+)/')
+# `## Next Steps` section slice (capture-detection-gaps.md §1.12, W8) — the
+# SAME semantics as `scripts/audit_progress.py`'s `NEXT_STEPS_SECTION_RE`
+# (heading -> next `##` / `<!-- @log:begin` / EOF). Duplicated rather than
+# imported: `hooks/` cannot import from `scripts/` (audit_progress.py's own
+# imports are stdlib-only, confirming no shared module exists to hang this
+# off of) — a single-source unification is out of this landing's scope
+# (§1.12 residual).
+_NEXT_STEPS_SECTION_RE = re.compile(
+    r'^##\s+Next Steps\s*$([\s\S]*?)(?=^##\s+|^<!--\s*@log:begin|\Z)',
+    re.MULTILINE,
+)
 
 
 def normalize_path(p: str, cwd: str) -> str:
@@ -866,7 +885,8 @@ def resolve_touch_cursor(capture, bind_existed, raw_lines, resolved, sid_tag,
 
 def compute_round_active(new_slice, project_roots, reverse_indexes, sid_tag,
                          log_seen, tried_tasks, extra=None, hook_appended=None,
-                         pre_selflog_out=None):
+                         pre_selflog_out=None, note_owners_out=None,
+                         carry_only_out=None):
     """Round-active set A_r (§1.3) as {"<project>/<basename>": absolute_path}.
 
         A_r = tasks written in this round's ledger slice
@@ -906,15 +926,41 @@ def compute_round_active(new_slice, project_roots, reverse_indexes, sid_tag,
     they drove off before, while the apply-path gate stops discarding the
     judgment layer for a task the agent happened to log itself (03-debug §4.3
     OBS1-DEFECT). The out-parameter form is deliberate: `hooks/precompact_flush.py`
-    is the other caller and must keep the unchanged single return value."""
+    is the other caller and must keep the unchanged single return value.
+
+    W7 (capture-detection-gaps.md §1.11): `note_owners_out`, when a list is
+    passed, is EXTENDED with the note-owner-sourced keys (this round's slice
+    notes resolved through the reverse index) that SURVIVED both the self-log
+    subtraction below and the 打止め filter in the return statement — i.e. the
+    subset of this function's RETURN value that came from a note owner rather
+    than a direct task-md write or `extra`. Load-bearing that this is taken
+    AFTER the subtraction, not before: a pre-subtraction snapshot would let an
+    owner that self-logged THIS round back into the `(referenced)` over-bind
+    boundary and reopen the W5 defect (a redundant `(referenced)` line next to
+    the agent's own log line). `carry_only_out`, when a dict is passed, gets
+    its `'carry_only'` key set to whether this round's slice contributed NOTHING
+    of its own (no task write, no note owner) and `extra` (the exec carry) is
+    what populated `active` instead — decided BEFORE the self-log subtraction
+    (so a round that only self-logged its slice work does not retroactively
+    read as carry-only) and BEFORE `extra` is merged in (so `active` at that
+    point is exactly the slice's own contribution)."""
     active = dict(resolve_touched_tasks(new_slice, project_roots))
+    note_owner_keys: set = set()
     for name, root in project_roots.items():
         ridx = reverse_indexes.get(name) or {}
         slice_notes, _slice_unlinked = _scan_note_writes(
             new_slice, name, root, ridx)
         for prel in slice_notes:
             for owner_path in resolve_note_owner(prel, root, ridx):
-                active[qualify(name, os.path.basename(owner_path))] = owner_path
+                okey = qualify(name, os.path.basename(owner_path))
+                active[okey] = owner_path
+                note_owner_keys.add(okey)
+    # W7: `carry_only` is decided HERE — `active` is exactly the slice's own
+    # contribution (task writes ∪ note owners), before `extra` (the exec
+    # carry) is merged in below. A round whose slice contributed nothing of
+    # its own, opened only because `extra` was non-empty, is carry-only.
+    if isinstance(carry_only_out, dict):
+        carry_only_out['carry_only'] = (not active) and bool(extra)
     if extra:
         for key, path in extra.items():
             active[key] = path
@@ -934,7 +980,12 @@ def compute_round_active(new_slice, project_roots, reverse_indexes, sid_tag,
             log_seen[key] = n_now
             active.pop(key, None)
     # 打止め (INV-1): a task with no bindable anchor is never re-requested.
-    return {k: p for k, p in active.items() if k not in tried_tasks}
+    result = {k: p for k, p in active.items() if k not in tried_tasks}
+    # W7: only the note-owner keys that SURVIVED the self-log subtraction and
+    # the 打止め filter above are reported — always a subset of `result`.
+    if isinstance(note_owners_out, list):
+        note_owners_out.extend(sorted(k for k in note_owner_keys if k in result))
+    return result
 
 
 def capture_sidecar_path(state_dir, session_id, round_n):
@@ -1022,6 +1073,40 @@ def _resolve_task_ref(ref, project_roots, primary, current_index, explicit=''):
     # Unknown everywhere: keep the primary-qualified form so the caller's index
     # lookup misses and the entry is dropped as "task gone" (unchanged shape).
     return primary_key, False
+
+
+def _next_steps_digest(path):
+    """The `## Next Steps` section body of `path`, normalized and hashed
+    (capture-detection-gaps.md §1.12, W8): line endings unified to LF,
+    per-line trailing whitespace stripped, and leading/trailing blank lines
+    dropped, all BEFORE hashing.
+
+    A raw-byte hash is explicitly rejected by the spec, and this is not a
+    hypothetical: `append_auto_binding`'s text-mode read/write round-trip
+    re-encodes the WHOLE task md to CRLF on this host's first `@log` append
+    (measured, mode-orchestrator-runs/2026-09-02_.../02-execute.md §5) — a
+    raw-byte digest would silently reset every debt counter to 0 the moment
+    any other `@log` line lands, which is every round.
+
+    Returns `None` (sentinel) when the task has no `## Next Steps` section —
+    §1.12 excludes those tasks from ns tracking outright; the section's
+    absence is `scripts/audit_progress.py`'s `untracked` classification to
+    report, not this mechanism's to re-report."""
+    try:
+        with open(path, 'rb') as f:
+            raw = f.read()
+    except OSError:
+        return None
+    text = raw.replace(b'\r\n', b'\n').decode('utf-8', errors='replace')
+    m = _NEXT_STEPS_SECTION_RE.search(text)
+    if not m:
+        return None
+    lines = [ln.rstrip() for ln in m.group(1).split('\n')]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return hashlib.md5('\n'.join(lines).encode('utf-8')).hexdigest()
 
 
 def _apply_capture(sidecar, current_index, project, project_roots, sid_tag, iso_ts, items=None):
@@ -1241,7 +1326,8 @@ def _to_forward_slash(path):
 
 
 def build_capture_context(sid_tag, iso_ts, capture_path, project_root,
-                           project_roots, task_keys, note_writes, round_n):
+                           project_roots, task_keys, note_writes, round_n,
+                           next_steps_stale=None):
     """Build the JSON context block handed to the capture subagent (§10.5).
 
     `sidecar_path` / `project_root` are forward-slashed absolute paths (same
@@ -1263,19 +1349,39 @@ def build_capture_context(sid_tag, iso_ts, capture_path, project_root,
     emitted `round` field is an ECHO for the subagent's own reasoning only. The
     hook treats the FILE NAME as authoritative and never reads a `round` back
     out of the sidecar, so this adds no output obligation to the agent contract.
-    """
+
+    W8 (§1.12): `next_steps_stale` is the qualified keys whose `## Next Steps`
+    digest has not moved for `_NS_DEBT_THRESHOLD` rounds despite a real summary
+    landing. OMITTED (not emitted as `[]`) when nothing is stale, unlike
+    `touched_tasks`/`note_writes` — the field's presence is itself the "there
+    is something stale" signal, so a round with nothing to report produces the
+    same JSON shape as before W8. Riding the EXISTING capture request — no new
+    notification channel (user ruling, §1.12)."""
+    ctx = {
+        'sid': sid_tag,
+        'iso_ts': iso_ts,
+        'round': round_n,
+        'sidecar_path': _to_forward_slash(capture_path),
+        'project_root': _to_forward_slash(project_root),
+        'project_roots': {name: _to_forward_slash(root)
+                          for name, root in dict(project_roots).items()},
+        'touched_tasks': list(task_keys),
+        'note_writes': list(note_writes),
+    }
+    if next_steps_stale:
+        # OMITTED, not emitted as `[]`, when nothing is stale: a
+        # `next_steps_stale` field's mere PRESENCE is itself the signal a
+        # round has something stale, so a round with nothing to report is
+        # byte-identical to pre-W8 output. Emitting `[]` unconditionally
+        # would make a presence-only check (T-W8-1b) pass on every spawn
+        # regardless of whether anything is actually listed, which defeats
+        # the one arm meant to positively verify a stale key round-trips
+        # into the block — the two negative arms (T-W8-2d, T-W8-3b) already
+        # check absence-of-key-substring and stay correct either way, so
+        # only the positive arm depended on this.
+        ctx['next_steps_stale'] = list(next_steps_stale)
     return json.dumps(
-        {
-            'sid': sid_tag,
-            'iso_ts': iso_ts,
-            'round': round_n,
-            'sidecar_path': _to_forward_slash(capture_path),
-            'project_root': _to_forward_slash(project_root),
-            'project_roots': {name: _to_forward_slash(root)
-                              for name, root in dict(project_roots).items()},
-            'touched_tasks': list(task_keys),
-            'note_writes': list(note_writes),
-        },
+        ctx,
         ensure_ascii=False, separators=(',', ':'),
     )
 
@@ -1506,6 +1612,18 @@ def main() -> int:
     tried_tasks = capture.get('tried_tasks')
     tried_tasks = list(tried_tasks) if isinstance(tried_tasks, list) else []
     tried_tasks = [qualify_legacy(t, project) for t in tried_tasks]  # F-4
+    # W8 (capture-detection-gaps.md §1.12): `## Next Steps` freshness debt,
+    # carried inside `capture` on the same terms as the round-binding keys
+    # above (§1.7 opaque round-trip) so no whitelist change is needed. All
+    # three are NEW keys introduced by this landing — no legacy `.bind` ever
+    # wrote them bare, so unlike `log_seen`/`tried_tasks` they need no F-4
+    # qualify_legacy pass.
+    ns_hash = capture.get('ns_hash')
+    ns_hash = dict(ns_hash) if isinstance(ns_hash, dict) else {}
+    ns_debt = capture.get('ns_debt')
+    ns_debt = dict(ns_debt) if isinstance(ns_debt, dict) else {}
+    tried_ns = capture.get('tried_ns')
+    tried_ns = list(tried_ns) if isinstance(tried_ns, list) else []
     requested_ts = capture.get('requested_ts')
     # The request-time closed set, with its task keys normalized once (F-4) so
     # every consumer below — apply membership, `_fold_tried`, the G backstop —
@@ -1524,6 +1642,12 @@ def main() -> int:
         if isinstance(items_open.get('allow_tasks'), list):
             items_open['allow_tasks'] = [qualify_legacy(t, project)
                                          for t in items_open['allow_tasks']]
+        # W7 (§1.11): `note_owners` gets the same F-4 normalization pass as
+        # `tasks` / `allow_tasks` — it is a list of qualified task keys too.
+        # `carry_only` needs no such pass (a bool, not a key).
+        if isinstance(items_open.get('note_owners'), list):
+            items_open['note_owners'] = [qualify_legacy(t, project)
+                                         for t in items_open['note_owners']]
 
     applied_summaries: list[str] = []
     applied_links: list[tuple] = []
@@ -1589,10 +1713,56 @@ def main() -> int:
         proposals.extend(_p)
         applied_link_skipped.extend(_ls)
         applied_membership_skipped.extend(_ms)
+        # W8 (§1.12): fold `next_steps` rewrite proposals into the SAME
+        # existing `proposals` channel — no new notification channel (user
+        # ruling); they ride the Stop block's presentation-only path
+        # alongside genesis-task proposals. `_apply_capture`'s signature and
+        # body stay untouched (§1.12's ns_debt-accounting paragraph fixes
+        # that): this reads the same `sidecar` this closure already has, and
+        # the 打止め (`tried_ns`) check lives here because `tried_ns` is
+        # `main()`-level session state `_apply_capture` never receives.
+        # Presented AT MOST ONCE per key: the key is appended to `tried_ns`
+        # the instant its proposal text is folded in, which is also what
+        # excludes it from a future `next_steps_stale` listing (built below)
+        # — the only enforcement this mechanism has against a re-send; a
+        # non-compliant subagent resending the same key is an accepted
+        # residual (§1.12).
+        _next_steps_items = sidecar.get('next_steps')
+        if isinstance(_next_steps_items, list):
+            for _ns in _next_steps_items:
+                if not isinstance(_ns, dict):
+                    continue
+                _ns_ref = _ns.get('task')
+                _ns_prop = _ns.get('proposal')
+                if (not isinstance(_ns_ref, str) or not isinstance(_ns_prop, str)
+                        or not _ns_prop.strip()):
+                    continue
+                _ns_explicit = _ns.get('project')
+                _ns_explicit = _ns_explicit if isinstance(_ns_explicit, str) else ''
+                _ns_key, _ns_ambiguous = _resolve_task_ref(
+                    _ns_ref, project_roots, project, current_index, _ns_explicit)
+                if _ns_ambiguous or _ns_key in tried_ns:
+                    continue
+                proposals.append(_ns_prop.strip())
+                tried_ns.append(_ns_key)
         for _k in _s:
             _pk = current_index.get(_k)
             if _pk:
                 _record_append(_pk, _k)  # F-1: hook write, not a self-log
+                # W8 (§1.12): a real summary just applied for `_k` — compare
+                # its CURRENT `## Next Steps` digest against the baseline
+                # frozen when the round that produced this summary was
+                # requested (below, at the (E) commit). Unchanged → the
+                # round did real work but the section decayed one round
+                # further; changed → the decay was broken, reset the debt
+                # and re-freeze the baseline on the new text.
+                _nsd = _next_steps_digest(_pk)
+                if _nsd is not None:
+                    if ns_hash.get(_k) == _nsd:
+                        ns_debt[_k] = ns_debt.get(_k, 0) + 1
+                    else:
+                        ns_debt[_k] = 0
+                        ns_hash[_k] = _nsd
                 # F-A, second channel: an EARLIER round's judgement must not
                 # read to the (D) backstop as THIS round's line. `round_base`
                 # is the count frozen when the OPEN round committed, so a task
@@ -1823,12 +1993,22 @@ def main() -> int:
     # B-m1: `pre_selflog` is filled in place with A_r as it stands before the
     # self-log subtraction (exec carry included). It feeds the request commit's
     # `allow_tasks` ONLY — `active` remains the sole driver of the backstop,
-    # `round_task_set`, `log_seen` and `round_base` (04-plan §0.2 U-1 / U-2).
+    # `log_seen` and `round_base` (04-plan §0.2 U-1 / U-2). `round_task_set`
+    # (the `(referenced)` over-bind boundary) moved to `note_owners` under W7
+    # (§1.11) — see below.
     pre_selflog: dict = {}
+    # W7 (§1.11): `note_owners` collects this round's note-owner-sourced keys
+    # (a subset of `active` below); `carry_only` collects whether this round's
+    # slice contributed nothing of its own (exec carry only). Both freeze into
+    # `items` at request commit and drive the (D) backstop skip / the
+    # `(referenced)` over-bind boundary below.
+    note_owners: list = []
+    carry_only: dict = {}
     active = compute_round_active(
         new_slice, project_roots, reverse_indexes, sid_tag,
         log_seen, tried_tasks, extra=exec_carry, hook_appended=hook_appended,
-        pre_selflog_out=pre_selflog)
+        pre_selflog_out=pre_selflog, note_owners_out=note_owners,
+        carry_only_out=carry_only)
 
     # --- (D) deterministic G backstop once capture has resolved ------------
     # §10.4 / §1.6: the backstop guarantees a line for the round's CLOSED item
@@ -1852,24 +2032,37 @@ def main() -> int:
         return log_seen_at_entry.get(key, 0)
 
     if status == 'expired':
-        # Round bound (W6, §1.10). The note SCAN stays whole-session — slicing
-        # it kills the over-bind outright, because the requesting round's slice
-        # was consumed at its own request commit (§1.9) — but the OWNER set is
-        # this round's frozen closed set. `items['tasks']` is that set with its
-        # note owners already in it (`compute_round_active` unions them before
-        # the freeze), and W5 keeps it un-retired, so it is the only
-        # round-scoped fact the whole-session scan cannot supply. Without it
-        # neither existing guard bounds a CARRIED owner across rounds: the text
-        # key carries `(r{N})` so it differs every round, and `_round_base`
-        # falls back to a `log_seen` the F-1 resync already advanced to the
-        # current count — so every later expiry appended one more false
-        # `(referenced)` line to a task whose note that round never touched,
-        # forever, `@log` being append-only (measured r1..r5 -> 5 lines).
-        # `None` = legacy `.bind` predating `items`: fail open, the same shape
-        # as the placeholder backstop's legacy branch below.
-        round_task_set = (set(items_open['tasks'])
-                          if isinstance(items_open, dict)
-                          and isinstance(items_open.get('tasks'), list) else None)
+        # Round bound (W6, §1.10; driver corrected to `note_owners` by W7,
+        # §1.11). The note SCAN stays whole-session — slicing it kills the
+        # over-bind outright, because the requesting round's slice was
+        # consumed at its own request commit (§1.9) — but the OWNER set is
+        # this round's frozen closed set. W5 keeps `items` un-retired, so it
+        # is the only round-scoped fact the whole-session scan cannot supply.
+        # Without it neither existing guard bounds a CARRIED owner across
+        # rounds: the text key carries `(r{N})` so it differs every round, and
+        # `_round_base` falls back to a `log_seen` the F-1 resync already
+        # advanced to the current count — so every later expiry appended one
+        # more false `(referenced)` line to a task whose note that round never
+        # touched, forever, `@log` being append-only (measured r1..r5 -> 5
+        # lines).
+        # `items['tasks']` is NOT the right bound on its own (§1.11 correction
+        # of the W6 text): it is both too wide (a basename that entered ONLY
+        # via `[tasks:]` exec carry, with no note of its own, still sits in
+        # `tasks`) and too narrow (an owner that self-logged this round is
+        # popped from `tasks` by the self-log subtraction, yet still needs the
+        # boundary to admit it so a late arriving owner is not silently
+        # widened elsewhere). `items['note_owners']` is exactly the slice-note-
+        # resolved owner subset that survived that same subtraction, so it is
+        # used here instead; a `.bind` predating the key falls back to
+        # `items['tasks']` (the pre-W7 bound), and `items=None` (legacy .bind
+        # predating even that) fails open — the same shape as the placeholder
+        # backstop's legacy branch below.
+        if isinstance(items_open, dict) and isinstance(items_open.get('note_owners'), list):
+            round_task_set = set(items_open['note_owners'])
+        elif isinstance(items_open, dict) and isinstance(items_open.get('tasks'), list):
+            round_task_set = set(items_open['tasks'])
+        else:
+            round_task_set = None
         for _name, _root in project_roots.items():
             _ridx = reverse_indexes[_name]
             for prel in note_writes_by_project[_name]:
@@ -1898,7 +2091,17 @@ def main() -> int:
                         _record_append(owner_path, okey)
     if status in ('done', 'expired'):
         items = items_open
-        if isinstance(items, dict) and isinstance(items.get('tasks'), list):
+        if isinstance(items, dict) and items.get('carry_only'):
+            # W7 (§1.11): a round opened SOLELY by a `[tasks:]` exec carry did
+            # no real work of its own this round — the slice was empty, so
+            # "(auto) touched; summary pending" would be false (the round
+            # touched nothing; the carry just executed by reference). Skip the
+            # backstop for the round wholesale rather than placeholder-bind
+            # any of its `items['tasks']`. A1 (never opening a carry-only
+            # round at all) was rejected — a real summary still applies
+            # normally via §10.3 if a sidecar lands for it (T-W7-3).
+            backstop = []
+        elif isinstance(items, dict) and isinstance(items.get('tasks'), list):
             backstop = [(k, current_index.get(k)) for k in items['tasks']]
         else:
             # Legacy `.bind` predating `items` — same fail-open shape as
@@ -1960,6 +2163,19 @@ def main() -> int:
             n = count_sid_lines(path, sid_tag)
             log_seen[key] = n
             round_base[key] = n
+            # W8 (§1.12): freeze this key's `## Next Steps` baseline the
+            # FIRST time it enters an open round. `_apply_one`'s accounting
+            # needs a baseline to exist before any summary for this key is
+            # ever applied, and it is never refrozen once set — the "changed"
+            # branch there updates it when a real edit is detected, so
+            # `setdefault`-shaped skip-if-present is what makes the debt
+            # accumulate across rounds instead of resetting to "unchanged"
+            # every time. `None` (no section) is the sentinel that keeps the
+            # key out of ns tracking entirely (§1.12).
+            if key not in ns_hash:
+                _nsd = _next_steps_digest(path)
+                if _nsd is not None:
+                    ns_hash[key] = _nsd
         # §4.4.1 D2: this round's closed set also goes into `history`, keyed by
         # round, and the window is pruned to the last `_ROUND_HISTORY_K` rounds.
         # This is the ONLY write point — a round's set is frozen exactly when it
@@ -1968,16 +2184,22 @@ def main() -> int:
         # in BOTH the history entry and the `capture['items']` literal below —
         # they are separate literals and a key added to only one of them is
         # silently absent from the other's gate (the §1.7 evaporation trap
-        # applied to the round-history schema).
+        # applied to the round-history schema). W7 (§1.11) adds `note_owners`
+        # / `carry_only` on the same terms — both literals, same evaporation
+        # trap.
         history[str(round_n)] = {'tasks': sorted(active.keys()),
                                  'notes': list(novel_notes),
-                                 'allow_tasks': sorted(pre_selflog.keys())}
+                                 'allow_tasks': sorted(pre_selflog.keys()),
+                                 'note_owners': list(note_owners),
+                                 'carry_only': bool(carry_only.get('carry_only'))}
         history = {k: v for k, v in history.items()
                    if int(k) > round_n - _ROUND_HISTORY_K}
         capture = {
             'status': 'requested',
             'items': {'tasks': sorted(active.keys()), 'notes': novel_notes,
-                      'allow_tasks': sorted(pre_selflog.keys())},
+                      'allow_tasks': sorted(pre_selflog.keys()),
+                      'note_owners': list(note_owners),
+                      'carry_only': bool(carry_only.get('carry_only'))},
             'requested_ts': requested_ts,
             'tried_notes': tried_notes,
             'tried_tasks': tried_tasks,
@@ -1990,6 +2212,14 @@ def main() -> int:
             # it from scratch — a key missing from either one is silently gone
             # every Stop.
             'history': history,
+            # W8 (§1.12): same evaporation trap as `history` above — `ns_*`
+            # sits directly under `capture` (not inside `items`, unlike
+            # `note_owners`/`carry_only`: its only consumer is `main()`
+            # itself, never `_apply_capture`) and must be re-emitted in BOTH
+            # dict literals or it silently vanishes the Stop after this one.
+            'ns_hash': ns_hash,
+            'ns_debt': ns_debt,
+            'tried_ns': tried_ns,
         }
         spawn = True
     else:
@@ -2040,6 +2270,13 @@ def main() -> int:
             # `history` is written only at the request commit above — but it
             # MUST be re-emitted here or every non-requesting Stop drops it.
             'history': history,
+            # W8 (§1.12): same requirement as `history` — `ns_*` is mutated
+            # by `_apply_one` above regardless of whether THIS Stop opens a
+            # new round, so this branch must carry the mutated values, not
+            # the ones read at Stop entry.
+            'ns_hash': ns_hash,
+            'ns_debt': ns_debt,
+            'tried_ns': tried_ns,
         }
 
     # --- Gate (INV-1): block only to (b) report binds, (c) report exec-skip,
@@ -2101,9 +2338,20 @@ def main() -> int:
         # from this single value (review F-I3).
         round_capture_path = capture_sidecar_path(STATE_DIR, session_id, round_n)
         sidecar_path_display = _to_forward_slash(round_capture_path)
+        # W8 (§1.12): keys whose `## Next Steps` digest has sat at
+        # `_NS_DEBT_THRESHOLD`+ rounds of unchanged despite a real summary
+        # landing, minus whatever has already had its one rewrite proposal
+        # presented (`tried_ns`, 打止め) — computed fresh each spawn so a
+        # key's later digest CHANGE (debt reset to 0) drops it here without
+        # any separate cleanup step.
+        next_steps_stale = sorted(
+            k for k, d in ns_debt.items()
+            if isinstance(d, int) and d >= _NS_DEBT_THRESHOLD and k not in tried_ns
+        )
         context = build_capture_context(
             sid_tag, iso_ts, round_capture_path, project_root, project_roots,
             sorted(active.keys()), novel_notes, round_n,
+            next_steps_stale=next_steps_stale,
         )
         reason = (
             f'{auto_lines}'

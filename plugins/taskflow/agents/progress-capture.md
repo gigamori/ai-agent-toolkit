@@ -54,7 +54,8 @@ or read, whether new task-worthy work appeared). Context block shape:
   "project_root": "<absolute path to the PRIMARY project's _projects/<project> dir, forward-slashed>",
   "project_roots": {"<project>": "<absolute path to that project's dir, forward-slashed>"},
   "touched_tasks": ["<project>/<task-basename>.md", ...],
-  "note_writes": ["project-notes/<category>/<file>.md", ...]
+  "note_writes": ["project-notes/<category>/<file>.md", ...],
+  "next_steps_stale": ["<project>/<task-basename>.md", ...]  // KEY ABSENT when nothing is stale
 }
 ```
 
@@ -92,6 +93,15 @@ default for anything you leave unqualified.
   and resolve the basename under `<that root>/tasks/<status>/` (try `0_todo/`,
   `1_in_progress/`, `2_done/`), never under your own cwd and never under
   another project's root.
+- `next_steps_stale` — qualified tasks whose `## Next Steps` section has not
+  been rewritten for a while despite real work landing on them (capture-
+  detection-gaps.md §1.12). For each one, propose a replacement `## Next
+  Steps` body that names the phase this session actually landed — see
+  `next_steps` in the Output section below. Do NOT rewrite the task file
+  yourself; the hook never applies this either (it only surfaces your
+  proposal for a human to confirm). ABSENT from the context block entirely
+  when nothing is stale this round (not an empty list) — treat a missing key
+  the same as an empty one.
 - `note_writes` — project-notes deliverables written this session whose owning
   task is not yet recorded. Each is **project-relative** (begins with
   `project-notes/`) — to `Read` one for grounding, join it onto the root of the
@@ -144,6 +154,9 @@ markdown fences, no second write.
   ],
   "proposals": [
     "<suggested title> — <TODO|In Progress|Done> — <why>"
+  ],
+  "next_steps": [
+    {"task": "<project>/<task-basename>.md", "proposal": "<replacement ## Next Steps body>"}
   ]
 }
 ```
@@ -167,8 +180,19 @@ markdown fences, no second write.
 - `proposals` — genesis suggestions for task-worthy work that has no task file
   yet. The hook only DISPLAYS these for the user to confirm; it never
   auto-creates a task. Empty list if none.
+- `next_steps` — ONLY for a task named in the input's `next_steps_stale`
+  (capture-detection-gaps.md §1.12). `task` is the qualified reference (same
+  rules as `confirmed`); `proposal` is the full replacement text for that
+  task's `## Next Steps` section — concrete, naming what actually landed and
+  what remains, not a restatement of the current (stale) list. The hook only
+  DISPLAYS this for a human to apply; it never rewrites the task file itself
+  (§10.3 rationale: the section is also a human editing surface, and an
+  automatic overwrite would race a concurrent hand-edit). Surfaced to the
+  user AT MOST ONCE per task per session — do not repeat a proposal for a
+  task that is no longer in `next_steps_stale`. Empty list if nothing is
+  stale or you have no proposal.
 
 Any key you have nothing for → an empty list. If you have no judgment at all,
-write `{"confirmed": [], "note_links": [], "proposals": []}`. A malformed or
-partial write is treated by the hook as absent, so write the whole object in
-one Write call.
+write `{"confirmed": [], "note_links": [], "proposals": [], "next_steps": []}`.
+A malformed or partial write is treated by the hook as absent, so write the
+whole object in one Write call.

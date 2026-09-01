@@ -80,6 +80,14 @@ no check fails when it drifts.
   emits LF is only discriminating on win32; it passes vacuously on Linux and macOS, where
   the untranslated and translated forms coincide. Observed 2026-08-29 against
   `packages/taskflow` at `dist/task-rebuild.js`.
+- That same text-mode round trip rewrites the WHOLE file, not just the appended region:
+  the capture hook's first `@log` append re-encodes an entire task markdown to CRLF on
+  win32. So a raw-byte digest over any section of a task markdown reads "changed" after
+  the first append here and "unchanged" on Linux, and a test comparing a section across
+  hook invocations has to normalize line endings before hashing — at the cost of no longer
+  seeing an edit that changes only line endings inside that section. Observed 2026-09-02 by
+  running `append_auto_binding` against a fixture task markdown in a temp directory and
+  reading the bytes back with `od -c`.
 
 ## The live machine — `_projects/_state/`
 
