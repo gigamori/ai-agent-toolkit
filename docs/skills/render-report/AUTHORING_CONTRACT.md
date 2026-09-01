@@ -56,7 +56,26 @@ An LLM judge's `PASS` is not evidence until its detection rate has been measured
 - Do not treat a `PASS` as assurance over the classes in `deck-review.md`.
 - Do not report a clean run as proof; report it as one trial.
 
-The measurement is one deck-spec fixture per class, each carrying a single planted deviation, judged once, with the rate recorded here alongside the model and date. **Not yet run** — see the repository's own rules on probabilistic verification before running it: a zero-hit result is inconclusive without a control arm at a non-zero rate.
+### Measured 2026-09-02
+
+Model: the judge inherited the parent (Opus 5, 1M context). Six trials: five decks each carrying exactly one planted deviation, plus `tests/fixtures/deck_clean.md` unmodified as the control arm. Each deck was judged once, in a fresh context, given only the report, the deck's body slides and `deck-review.md`.
+
+**Every planted deck passes `validate_deck.py` first.** That is what makes the measurement about G-B: the deterministic gate cannot see any of these five, so a detection is attributable to the judge alone.
+
+| Class | Plant | Verdict | Class named | Slide named |
+|---|---|---|---|---|
+| `MODALITY_UP` | S12 `body`: 「棄却できない」→「棄却された」 | FAIL | correct | correct |
+| `QUALIFIER_DROP` | S8 `evidence`: 「分母=前回接触ありの8,257案件。」を削除 | FAIL | correct | correct |
+| `UNTRACEABLE` | S10 `body`: report にない一文を追加 | FAIL | correct | correct |
+| `EMPHASIS_SWAP` | S2 `findings`: 主要な発見 1 と 2 を入替え | FAIL | correct | correct |
+| `CONTRADICTION` | S5 `body`: 13,020行 → 12,443行（S21 と矛盾する実在トークン） | FAIL | correct | correct |
+| — (control) | none | PASS | — | — |
+
+5 of 5 detected. Every planted deck returned **exactly one** finding, so the 18 other body slides in each produced no false positive: 90 slide-level clean observations plus the control's own 19.
+
+**What this does not establish.** One trial per class is not a rate. It shows each class is detectable and that the judge does not fail indiscriminately (the control passed); it puts no useful lower bound on the miss rate — a single success is consistent with a true rate anywhere above a few percent. Do not quote "5/5" as a detection rate. Re-measure with more trials per class before treating a `PASS` as assurance, and re-measure from scratch if the model, `deck-review.md`, or the class list changes.
+
+The mutation strings are in the table above; the fixtures themselves are disposable and were built under `tmp/gb-baserate/` rather than tracked, since the ordinary change loop does not re-run them.
 
 ## What has not been run end to end
 
