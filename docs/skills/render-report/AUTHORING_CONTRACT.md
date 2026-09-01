@@ -86,15 +86,22 @@ Executed on `tests/fixtures/report_clean.md` (342 lines, 12 claims) in an isolat
 | `[A]` deck-author | 27 slides — 1 title, 1 exec-summary, 6 section, 12 finding, 4 evidence, 3 appendix |
 | G-A `validate_deck.py` | OK, re-run independently of the agent's own claim |
 | `[G-B]` deck-judge | PASS |
-| Loop iterations consumed | **0** — neither gate sent it back |
-| `[H]` human approval | not performed; see below |
-| `[R]` + G-R | not run — gated behind `[H]` |
+| `[H]` human approval | granted, with overflow explicitly waived for this run |
+| `[R]` deck-renderer | 27 slides, 162 shapes, 4 charts, 664 words |
+| G-R `check_pptx_text.py` | OK, re-run with this repository's checker rather than the renderer's own |
+| G-R `officecli validate` | passed |
+| G-R contrast | not applicable — all 27 slides enumerated, the only 4 explicit colour sites are chart series fills, no text-on-background pair |
+| G-R overflow | 1 site (`S2` `exec-summary`/`findings`, ~458 chars against a ~424 budget); waived at `[H]`, nothing was shortened |
+| Loop iterations consumed | **0** — no gate sent it back |
+| PowerPoint open on real hardware | not done; `validate` does not prove it |
 
 **27 slides against the 77** that a verbatim transcription of the same report produced. That ratio is the whole point of the second hop, and it is now measured rather than asserted.
 
 The report markdown was untouched: the worktree's only new file was the deck-spec.
 
-`[H]` was not performed because it is a human judgement by construction — the gate exists so that no machine approves the deck it produced. `[R]` and G-R therefore remain unexercised against a real deck; `check_pptx_text.py` has only its fixture control arm.
+`[H]` was put to a human rather than self-approved: the gate exists so that no machine approves the deck it produced. The approval came with overflow waived, so the deck was rendered as authored.
+
+`[R]` never read the report — its inputs were the deck-spec and `deck-archetypes.md` only. That hop2 produced no untraceable string is the evidence that the isolation held, and it was checked with this repository's `check_pptx_text.py`, not with the instrument the renderer wrote for itself.
 
 ### Measured gap: nothing checks the capacity guidance before rendering
 
