@@ -47,10 +47,11 @@ deck-spec の 6 原型を pptx 上のどこに置くかの固定表。**レン�
 |------|---|---|------|------|
 | 見出し（`trace` の節名） | 0.95cm | 1.64cm | 26pt | true |
 | `headline` | 3.14cm | 1.6cm | 20pt | true |
-| `body` | 5.0cm | 4.4cm | 16pt | false |
-| テーブル（`table` 宣言があるとき） | 9.7cm | 7.4cm | 12pt | false |
+| `body` | 5.0cm | 4.2cm | 16pt | false |
+| 表の見出し（`table` の値） | 9.4cm | 0.6cm | 12pt | true |
+| テーブル | 10.1cm | 7.0cm | 12pt | false |
 
-テーブルが無い場合、`body` の h を 12.1cm まで伸ばす。
+テーブルが無い場合、`body` の h を 12.1cm まで伸ばし、見出しも置かない。
 
 ### finding
 
@@ -76,6 +77,13 @@ deck-spec の 6 原型を pptx 上のどこに置くかの固定表。**レン�
 
 チャートアノテーションが無いスライドでは、source 表の y を 2.2cm、h を 14.8cm にする。
 
+### appendix
+
+| 要素 | y | h | size | bold |
+|------|---|---|------|------|
+| 見出し（`trace`） | 0.95cm | 1.64cm | 26pt | true |
+| 本文 / テーブル | 3.14cm | 14.0cm | 12pt | false |
+
 ## スライド面に置いてよい、deck-spec 由来でない文字列
 
 hop2 の文言一致検査（`scripts/check_pptx_text.py`）は、スライド上の全テキストが deck-spec に由来することを要求する。例外はここに列挙した 3 語のラベルとページ番号だけであり、[R] はこれ以外の語を足せない。
@@ -88,13 +96,6 @@ hop2 の文言一致検査（`scripts/check_pptx_text.py`）は、スライド�
 | スライド番号（数字のみ） | ページ番号 |
 
 見出しに使う節名・`F-n` は deck-spec の `trace` 値そのもの、表紙のタイトルと副題は frontmatter の `title` / `source` そのものであり、いずれも「足した文字列」ではない。
-
-### appendix
-
-| 要素 | y | h | size | bold |
-|------|---|---|------|------|
-| 見出し（`trace`） | 0.95cm | 1.64cm | 26pt | true |
-| 本文 / テーブル | 3.14cm | 14.0cm | 12pt | false |
 
 ## 容量目安
 
@@ -127,4 +128,4 @@ hop2 の文言一致検査（`scripts/check_pptx_text.py`）は、スライド�
 
 ## 表の行数
 
-12pt・行の高さ 0.6cm で、`section` のテーブル領域（7.4cm）に**ヘッダ + 11 行**、`evidence` のテーブル領域（6.8cm）に**ヘッダ + 10 行**、チャートなしの `evidence`（14.8cm）に**ヘッダ + 23 行**が目安。source 表がこれを超える場合、行を間引かず 2 枚の `evidence` スライドに分ける。
+12pt・行の高さ 0.6cm で、`section` のテーブル領域（7.0cm）に**ヘッダ + 10 行**、`evidence` のテーブル領域（6.8cm）に**ヘッダ + 10 行**、チャートなしの `evidence`（14.8cm）に**ヘッダ + 23 行**が目安。source 表がこれを超える場合、行を間引かず 2 枚の `evidence` スライドに分ける。
