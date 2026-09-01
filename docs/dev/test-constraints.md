@@ -110,3 +110,21 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
 Every count above is a sample from one harness on one date, not a rate that holds for
 another model or another prompt. Re-measure before relying on one; the harnesses that
 produced them live in `skills/xml-wf/scripts/evals/`.
+
+## officecli (measured on 1.0.146)
+
+- `officecli view <pptx> text` frames every slide with a line of the exact form
+  `=== /slide[N] ===` and emits the slide's text one string per line, with a blank line
+  between slides. Table cells arrive as separate lines, one per cell, and a chart's title
+  arrives as a line of its own. `skills/render-report/scripts/check_pptx_text.py` parses
+  that framing, and `fixtures/view_text_clean.txt` is written in it. Observed 2026-09-02 by
+  running the command against a real deck.
+- Slide geometry is reported and accepted in centimetres, on a 33.87cm × 19.05cm canvas for
+  a 16:9 deck. `skills/render-report/references/deck-archetypes.md` fixes its regions in
+  those units. Observed 2026-09-02 via `officecli get <pptx> "/slide[N]" --json`.
+- `officecli view <pptx> issues --type low_contrast` does **not** subsume
+  `skills/render-report/scripts/check_contrast.py`. On a deck carrying an explicit
+  `background=#1F3864` with an explicit text `color=#2B2B2B` at 14pt — both confirmed
+  present by `officecli get` — the issues view returned `count: 0` for `low_contrast` and
+  for every other type, while the WCAG ratio is 1.22:1 against a 4.5:1 threshold. The
+  contrast procedure therefore stays on `check_contrast.py`. Observed 2026-09-02.

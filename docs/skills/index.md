@@ -16,6 +16,7 @@ rest are documented by their `SKILL.md` and the row in the repo
 | [compact-document](compact-document/) | [AUTHORING_CONTRACT.md](compact-document/AUTHORING_CONTRACT.md) | Maintainers — the shared design contract the skill's three prompt templates must jointly satisfy |
 | [mode-orchestrator](mode-orchestrator/) | [index.md](mode-orchestrator/index.md) → user guide (EN/JA), workflow-spec authoring guide | End users + spec authors |
 | [register-pi-tools](register-pi-tools/) | [USER_GUIDE.md](register-pi-tools/USER_GUIDE.md) / [USER_GUIDE_ja.md](register-pi-tools/USER_GUIDE_ja.md) | End users |
+| [render-report](render-report/) | [AUTHORING_CONTRACT.md](render-report/AUTHORING_CONTRACT.md) | Maintainers — the two structure contracts, the four gates, and what each gate cannot see |
 | [xml-wf](xml-wf/) | [README.md](xml-wf/README.md) / [README_ja.md](xml-wf/README_ja.md) (reference), [USER_GUIDE.md](xml-wf/USER_GUIDE.md) / [USER_GUIDE_ja.md](xml-wf/USER_GUIDE_ja.md) | Reference readers + end users |
 
 ## Where a doc belongs

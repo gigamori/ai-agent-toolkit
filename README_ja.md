@@ -60,7 +60,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | 過去の Claude Code セッションログを、事前構築した DuckDB ビュー（会話・引数付き tool 呼び出し・ファイル変更・fork・compaction・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [compact-cc-log](skills/compact-cc-log/) | CC | — | 過去または実行中の Claude Code セッションを要約。title・`--session-id`・`--current`（実行中セッション。`scripts/transcript.py` が呼び出しターン自体を除外）でセッションを解決し、`compact-document` に委譲して圧縮 |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | 過去の Pi Coding Agent セッションログを、事前構築した DuckDB ビュー（会話・tool 呼び出し・ファイル変更・セッション系譜/bundle・compaction・in-file branch・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、subagent/skill-fork/handoff/fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
-| [render-report](skills/render-report/) | CC | — | 完成した分析レポート Markdown を `officecli` CLI 経由で pptx / docx / xlsx に変換する、内容の著者ではなく配置の実行者。同梱の `validate_contract.py` が入力をレポート構造契約（frontmatter の `purpose`、固定セクション、n数と確信度を持つクレームブロック、実在する表の列に紐づくチャートアノテーション）で検証してから変換し、文言は要約も短縮もせず原文転記、収まらないテキストは truncate せず overflow として呼び出し元に差し戻す。分析コンテキストを一切受け取らないため、契約準拠 Markdown を出力するパイプラインであれば再利用できる |
+| [render-report](skills/render-report/) | CC | [docs](docs/skills/render-report/) | 完成した分析レポート Markdown を `officecli` CLI 経由で pptx / docx / xlsx に変換する。正本の Markdown は決して書き換えない。`docx` / `xlsx` は原文転記の 1 hop。`pptx` は 2 hop で、hop1 がレポートを媒体向けの **deck-spec** へ再著述し、hop2 がそれを一切書き換えずスライドへ転記する——媒体都合の短縮がスライド側の文書に閉じ、分析の正本に逆流しない。その間に 3 つのゲートが立つ: `validate_deck.py` が構造・数値の出所・source 表の一致・主張カバレッジを検査し、fresh context の LLM ジャッジが様相・分母・限界の脱落を検査し、人間が deck-spec を読んで可読性を判断する。分析コンテキストを一切受け取らないため、契約準拠 Markdown を出力するパイプラインであれば再利用できる |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。バッチ実行は `--backend`（harness から自動判定）で選ぶ2つの backend を持つ: run-cc は各ステップを独立した `claude -p` subagent として実行し、run-pi は claude を一切必要とせず pi CLI で実行する（pi では強制できない `schema=` と `on-error="debug"` は起動前に拒否）。run-llm プロトコルはホスト側エージェント自身の subagent 機能へ委譲する。本当に曖昧なフォークに当たったステップは黙って推測せず `DECISION:` 要求を発行する——run は人間の回答待ちで停止するか、`decider="llm"` なら裁定モデルがどちらの backend でも無人で解決する |
 
 ### revert
@@ -78,14 +78,18 @@ AI アシスタントが不要な編集・commit・git 操作を行ったとき�
 
 ### render-report
 
-完成した分析を資料化する工程は、内容を壊しやすい。レイアウトを組む者が文言にも手を入れ始め、テキストボックスに収める過程で数値から分母が静かに落ちる。**render-report** はこの2つの仕事を分離し、内容の著者ではなく配置の実行者に徹する。
+完成した分析を資料化する工程は、内容を壊しやすい。レイアウトを組む者が文言にも手を入れ始め、テキストボックスに収める過程で数値から分母が静かに落ちる。かといって書き換えを全面禁止しても解決しない——長いレポートを忠実に転記したデッキは誰も読まず、短縮の圧力が分析の正本の側にかかる。**render-report** は片方を禁じるのではなく、2つの仕事を分離する。
 
 1. **契約ゲート** — 変換前に `scripts/validate_contract.py` が入力 Markdown を構造契約で検証する。frontmatter の `purpose`、固定のセクション順序、n数と確信度記号を必ず持つクレームブロック、`x=` / `y=` が直後のテーブルに実在する列を指すチャートアノテーション。違反は中途半端な資料ではなく違反行の一覧として返す。
-2. **原文転記** — 文言はそのまま複写する。要約・短縮・数値の再フォーマットを行わない。収まらないテキストは truncate せず overflow（どのスライドのどの要素が、どれだけ超過したか）として呼び出し元に差し戻す。
+2. **出力形が決まった著述段** — `pptx` に限り、レポートを **deck-spec** へ再著述する。スライド原型は6種、全スライドが由来する節・クレームへ `trace` で紐づき、テーブルは *source* 表（全行全列そのまま）と *authored* 表に分かれる。再著述が許されるのはここだけ。
+3. **互いに見えないものを見る3つのゲート** — `scripts/validate_deck.py` が構造、全数値トークンがレポートに実在すること、source 表の全行全列一致、チャートを発明していないこと、主張を落としていないことを機械的に検査する。次に fresh context の LLM ジャッジが、トークン検査には見えない5点——様相の強化、分母や限界の脱落、レポートに帰着しない文、強調の入替え、スライド間の矛盾——を判定する。最後に人間が deck-spec を読み、可読性だけを判断する。
+4. **一切書き換えない転記段** — レンダラは deck-spec と固定配置表のみを読み、レポートを読まない。生成後に `scripts/check_pptx_text.py` が、スライド上の全文字列が deck-spec に由来することを検査する（例外は3語のラベルとページ番号だけ）。
+
+正本の Markdown は決して書き換えない。収まらないときに短くするのは deck-spec であって、分析ではない。
 
 **分析コンテキストを一切受け取らない**（入力は Markdown と出力パスのみ）ため、契約準拠 Markdown を出力するパイプラインであれば再利用でき、レイアウト作業が分析側のコンテキストを消費しない。
 
-**形式**: `pptx` はスライド単位で構築（1スライド1クレーム、チャートはアノテーション付きテーブルから生成、検証詳細は Appendix へ）。`docx` は officecli の `markdown` 要素で一括投入するため、転記をモデルではなく CLI が行う。`xlsx` はデータ付録（1テーブル1シート）で、明示要求時のみ生成する。
+**形式**: `pptx` は上記の deck-spec を経由する。`docx` は officecli の `markdown` 要素で一括投入するため、転記をモデルではなく CLI が行う。`xlsx` はデータ付録（1テーブル1シート）で、明示要求時のみ生成する。
 
 **トリガー**: 分析レポートのスライド化・文書化を依頼、または `/render-report <md-path> <format>` で明示呼び出し。
 
