@@ -4,7 +4,17 @@
 #   "sqlalchemy",
 #   "psycopg2-binary",       # PostgreSQL
 #   "PyMySQL",               # MySQL
-#   "mariadb",               # MariaDB ※ libmariadb システム依存
+#   # "mariadb",             # MariaDB。既定で無効化している。
+#                            # wheel が提供されない環境（Linux で観測）では mariadb_config
+#                            # （MariaDB Connector/C）を要する source build になり失敗する。
+#                            # wheel がある環境（Windows / CPython 3.12 で実測）では成功する
+#                            # ので、これは移植性のための無効化であって当環境の不具合ではない。
+#                            # PEP 723 の依存は全部入りで解決されるため、1つ落ちると
+#                            # Redshift など他のバックエンドでも本スクリプトが起動できなくなる。
+#                            # MariaDB へは DSN を mysql+pymysql:// にすれば
+#                            # PyMySQL（システム依存なし）で接続できる。
+#                            # mariadb+mariadbconnector:// を使う場合のみ、
+#                            # libmariadb-dev 等を入れた上でこの行を有効化する。
 #   "sqlalchemy-redshift",   # Redshift（dialect）
 #   "redshift-connector",    # Redshift（driver）
 #   "snowflake-sqlalchemy",  # Snowflake

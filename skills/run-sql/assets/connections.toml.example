@@ -15,9 +15,13 @@
 # description = "MySQL (local)"
 
 # --- MariaDB ---
+# PyMySQL 経由を推奨（システムライブラリ不要）。
 # [connections.mariadb]
-# dsn = "mariadb+mariadbconnector://user:password@localhost:3306/dbname"
+# dsn = "mysql+pymysql://user:password@localhost:3306/dbname"
 # description = "MariaDB (local)"
+#
+# mariadb+mariadbconnector:// を使う場合は、libmariadb（mariadb_config）を入れた上で
+# run_sql.py 冒頭の依存ブロックにある "mariadb" 行を有効化すること（既定では無効）。
 
 # --- Amazon Redshift ---
 # [connections.redshift]
