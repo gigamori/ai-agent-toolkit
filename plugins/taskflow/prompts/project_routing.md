@@ -43,7 +43,7 @@ block as the prompt.
      "state_file": "extracted from [Progress Session]",
      "current_project": "extracted from [Progress Session]",
      "leading_lines": "the leading lines of the user input (near the beginning, before the body; pj:/mode: etc. may appear in any order, not necessarily the literal first line)",
-     "prompt_summary": "summary of the user input (≤ 50 chars)"
+     "prompt_summary": "the meaning of the instruction — what the user asks to be done (≤ 50 chars). Never restate what leading_lines already carries (pj:/mode: etc.), and never include skill/command names, flags, or tool names"
    }
    ```
 2. Invoke the subagent via the Agent tool: `subagent_type: taskflow:project-router`, `prompt: <JSON context block>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself by reading the spec in the body of `agents/project-router.md`.

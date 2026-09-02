@@ -64,6 +64,7 @@ If ANY of the following apply, set `action=skip` and proceed to Step 6:
 - `prompt_summary` is a single question / explanation request only (e.g., "what is X?", "tell me about X"). However, inquiries about tasks, progress, or remaining work (e.g., "remaining tasks", "what's left", "status") are apply.
 - `prompt_summary` is code reading / investigation only with no artifact change (but if managed as a project task, use apply).
 - `prompt_summary` is a small task that completes in one turn (typo fixes, etc.).
+- `prompt_summary` names no subject: it says what to do (an action or a procedure to run) but not what that work would change or produce.
 
 Otherwise (development tasks involving code changes, work spanning multiple steps, or when project management is explicitly requested), set `action=apply` and proceed to Step 3.
 
