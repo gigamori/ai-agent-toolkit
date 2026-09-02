@@ -226,6 +226,57 @@ def test_is_contained_note_rel_table() -> None:
         check(nl.is_contained_note_rel(rel) is False, f"not contained: {rel!r}")
 
 
+def make_crlf_task(root: Path) -> Path:
+    task_dir = root / "tasks" / "1_in_progress"
+    task_dir.mkdir(parents=True)
+    task_path = task_dir / "task1.md"
+    task_path.write_bytes(TASK_TEMPLATE.replace("\n", "\r\n").encode("utf-8"))
+    return task_path
+
+
+def test_crlf_seed_normalized_to_lf(root: Path) -> None:
+    print("--- CRLF-seeded task md is normalized to LF on write ---")
+    task_path = make_crlf_task(root)
+    res = nl.append_note_link(str(task_path), "project-notes/specs/foo.md")
+    check(res is True, "append_note_link succeeds on a CRLF-seeded task md")
+    data = task_path.read_bytes()
+    cr_count = data.count(b"\r")
+    check(b"\r" not in data,
+          f"file has zero \\r bytes after the write (got {cr_count})")
+
+
+def test_crlf_seed_control_no_call(root: Path) -> None:
+    print("--- control: CRLF-seeded task md, no call, still carries \\r bytes ---")
+    task_path = make_crlf_task(root)
+    data = task_path.read_bytes()
+    check(b"\r" in data,
+          "the fixture itself carries \\r bytes before any call (proves arm 1 measures "
+          "the write, not a fixture that never had CRLF)")
+
+
+def test_lf_seed_diff_is_one_line(root: Path) -> None:
+    print("--- LF-seeded task md: appending a second entry is a byte-exact one-line diff ---")
+    task_dir = root / "tasks" / "1_in_progress"
+    task_dir.mkdir(parents=True)
+    task_path = task_dir / "task1.md"
+    seeded = (
+        TASK_TEMPLATE
+        + f"\n{nl.NOTES_BEGIN}\n{nl._AUTO_COMMENT}\n- project-notes/specs/foo.md\n{nl.NOTES_END}\n"
+    )
+    task_path.write_bytes(seeded.encode("utf-8"))
+    before = task_path.read_bytes()
+    res = nl.append_note_link(str(task_path), "project-notes/specs/bar.md")
+    check(res is True, "append_note_link succeeds on an LF-seeded, already-established block")
+    after = task_path.read_bytes()
+    added_line = b"- project-notes/specs/bar.md\n"
+    end_marker = nl.NOTES_END.encode("utf-8")
+    insert_at = before.index(end_marker)
+    expected = before[:insert_at] + added_line + before[insert_at:]
+    check(after == expected,
+          f"the after-state equals the before-state with exactly one line inserted "
+          f"before NOTES_END (got a {len(after) - len(before)}-byte diff)")
+
+
 def test_no_anchor_fails(root: Path) -> None:
     print("--- no @log:end anchor → graceful False ---")
     task_dir = root / "tasks" / "0_todo"
@@ -283,6 +334,9 @@ def main() -> int:
             test_resolve_ac2,
             test_pure_reference_ac4,
             test_stale_skip_ac7,
+            test_crlf_seed_normalized_to_lf,
+            test_crlf_seed_control_no_call,
+            test_lf_seed_diff_is_one_line,
             test_no_anchor_fails,
             test_entry_literal_pin,
             test_traversal_not_established,

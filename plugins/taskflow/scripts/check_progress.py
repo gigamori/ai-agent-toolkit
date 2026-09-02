@@ -21,6 +21,8 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
   11. notes index arity  — project-notes/index.md data rows must have exactly 4
                            columns (File | Description | Tags | Updated)
   12. duplicate @table   — progress.md must hold exactly 1 @table region
+  13. notes desc length  — project-notes/index.md Description must be ≤ 100
+                           chars
 
 Note: progress.md's Completed table lists every task in tasks/2_done/ — the
 file is never truncated (context-side truncation is view_progress.py's job and
@@ -60,6 +62,7 @@ NOTES_REF_RE = re.compile(r"@(?:project-notes|notes)/([^\s)|`\]*]+)")
 
 TABLE_BEGIN = "<!-- @table:begin -->"
 TASK_STATUSES = ("0_todo", "1_in_progress", "2_done")
+NOTES_DESC_MAX = 100
 SECTION_TO_STATUS = {
     "TODO": "0_todo",
     "In Progress": "1_in_progress",
@@ -303,6 +306,35 @@ def check_notes_index_consistency(project_dir: Path, result: Result) -> None:
             str(notes_dir / f),
             f"'{f}' exists but is not registered in index.md",
         )
+
+
+def check_notes_index_desc_length(project_dir: Path, result: Result) -> None:
+    """#13 — project-notes/index.md Description cell must be <= NOTES_DESC_MAX
+    chars (prompts/notes_guidelines.md lines 50, 98).
+
+    Counted over the rendered cell (parse_notes_index_rows already unescapes
+    "\\|"), not the raw markdown row.
+    """
+    notes_dir = project_dir / "project-notes"
+    if not notes_dir.is_dir():
+        return
+    index_md = notes_dir / "index.md"
+    content = read_text(index_md)
+    if content is None:
+        return
+    for row in parse_notes_index_rows(content):
+        cells = row["cells"]
+        if len(cells) < 2:
+            continue
+        desc = cells[1]
+        if len(desc) > NOTES_DESC_MAX:
+            result.add(
+                "notes_index_desc_len",
+                "violation",
+                str(index_md),
+                f"row '{row['file']}' Description is {len(desc)} chars, "
+                f"expected <= {NOTES_DESC_MAX}",
+            )
 
 
 def check_task_stale(project_dir: Path, result: Result, threshold_days: int) -> None:
@@ -657,6 +689,7 @@ def main(argv: list[str] | None = None) -> int:
     result = Result()
     check_progress_task_links(project_dir, result)
     check_notes_index_consistency(project_dir, result)
+    check_notes_index_desc_length(project_dir, result)
     check_task_stale(project_dir, result, args.stale_days)
     check_project_marker(project_dir, result)
     check_task_body_links(project_dir, result)

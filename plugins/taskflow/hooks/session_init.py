@@ -242,7 +242,7 @@ if not os.path.isdir(PROGRESS_ROOT):
     os.makedirs(STATE_DIR, exist_ok=True)
     index_md = os.path.join(PROGRESS_ROOT, 'index.md')
     if not os.path.exists(index_md):
-      with open(index_md, 'w', encoding='utf-8') as f:
+      with open(index_md, 'w', encoding='utf-8', newline='\n') as f:
         f.write('| Project | Description | Target |\n|---------|-------------|--------|\n')
   else:
     sys.exit(0)

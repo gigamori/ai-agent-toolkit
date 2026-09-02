@@ -32,6 +32,14 @@ ROW_4_ESCAPED_PIPE = (
     r"| llm-wiki, pj, integration, hook, wiki-toggle, design | 2026-07-03 |"
 )
 
+ROW_DESC_OVER = "| specs/over.md | " + ("A" * 101) + " | tag | 2026-08-19 |"
+ROW_DESC_BOUNDARY = "| specs/boundary.md | " + ("A" * 100) + " | tag | 2026-08-19 |"
+ROW_DESC_STRADDLE = (
+    "| specs/straddle.md | " + ("x" * 95 + r"\|" * 5) + " | tag | 2026-08-19 |"
+)
+ROW_DESC_NONASCII = "| specs/nonascii.md | " + ("あ" * 101) + " | tag | 2026-08-19 |"
+ROW_DESC_MALFORMED = "| onlyfile.md |"
+
 
 def ok(msg: str) -> None:
     global PASS
@@ -77,6 +85,12 @@ def other_findings(project_dir: Path) -> list[cp.Finding]:
     result = cp.Result()
     cp.check_notes_index_consistency(project_dir, result)
     return [f for f in result.findings if f.check != "notes_index_arity"]
+
+
+def desc_findings(project_dir: Path) -> list[cp.Finding]:
+    result = cp.Result()
+    cp.check_notes_index_desc_length(project_dir, result)
+    return [f for f in result.findings if f.check == "notes_index_desc_len"]
 
 
 def test_three_column_row_reported(root: Path) -> None:
@@ -174,6 +188,61 @@ def test_finding_labels(root: Path) -> None:
     check(f.path == expected_path, f"path is the index.md path (got {f.path!r})")
 
 
+def test_desc_over_max_reported(root: Path) -> None:
+    print("--- B1: a 101-char Description is reported ---")
+    project_dir = make_project(root, [ROW_DESC_OVER])
+    found = desc_findings(project_dir)
+    check(len(found) == 1, f"exactly one desc-length finding (got {len(found)})")
+    if found:
+        check(found[0].check == "notes_index_desc_len",
+              f"check is 'notes_index_desc_len' (got {found[0].check!r})")
+        check(found[0].severity == "violation",
+              f"severity is 'violation' (got {found[0].severity!r})")
+
+
+def test_desc_at_max_not_reported(root: Path) -> None:
+    print("--- B2: a 100-char Description (boundary control) is not reported ---")
+    project_dir = make_project(root, [ROW_DESC_BOUNDARY])
+    found = desc_findings(project_dir)
+    check(len(found) == 0, f"no desc-length finding (got {[f.message for f in found]})")
+
+
+def test_desc_escaped_pipe_straddle_not_reported(root: Path) -> None:
+    print("--- B3: raw >100 chars, unescaped-cell exactly 100, is not reported ---")
+    project_dir = make_project(root, [ROW_DESC_STRADDLE])
+    rows = cp.parse_notes_index_rows(
+        (project_dir / "project-notes" / "index.md").read_text(encoding="utf-8")
+    )
+    check(len(rows) == 1 and len(rows[0]["cells"][1]) == 100,
+          f"the unescaped Description cell is exactly 100 chars "
+          f"(got {len(rows[0]['cells'][1]) if rows else 'no row'})")
+    found = desc_findings(project_dir)
+    check(len(found) == 0,
+          f"no desc-length finding for the straddling row (got "
+          f"{[f.message for f in found]})")
+
+
+def test_desc_nonascii_counts_chars(root: Path) -> None:
+    print("--- B4: a 101-char non-ASCII Description is reported by char count ---")
+    project_dir = make_project(root, [ROW_DESC_NONASCII])
+    found = desc_findings(project_dir)
+    check(len(found) == 1, f"exactly one desc-length finding (got {len(found)})")
+    if found:
+        check("101" in found[0].message,
+              f"the finding names 101 chars, not a byte count (got {found[0].message!r})")
+
+
+def test_desc_malformed_row_no_exception(root: Path) -> None:
+    print("--- B5: a 1-cell row raises no exception; arity fires, desc-length does not ---")
+    project_dir = make_project(root, [ROW_DESC_MALFORMED])
+    found = desc_findings(project_dir)
+    check(len(found) == 0,
+          f"no desc-length finding for a 1-cell row (got {[f.message for f in found]})")
+    arity = arity_findings(project_dir)
+    check(len(arity) == 1,
+          f"the arity check fires for the same 1-cell row (got {len(arity)})")
+
+
 def test_main_end_to_end(root: Path) -> None:
     print("--- A8: main() exit code and stdout ---")
     bad_dir = make_project(root / "bad", [ROW_3])
@@ -197,7 +266,8 @@ def test_main_end_to_end(root: Path) -> None:
 
 
 def main() -> int:
-    print("=== check_progress.py check #11 (notes index arity) unit tests ===")
+    print("=== check_progress.py checks #11 (notes index arity) and "
+          "#13 (notes desc length) unit tests ===")
     tests = (
         test_three_column_row_reported,
         test_four_column_row_not_reported,
@@ -206,6 +276,11 @@ def main() -> int:
         test_five_column_row_reported,
         test_header_and_separator_excluded,
         test_finding_labels,
+        test_desc_over_max_reported,
+        test_desc_at_max_not_reported,
+        test_desc_escaped_pipe_straddle_not_reported,
+        test_desc_nonascii_counts_chars,
+        test_desc_malformed_row_no_exception,
         test_main_end_to_end,
     )
     for t in tests:

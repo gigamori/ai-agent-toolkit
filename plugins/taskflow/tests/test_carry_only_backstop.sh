@@ -63,6 +63,7 @@ cleanup() {
   rm -rf "$TMP"
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
+  [ "$FAIL" -eq 0 ] || exit 1
 }
 trap cleanup EXIT
 
@@ -237,6 +238,70 @@ grep -qF "(referenced) owner of $NCREL via reverse-index; capture expired (r2)" 
   && fail "a carry-derived owner received a (referenced) line for a note round 2 never touched — this owner entered the round through the [tasks:] carry alone, never through a slice note: $(grep -F "[s:$SID_TAG]" "$TCO")" \
   || pass "no (referenced) line for the carry-derived owner at r2"
 unset O52
+
+echo ""
+echo "=== T5: backstop skips tasks currently under tasks/2_done/ ==="
+mkdir -p "$PDIR/tasks/2_done"
+
+echo "arm 1: a touched task in tasks/2_done/ gets no placeholder"
+reset_state
+TD1="$PDIR/tasks/2_done/2026-09-02_done-task.md"; mk "$TD1"
+write_touched "$TD1"
+OD1=$(stop 999)
+OD2=$(stop 0)
+echo "$OD1" | grep -q 'Spawn the async capture subagent' \
+  && pass "positive marker: the done-task round opened" \
+  || fail "positive marker missing — done-task round never opened: $OD1"
+[ "$(count_note "$TD1" '(auto) touched; summary pending (r1)')" = "0" ] \
+  && pass "no placeholder line appears on a task under tasks/2_done/" \
+  || fail "placeholder leaked onto a done task: $(grep -F '(auto) touched; summary pending' "$TD1")"
+unset OD2
+
+echo ""
+echo "arm 2 (control): the same flow with the task in tasks/1_in_progress/ DOES placeholder"
+reset_state
+TD2="$PDIR/tasks/1_in_progress/2026-09-02_inprogress-task.md"; mk "$TD2"
+write_touched "$TD2"
+OI1=$(stop 999)
+OI2=$(stop 0)
+echo "$OI1" | grep -q 'Spawn the async capture subagent' \
+  && pass "positive marker: the in-progress-task round opened" \
+  || fail "positive marker missing — in-progress round never opened: $OI1"
+[ "$(count_note "$TD2" '(auto) touched; summary pending (r1)')" = "1" ] \
+  && pass "control: the placeholder line DOES appear for the same flow outside tasks/2_done/" \
+  || fail "control arm did not fire — placeholder count $(count_note "$TD2" '(auto) touched; summary pending (r1)'); T5's arm 1 proves nothing without this"
+unset OI2
+
+echo ""
+echo "arm 3: a real summary still applies normally to a task in tasks/2_done/"
+reset_state
+TD3="$PDIR/tasks/2_done/2026-09-02_done-summary.md"; mk "$TD3"
+write_touched "$TD3"
+stop 999 >/dev/null
+cat > "$(rcap 1)" << EOF
+{"confirmed":[{"task":"2026-09-02_done-summary.md","summary":"DONESUM the done task's real judgement"}],
+ "note_links":[],"proposals":[]}
+EOF
+OD3=$(stop 999)
+echo "$OD3" | grep -q "applied summary: $PROJ/2026-09-02_done-summary.md (r1)" \
+  && pass "the real summary was applied to the done task and reported" \
+  || fail "no applied summary for the done task: $OD3"
+grep -qF "DONESUM the done task's real judgement" "$TD3" \
+  && pass "the summary text landed in the done task's @log" \
+  || fail "summary text missing on done task: $(grep -F "[s:$SID_TAG]" "$TD3")"
+
+echo ""
+echo "arm 4: a task in tasks/2_done/ reached via the (referenced) note-owner loop still binds"
+reset_state
+ND4="$PDIR/project-notes/procedures/done-owned-note.md"; printf '# done owned\n' > "$ND4"
+ND4REL="project-notes/procedures/done-owned-note.md"
+TD4="$PDIR/tasks/2_done/2026-09-02_done-owner.md"; mk_linked "$TD4" "$ND4REL"
+write_touched "$ND4"
+stop 999 >/dev/null
+stop 0   >/dev/null
+grep -qF "(referenced) owner of $ND4REL via reverse-index; capture expired (r1)" "$TD4" \
+  && pass "the (referenced) note-owner binding still applies to a task under tasks/2_done/" \
+  || fail "(referenced) binding lost for a done-task note owner: $(grep -F "[s:$SID_TAG]" "$TD4")"
 
 echo ""
 echo "=== Done ==="

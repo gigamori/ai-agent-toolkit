@@ -85,11 +85,28 @@ priority: HIGH
 T
 }
 
+mk_crlf() {
+  uv run --no-project python - "$1" << 'PY'
+import sys
+body = (
+    "---\r\npriority: HIGH\r\n---\r\n\r\n"
+    "# Self-log placeholder guard task\r\n\r\n"
+    "## Next Steps\r\n- (none)\r\n\r\n"
+    "<!-- @log:begin -->\r\n- 2026-08-19: created\r\n<!-- @log:end -->\r\n"
+)
+open(sys.argv[1], "wb").write(body.encode("utf-8"))
+PY
+}
+
 write_touched() {
   local rel="${1#$PROJECTS/}"
   rel="_projects/${rel}"
   rel="${rel//\\//}"
   printf '%s\n' "$rel" >> "$TF"
+}
+
+crcount() {
+  uv run --no-project python -c "import sys;print(open(sys.argv[1],'rb').read().count(b'\r'))" "$1"
 }
 
 stop() {
@@ -208,6 +225,34 @@ if echo "$OC2" | grep -qF "auto-bound"; then
   else
   fail "no auto-bind reported: $OC2"
   fi
+
+  echo ""
+echo "[T6 site 1] CRLF-seeded task md is normalized to LF by the placeholder write"
+reset_state
+TR="$PDIR/tasks/1_in_progress/2026-08-19_selflog-crlf.md"; mk_crlf "$TR"
+NR="$PDIR/project-notes/specs/selflog-crlf-note.md"; printf '# crlf note\n' > "$NR"
+write_touched "$TR"
+write_touched "$NR"
+
+CRLF_BEFORE=$(crcount "$TR")
+[ "$CRLF_BEFORE" -gt 0 ] \
+  && pass "the CRLF fixture carries \\r bytes before any call (control): $CRLF_BEFORE" \
+  || fail "the CRLF fixture unexpectedly has zero \\r bytes before any call"
+
+OR1=$(stop 0)
+OR2=$(stop 0)
+
+echo "$OR1" | grep -q '"decision": *"block"' \
+  && pass "the CRLF-seeded round opened too (same fixture, same path)" \
+  || fail "CRLF-seeded round did not open: $OR1"
+[ "$(sidlines "$TR")" = "1" ] \
+  && pass "expiry appended exactly one [s:sid8] line to the CRLF-seeded task" \
+  || fail "expiry line count on CRLF-seeded task: $(sidlines "$TR")"
+
+CRLF_AFTER=$(crcount "$TR")
+[ "$CRLF_AFTER" -eq 0 ] \
+  && pass "CRLF-seeded task md has zero \\r bytes after the placeholder write" \
+  || fail "CRLF-seeded task md still carries $CRLF_AFTER \\r byte(s) after the placeholder write"
 
   echo ""
 echo "=== Done ==="

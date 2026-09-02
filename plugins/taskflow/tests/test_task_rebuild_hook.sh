@@ -39,6 +39,7 @@ cleanup() {
   else
     echo "$FAIL failed, $PASS passed."
   fi
+  [ "$FAIL" -eq 0 ] || exit 1
 }
 trap cleanup EXIT
 

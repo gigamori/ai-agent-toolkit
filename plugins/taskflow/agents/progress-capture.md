@@ -179,7 +179,8 @@ markdown fences, no second write.
   means the primary project.
 - `proposals` — genesis suggestions for task-worthy work that has no task file
   yet. The hook only DISPLAYS these for the user to confirm; it never
-  auto-creates a task. Empty list if none.
+  auto-creates a task. The user sees each one under a "Proposed new tasks"
+  heading with a `(proposed)` prefix. Empty list if none.
 - `next_steps` — ONLY for a task named in the input's `next_steps_stale`
   (capture-detection-gaps.md §1.12). `task` is the qualified reference (same
   rules as `confirmed`); `proposal` is the full replacement text for that
@@ -187,7 +188,11 @@ markdown fences, no second write.
   what remains, not a restatement of the current (stale) list. The hook only
   DISPLAYS this for a human to apply; it never rewrites the task file itself
   (§10.3 rationale: the section is also a human editing surface, and an
-  automatic overwrite would race a concurrent hand-edit). Surfaced to the
+  automatic overwrite would race a concurrent hand-edit). The user sees each
+  one under its own "Proposed Next Steps rewrites" heading with a
+  `(next-steps)` prefix, never mixed with a genesis `proposals` entry — put a
+  task-worthy idea in `proposals` and a rewrite of an existing task's
+  `## Next Steps` here, not the other way around. Surfaced to the
   user AT MOST ONCE per task per session — do not repeat a proposal for a
   task that is no longer in `next_steps_stale`. Empty list if nothing is
   stale or you have no proposal.

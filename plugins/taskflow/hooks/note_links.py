@@ -207,7 +207,7 @@ def append_note_link(task_path: str, note_rel: str) -> bool:
             new_content = content[:insert_at] + block + content[insert_at:]
 
         try:
-            with open(task_path, 'w', encoding='utf-8') as f:
+            with open(task_path, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(new_content)
         except OSError:
             return False

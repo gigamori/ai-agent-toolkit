@@ -20,6 +20,7 @@ cleanup() {
   rm -rf "$PROJ_DIR"
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
+  [ "$FAIL" -eq 0 ] || exit 1
 }
 trap cleanup EXIT
 mkdir -p "$STATE_DIR" "$PROJ_DIR"

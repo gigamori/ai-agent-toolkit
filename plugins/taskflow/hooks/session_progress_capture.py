@@ -771,7 +771,7 @@ def append_auto_binding(path, sid_tag, iso_ts, note='(auto) touched; summary pen
             line = '\n' + line
         new_content = prefix + line + content[insert_at:]
         try:
-            with open(path, 'w', encoding='utf-8') as f:
+            with open(path, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(new_content)
         except OSError:
             return False
@@ -1654,6 +1654,7 @@ def main() -> int:
     applied_link_skipped: list[tuple] = []
     applied_membership_skipped: list[str] = []
     proposals: list[str] = []
+    ns_proposals: list[str] = []
 
     def _fold_tried(items):
         for n in (items.get('notes') if isinstance(items, dict) else []) or []:
@@ -1743,7 +1744,7 @@ def main() -> int:
                     _ns_ref, project_roots, project, current_index, _ns_explicit)
                 if _ns_ambiguous or _ns_key in tried_ns:
                     continue
-                proposals.append(_ns_prop.strip())
+                ns_proposals.append(_ns_prop.strip())
                 tried_ns.append(_ns_key)
         for _k in _s:
             _pk = current_index.get(_k)
@@ -2113,6 +2114,8 @@ def main() -> int:
         for key, path in backstop:
             if not path or key in tried_tasks:
                 continue
+            if os.path.basename(os.path.dirname(path)).lower() == '2_done':
+                continue
             # Text-key bound (W5), the same monotone stop condition as the
             # `referenced` loop above: `items` is no longer retired, so this
             # backstop is re-entered for the same closed set on every later
@@ -2286,7 +2289,7 @@ def main() -> int:
     # block (AC-9).
     report_binds = auto_bound or applied_summaries or applied_links or applied_link_skipped or applied_membership_skipped or bind_skipped or round_mismatched
     if (not spawn and not report_binds and not exec_skipped
-            and not exec_unresolved and not proposals):
+            and not exec_unresolved and not proposals and not ns_proposals):
         _save_bind(bind_path, reminded, exec_tried, capture)
         return 0
     _save_bind(bind_path, reminded, exec_tried, capture)
@@ -2408,10 +2411,17 @@ def main() -> int:
                 'with the user before creating any):\n'
                 + ''.join(f'   - (proposed) {p}\n' for p in proposals)
             )
+        ns_lines = ''
+        if ns_proposals:
+            ns_lines = (
+                '\nProposed Next Steps rewrites (capture subagent — NOT '
+                'applied; the task file is unchanged):\n'
+                + ''.join(f'   - (next-steps) {p}\n' for p in ns_proposals)
+            )
         reason = (
             f'{auto_lines}'
             f'[progress capture] session={sid_tag} date={date}\n'
-            f'{note}{prop_lines}'
+            f'{note}{prop_lines}{ns_lines}'
         )
 
     result = {'decision': 'block', 'reason': reason}

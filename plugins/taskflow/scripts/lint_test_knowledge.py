@@ -29,6 +29,12 @@ import sys
 import tokenize
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
+
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 RATCHET = TESTS / "test_sandbox_guard_ratchet.py"

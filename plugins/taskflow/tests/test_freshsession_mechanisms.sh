@@ -154,3 +154,4 @@ echo "=== deterministic check result: PASS=$PASS FAIL=$FAIL ==="
 cd "$REPO_ROOT"
 rm -rf "$TMP"
 echo "tmpdir removed."
+[ "$FAIL" -eq 0 ] || exit 1

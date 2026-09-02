@@ -16,7 +16,7 @@ Internal design document for developers — read this when you need to understan
 ### Role boundaries
 
 - `progress.md` table region (between `<!-- @table:begin -->` and `<!-- @table:end -->`): auto-generated from task files. Never hand-edit. Exactly one region per file, enforced rather than assumed: `rebuild_progress.py` keeps the first and drops any others, and `check_progress.py`'s `duplicate_table_region` reports the state before a rebuild reaches it. A second region is what a writer leaves behind when it misses the markers and takes the append branch, and it is silent damage — `view_progress.py` caps the first region only, so every extra Completed table reaches an agent's context uncapped.
-- Line endings on the shared files are LF, written explicitly (`newline="\n"`), not left to the platform. `progress.md` and the task markdown are read by the Pi taskflow extension as well, which reads them raw and matches `\n` literally; a CRLF write from this side makes its markers unmatchable, and it then appends a region instead of replacing one. Python's own readers hide the difference behind universal newlines, so this side cannot detect the damage by reading.
+- Line endings on the shared files are LF, written explicitly (`newline="\n"`), not left to the platform — `rebuild_progress.py` for `progress.md`, and, for the task markdown, every writer that appends to it: `session_progress_capture.py`'s `append_auto_binding`, `note_links.py`'s `append_note_link`, and `session_init.py`'s `_projects/index.md` scaffold write. `progress.md` and the task markdown are read by the Pi taskflow extension as well, which reads them raw and matches `\n` literally; a CRLF write from this side makes its markers unmatchable, and it then appends a region instead of replacing one. Python's own readers hide the difference behind universal newlines, so this side cannot detect the damage by reading.
 - The Completed section lists every file in `tasks/2_done/`. `rebuild_progress.py` never truncates it. Bounding context cost is `view_progress.py`'s job: it reads `progress.md`, drops all but the most recent `TASKFLOW_CONTEXT_DONE_ROWS_MAX` Completed rows (default 10, `0` = unlimited, CLI `--limit` / `--all` override), appends a `[context view]` footnote when it dropped any, and writes the result to stdout — it never writes to a file. Because the view is a line-level subset of the file rather than a re-render from `tasks/`, it cannot disagree with the file; the `#` column is deliberately not renumbered, so a view is visibly a tail.
 - `progress.md` free-text sections: hand-edited; both LLM and human contribute.
 - `tasks/<status>/<file>.md`: each file has frontmatter (priority, created, updated, optional dependencies), an H1 title (=summary shown in progress.md), a mutable body, and an append-only log block.
@@ -98,7 +98,7 @@ The router does NOT walk `project-notes/**/*.md` as a fallback — neither for `
 
 | Sub-action | Effect |
 |---|---|
-| `check` | Run drift / stale / approval-pending detection across 11 checks (`check_progress.py`). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
+| `check` | Run drift / stale / approval-pending detection across 12 checks (`check_progress.py`). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
 | `audit` | Classify each task by `## Next Steps` state: pending / completion_candidate / untracked / clean (`audit_progress.py`). Read-only. |
 | `rebuild` (alias `sync`) | Regenerate the `<!-- @table -->` block from task files (`rebuild_progress.py`). |
 | `start <id>` | Move a task `0_todo/ → 1_in_progress/` (also reopens `2_done/ → 1_in_progress/`). |
@@ -333,10 +333,12 @@ session end
         had its rewrite proposal presented (`tried_ns`) — but ONLY when that set is non-empty;
         the key is OMITTED, not emitted as `[]`, when nothing is stale, so a round with no
         staleness produces byte-identical context JSON to before W8. The subagent's own `next_steps`
-        response is never written back to the task file — it is folded into the SAME
-        `proposals` channel the Stop block already uses for genesis-task suggestions (no new
-        notification channel, §1.12 user ruling), and the key is added to `tried_ns` the
-        instant its proposal is folded in, capping it at one presentation per task per
+        response is never written back to the task file — it is folded into the SAME Stop
+        block the hook already uses for genesis-task suggestions (no new notification
+        channel, §1.12 user ruling), rendered under its own "Proposed Next Steps rewrites"
+        heading with a `(next-steps)` prefix so it reads distinctly from a genesis
+        `(proposed)` task suggestion in the same block, and the key is added to `tried_ns`
+        the instant its proposal is folded in, capping it at one presentation per task per
         session.
         The context block handed to it carries ABSOLUTE, forward-slashed `sidecar_path` /
         `project_root` (the same values this hook reads), so the subagent's write/read basis
@@ -360,6 +362,11 @@ session end
         `items.carry_only` is true skips the placeholder step wholesale — such a round was opened
         SOLELY by a `[tasks:]` exec carry, its slice is empty, and "touched; summary pending"
         would be false for it. A real summary still applies normally if a sidecar lands for it.
+        **Exception (a task currently filed under `tasks/2_done/`)**: the placeholder step also
+        skips a task whose current path's parent directory is `2_done`, read live off
+        `current_index` at backstop time — a task moved into `2_done` before the Stop is skipped,
+        one moved back out picks its placeholder up again on the next Stop. The `referenced`
+        over-bind above and any real summary are unaffected by a task's status folder.
         The note scan behind the `referenced` over-bind is whole-session by necessity — the
         requesting round consumed its own ledger slice when it committed — so the owner set,
         not the scan, is what bounds it: an owner the scan reaches for a note this round never

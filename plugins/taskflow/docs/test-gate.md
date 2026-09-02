@@ -15,6 +15,20 @@ into the assertion message where a failure prints it, and everything else goes.
 - **R2** No unreachable references, applied to every line — comments, docstrings, test names and
   assertion messages alike. R2 is what stops a reference from being smuggled into the relocation
   targets when a comment's content moves into a test name.
+- **R3** Every `.sh` suite under `tests/` (`capture_paths.sh` excluded — it is a sourced snippet
+  with no `PASS`/`FAIL` counter of its own) reaches an `exit 1` when its own `$FAIL` counter is
+  non-zero: either inside the function its `trap ... EXIT` installs, or, for the one suite with no
+  trap, as a tail guard. Enforced by `tests/test_sh_fail_propagation.py`, run as one more suite
+  rather than wired into `lint_test_knowledge.py`'s own invocation — a class lint (a) over all 23
+  in-scope files in one pass, plus a RED/GREEN control (b) that mirrors `hooks/` and `prompts/`
+  into a temp tree, copies `test_guidelines_reminder_mode.sh` in at matching depth, and asserts the
+  unperturbed copy exits 0 while a one-character perturbation to one of its own assertions makes it
+  exit 1. R3's own detector limits, printed in its report: the class lint (a) is a source-text
+  guard — it cannot see a trailer present but unreachable (dead code after an earlier `exit`), a
+  suite that never increments `$FAIL` and so legitimately exits 0, or a suite whose failures are
+  reported through a differently-named counter; it is a lower bound on violations. The RED/GREEN
+  control (b) covers exactly the one file it mirrors — the other 22 in-scope suites are covered by
+  the class lint (a) only, and that is a stated limit, not an implied one.
 
 Directive allowlist, enumerated by grep over the tree rather than from memory:
 

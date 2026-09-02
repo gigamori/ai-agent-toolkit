@@ -63,6 +63,7 @@ cleanup() {
   rm -rf "$TMP"
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
+  [ "$FAIL" -eq 0 ] || exit 1
 }
 trap cleanup EXIT
 
@@ -276,6 +277,101 @@ echo "$O32" | grep -q "applied summary: $K3 (r2)" \
 [ "$(bind_get "ns_debt.$K3")" = "2" ] \
   && pass "a CRLF-only change is normalized away — the debt kept counting (2)" \
   || fail "capture.ns_debt['$K3'] = '$(bind_get "ns_debt.$K3")' (expected 2); a raw-byte digest would read 0 here; ns_debt=$(bind_get ns_debt)"
+
+echo ""
+echo "T3: next_steps proposals render under their own label, genesis proposals unchanged"
+reset_state
+TQ="$PDIR/tasks/1_in_progress/2026-09-02_ns-quiet.md"; mk "$TQ"
+NQ="$PDIR/project-notes/procedures/ns-quiet-note.md"; printf '# quiet note\n' > "$NQ"
+write_touched "$NQ"
+OQ1=$(stop 999)
+echo "$OQ1" | grep -q 'Spawn the async capture subagent' \
+  && pass "T3 quiet fixture: round 1 opened via a note touch (task set stays empty)" \
+  || fail "T3 quiet fixture: round 1 never opened: $OQ1"
+cat > "$(rcap 1)" << EOF
+{"confirmed":[],"note_links":[],"proposals":[],
+ "next_steps":[{"task":"2026-09-02_ns-quiet.md","proposal":"QUIETPROP rewrite this task Next Steps"}]}
+EOF
+
+echo ""
+echo "arm 1: a Stop whose only content is a next_steps proposal still emits a block"
+OQ2=$(stop 999)
+echo "$OQ2" | grep -qF 'Proposed Next Steps rewrites' \
+  && pass "the next-steps heading is present" \
+  || fail "next-steps heading missing: $OQ2"
+echo "$OQ2" | grep -qF '(next-steps) QUIETPROP rewrite this task Next Steps' \
+  && pass "the proposal renders with the (next-steps) prefix" \
+  || fail "(next-steps) entry missing: $OQ2"
+echo "$OQ2" | grep -qF 'Proposed new tasks' \
+  && fail "the genesis 'Proposed new tasks' heading appeared for a next_steps-only round: $OQ2" \
+  || pass "no genesis heading for a next_steps-only round"
+echo "$OQ2" | grep -qF 'Spawn the async capture subagent' \
+  && fail "a new capture was unexpectedly re-requested this Stop (spawn=true) — the quiet-fixture precondition is violated" \
+  || pass "no new capture requested this Stop (spawn=false precondition holds)"
+[ -n "$OQ2" ] \
+  && pass "a block WAS emitted for a next_steps-only round (catches a missed gate edit)" \
+  || fail "NO block was emitted for a next_steps-only round — the gate still excludes ns_proposals"
+
+echo ""
+echo "arm 2: a sidecar with genesis proposals only renders under the genesis heading, no next-steps heading"
+reset_state
+TG="$PDIR/tasks/1_in_progress/2026-09-02_ns-genesis.md"; mk "$TG"
+NG="$PDIR/project-notes/procedures/ns-genesis-note.md"; printf '# genesis note\n' > "$NG"
+write_touched "$NG"
+stop 999 >/dev/null
+cat > "$(rcap 1)" << EOF
+{"confirmed":[],"note_links":[],"proposals":["GENESISPROP a brand new task idea"]}
+EOF
+OG2=$(stop 999)
+echo "$OG2" | grep -qF 'Proposed new tasks' \
+  && pass "the genesis heading is present" \
+  || fail "genesis heading missing: $OG2"
+echo "$OG2" | grep -qF '(proposed) GENESISPROP a brand new task idea' \
+  && pass "the genesis proposal renders with the (proposed) prefix, unchanged" \
+  || fail "(proposed) entry missing: $OG2"
+echo "$OG2" | grep -qF 'Proposed Next Steps rewrites' \
+  && fail "the next-steps heading appeared for a genesis-only round: $OG2" \
+  || pass "no next-steps heading for a genesis-only round"
+
+echo ""
+echo "arm 3: a sidecar with both kinds renders both headings, each item under its own"
+reset_state
+TB="$PDIR/tasks/1_in_progress/2026-09-02_ns-both.md"; mk "$TB"
+NB="$PDIR/project-notes/procedures/ns-both-note.md"; printf '# both note\n' > "$NB"
+write_touched "$NB"
+stop 999 >/dev/null
+cat > "$(rcap 1)" << EOF
+{"confirmed":[],"note_links":[],"proposals":["BOTHGENESIS a genesis idea"],
+ "next_steps":[{"task":"2026-09-02_ns-both.md","proposal":"BOTHNS rewrite this task Next Steps"}]}
+EOF
+OB2=$(stop 999)
+echo "$OB2" | grep -qF 'Proposed new tasks' \
+  && pass "both: the genesis heading is present" \
+  || fail "both: genesis heading missing: $OB2"
+echo "$OB2" | grep -qF 'Proposed Next Steps rewrites' \
+  && pass "both: the next-steps heading is present" \
+  || fail "both: next-steps heading missing: $OB2"
+echo "$OB2" | grep -qF '(proposed) BOTHGENESIS a genesis idea' \
+  && pass "both: the genesis item carries the (proposed) prefix" \
+  || fail "both: genesis item missing: $OB2"
+echo "$OB2" | grep -qF '(next-steps) BOTHNS rewrite this task Next Steps' \
+  && pass "both: the next-steps item carries the (next-steps) prefix" \
+  || fail "both: next-steps item missing: $OB2"
+
+echo ""
+echo "arm 4: the same quiet fixture with next_steps removed emits no block at all"
+reset_state
+TQ4="$PDIR/tasks/1_in_progress/2026-09-02_ns-quiet2.md"; mk "$TQ4"
+NQ4="$PDIR/project-notes/procedures/ns-quiet2-note.md"; printf '# quiet2 note\n' > "$NQ4"
+write_touched "$NQ4"
+stop 999 >/dev/null
+cat > "$(rcap 1)" << EOF
+{"confirmed":[],"note_links":[],"proposals":[]}
+EOF
+OQ4=$(stop 999)
+[ -z "$OQ4" ] \
+  && pass "the quiet fixture with no next_steps field emits NO block at all (proves arm 1's block came from ns_proposals)" \
+  || fail "the quiet-minus-next_steps fixture unexpectedly emitted a block: $OQ4"
 
 echo ""
 echo "=== Done ==="

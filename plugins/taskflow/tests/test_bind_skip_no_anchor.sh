@@ -50,6 +50,7 @@ cleanup() {
   rm -rf "$TMP"
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
+  [ "$FAIL" -eq 0 ] || exit 1
 }
 trap cleanup EXIT
 

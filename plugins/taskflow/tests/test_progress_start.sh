@@ -21,6 +21,7 @@ summary() {
   fi
   echo "  project dir preserved at: $PROJECT_DIR"
   echo "  to clean up: rm -rf $PROJECT_DIR"
+  [ "$FAIL" -eq 0 ] || exit 1
 }
 trap summary EXIT
 
