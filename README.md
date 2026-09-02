@@ -60,7 +60,6 @@ contracts, indexed there and linked per skill in the **Docs** column below.
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | Investigate past Claude Code session logs with SQL over pre-built DuckDB views (conversation, tool calls with arguments, file changes, forks, compaction, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a fork tree via a self-contained query script |
 | [compact-cc-log](skills/compact-cc-log/) | CC | — | Summarize a past or the current Claude Code session — resolves the session by title, `--session-id`, or `--current` (the running session, cutting the invoking turn out via `scripts/transcript.py`), then delegates to `compact-document` for compression |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | Investigate past Pi Coding Agent session logs with SQL over pre-built DuckDB views (conversation, tool calls, file changes, session lineage/bundles, compaction, in-file branches, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a subagent/skill-fork/handoff/fork tree via a self-contained query script |
-| [render-report](skills/render-report/) | CC | [docs](docs/skills/render-report/) | Convert a finished analysis report Markdown into pptx / docx / xlsx through the `officecli` CLI without ever modifying the report itself. `docx` / `xlsx` are verbatim transcription. `pptx` is built by an isolated deck subagent that follows the `officecli-pptx` skill and may rewrite for the medium — the layout trial-and-error, screenshots included, stays inside that subagent, so the caller's context never fills with images. Fidelity is checked afterwards, on the finished deck: `check_pptx_text.py` asserts that every claim reached a slide alongside its confidence mark and lists any number that is not in the report, a fresh-context LLM judge checks that nothing was overstated or lost its denominator, and a human reads the contact sheet for readability. An optional scope narrows which findings the deck is built from. Takes no analysis context, so any pipeline emitting contract-conforming Markdown can reuse it |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | Build, run, and resume XML v2 workflows: a task is decomposed into single-responsibility steps orchestrated deterministically by a bundled Python runner (`wfrun`) — not by an LLM. Batch execution has two backends selected by `--backend` (auto-detected from the harness): run-cc runs each step as an isolated `claude -p` subagent, run-pi runs it on the pi CLI with no claude install at all, refusing `schema=` and `on-error="debug"` up front because pi cannot enforce them. The run-llm protocol instead delegates steps through the hosting agent's own subagent facility. A step that hits a genuinely ambiguous fork raises a `DECISION:` request instead of silently guessing — the run stops for a human answer, or `decider="llm"` has an adjudicator model settle it unattended on either backend |
 
 ### revert
@@ -75,25 +74,6 @@ When an AI assistant makes an unwanted edit, commit, or git operation, the typic
 **Turn-scope default**: vague requests like "undo that" target only the **latest turn**. The skill never silently expands to session-wide changes — if ambiguity exists, it asks first.
 
 **Requirements**: Python 3.11+, [uv](https://docs.astral.sh/uv/), DuckDB (installed automatically by uv).
-
-### render-report
-
-Turning a finished analysis into slides tends to corrupt it: whoever lays out the deck also starts editing the wording, and a number quietly loses its denominator on the way into a text box. Forbidding the rewriting outright does not fix it either — a faithful transcription of a long report is a deck nobody reads, and the pressure to shorten lands on the analysis instead. **render-report** lets a deck skill do the rewriting, contains it, and checks the result:
-
-1. **Contract gate** — `scripts/validate_contract.py` checks the input Markdown against a structure contract before anything is converted: frontmatter `purpose`, a fixed section order, claim blocks that must carry a sample size and a confidence mark, and chart annotations whose `x=` / `y=` name real columns of the table that follows. A violation is returned as a list of offending lines instead of a half-correct deck.
-2. **A deck subagent that owns the design** — for `pptx`, the deck is built by an isolated subagent following the `officecli-pptx` skill, which is the standard for what a good deck looks like. It decides the structure, the slide count and what to leave out. Its screenshot-and-fix loop, including a second subagent that judges the rendered slides adversarially, runs entirely inside it; the caller gets back a contact-sheet path and a short declaration, never images.
-3. **Deterministic gates on the finished deck** — `scripts/check_pptx_text.py` asserts that every in-scope claim reached a slide together with its confidence mark, and separately *lists* every number on the deck that is not in the report. It lists rather than fails because no predicate separates an invented statistic from a decorative section counter — the judge makes that call. `officecli validate` and `view issues` are re-run by the caller rather than trusted, and explicit colours are checked against the WCAG floor.
-4. **A judge and a human** — a fresh-context LLM judge reads the rendered text against the report for the five things a token check cannot see: strengthened modality, a dropped denominator, an invented claim, a swapped emphasis, a contradiction between slides. A human reads the contact sheet last, for readability alone.
-
-The report Markdown is never modified. When text does not fit, the deck subagent resizes, splits or narrows what it carries — the analysis is not touched. An optional **scope** ("only F-6 and F-7") narrows the input the deck is built from; it never specifies a page count.
-
-Because it takes **no analysis context** — only the Markdown and an output path — any pipeline that emits contract-conforming Markdown can reuse it, and the layout work stays out of the analysis context window.
-
-**Formats**: `pptx` goes through the deck subagent described above. `docx` bulk-imports the Markdown through officecli's `markdown` element, so the CLI — not a model — performs the transcription. `xlsx` is a data appendix (one table per sheet) and is produced only on explicit request.
-
-**Trigger**: ask to convert an analysis report to slides or a document, or invoke `/render-report <md-path> <format>`.
-
-**Requirements**: [officecli](https://d.officecli.ai/), Python 3.11+, [uv](https://docs.astral.sh/uv/).
 
 Copy a skill into your agent's skill folder:
 
@@ -137,7 +117,6 @@ ai-agent-toolkit/
 │   ├── inspect-cc-log/         Skill: SQL views over CC logs for session investigation
 │   ├── compact-cc-log/         Skill: summarize a past or the current CC session
 │   ├── inspect-pi-log/         Skill: SQL views over Pi Coding Agent logs for session investigation
-│   ├── render-report/          Skill: render a contract-conforming report Markdown to pptx/docx/xlsx
 │   └── xml-wf/                 Skill: deterministic XML v2 workflow runner (wfrun)
 ├── docs/
 │   ├── skills/                Non-runtime skill docs (user guides, authoring contracts)

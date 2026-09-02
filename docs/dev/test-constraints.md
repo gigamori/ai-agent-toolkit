@@ -111,31 +111,10 @@ Every count above is a sample from one harness on one date, not a rate that hold
 another model or another prompt. Re-measure before relying on one; the harnesses that
 produced them live in `skills/xml-wf/scripts/evals/`.
 
-## officecli (measured on 1.0.146)
+## officecli
 
-- `officecli view <pptx> text` frames every slide with a line of the exact form
-  `=== /slide[N] ===` and emits the slide's text one string per line, with a blank line
-  between slides. Table cells arrive as separate lines, one per cell.
-  `skills/render-report/scripts/check_pptx_text.py` parses that framing, and
-  `fixtures/view_text_baseline.txt` is written in it. Observed 2026-09-02 by running the
-  command against a real deck.
-- A **native chart's** title, categories and series values do NOT appear in
-  `officecli view <pptx> text`, nor in `view ... annotated`. They are reachable from
-  `officecli query <pptx> chart --json`, where `format.categories` and a series'
-  `format.values` are comma-joined strings, so a category containing a comma is mis-split
-  by any consumer that splits on commas. `check_pptx_text.py` therefore reads both sources.
-  A native chart's data labels also round for display (`33.6` for `33.632`) and the rounded
-  form appears in neither source. Observed 2026-09-02 on officecli 1.0.146, against a
-  purpose-built deck carrying one native chart confirmed present via
-  `ppt/slides/charts/chart1.xml`.
-  - An earlier entry here claimed a chart's title arrives as its own line in `view text`.
-    That claim is **withdrawn**: it was recorded against a deck whose charts were never
-    confirmed to be native, and the measurement above contradicts it for native charts.
-    Whether a non-native, textbox-drawn "chart" puts its title in `view text` is not in
-    question — such a title is an ordinary text box.
-- `officecli view <pptx> issues --type low_contrast` does **not** subsume
-  `skills/render-report/scripts/check_contrast.py`. On a deck carrying an explicit
-  `background=#1F3864` with an explicit text `color=#2B2B2B` at 14pt — both confirmed
-  present by `officecli get` — the issues view returned `count: 0` for `low_contrast` and
-  for every other type, while the WCAG ratio is 1.22:1 against a 4.5:1 threshold. The
-  contrast procedure therefore stays on `check_contrast.py`. Observed 2026-09-02.
+No tracked skill in this repository consumes `officecli`. The measurements taken against
+it on 2026-09-02 (1.0.146) moved out of this document with their only consumer when that
+skill left the tracked tree; keeping them here would leave constraints whose consumer no
+reader of this checkout can open. Re-measure from scratch if a tracked skill starts using
+`officecli` — do not reconstruct them from memory or from a copy.

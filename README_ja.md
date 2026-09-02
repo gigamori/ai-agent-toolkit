@@ -60,7 +60,6 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | 過去の Claude Code セッションログを、事前構築した DuckDB ビュー（会話・引数付き tool 呼び出し・ファイル変更・fork・compaction・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [compact-cc-log](skills/compact-cc-log/) | CC | — | 過去または実行中の Claude Code セッションを要約。title・`--session-id`・`--current`（実行中セッション。`scripts/transcript.py` が呼び出しターン自体を除外）でセッションを解決し、`compact-document` に委譲して圧縮 |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | 過去の Pi Coding Agent セッションログを、事前構築した DuckDB ビュー（会話・tool 呼び出し・ファイル変更・セッション系譜/bundle・compaction・in-file branch・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、subagent/skill-fork/handoff/fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
-| [render-report](skills/render-report/) | CC | [docs](docs/skills/render-report/) | 完成した分析レポート Markdown を `officecli` CLI 経由で pptx / docx / xlsx に変換する。正本の Markdown は決して書き換えない。`docx` / `xlsx` は原文転記。`pptx` は隔離されたデッキ subagent が `officecli-pptx` スキルを標準として作り、媒体向けに再著述してよい——レイアウトの試行錯誤はスクリーンショットごとその subagent の内側で完結するため、呼び出し元のコンテキストが画像で埋まらない。忠実性は完成したデッキに対して後から検査する: `check_pptx_text.py` が全ての発見が確信度記号とともにスライドへ載ったことを判定し、レポートに無い数値を列挙する。fresh context の LLM ジャッジが言い過ぎと分母の脱落を検査し、人間が contact sheet を読んで可読性を判断する。任意の範囲指定でデッキ化する発見を絞れる。分析コンテキストを一切受け取らないため、契約準拠 Markdown を出力するパイプラインであれば再利用できる |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。バッチ実行は `--backend`（harness から自動判定）で選ぶ2つの backend を持つ: run-cc は各ステップを独立した `claude -p` subagent として実行し、run-pi は claude を一切必要とせず pi CLI で実行する（pi では強制できない `schema=` と `on-error="debug"` は起動前に拒否）。run-llm プロトコルはホスト側エージェント自身の subagent 機能へ委譲する。本当に曖昧なフォークに当たったステップは黙って推測せず `DECISION:` 要求を発行する——run は人間の回答待ちで停止するか、`decider="llm"` なら裁定モデルがどちらの backend でも無人で解決する |
 
 ### revert
@@ -75,25 +74,6 @@ AI アシスタントが不要な編集・commit・git 操作を行ったとき�
 **ターンスコープ**: 「戻して」のような曖昧な要求は **直前 1 ターンのみ** を対象にする。セッション全体に暗黙で拡大することはなく、曖昧な場合は必ず確認する。
 
 **必要環境**: Python 3.11+, [uv](https://docs.astral.sh/uv/), DuckDB（uv が自動インストール）。
-
-### render-report
-
-完成した分析を資料化する工程は、内容を壊しやすい。レイアウトを組む者が文言にも手を入れ始め、テキストボックスに収める過程で数値から分母が静かに落ちる。かといって書き換えを全面禁止しても解決しない——長いレポートを忠実に転記したデッキは誰も読まず、短縮の圧力が分析の正本の側にかかる。**render-report** は書き換えをデッキ専用スキルに任せ、それを封じ込め、結果を検査する。
-
-1. **契約ゲート** — 変換前に `scripts/validate_contract.py` が入力 Markdown を構造契約で検証する。frontmatter の `purpose`、固定のセクション順序、n数と確信度記号を必ず持つクレームブロック、`x=` / `y=` が直後のテーブルに実在する列を指すチャートアノテーション。違反は中途半端な資料ではなく違反行の一覧として返す。
-2. **デザインを持つデッキ subagent** — `pptx` では、隔離された subagent が `officecli-pptx` スキル（良いデッキとは何かの標準）に従ってデッキを作る。構成・枚数・何を落とすかはその subagent が決める。スクリーンショットと修正のループは、描いたスライドを別の subagent が敵対的に判定する工程も含めて、すべてその内側で完結する。呼び出し元が受け取るのは contact sheet のパスと短い申告だけで、画像は返らない。
-3. **完成したデッキへの決定論ゲート** — `scripts/check_pptx_text.py` が、範囲内の全ての発見が確信度記号とともにスライドへ載ったことを判定し、それとは別に、レポートに無い数値を**列挙する**。判定ではなく列挙なのは、捏造された統計値と区切りの装飾番号を分ける述語が無いためで、その判断はジャッジが行う。`officecli validate` と `view issues` は申告を信用せず呼び出し元が再実行し、明示指定した色は WCAG の床に対して検査する。
-4. **ジャッジと人間** — fresh context の LLM ジャッジが、レンダリング後のテキストをレポートと照合し、トークン検査には見えない5点——様相の強化、分母の脱落、レポートに無い主張、強調の入替え、スライド間の矛盾——を判定する。最後に人間が contact sheet を読み、可読性だけを判断する。
-
-正本の Markdown は決して書き換えない。収まらないときはデッキ subagent がサイズを下げ、スライドを割り、載せる範囲を減らす——分析には触れない。任意の**範囲指定**（「F-6 と F-7 のみ」）でデッキ化する入力を絞れるが、これで枚数を指示することはない。
-
-**分析コンテキストを一切受け取らない**（入力は Markdown と出力パスのみ）ため、契約準拠 Markdown を出力するパイプラインであれば再利用でき、レイアウト作業が分析側のコンテキストを消費しない。
-
-**形式**: `pptx` は上記のデッキ subagent を経由する。`docx` は officecli の `markdown` 要素で一括投入するため、転記をモデルではなく CLI が行う。`xlsx` はデータ付録（1テーブル1シート）で、明示要求時のみ生成する。
-
-**トリガー**: 分析レポートのスライド化・文書化を依頼、または `/render-report <md-path> <format>` で明示呼び出し。
-
-**必要環境**: [officecli](https://d.officecli.ai/), Python 3.11+, [uv](https://docs.astral.sh/uv/)。
 
 スキルディレクトリをエージェントのスキルフォルダにコピー:
 
@@ -137,7 +117,6 @@ ai-agent-toolkit/
 │   ├── inspect-cc-log/         スキル: CC ログ調査用の SQL ビュー群
 │   ├── compact-cc-log/         スキル: 過去/実行中の CC セッションを要約
 │   ├── inspect-pi-log/         スキル: Pi Coding Agent ログ調査用の SQL ビュー群
-│   ├── render-report/          スキル: 契約準拠レポート Markdown を pptx/docx/xlsx に変換
 │   └── xml-wf/                 スキル: 決定論的 XML v2 ワークフローランナー (wfrun)
 ├── docs/
 │   ├── skills/                非 runtime のスキル文書 (ユーザガイド・authoring contract)
