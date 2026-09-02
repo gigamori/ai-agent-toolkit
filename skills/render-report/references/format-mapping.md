@@ -4,57 +4,39 @@
 
 共通する原則: **正本の markdown は書き換えない**。収まらない場合も truncate しない（SKILL.md の overflow 手順に従う）。
 
-原文転記の適用範囲は経路で異なる。docx / xlsx は 1 hop で全体が原文転記。pptx は deck-spec を挟む 2 hop で、著述が許されるのは hop1（report.md → deck-spec）だけであり、hop2（deck-spec → pptx）は原文転記のみ。
+原文転記の適用範囲は経路で異なる。docx / xlsx は全体が原文転記。pptx はデッキ subagent [D] が再著述してよく、忠実性は生成後のゲート（SKILL.md 手順 5-7）が検査する。
 
 ## 変換対象の対応
 
-| markdown 要素 | pptx（deck-spec の原型） | docx | xlsx（明示要求時のみ） |
-|---------------|--------------------------|------|------------------------|
-| frontmatter `title` | `title` | 文書タイトル | ブック名 |
-| エグゼクティブサマリ | `exec-summary` | 冒頭節 | 対象外 |
-| 分析対象データ | `section` | 節 | 対象外 |
-| データの基本的特徴 | `section` | 節 | 対象外 |
-| クレームブロック | `finding`（+ チャートがあれば `evidence`） | 各 1節 | 対象外 |
-| 限界と注意事項 | `section` | 節 | 対象外 |
-| 付録: 再現性 / 変数対応表 | `appendix` | 末尾節 | 対象外 |
-| 付録: 検証詳細 | `appendix` | 末尾節 | 対象外 |
-| アノテーション付きテーブル | `evidence`（チャート + source 表） | チャート埋め込み | 1テーブル = 1シート |
-| アノテーションなしテーブル | `section` の表、または `evidence` の source 表 | 表として配置 | 1テーブル = 1シート |
+| markdown 要素 | pptx（[D] が決める。目安） | docx | xlsx（明示要求時のみ） |
+|---------------|---------------------------|------|------------------------|
+| frontmatter `title` | 表紙 | 文書タイトル | ブック名 |
+| エグゼクティブサマリ | 冒頭のスライド | 冒頭節 | 対象外 |
+| 分析対象データ | スライド | 節 | 対象外 |
+| データの基本的特徴 | スライド | 節 | 対象外 |
+| クレームブロック | 発見のスライド（`F-n` と確信度記号を同じ面に） | 各 1節 | 対象外 |
+| 限界と注意事項 | スライド | 節 | 対象外 |
+| 付録: 再現性 / 変数対応表 | 付録スライド | 末尾節 | 対象外 |
+| 付録: 検証詳細 | 付録スライド | 末尾節 | 対象外 |
+| アノテーション付きテーブル | チャート | チャート埋め込み | 1テーブル = 1シート |
+| アノテーションなしテーブル | 表、または図 | 表として配置 | 1テーブル = 1シート |
 
 ## pptx
 
-pptx だけが 2 hop である。**この節は markdown 要素とスライドの直接対応を定義しない** — その対応は deck-spec 経由でのみ成立する。
+pptx は転記ではない。デッキ subagent [D] が report.md を読み、officecli-pptx SKILL.md を標準として pptx を作る。**この節は markdown 要素とスライドの直接対応を定義しない** — 構成は [D] が決める。上の対応表の pptx 列は「載りうる場所」の目安であり、[D] を縛らない。
 
 ```
-report.md ──[A]──▶ deck-spec ──[R]──▶ pptx
-           hop1              hop2
-        再著述してよい      原文転記のみ
+report.md ──[D]──▶ pptx ──▶ G-1 / [J] / [H]
+       再著述してよい      忠実性はここで検査
 ```
 
-### hop1: report.md → deck-spec
-
-デッキ著述役 [A] が行う。規則は [deck-authoring.md](deck-authoring.md)、出力の構造は [deck-md-contract.md](deck-md-contract.md)。
-
-要点だけ再掲する（詳細を本ファイルに複製しない）:
-
-- 再著述してよい。ただし数値は原文転記、n と分母を落とさない、様相を強めない、順序を変えない。
-- report.md は書き換えない。overflow の短縮は deck-spec 側で行う。
-- チャートは report.md のアノテーションを原文のまま写したものだけ。
-
-### hop2: deck-spec → pptx
-
-レンダリング役 [R] が行う。**[R] は report.md を読まない。** 読むのは deck-spec と [deck-archetypes.md](deck-archetypes.md) だけ。
-
-- 配置は deck-archetypes.md の固定表に従う。スライドごとに領域を考えない。
-- deck-spec の文字列をそのまま転記する。Hard Rule 1 がここに適用される。
-- スライド面に置いてよい deck-spec 由来でない文字列は、deck-archetypes.md が列挙する 3 語のラベルとページ番号だけ。
-- 収まらない場合は短縮せず overflow として差し戻す。
+- [D] の手順は [deck-building.md](deck-building.md)。読むのは `~/.claude/skills/officecli-pptx/SKILL.md`、report.md、deck-building.md。
+- 数値は report.md にあるものだけ（`check_pptx_text.py` が検査）。n と分母を落とさない、様相を強めない、順序を変えない（[J] が検査）。
+- report.md は書き換えない。overflow は [D] が内部で解決する。
 
 ### チャート
 
-アノテーションの種別を officecli のチャート種別に対応させる。`x=` をカテゴリ軸、`y=` を系列とする。`y=` が複数列なら複数系列。`title=` があればチャートタイトルに使う。
-
-チャート化した元テーブルは同じ `evidence` スライドに source 表として残す（数値の検証可能性を保つため）。
+report.md にある数値からのみ作る。アノテーション付きテーブルは著者が図として宣言したものなので、`x=` をカテゴリ軸、`y=` を系列、`title=` をタイトルとして使う。アノテーションの無い数値列（発見の根拠にある推移など）を図にしてもよい。種別は officecli-pptx の chart-choice 表に従う。
 
 ### batch 実行時の注意
 
@@ -62,7 +44,7 @@ report.md ──[A]──▶ deck-spec ──[R]──▶ pptx
 
 ### 体裁
 
-officecli-pptx スキルの deck 要件（1スライド1メッセージ、明示的な型階層、テーマ既定に依存しないサイズ指定）に従う。deck-archetypes.md の固定表はこの要件を満たすように組んである。
+officecli-pptx SKILL.md の deck 要件に従う。render-report はその上に体裁の規則を足さない。
 
 背景色や文字色を明示指定した場合は、テーマ既定の配色から外れて文字がつぶれうる。生成後に SKILL.md の「コントラスト検査」で判定する（`scripts/check_contrast.py`）。色を指定しない場合はテーマの配色が保たれるため検査は不要。
 

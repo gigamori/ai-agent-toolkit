@@ -1,0 +1,55 @@
+{
+  "success": true,
+  "data": {
+    "matches": 1,
+    "results": [
+      {
+        "path": "/slide[1]/chart[@id=100000]",
+        "type": "chart",
+        "preview": "probe chart",
+        "childCount": 1,
+        "format": {
+          "name": "probe chart",
+          "id": 100000,
+          "x": "2cm",
+          "y": "2cm",
+          "width": "20cm",
+          "height": "12cm",
+          "zorder": 1,
+          "chartType": "column",
+          "title": "probe chart",
+          "title.size": "14pt",
+          "title.bold": "true",
+          "title.lang": "en-US",
+          "legend": "bottom",
+          "gridlines": "true",
+          "gapwidth": "150",
+          "majorTickMark": "out",
+          "minorTickMark": "none",
+          "tickLabelPos": "nextTo",
+          "crosses": "autoZero",
+          "crossBetween": "between",
+          "dispBlanksAs": "gap",
+          "varyColors": "false",
+          "seriesCount": 1,
+          "series1": "Series1:5.665,5.064,4.076",
+          "categories": "1回目,2回目,3回目"
+        },
+        "children": [
+          {
+            "path": "/slide[1]/chart[@id=100000]/series[1]",
+            "type": "series",
+            "text": "Series1",
+            "childCount": 0,
+            "format": {
+              "name": "Series1",
+              "values": "5.665,5.064,4.076",
+              "color": "#4472C4"
+            },
+            "children": []
+          }
+        ]
+      }
+    ]
+  }
+}
