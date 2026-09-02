@@ -164,13 +164,13 @@ Notes about the work go here (free to rewrite).
 - add tests
 
 <!-- @log:begin -->
-- 2026-05-13 [s:abc12345]: started
-- 2026-05-14 [s:def67890]: form + endpoint done | next: email template
+- 2026-05-13T09:15:00+09:00 [s:abc123456789]: started
+- 2026-05-14T14:30:00+09:00 [s:def678901a2b]: form + endpoint done | next: email template
 <!-- @log:end -->
 ```
 
 - **`## Next Steps`** is the honest "what's left" list. The guidelines instruct the agent to rewrite it at the end of every turn that advances the task; `/progress audit` verifies it.
-- The **`@log` block is the history** — append-only, one line per session, so you can always see how a task progressed and jump back to the exact session that did the work.
+- The **`@log` block is the history** — append-only, one line per round per task, so you can always see how a task progressed and jump back to the exact session that did the work.
 
 ### Orchestrating a task's Next Steps (optional)
 
@@ -308,7 +308,7 @@ flowchart TD
     end
     subgraph end_["When the session ends"]
         C["Copy any new plan/memory files into the project"]
-        D["Write a log line into each task you worked on,<br/>and update its Next Steps"]
+        D["Write a log line into each task you worked on,<br/>and propose a Next Steps rewrite when one is stale"]
     end
     A --> B --> C --> D
 ```

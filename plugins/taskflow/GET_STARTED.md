@@ -13,7 +13,7 @@ You do not have to maintain a separate record for this. taskflow keeps the proje
 
 ## Your first action
 
-When you begin work, name the project at the start of your prompt:
+When you begin work, name the project near the beginning of your prompt:
 
 ```
 pj:customer-portal refresh the login screen

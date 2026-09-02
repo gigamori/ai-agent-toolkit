@@ -32,9 +32,9 @@ Common subsections:
 - ## Next Steps
 
 <!-- @log:begin -->
-- 2026-05-08T09:15:00 [s:1a2b3c4d]: started
-- 2026-05-10T14:30:00 [s:9f8e7d6c]: phase A complete
-- 2026-05-12T11:05:00 [s:0a1b2c3d]: phase B underway
+- 2026-05-08T09:15:00+09:00 [s:1a2b3c4d5e6f]: started
+- 2026-05-10T14:30:00+09:00 [s:9f8e7d6c5b4a]: phase A complete
+- 2026-05-12T11:05:00+09:00 [s:0a1b2c3d4e5f]: phase B underway
 <!-- @log:end -->
 ```
 

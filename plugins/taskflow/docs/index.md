@@ -8,5 +8,5 @@ live at the plugin root: [README](../README.md) / [README_ja](../README_ja.md),
 | Document | What it covers |
 |---|---|
 | [architecture.md](architecture.md) | Internal design: context-management types, the hook pipeline, round binding, the capture lifecycle, path resolution |
-| [test-gate.md](test-gate.md) | The two mechanical rules over `tests/`, the command that enforces them, and the scope decisions behind them |
+| [test-gate.md](test-gate.md) | The three mechanical rules over `tests/`, how each is enforced (R1/R2 by `lint_test_knowledge.py`, R3 by its own `test_sh_fail_propagation.py` suite), and the scope decisions behind them |
 | [test-constraints.md](test-constraints.md) | Facts about the world outside this repository that the test suite depends on, each with the date it was observed |
