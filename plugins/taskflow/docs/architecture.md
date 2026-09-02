@@ -130,6 +130,14 @@ user prompt
   │  │
   │  └─ injection (only when current_project is non-empty, or `pj:?` discovery):
   │     "[Progress Session] session_id=... state_file=... current_project=..."
+  │     + bootstrap: BOOTSTRAP_BLOCK (ROUTER / RESPONSE-LEADING-LINES / TRUNCATION,
+  │                  ASCII-only, ≤1200 chars) — placed first, immediately after the
+  │                  header and ahead of fork_context/ACTION_REQUIRED/everything else,
+  │                  so it survives preview truncation. Gated on inject_rules,
+  │                  inject_guidelines_full, inject_index or inject_rules_full — the
+  │                  turns whose payload is large enough to be persisted rather than
+  │                  delivered inline. Absent on an ordinary turn, which already
+  │                  carries guidelines_reminder.md's own ROUTER line.
   │     + static_rules: body of project_routing.md (once per session)
   │     + guidelines:  full 3 files on first turn / after compact; keyword reminder otherwise
   │                    (reminder variant via env TASKFLOW_GUIDELINES_REMINDER: `full` default =

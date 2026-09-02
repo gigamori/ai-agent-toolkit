@@ -5,6 +5,14 @@ UserPromptSubmit hook: smart session/project context injection (v2.2).
 Injection blocks per turn (decided from state file flags):
 
   - session_info       (always): [Progress Session] header (~50 tok)
+  - bootstrap          (heavy turns: inject_rules, inject_guidelines_full,
+                       inject_index or inject_rules_full): compact
+                       ROUTER/RESPONSE-LEADING-LINES/TRUNCATION invariant
+                       (BOOTSTRAP_BLOCK), placed first — immediately after
+                       session_info, ahead of action_req and everything else
+                       (~200 tok, ASCII-only, BOOTSTRAP_MAX_CHARS ceiling).
+                       Survives preview truncation on the turns whose payload
+                       is persisted instead of delivered inline.
   - static_rules       (once per session): project_routing.md (~2700 tok)
   - project_index      (on project switch): _projects/<project>/index.md (~250 tok)
   - guidelines_full    (once per session): 3 guidelines files (~3250 tok)
@@ -80,6 +88,33 @@ GUIDELINES_REMINDER_MANIFEST_MD = os.path.join(
     PLUGIN_ROOT, 'prompts', 'guidelines_reminder_manifest.md')
 
 PARENT_SCAN_LINES = 50  # transcript head lines scanned for parent detection
+
+# Bootstrap block: a compact, ASCII-only invariant placed first in the
+# injected context (see the module docstring's "bootstrap" entry and
+# `mode-orchestrator-runs/2026-09-02_taskflow-review-followup/02-plan.md`
+# section 1) so it survives preview truncation on turns whose payload is
+# large enough to be persisted rather than delivered inline. ASCII-only by
+# construction: its character length and UTF-8 byte length are equal, so it
+# fits inside the preview on either counting basis.
+BOOTSTRAP_MAX_CHARS = 1200
+BOOTSTRAP_BLOCK = (
+  "[taskflow bootstrap - read this block before anything else]\n"
+  "1. ROUTER: if current_project above is non-empty, invoke the subagent\n"
+  "   taskflow:project-router (Agent tool) BEFORE answering. If it is empty, do\n"
+  "   not invoke it. Build a JSON object with fields session_id, state_file,\n"
+  "   current_project, leading_lines, prompt_summary and pass ONLY that JSON\n"
+  "   object as the prompt - no other text. prompt_summary carries the\n"
+  "   instruction's meaning only - never leading lines, skill names, command\n"
+  "   names or tool names.\n"
+  "2. RESPONSE LEADING LINES: when a project is assigned, include\n"
+  "   [pj:<current_project>] near the beginning of the response, before the main\n"
+  "   body. Add [tasks: <file>.md ...] as well when you did task work without\n"
+  "   editing that task's own tasks/<status>/*.md file.\n"
+  "3. TRUNCATION: if this context was cut short with a \"Full output saved to:\n"
+  "   <path>\" notice, Read that file now and follow it before answering. The\n"
+  "   project index, the routing rules and the guidelines are all in it and are\n"
+  "   not optional."
+)
 
 PARENT_MARKER_RE = re.compile(
   r'\[Progress Session\] session_id='
@@ -414,6 +449,11 @@ if inject_index:
 # block. Naming is deliberately project_rules_* to avoid collision with the
 # unrelated rules_loaded / inject_rules (project_routing.md static_rules).
 rules_content = ''
+# Hoisted so the bootstrap gate below can read it regardless of whether
+# current_project is set or rules.md exists (review finding F3,
+# 03-review-dev.md): without this default, referencing inject_rules_full
+# outside the `if rules_raw is not None:` block raises NameError.
+inject_rules_full = False
 if current_project:
   rules_path = os.path.join(PROGRESS_ROOT, current_project, 'rules.md')
   rules_raw = None
@@ -455,6 +495,20 @@ if current_project:
           f'\n\n[Project Rules reminder: {current_project}] · {rel} — '
           f'consult before non-trivial action.'
         )
+
+# Build bootstrap block. Gated on the same conditions that push a turn's
+# payload large enough to be persisted rather than delivered inline —
+# routing (11,614 chars) and guidelines (14,489 chars) fire once per session
+# via inject_rules / inject_guidelines_full, a large project index can do
+# the same via inject_index, and a per-project rules.md with
+# `inject_every_turn: true` does it every turn via inject_rules_full
+# (review finding F3). A turn with none of these is the ordinary
+# ~4,000-char case delivered inline, already carrying
+# guidelines_reminder.md's own ROUTER line, so it needs no bootstrap block
+# and pays nothing.
+bootstrap_content = ''
+if inject_rules or inject_guidelines_full or inject_index or inject_rules_full:
+  bootstrap_content = '\n\n' + BOOTSTRAP_BLOCK
 
 # Persist updated state. We mark rules_loaded and indexed_project regardless of
 # read success — if a file is genuinely broken, we don't want to retry every turn.
@@ -510,7 +564,7 @@ else:
   result = {
     'hookSpecificOutput': {
       'hookEventName': 'UserPromptSubmit',
-      'additionalContext': f'[Progress Session] session_id={session_id} sid={session_id.replace("-", "")[-12:]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}{rules_content}'
+      'additionalContext': f'[Progress Session] session_id={session_id} sid={session_id.replace("-", "")[-12:]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{bootstrap_content}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}{rules_content}'
     }
   }
 
