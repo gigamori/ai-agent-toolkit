@@ -2,116 +2,93 @@
 
 > Positioning: this is **maintenance context, not execution context** — not needed to *run* render-report, needed to *maintain* it. `SKILL.md` and the files under `references/` are behaviourally accurate for execution; this file records the obligations an editor of the skill must satisfy that they do not (and should not) state.
 
-## The two contracts and who enforces them
+## What the skill is
 
-The skill owns two structure contracts and four gates. Changing either contract without moving its gate leaves an assurance that nobody produces.
+render-report is a **containment shell around `officecli-pptx`**, plus fidelity gates. It does not carry deck-design knowledge of its own. The quality of a deck is owned by `~/.claude/skills/officecli-pptx/SKILL.md`; render-report owns two things the deck skill does not: keeping the layout trial-and-error out of the caller's context, and checking afterwards that the deck still says what the report said.
 
-| Contract | Definition | Deterministic gate | LLM gate |
-|---|---|---|---|
-| report markdown | `references/report-md-contract.md` | `scripts/validate_contract.py` | — |
-| deck-spec | `references/deck-md-contract.md` | `scripts/validate_deck.py` (G-A) | `references/deck-review.md` (G-B) |
+This is a reversal of the earlier design, which put a **deck-spec** document between the report and the pptx and had render-report supply the layout rules. That design was measured against a control that delegated the whole job to `officecli-pptx` with no render-report documents at all, on the same 342-line report: the control produced the better deck, and the deck-spec pipeline got worse as more layout rules were added to it. Only containment kept the control from being adoptable, and containment is a subagent boundary rather than a document. The old pipeline is in git history; do not reintroduce it piecemeal.
 
-`scripts/check_pptx_text.py` (G-R hop2) enforces neither contract: it enforces that the rendered pptx says only what the deck-spec says.
+## The one contract and the gates
 
-**`validate_deck.py` imports `validate_contract.py`** — `ACTION_VERB_HINTS`, `parse_frontmatter`, `claim_blocks` and `section_subheadings`. A rename or signature change in the older script breaks the newer one, and nothing but its test suite will say so. Run the suite after touching either.
+| Contract | Definition | Deterministic gate |
+|---|---|---|
+| report markdown | `references/report-md-contract.md` | `scripts/validate_contract.py` |
+
+There is no second contract. The deck is not a document with a schema any more, so the gates below check the *rendered pptx* against the report rather than checking an intermediate against a spec.
+
+| Gate | Kind | What it does |
+|---|---|---|
+| `scripts/check_pptx_text.py` | deterministic | **Judges** two things: every in-scope `F-n` appears on some slide, and each `F-n` shares a slide with its confidence mark. **Lists** a third: every numeric token on the deck that does not occur in the report. The listing never sets the exit code |
+| `officecli validate` / `view issues` | deterministic | Schema, overflow, structure. Re-run by the caller rather than trusted from `[D]`'s report |
+| `scripts/check_contrast.py` | deterministic | WCAG ratio at sites where a colour was set explicitly |
+| `references/deck-review.md` (`[J]`) | LLM, fresh context | Five distortion classes over `officecli view <pptx> text` |
+| contact sheet (`[H]`) | human | Readability, which no gate above judges |
+
+`check_pptx_text.py` imports `validate_contract.py` (`claim_blocks`, `CONFIDENCE_MARKS`) by path. A rename or signature change in the older script breaks the newer one, and nothing but the test suite will say so. Run the suite after touching either.
 
 ## Editing rules
 
-- **The pptx path is 2 hop; docx and xlsx are 1 hop.** Any statement of Hard Rule 1 must name the hop it applies to. A blanket "wording is never rewritten" is now false for hop1, and it is the sentence a maintainer will reach for by reflex.
-- **The archetype set is closed at 6.** Adding one means editing `deck-md-contract.md`, `deck-archetypes.md` (its region table), `deck-authoring.md` (its per-archetype table), `validate_deck.py` (`ARCHETYPES`, `REQUIRED_SLOTS`, `OPTIONAL_SLOTS`, and `BODY_ARCHETYPES` if the new one carries claims), and the mapping table in `references/format-mapping.md`. Five files; there is no single source.
-- **The layout-label set is closed at 3** (`主要な発見`, `主な限界`, `根拠`). It is stated in `deck-archetypes.md` and duplicated as `LAYOUT_LABELS` in `check_pptx_text.py`, because the checker cannot parse a prose table at runtime. Changing one without the other makes hop2 either reject a legitimate deck or admit an invented word. This duplication is deliberate; do not "fix" it by having the script read the markdown.
-- **`deck-review.md`'s exclusion list is load-bearing.** It tells the judge not to flag what a deterministic gate already covers (`検証状態`, `付録`, numeric provenance). Removing a deterministic check without adding its subject back to the judge's scope leaves that subject unchecked by anything.
-- **Deviation classes are fixed at 5.** The base-rate measurement is per class; adding a class invalidates the recorded rates for none of the others but leaves the new one unmeasured, which must be stated rather than assumed.
+- **Do not restate in a document what a gate already enforces.** `deck-building.md` is what `[D]` reads, and its content budget is the control's own prompt plus containment. Two constraints that gates already check — "do not strengthen a claim" (`[J]`) and "put `F-n` on the same slide as its mark" (`check_pptx_text.py`) — were written into it as standalone rules, then removed on 2026-09-02. The requirement that a gate checks still reaches `[D]` through the section that tells it to *run* that gate; a second copy phrased as a rule adds compliance pressure without adding capability. **The effect of that removal is unmeasured** — see "What is not measured".
+- **`範囲` (scope) narrows the input, never the output.** It selects which part of the report the deck is built from. It must never be used to specify a slide count. A slide-count instruction makes the resulting page count an artefact of the instruction rather than an observation, which is how one earlier experiment was invalidated.
+- **The pptx route is one hop.** Any statement of Hard Rule 1 must name the route it applies to: `docx`/`xlsx` are verbatim transcription, `pptx` is authored by `[D]`. A blanket "wording is never rewritten" is false for pptx and is the sentence a maintainer will reach for by reflex.
+- **Numbers are listed, not judged.** Do not "fix" `check_pptx_text.py` by adding a rule that exempts short integers, digits-only lines, or dates. The decision and its evidence are below.
+- **`[J]` runs in a fresh context and sees no images.** If it is ever given the contact sheet, it stops being a fidelity judge and starts being a second layout reviewer, which `[H]` already is.
+- **Gate 3 inside `[D]` is judged by a different subagent.** `officecli-pptx` says the builder is biased toward "looks fine"; measured on this skill's own earlier run, self-judgement produced 4 findings where an independent judge produced 59 on the same deck.
 
 ## Blind spots — what the gates do not see
 
-Recorded because a gate's coverage claim is only as good as its stated denominator. Each row was produced by a control arm in `scripts/tests/`, not by reading the code.
+A gate's coverage claim is only as good as its stated denominator.
 
-| Gate | Predicate | Does not see |
-|---|---|---|
-| G-A structure | archetype / slot / trace resolution | whether the content is right |
-| G-A numeric provenance | every numeric token in deck content ∈ the report's token set | a correct number under a wrong label; a swapped denominator; a value recombined from another row; a claim carrying no digits at all; **any substituted value whose digits occur anywhere else in the report** (`17列` → `18列` passes because `18` occurs elsewhere) |
-| G-A numeric provenance | — | tokens that are not quantities: `F-1` yields `1`, `2008-05-05` yields `2008`/`05`. Both sides use the same tokenizer, so this is consistent, never a FAIL — and never a catch either |
-| G-A source table | header equality selects the table, then full row/column equality | a source table with a **column dropped** stops matching any report header and degrades to an authored table. Under a chart annotation the chart check still catches it; **a source table with no chart above it degrades silently** |
-| G-A source table | — | choosing the wrong table for the slide |
-| G-A authored table | numeric provenance only | every string cell (left to G-B), and any recombination of real numbers |
-| G-A chart | annotation must match the report's after whitespace normalization; next table must be a source table | how the chart actually renders |
-| G-A coverage | every `[F-n]` / `エグゼクティブサマリ` / `限界と注意事項` has ≥1 body slide | a slide that carries the trace but says something else. `分析対象データ` and `データの基本的特徴` are deliberately **not** in the coverage set |
-| G-B | five deviation classes over body slides | `title` / `evidence` / `appendix` slides; visual emphasis; numeric correctness; probabilistic misses |
-| G-R | every rendered string ∈ deck-spec strings ∪ 3 labels ∪ slide number | correct text placed on the **wrong slide**; text positioned off-canvas; anything the renderer omitted entirely (the check is containment, not equality) |
-| G-R | — | a slide-number line that coincides with the slide's own number is admitted unconditionally |
+| Gate | Does not see |
+|---|---|
+| `check_pptx_text.py` numeric listing | Nothing about correctness: it is a listing, not a verdict. On the control deck all 15 entries were decorative — divider counters `01`–`04`, the cover date, and two axis reference ticks (`1.0`, `1.00`) — and zero were fabricated data. It also cannot see a substituted value whose digits occur elsewhere in the report, a correct number under a wrong label, or a swapped denominator |
+| `check_pptx_text.py` chart data | Chart categories and values do **not** appear in `officecli view <pptx> text`; they are read separately from `officecli query <pptx> chart --json`. A category string containing a comma is mis-split, because that JSON returns categories comma-joined. A native chart's **data labels round** (`33.6` for `33.632`) and the rounded form is not what the query returns, so a rounded label that does not occur in the report is invisible to this gate and to the visual auditor alike |
+| `check_pptx_text.py` coverage | That the slide carrying `F-n` says anything true about `F-n` |
+| `[J]` | Anything that is not one of the five distortion classes. In particular, a deck that moves the report's `検証状態` (test statistics, robustness variants) into its body prose and drops the `解釈` (the causal reading) is **not** a distortion, so `[J]` passes it. A deck can be faithful and still fail to communicate; that is `[H]`'s to catch, and `[H]` is the only gate that catches it |
+| `[J]` | Defects that are already in the report. A deck that faithfully carries a report's own contradiction passes every gate here. On 2026-09-02 three independent role-played reviewers reading only two claim blocks each found the same contradiction between a claim's heading and its own `限界` line, plus an over-strong causal verb in an `解釈`. `validate_contract.py` requires a heading to be an assertion but does not check it against the block's own limits. **Upstream defects are out of this skill's scope and no gate here will report them** |
+| `check_contrast.py` | Sites where no colour was set explicitly (theme defaults). It applies to text on *any* background, white included — a run on 2026-09-02 skipped 31 white-background pairs and missed three sites at ≈2.9:1 that the deck builder later reported |
+| `officecli view issues --type low_contrast` | Not adopted as a replacement; see the measurement in `docs/dev/test-constraints.md` |
 
-The measurement unit for every count above is the control arm in `scripts/tests/test_validate_deck.py` and `test_check_pptx_text.py`. Regions with no control arm carry no assurance from this table.
+The measurement unit for the deterministic rows is the control arm in `scripts/tests/test_check_pptx_text.py`. Regions with no control arm carry no assurance from this table.
 
-## Contract decisions taken during implementation
+## Decisions
 
-- **A `title` slide carries no `trace:`.** The design document said trace was required on every slide while its own skeleton showed `## S1 title` with none and its value list had no title-shaped value. Settled in favour of the skeleton: the title slide's provenance is already fixed by frontmatter `title` / `source`. `validate_deck.py` rejects a `trace:` on a title slide, so the two readings cannot both pass.
-- **`officecli view issues --type low_contrast` is not adopted.** It was evaluated as a replacement for `check_contrast.py` and returned `count: 0` on a deck measuring 1.22:1. The measurement is in [`docs/dev/test-constraints.md`](../../dev/test-constraints.md). Re-test before adopting it on a later officecli.
-- **The `officecli batch` code renderer (deck-spec → batch JSON with archetype geometry and a text-fit estimate) is not built.** `[R]` stays an LLM transcription hop. The decision was deferred until the cost and overflow rate of the LLM path are measured on a real deck; if it is built, the hop2 wording check moves from a post-render officecli call into a unit test over the payload.
+- **Numeric provenance is a listing, not a verdict** (user ruling, 2026-09-02). Run against the control deck, the judging version produced 13 failures: 12 decorative section counters and one genuine derived value absent from the report (`88.30%` = 100 − 11.70). The derived value is exactly what the constraint exists for; the counters are false positives, and no predicate available to the script separates them — a counter is not wrong content, so it fails the test for a rule ("whatever the content, the content is the side that is wrong"). Rather than add a threshold, the script lists and `[J]` decides.
+- **Charts may be built from any number in the report** (settled 2026-09-02 by adopting v3). The earlier Hard Rule 5 admitted only tables carrying a chart annotation. The control deck charted a five-point series from a claim's `根拠`, which has no annotation, and that slide was the quality target. Annotations remain the author's explicit request for a figure and still govern `docx`.
+- **`[D]` is one role.** The earlier split of authoring from layout was dropped with the deck-spec. Its stated risk — that a single agent doing both would degrade the writing — is the one real cost of the change, and it remains at one observation.
+- **The `officecli batch` code renderer is still not built.** `[D]` writes the deck through officecli calls of its own choosing.
 
-## Base-rate measurement for G-B
+## Measurements
 
-An LLM judge's `PASS` is not evidence until its detection rate has been measured per deviation class. Until that measurement exists:
+### Equivalence with the control is stipulated, not measured
 
-- Do not treat a `PASS` as assurance over the classes in `deck-review.md`.
-- Do not report a clean run as proof; report it as one trial.
+The adoption decision on 2026-09-02 was a ruling that the shell is "equivalent to the control", taken deliberately without the run that would separate the remaining difference. Recorded so no later reader mistakes it for a measurement.
 
-### Measured 2026-09-02
+| | control (12 claims) | control, narrowed | v3 shell, narrowed |
+|---|---|---|---|
+| documents read | officecli-pptx only | officecli-pptx only | + `deck-building.md` |
+| scope | 12 claims | F-6, F-7 | F-6, F-7 |
+| model | Opus 5 | Opus 5 | Fable 5.1 |
+| tool calls / tokens / minutes | — | 116 / 320k / 39 | 37 / 219k / 25 |
+| slides | 24 | 13 | 8 |
+| body prose drawn from | — | `解釈` | `検証状態` |
 
-Model: the judge inherited the parent (Opus 5, 1M context). Six trials: five decks each carrying exactly one planted deviation, plus `tests/fixtures/deck_clean.md` unmodified as the control arm. Each deck was judged once, in a fresh context, given only the report, the deck's body slides and `deck-review.md`.
+Containment held in every run (no images returned to the caller). Structure — splitting one claim across slides, and giving the crude figure its own heading — appeared in the narrowed control too, so it is an effect of narrowing the scope and not of these documents. The prose difference is **confounded with model and budget** and is not attributable to the documents. Narrowing scope lowers the total slide count but raises slides per claim (2.0 → 6.5 in the control), because the framing slides are a floor.
 
-**Every planted deck passes `validate_deck.py` first.** That is what makes the measurement about G-B: the deterministic gate cannot see any of these five, so a detection is attributable to the judge alone.
+### What is not measured
 
-| Class | Plant | Verdict | Class named | Slide named |
-|---|---|---|---|---|
-| `MODALITY_UP` | S12 `body`: 「棄却できない」→「棄却された」 | FAIL | correct | correct |
-| `QUALIFIER_DROP` | S8 `evidence`: 「分母=前回接触ありの8,257案件。」を削除 | FAIL | correct | correct |
-| `UNTRACEABLE` | S10 `body`: report にない一文を追加 | FAIL | correct | correct |
-| `EMPHASIS_SWAP` | S2 `findings`: 主要な発見 1 と 2 を入替え | FAIL | correct | correct |
-| `CONTRADICTION` | S5 `body`: 13,020行 → 12,443行（S21 と矛盾する実在トークン） | FAIL | correct | correct |
-| — (control) | none | PASS | — | — |
+- **`[J]`'s detection rate for this skill.** The earlier judge was measured at 5 of 5 planted deviations with a clean control, but that measurement was taken with a different model, a different `deck-review.md` and a different input (a deck-spec, not rendered text). Its own recorded re-measurement condition names all three. **It does not transfer.** The current judge has one trial, with nothing planted: no evidence of detection at all. Do not quote a `PASS` as assurance.
+- **The effect of removing the two restated rules from `deck-building.md`.** Removed on the reasoning above, not on a measurement. Nothing was lost from the gates, so the change cannot reduce coverage; whether it improves the prose is open.
+- **PowerPoint on real hardware.** `validate` does not prove a deck opens.
+- **Which model runs `[D]` in production.** The two runs above used different models and neither is designated the representative one.
 
-5 of 5 detected. Every planted deck returned **exactly one** finding, so the 18 other body slides in each produced no false positive: 90 slide-level clean observations plus the control's own 19.
-
-**What this does not establish.** One trial per class is not a rate. It shows each class is detectable and that the judge does not fail indiscriminately (the control passed); it puts no useful lower bound on the miss rate — a single success is consistent with a true rate anywhere above a few percent. Do not quote "5/5" as a detection rate. Re-measure with more trials per class before treating a `PASS` as assurance, and re-measure from scratch if the model, `deck-review.md`, or the class list changes.
-
-The mutation strings are in the table above; the fixtures themselves are disposable and were built under `tmp/gb-baserate/` rather than tracked, since the ordinary change loop does not re-run them.
-
-## End-to-end run — 2026-09-02
-
-Executed on `tests/fixtures/report_clean.md` (342 lines, 12 claims) in an isolated worktree, with `[A]` and `[G-B]` as separately launched subagents so the two context boundaries the design depends on were real: the judge did not grade what it wrote, and it read only the report, the deck's body slides and `deck-review.md`.
+### Run on 2026-09-02 (the adopted shell, scope F-6/F-7)
 
 | Stage | Result |
 |---|---|
-| `[A]` deck-author | 27 slides — 1 title, 1 exec-summary, 6 section, 12 finding, 4 evidence, 3 appendix |
-| G-A `validate_deck.py` | OK, re-run independently of the agent's own claim |
-| `[G-B]` deck-judge | PASS |
-| `[H]` human approval | granted, with overflow explicitly waived for this run |
-| `[R]` deck-renderer | 27 slides, 162 shapes, 4 charts, 664 words |
-| G-R `check_pptx_text.py` | OK, re-run with this repository's checker rather than the renderer's own |
-| G-R `officecli validate` | passed |
-| G-R contrast | not applicable — all 27 slides enumerated, the only 4 explicit colour sites are chart series fills, no text-on-background pair |
-| G-R overflow | 1 site (`S2` `exec-summary`/`findings`, ~458 chars against a ~424 budget); waived at `[H]`, nothing was shortened |
-| Loop iterations consumed | **0** — no gate sent it back |
-| PowerPoint open on real hardware | not done; `validate` does not prove it |
-
-**27 slides against the 77** that a verbatim transcription of the same report produced. That ratio is the whole point of the second hop, and it is now measured rather than asserted.
-
-The report markdown was untouched: the worktree's only new file was the deck-spec.
-
-`[H]` was put to a human rather than self-approved: the gate exists so that no machine approves the deck it produced. The approval came with overflow waived, so the deck was rendered as authored.
-
-`[R]` never read the report — its inputs were the deck-spec and `deck-archetypes.md` only. That hop2 produced no untraceable string is the evidence that the isolation held, and it was checked with this repository's `check_pptx_text.py`, not with the instrument the renderer wrote for itself.
-
-### Measured gap: nothing checks the capacity guidance before rendering
-
-`deck-archetypes.md` gives a per-slot character budget, but it is prose that `[A]` applies by hand and no gate reads. Measured over both decks:
-
-| Deck | Slots over budget | Of measured | Worst |
-|---|---|---|---|
-| `[A]`'s E2E deck | 7 | 63 | `section/body` at 1.59× |
-| the hand-authored control | 3 | 61 | `section/body` at 1.72× |
-
-Two independent authors overshot, both concentrated in `section/body`. Overflow would surface only after an expensive render, as a G-R finding, one full loop iteration later.
-
-The budget is arithmetic over the deck-spec and needs no pptx, so G-A could carry it. **Not built** — it is outside the design this change implemented, and is recorded here as the next candidate rather than added silently. If it is built, it belongs beside the other `validate_deck.py` predicates with its own control arm, and `deck-archetypes.md` becomes its data source rather than advice.
+| `[D]` | 8 slides; Gates 1/2/2b pass; Gate 3 with a fresh auditor, 3 rounds, **not converged** (residual sub-threshold spacing and CJK line-breaking items) |
+| `check_pptx_text.py --scope F-6,F-7` | `OK`, listing empty |
+| `officecli validate` / `view issues` | pass / 0 |
+| contrast | 73 pairs checked, 1 fail, fixed; then 12 more sites fixed after the builder reported the white-background gap |
+| `[J]` | `PASS`, no findings |
+| `[H]` | The prose was rejected by the human reader as a list of numbers — the gap `[J]` cannot see, above |

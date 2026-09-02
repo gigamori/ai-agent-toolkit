@@ -115,13 +115,24 @@ produced them live in `skills/xml-wf/scripts/evals/`.
 
 - `officecli view <pptx> text` frames every slide with a line of the exact form
   `=== /slide[N] ===` and emits the slide's text one string per line, with a blank line
-  between slides. Table cells arrive as separate lines, one per cell, and a chart's title
-  arrives as a line of its own. `skills/render-report/scripts/check_pptx_text.py` parses
-  that framing, and `fixtures/view_text_clean.txt` is written in it. Observed 2026-09-02 by
-  running the command against a real deck.
-- Slide geometry is reported and accepted in centimetres, on a 33.87cm × 19.05cm canvas for
-  a 16:9 deck. `skills/render-report/references/deck-archetypes.md` fixes its regions in
-  those units. Observed 2026-09-02 via `officecli get <pptx> "/slide[N]" --json`.
+  between slides. Table cells arrive as separate lines, one per cell.
+  `skills/render-report/scripts/check_pptx_text.py` parses that framing, and
+  `fixtures/view_text_baseline.txt` is written in it. Observed 2026-09-02 by running the
+  command against a real deck.
+- A **native chart's** title, categories and series values do NOT appear in
+  `officecli view <pptx> text`, nor in `view ... annotated`. They are reachable from
+  `officecli query <pptx> chart --json`, where `format.categories` and a series'
+  `format.values` are comma-joined strings, so a category containing a comma is mis-split
+  by any consumer that splits on commas. `check_pptx_text.py` therefore reads both sources.
+  A native chart's data labels also round for display (`33.6` for `33.632`) and the rounded
+  form appears in neither source. Observed 2026-09-02 on officecli 1.0.146, against a
+  purpose-built deck carrying one native chart confirmed present via
+  `ppt/slides/charts/chart1.xml`.
+  - An earlier entry here claimed a chart's title arrives as its own line in `view text`.
+    That claim is **withdrawn**: it was recorded against a deck whose charts were never
+    confirmed to be native, and the measurement above contradicts it for native charts.
+    Whether a non-native, textbox-drawn "chart" puts its title in `view text` is not in
+    question — such a title is an ordinary text box.
 - `officecli view <pptx> issues --type low_contrast` does **not** subsume
   `skills/render-report/scripts/check_contrast.py`. On a deck carrying an explicit
   `background=#1F3864` with an explicit text `color=#2B2B2B` at 14pt — both confirmed
