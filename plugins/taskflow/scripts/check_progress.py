@@ -111,6 +111,8 @@ def extract_h1(content: str) -> str | None:
 
 
 def parse_date(value: object) -> datetime.date | None:
+    if isinstance(value, datetime.datetime):
+        return value.date()
     if isinstance(value, datetime.date):
         return value
     if isinstance(value, str):

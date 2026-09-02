@@ -227,15 +227,24 @@ def test_sweep_blast_cap_combined_oldest_first(state_dir: Path) -> None:
         spc._SWEEP_MAX = orig_cap
 
 
-def test_real_state_dir_untouched() -> None:
-    print("--- ABSOLUTE SAFETY: real _projects/_state/ was never referenced ---")
-    real_state_dir = Path(__file__).resolve().parent.parent.parent.parent / "_projects" / "_state"
-    check(real_state_dir.is_dir(), "sanity: real _state/ dir exists in this repo "
-          "(confirms the hazard this test avoids is real, not hypothetical)")
+_SYNTHETIC_SID = "00000000-0000-7000-8000-0000000000f3"
+
+
+def real_state_dir() -> Path:
+    return Path(__file__).resolve().parent.parent.parent.parent / "_projects" / "_state"
+
+
+def test_real_state_dir_untouched(before: set[str]) -> None:
+    print("--- ABSOLUTE SAFETY: real _projects/_state/ before/after snapshot ---")
+    after = sidecar_names(real_state_dir())
+    check(after == before, "real _state/ name set unchanged across this run")
+    check(not any(_SYNTHETIC_SID in name for name in after),
+          "synthetic session id absent from real _state/")
 
 
 def main() -> int:
     print("=== session_progress_capture.py _cleanup_stale_markers unit tests ===")
+    before_real_state = sidecar_names(real_state_dir())
     test_threshold_is_7_days()
     with tempfile.TemporaryDirectory() as d:
         state_dir = Path(d)
@@ -255,7 +264,7 @@ def main() -> int:
         test_removal_logged_under_cap(Path(d6))
     with tempfile.TemporaryDirectory() as d7:
         test_sweep_blast_cap_combined_oldest_first(Path(d7))
-    test_real_state_dir_untouched()
+    test_real_state_dir_untouched(before_real_state)
 
     print()
     if FAIL == 0:

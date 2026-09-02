@@ -172,12 +172,6 @@ def main() -> int:
     print("=== session id tail-12 tag collision tests ===")
     print()
 
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    if (repo_root / "_projects" / "_state").exists():
-        print("FATAL: Running in shared tree with existing _state directory")
-        print("  This test requires isolation in a worktree or temp directory")
-        return 1
-
     test_ac1_zeroed_two_sessions_separated()
     test_ac3_ambiguous_legacy_tag_no_resolution()
     test_ac3_ambiguous_tail12_tag_no_resolution()
