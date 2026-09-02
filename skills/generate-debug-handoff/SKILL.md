@@ -173,6 +173,8 @@ Separately from the handoff, generate one setup script that bundles the determin
 - Respect the literal of the input; do not summarize, complete, or reformat
 - Do not generate a diagnostic flow
 - Do not put summaries of design docs / source into the handoff (placing related paths in the Header is enough)
+- Do not carry commit hashes, design-doc section ids, or results of earlier test runs into the handoff
+- Do not record why a step was included, excluded, or de-scoped. To stop judging a step, blank its Result cell; to drop it, delete the row. Nothing else changes
 - Split operation columns by operation type (do not use a single Operation column)
 - Output in table form (list / prose / numbered procedure is not allowed)
 - Do not add any independent section beyond the 5 (Header / Pre-test Notes / Run-Fill Guide / Test Results / Comments)
