@@ -26,7 +26,11 @@ Task types:
 
 Runtime variables:
 - task_description: mode, axes, chunk text or merged state, source_name
-- output_file_path: `{working_dir}/compact-output/{source_name}-brief-{chunk_id}.md`, `{working_dir}/compact-output/{source_name}-merged.md`, or `{working_dir}/compact-output/{source_name}-compacted.md`
+- output_file_path: `{work_dir}/{source_name}-brief-{chunk_id}.md`, `{work_dir}/{source_name}-merged.md`, or `{out_dir}/{source_name}-compacted.md`
+
+Path roots:
+- `{work_dir}`: `<cwd>/tmp/compact-document/<YYYY-MM-DD>_{source_name}/`. Chunk briefs, the merged state and the Context Handoff are intermediates and stay here. Nothing indexes, commits or preserves this tree.
+- `{out_dir}`: the directory holding the source document, or the path the user named. Only the final `{source_name}-compacted.md` goes here, so the deliverable is not buried in scratch.
 
 ## Discovery (Main Thread)
 
@@ -133,7 +137,7 @@ Decide chunking after mode and axes are confirmed.
 
 ### Step 7: Create Context Handoff
 
-Write a Context Handoff file to `{working_dir}/compact-output/context-handoff.md` containing:
+Write a Context Handoff file to `{work_dir}/context-handoff.md` containing:
 
 ```
 source_name: [name]
@@ -165,16 +169,16 @@ For every SubAgent launch below (chunk-brief, merge, render), inline the Context
 1. Split source into chunks at natural boundaries decided in Step 6
 2. For each chunk, read chunk-brief/prompt.md, resolve variables:
    - task_description: inline the Context Handoff content, then chunk_id, source_span, chunk_text
-   - output_file_path: `{working_dir}/compact-output/{source_name}-brief-{chunk_id}.md`
+   - output_file_path: `{work_dir}/{source_name}-brief-{chunk_id}.md`
 3. Launch chunk-brief SubAgents in parallel (max 4)
 4. Collect all chunk briefs
 5. **Launch merge SubAgent:** read merge/prompt.md, resolve variables:
    - task_description: inline the Context Handoff content and all collected chunk briefs
-   - output_file_path: `{working_dir}/compact-output/{source_name}-merged.md`
+   - output_file_path: `{work_dir}/{source_name}-merged.md`
    The merge SubAgent writes the merged_compacted_state (see Merge Procedure below) to that file.
 6. Read render/prompt.md, resolve variables:
    - task_description: inline the Context Handoff content; extract the selected mode's section from references/mode-definitions.md (for general_article, include the chosen article_subtype) and inline it (render does not read mode-definitions.md); then "Chunking is on. Merged compacted state follows:" then the merged_compacted_state from Step 5
-   - output_file_path: `{working_dir}/compact-output/{source_name}-compacted.md`
+   - output_file_path: `{out_dir}/{source_name}-compacted.md`
 7. Launch render SubAgent -> output file is the final result
 8. Present the render SubAgent's output to the user VERBATIM: do not add preamble, re-summarize, or re-template it.
 

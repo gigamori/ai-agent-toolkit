@@ -506,7 +506,7 @@ def _detect_ask_backend() -> str:
     """Deterministic `--backend auto` resolution: the same env signal
     mode-orchestrator's Step -1 uses for harness detection (non-empty
     CLAUDE_CODE_SESSION_ID => Claude Code => "cc"; empty => "pi"). See
-    mode-orchestrator-runs/phase5-item1-cc-inventory-design.md §2.3 -- this
+    tmp/runs/phase5-item1-cc-inventory-design.md §2.3 -- this
     is deliberately NOT left to the calling orchestrator's own judgment: a
     forgotten/wrong flag would otherwise fail silently (ask would just run
     against whichever CLI happens to be on PATH)."""
@@ -515,7 +515,7 @@ def _detect_ask_backend() -> str:
 
 def _resolve_backend(explicit: str, quiet: bool = False) -> str:
     """`--backend {auto,cc,pi}` resolution shared by `run`, `ask` and `validate`
-    (mode-orchestrator-runs/phase6-run-pi-design.md §3.1: "same determinant,
+    (tmp/runs/phase6-run-pi-design.md §3.1: "same determinant,
     same default" as `ask --backend`, _detect_ask_backend promoted to
     shared use). auto detects from CLAUDE_CODE_SESSION_ID; an explicit
     cc/pi that disagrees with the detected environment is honored but
@@ -584,7 +584,7 @@ LLM_GUARD_MARKER = "xml-wf-llm-guard"
 def _warn_if_no_llm_guard():
     # The hook is a Claude Code PreToolUse mechanism; only under CC is
     # "is it configured" even a meaningful question (see
-    # mode-orchestrator-runs/phase5-item1-cc-inventory-design.md §3.2).
+    # tmp/runs/phase5-item1-cc-inventory-design.md §3.2).
     # An unset CLAUDE_CODE_SESSION_ID means "not CC" -- not "Pi": the same
     # signal is unset when wfrun is run from a plain terminal.
     if not os.environ.get("CLAUDE_CODE_SESSION_ID"):

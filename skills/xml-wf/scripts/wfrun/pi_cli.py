@@ -1,9 +1,9 @@
 """`pi -p` subprocess invocation: `wfrun ask --backend pi` (`ask_llm_pi`) and
 `wfrun run --backend pi` (`run_pi`, the step-execution counterpart to
-claude_cli.run_claude -- mode-orchestrator-runs/phase6-run-pi-design.md).
+claude_cli.run_claude -- tmp/runs/phase6-run-pi-design.md).
 
 Sibling of `claude_cli.py`. `ask_llm_pi` predates `run_pi`: see
-`mode-orchestrator-runs/phase5-item1-cc-inventory-design.md` for the
+`tmp/runs/phase5-item1-cc-inventory-design.md` for the
 original CC<->Pi feature-parity survey that scoped this module to condition
 judgment only ("not a general pi -p wrapper"); phase6-run-pi-design.md §4
 lifted that scope to full step execution. Structured-output forcing
@@ -576,7 +576,7 @@ def diagnose_stub_pi(step, prompt, failure, *, cwd=None):
                                            # pi_cli <-> executor coupling
     raise WorkflowFailure(
         "diagnose was invoked under the pi backend, which has no debug "
-        "implementation (mode-orchestrator-runs/phase6-run-pi-design.md "
+        "implementation (tmp/runs/phase6-run-pi-design.md "
         "§2.3); this should be unreachable, since on-error=\"debug\" "
         "workflows are rejected at startup -- if you are seeing this, that "
         "fail-fast check (pi_cli.pi_compat_errors) was bypassed")

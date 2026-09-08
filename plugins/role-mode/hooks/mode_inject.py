@@ -53,7 +53,7 @@ Slug syntax:
   - Both prefixes are detected at string start or after whitespace, are
     case-insensitive, and only the first occurrence per kind is used.
 
-Non-invocation inputs (both measured; see mode-orchestrator-runs/
+Non-invocation inputs (both measured; see tmp/runs/
 phase4-defects-2-4-design.md, defect 2):
   - Backtick spans are masked before detection: `` `mode:execute` `` is a
     mention/quotation, not an invocation. A real run's orchestrator was

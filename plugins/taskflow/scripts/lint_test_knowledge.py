@@ -54,11 +54,11 @@ PEP723_OPEN = re.compile(r"^#\s*///\s*script\s*$")
 PEP723_CLOSE = re.compile(r"^#\s*///\s*$")
 
 # R2 patterns: references a reader holding only this checkout cannot open.
-# `_projects/`, `mode-orchestrator-runs/` and `notes/` are gitignored; `§`, plan
+# `_projects/`, `tmp/runs/` and `notes/` are gitignored; `§`, plan
 # and run-directory filenames, and spec-scoped ids live only inside them.
 UNREACHABLE = [
     (re.compile(r"§"), "section sign -- the document it indexes is not in this checkout"),
-    (re.compile(r"mode-orchestrator-runs/"), "run directory (gitignored)"),
+    (re.compile(r"tmp/runs/"), "run directory (gitignored)"),
     (re.compile(r"\b\d{2}[a-z]?-(?:plan|debug|execute|review|review-dev|decision)\.md\b"),
      "run-directory document (gitignored)"),
     (re.compile(r"(?i)\b(?:see|per|spec:?|design|governed by|documented in|described in|covers)\s+"

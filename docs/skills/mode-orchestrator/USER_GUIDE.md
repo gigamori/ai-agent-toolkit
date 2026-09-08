@@ -321,8 +321,8 @@ the todolist. To add a spec for another task type, see
 
 ## Run directory and artifacts
 
-Each invocation creates one run directory in the workspace, e.g.
-`mode-orchestrator-runs/<run-slug>/`:
+Each invocation creates one run directory at
+`<cwd>/tmp/runs/<YYYY-MM-DD>_<slug>/`:
 
 - `NN-<mode>.md` — one deliverable per turn, in order. Any turn inserted for
   turn `NN` — by either loop — takes the next free suffix letter, so a turn that

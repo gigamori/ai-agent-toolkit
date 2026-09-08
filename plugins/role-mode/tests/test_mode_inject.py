@@ -1,6 +1,6 @@
 """Tests for hooks/mode_inject.py slug detection boundaries.
 
-Covers the Phase 4 defect-2 hardening (mode-orchestrator-runs/
+Covers the Phase 4 defect-2 hardening (tmp/runs/
 phase4-defects-2-4-design.md): backtick-span masking and the
 system-notification gate, plus regressions for normal invocation.
 

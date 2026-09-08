@@ -27,7 +27,7 @@ from touched_capture import _find_state_root  # noqa: E402
 # life, so a cwd-direct root resolves to a tree that does not exist and this
 # hook exits at the guard below without syncing anything. `or os.getcwd()`
 # reproduces the pre-change value byte-for-byte when no ancestor qualifies.
-# Decision record: mode-orchestrator-runs/
+# Decision record: tmp/runs/
 # 2026-08-20_remaining-hooks-cwd-dependence/02a-decision.md (option (b));
 # scope: that run's 02-plan.md §3.
 STATE_ROOT = _find_state_root(os.getcwd()) or os.getcwd()

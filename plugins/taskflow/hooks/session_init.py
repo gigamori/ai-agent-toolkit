@@ -71,7 +71,7 @@ PJ_PARSE_WINDOW = 500  # chars; pj: and norouter are only recognized within this
 # would then create a STRAY `<subdir>/_projects/` and write the state json every
 # other hook's orphan guard keys on into it. `or os.getcwd()` reproduces the
 # pre-change value byte-for-byte when no ancestor qualifies. Decision record:
-# mode-orchestrator-runs/2026-08-20_remaining-hooks-cwd-dependence/02a-decision.md
+# tmp/runs/2026-08-20_remaining-hooks-cwd-dependence/02a-decision.md
 # (option (b)); scope: that run's 02-plan.md §3.
 STATE_ROOT = _find_state_root(os.getcwd()) or os.getcwd()
 PROGRESS_ROOT = os.path.join(STATE_ROOT, '_projects')
@@ -91,7 +91,7 @@ PARENT_SCAN_LINES = 50  # transcript head lines scanned for parent detection
 
 # Bootstrap block: a compact, ASCII-only invariant placed first in the
 # injected context (see the module docstring's "bootstrap" entry and
-# `mode-orchestrator-runs/2026-09-02_taskflow-review-followup/02-plan.md`
+# `tmp/runs/2026-09-02_taskflow-review-followup/02-plan.md`
 # section 1) so it survives preview truncation on turns whose payload is
 # large enough to be persisted rather than delivered inline. ASCII-only by
 # construction: its character length and UTF-8 byte length are equal, so it

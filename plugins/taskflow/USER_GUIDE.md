@@ -187,7 +187,7 @@ For a bigger task, you can hand the whole `## Next Steps` list to the **mode-orc
 **Before you start:**
 
 1. Confirm mode-orchestrator is available. If it is not, stop here and work the steps manually.
-2. Check for an existing run directory (`mode-orchestrator-runs/<task-slug>/`). If one exists, reconcile it against `## Next Steps` **before** starting a new run: drop the steps its index shows as finished, and if a decision request is still unanswered, copy its file path and its question to the top of the list. A stale list would re-run source edits that already happened.
+2. Check for an existing run directory (`<cwd>/tmp/runs/<YYYY-MM-DD>_<task-slug>/`). If one exists, reconcile it against `## Next Steps` **before** starting a new run: drop the steps its index shows as finished, and if a decision request is still unanswered, copy its file path and its question to the top of the list. A stale list would re-run source edits that already happened.
 3. Start the task (`/progress start <id>`) if it is not started yet.
 4. Commit or stash work in progress. Orchestrated steps edit real files in the shared tree, and the skill provides no rollback.
 5. Ask for the run. Point at the task file and name the skill — for example:
@@ -232,7 +232,7 @@ Each line is actionable on its own, the intent is carried by the verb, the conte
 
 **Limits:**
 
-- Run artifacts under `mode-orchestrator-runs/` are not committed, so a `git clean` in the same tree destroys them. Keep the pre-run commit/stash habit.
+- Run artifacts under `<cwd>/tmp/runs/` are not committed, so a `git clean` in the same tree destroys them. Keep the pre-run commit/stash habit.
 - In a non-interactive run (`claude -p`), a step that asks for your decision simply ends the run. The request is preserved on disk, so you can restart from it interactively.
 
 ---

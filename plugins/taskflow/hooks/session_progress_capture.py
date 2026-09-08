@@ -124,7 +124,7 @@ from tstamp import now_iso  # noqa: E402
 # life, so a cwd-direct root makes this whole hook a no-op: no round opens and
 # the session's `.touched` ledger is never consumed. `or os.getcwd()` reproduces
 # the pre-change value byte-for-byte when no ancestor qualifies. Decision
-# record: mode-orchestrator-runs/
+# record: tmp/runs/
 # 2026-08-20_remaining-hooks-cwd-dependence/02a-decision.md (option (b)).
 STATE_ROOT = _find_state_root(os.getcwd()) or os.getcwd()
 PROGRESS_ROOT = os.path.join(STATE_ROOT, '_projects')
@@ -1084,7 +1084,7 @@ def _next_steps_digest(path):
     A raw-byte hash is explicitly rejected by the spec, and this is not a
     hypothetical: `append_auto_binding`'s text-mode read/write round-trip
     re-encodes the WHOLE task md to CRLF on this host's first `@log` append
-    (measured, mode-orchestrator-runs/2026-09-02_.../02-execute.md §5) — a
+    (measured, tmp/runs/2026-09-02_.../02-execute.md §5) — a
     raw-byte digest would silently reset every debt counter to 0 the moment
     any other `@log` line lands, which is every round.
 

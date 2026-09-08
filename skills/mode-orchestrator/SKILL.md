@@ -348,9 +348,9 @@ For each turn record, in order:
 9. After all turns: summarize the run directory's artifacts and gists. If the gists you already hold contradict each other — a later turn reporting a different value for the same thing than the turn it depended on — **say so in the summary and record it in the run index**. Do not go looking for it in the deliverables; you do not read those, and this is only about what your own context already shows.
    - **Reporting it is the whole of the response. Do not insert a turn to fix it, and do not ask which fix to apply.** Every turn this skill inserts is charged to an originating turn under one of the two loops (step 7.5); a corrective turn opened here belongs to neither and would be counted by neither cap — an unbounded third path, which is exactly what the caps exist to prevent. The run is over; a fix is the next invocation's work, made by whoever reads the summary. Measured 2026-08-13: an orchestrator that spotted such a contradiction offered to re-run the later turn, which would have been that uncounted insertion.
 
-## Run directory (workspace)
+## Run directory
 
-- Create one run directory in the workspace per invocation, e.g. `mode-orchestrator-runs/<run-slug>/` — derive the slug from the input document name.
+- Create one run directory per invocation at `<cwd>/tmp/runs/<YYYY-MM-DD>_<slug>/` — derive the slug from the input document name, and date it so re-running the same document does not collide.
 - Artifacts: `NN-<mode>.md`; dynamic turns take the next suffix on their originating `NN`. `index.md` contains one JSONL block. The block holds exactly six record kinds, each carrying `record` plus exactly the fields the table below gives it, no others. **Everything else this skill or a harness reference tells you to record in the run index goes in prose above the block**, never as a new record kind and never as an extra field on an existing one. A first-pass `turn` record has `kind: planned` and null parent/inherits; only a listed dynamic kind may have a non-null parent.
 
   | record | fields besides `record` |

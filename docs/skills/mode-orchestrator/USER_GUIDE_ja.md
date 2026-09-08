@@ -181,7 +181,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
 
 ## run ディレクトリと成果物
 
-起動ごとに workspace に run ディレクトリを1つ作る（例: `mode-orchestrator-runs/<run-slug>/`）:
+起動ごとに `<cwd>/tmp/runs/<YYYY-MM-DD>_<slug>/` に run ディレクトリを1つ作る:
 
 - `NN-<mode>.md` — ターンごとの deliverable を順に。起点ターン `NN` に対して挿入されたターンは、どちらのループのものでも次の空き接尾辞を取る。両方を通ったターンは `05a-decision.md` → `05b-execute.md` → `05c-debug.md` → `05d-execute.md` と読める。ファイル名に mode が入るので、どのループの成果物かは常に一意。
 - `index.md` — canonical run index。人間が読む plan と、機械可読な JSONL block をちょうど1つ含む。入れ子の、または prose だけの `index.md` は run index ではない。delegation 前にこの block は contract と初期 plan record を書く:

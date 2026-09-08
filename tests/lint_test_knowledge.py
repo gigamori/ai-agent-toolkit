@@ -25,7 +25,7 @@ DIRECTIVE = re.compile(r"^#!|# noqa:|# type: ignore\[|# pragma|# ruff:")
 PEP723_OPEN = re.compile(r"^#\s*///\s*script\s*$")
 PEP723_CLOSE = re.compile(r"^#\s*///\s*$")
 
-GITIGNORED_TREES = ("_projects/", "mode-orchestrator-runs/",
+GITIGNORED_TREES = ("_projects/", "tmp/runs/",
                     "analytics-expert-using-sql-runs/")
 CITATION = re.compile(
     r"(?i)\b(?:see|per|spec:?|design|governed by|documented in|described in|"

@@ -19,9 +19,9 @@ __pycache__/
 .venv/
 .pytest*/
 
-# Runtime artifacts of a mode-orchestrator run (never committed)
-mode-orchestrator-runs/
+# Runtime artifacts of a skill run (never committed)
 analytics-expert-using-sql-runs/
+runs/
 
 # Temp / scratch
 **/ignore*/**

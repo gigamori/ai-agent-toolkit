@@ -27,7 +27,7 @@ Known parser gaps accepted as best-effort (exec-binding.md §3.3 / R2):
     metacharacter guard (`$`, backtick, `*`, `?`) so a variable-shaped operand
     like `"$f"` is skipped rather than recorded as a garbage literal — a
     `sed -i` invocation whose only file operand is such a variable still
-    contributes nothing (mode-orchestrator-runs/
+    contributes nothing (tmp/runs/
     2026-08-19_touched-capture-bash-parse-gap-cd-target/03-review-dev.md F4).
   - `sed`'s `=`-attached script flags (`--expression=EXPR`, `--file=F`) are
     not recognized: `_SED_EXPR_FLAGS` lists only the space-separated
@@ -116,7 +116,7 @@ bodies were parsed as shell, so prose `19 -> 31 -> 34` recorded `31` and `34,`
 in the ledger it feeds, since PostToolUse fires for subagent calls with the
 parent session_id (`_is_state_ledger_path`).
 
-Closed 2026-08-20 (mode-orchestrator-runs/
+Closed 2026-08-20 (tmp/runs/
 2026-08-19_touched-capture-bash-parse-gap-cd-target/02-plan.md D1/P1/P2):
 `sed -i`/`--in-place` operands are now recognized, subject to the
 metacharacter guard above (`_sed_is_inplace`/`_sed_operands`); an unquoted
@@ -220,6 +220,10 @@ _HEREDOC_TAIL_RE = re.compile(r'(-?)[ \t]*("[^"]*"|\'[^\']*\'|[^\s|&;<>()]+)')
 # own sidecar write fires PostToolUse with the PARENT session_id, so without
 # this the ledger records its own bookkeeping.
 _STATE_LEDGER_PREFIX = '_projects/_state/'
+# The workspace's own scratch root. Run artifacts land here, so without this
+# the ledger fills with a run's working files instead of the work.
+_SCRATCH_PREFIX = 'tmp/'
+_LEADING_DOT_SLASH_RE = re.compile(r'^(?:\./)+')
 
 
 def _is_null_sink(target: str) -> bool:
@@ -564,6 +568,24 @@ def _is_state_ledger_path(rel: str) -> bool:
     return rel.replace('\\', '/').casefold().startswith(_STATE_LEDGER_PREFIX)
 
 
+def _is_scratch_path(rel: str) -> bool:
+    """True for a normalized path under the workspace's own `tmp/` — scratch,
+    never task or note material.
+
+    `<cwd>/tmp/` is the one temporary root a workspace has: not indexed, not
+    committed, no promise that anything survives. The mode-orchestrator run
+    directory lives there, so a single orchestrated run would otherwise append
+    hundreds of its own artifact paths to the ledger and bury the source edits
+    the round is actually about.
+
+    Anchored at the workspace root: a nested `sub/tmp/` is ordinary work and
+    stays recorded. A leading `./` is stripped first so the spelling of the
+    path cannot smuggle a scratch write past the check.
+    """
+    p = _LEADING_DOT_SLASH_RE.sub('', rel.replace('\\', '/'))
+    return p.casefold().startswith(_SCRATCH_PREFIX)
+
+
 def normalize_path(p: str, cwd: str) -> str:
     if not p:
         return p
@@ -761,7 +783,7 @@ def main() -> int:
     seen: set[str] = set()
     for p in raw_paths:
         n = normalize_path(p, cwd)
-        if not n or _is_state_ledger_path(n):
+        if not n or _is_state_ledger_path(n) or _is_scratch_path(n):
             continue
         if n not in seen:
             seen.add(n)
