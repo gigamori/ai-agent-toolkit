@@ -120,12 +120,14 @@ nomode norole — mode:plan と mode:execute の違いは何ですか？
 | `mode:discuss` | | 専門家としての意見、結論に向けた議論が欲しい |
 | `mode:brainstorm` | | 評価・根拠抜きで多様なアイデアが欲しい |
 | `mode:organize` | | 散らかった考えを構造化したい |
+| `mode:explain` | | 自分の知識レベルに合わせて、既知の知識から概念や仕組みを教えてほしい |
 | `mode:survey` | | 事実収集のみ、解決策・提案は不要 |
 | `mode:plan` | | 明確な基準のあるアクション手順、最終成果物は不要 |
 | `mode:execute` | `implement` | 計画を厳密に適用、scope 拡張禁止 |
 | `mode:debug` | `verify` | 根本原因分析、早すぎる修正は禁止 |
-| `mode:review` | | プロセス評価と教訓抽出 |
+| `mode:review-process` | | プロセス評価と教訓抽出 |
 | `mode:review-dev` | | 開発成果物（設計主・実装副次）を品質次元に照らして構造的にレビューしたい |
+| `mode:review-doc` | | 文章成果物を対象読者・目的に照らしてレビューし、較正済みの verdict（指摘＋理由、または明確なクリーン判定）が欲しい |
 
 各 mode の `NEVER` / `DO` ルール全文は [`prompts/modes/`](prompts/modes/) を参照。
 
@@ -200,12 +202,14 @@ plugins/role-mode/
     discuss.md
     brainstorm.md
     organize.md
+    explain.md
     survey.md
     plan.md
     execute.md
     debug.md
-    review.md
+    review-process.md
     review-dev.md
+    review-doc.md
 ```
 
 各 `<mode>.md` は `Basic Behavior` / `NEVER` / `DO` の 3 行が必須。加えて任意セクションが 2 種:

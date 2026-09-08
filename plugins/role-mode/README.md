@@ -120,12 +120,14 @@ nomode norole — how does mode:plan differ from mode:execute?
 | `mode:discuss` | | You want an expert opinion or a decision-driving conversation |
 | `mode:brainstorm` | | You want diverse ideas without judgment or evidence pressure |
 | `mode:organize` | | You want help structuring fragmented thoughts |
+| `mode:explain` | | You want a concept or mechanism taught to your level, building from what you already know |
 | `mode:survey` | | You want fact collection — no solutions, no proposals |
 | `mode:plan` | | You want actionable steps with clear criteria, no final deliverables |
 | `mode:execute` | `implement` | You want the plan applied strictly, no scope expansion |
 | `mode:debug` | `verify` | You want root-cause analysis, no premature fixes |
-| `mode:review` | | You want process evaluation and lessons learned |
+| `mode:review-process` | | You want process evaluation and lessons learned |
 | `mode:review-dev` | | You want a structured development-artifact review (design-primary, implementation-secondary) against quality dimensions |
+| `mode:review-doc` | | You want a written artifact reviewed for its audience and purpose, with a calibrated verdict — findings + why, or a clean pass |
 
 The full `NEVER` / `DO` rules for each mode live in [`prompts/modes/`](prompts/modes/).
 
@@ -200,12 +202,14 @@ plugins/role-mode/
     discuss.md
     brainstorm.md
     organize.md
+    explain.md
     survey.md
     plan.md
     execute.md
     debug.md
-    review.md
+    review-process.md
     review-dev.md
+    review-doc.md
 ```
 
 Each `<mode>.md` has three required lines — `Basic Behavior`, `NEVER`, `DO` — plus two optional sections:

@@ -299,8 +299,9 @@ copies of the plugin's same-named files: a step also carries `<rules>` and a
 `<task>`, which the plugin's axis model has no notion of.
 
 Available modes (**autonomous only** — the plugin's interactive modes
-ask/brainstorm/discuss/organize need a live human exchange and are not
-bundled): `debug`, `execute`, `plan`, `review`, `review-dev`, `survey` —
+ask/brainstorm/discuss/explain/organize need a live human exchange and are not
+bundled): `debug`, `execute`, `plan`, `review-doc`, `review-dev`,
+`review-process`, `survey` —
 plus the aliases `verify` → debug and `implement` → execute (the alias picks
 the file; the declared name is preserved in the prompt). Unknown names are a
 validate error (`mode-unknown`).

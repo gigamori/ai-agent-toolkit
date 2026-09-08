@@ -186,9 +186,9 @@ file path.</task>
   `tools=` explicitly. Omitting the role is a fine default when `mode=`/`rules=`
   already fix the discipline — better than inventing a filler persona.
 - **Mode** (`mode=`, optional): a processing discipline injected as `mode:<name>`
-  plus its rules. Autonomous modes only: `debug`, `execute`, `plan`, `review`,
-  `review-dev`, `survey`, plus aliases `verify` → debug and
-  `implement` → execute.
+  plus its rules. Autonomous modes only: `debug`, `execute`, `plan`,
+  `review-doc`, `review-dev`, `review-process`, `survey`, plus aliases
+  `verify` → debug and `implement` → execute.
 - **Model** (`model=`): a **difficulty class**, not a deployment — canonical
   names are `basic` (mechanical), `pro` (standard, the default), `ultra`
   (design/diagnosis/review). `scripts/wfrun/model_map.json` binds these to the

@@ -179,8 +179,8 @@ file path.</task>
   `tools=` を明示すべき。`mode=`/`rules=` で規律が既に決まっているなら、埋め草の
   ペルソナを捏造するより省略するのが良い既定。
 - **モード**（`mode=`、任意）: `mode:<name>` とそのルールとして注入される処理規律。
-  自律モードのみ: `debug`・`execute`・`plan`・`review`・`review-dev`・`survey`、
-  さらにエイリアス `verify` → debug、`implement` → execute。
+  自律モードのみ: `debug`・`execute`・`plan`・`review-doc`・`review-dev`・
+  `review-process`・`survey`、さらにエイリアス `verify` → debug、`implement` → execute。
 - **モデル**（`model=`）: デプロイ名ではなく **難易度クラス**。正典の名前は
   `basic`（機械的）・`pro`（標準・既定）・`ultra`（設計/診断/レビュー）。
   `scripts/wfrun/model_map.json` がディスパッチ時に実モデルへ束縛する。同梱の

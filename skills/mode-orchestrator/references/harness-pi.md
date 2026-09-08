@@ -259,11 +259,18 @@ pass one explicitly, taken from this table. The upper bound is
 |---|---|
 | `survey` | 3600 |
 | `plan` | 2400 |
-| `execute` | 1500 |
+| `execute` | 2400 |
 | `debug` | 900 |
-| `review` | 900 |
+| `review-process` | 900 |
 | `review-dev` | 1800 |
 | anything else | 900 |
+
+`review-doc` has no row of its own on either harness, and that is a ruling
+rather than an open TODO: the maintainer decided on 2026-09-08 that it takes the
+`anything else` budget. No turn of that mode had been measured, and inventing a
+row would have put an unmeasured number where every other row carries one. A
+review-doc turn that times out at that budget is the evidence that would reopen
+it; give it a row here and in `scripts/watchdog.sh` together if that happens.
 
 An inserted **decision turn** (`SKILL.md` Execution step 7) runs as
 `mode: review-dev` and therefore takes the `review-dev` row (1800 s) — the same
@@ -272,7 +279,9 @@ A `--decider=human` wait makes no `pi -p` call at all, so no `timeout` applies
 to it; see below.
 
 These are the CC watchdog's `DEADLINE_*` values verbatim
-(`scripts/watchdog.sh`, re-verified 2026-08-20), so the same turn gets the same
+(`scripts/watchdog.sh`, re-verified 2026-09-08 — every row above compared
+against the script after `DEADLINE_EXECUTE` moved to 2400), so the same turn
+gets the same
 wall-clock budget on either harness. They are **numbers, not a starting
 point to re-derive per run**: the whole reason CC's bound lives in a script is
 that a wall-clock bound decided fresh each turn is no bound at all, and the

@@ -136,9 +136,16 @@ full gate, build and package had all passed.
 That same turn is the tuning question's second point: 1327 s of 1500 s, 88 %,
 for a turn whose tail was a build and a package. Two points, one turn each, do
 not fix a new value — what would is a handful of build-bearing `execute` turns
-measured under the same budget. Until then `DEADLINE_EXECUTE` stands at 1500 s
-and the window stands at 120 s, because re-setting a threshold off two samples
-is the same move that put the first one here.
+measured under the same budget.
+
+**`DEADLINE_EXECUTE` was raised to 2400 s on 2026-09-08 by the maintainer's
+decision, not by that measurement.** The two points above stay stated against
+the 1500 s budget they were actually measured under — 1393 s and 1327 s are
+what happened, and rewriting them to the new denominator would fabricate a
+margin nobody observed. What the raise does is remove the pressure those two
+near-misses recorded; it does not answer the tuning question, which still wants
+a handful of build-bearing `execute` turns measured under one budget. The
+grace window is untouched at 120 s.
 
 ## `aborted` handling (Execution step 4)
 

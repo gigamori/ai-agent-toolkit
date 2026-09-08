@@ -69,12 +69,12 @@ which the role-mode hook would capture.
 ## Modes
 
 **Autonomous** (executed as a subagent turn): `survey`, `plan`, `execute`,
-`debug`, `review`, `review-dev`. Aliases: `verify` → `debug`,
+`debug`, `review-process`, `review-dev`, `review-doc`. Aliases: `verify` → `debug`,
 `implement` → `execute`.
 
 **Interactive** (never executed — surfaced as a suggestion to run natively):
-`ask`, `discuss`, `brainstorm`, `organize`. These need a live human exchange an
-autonomous subagent cannot provide.
+`ask`, `discuss`, `brainstorm`, `organize`, `explain`. These need a live human
+exchange an autonomous subagent cannot provide.
 
 Mode is chosen hybrid: if a step names a mode it is honored; otherwise the fitting
 mode is inferred from the step's content.
@@ -285,7 +285,7 @@ Defaults are at the top of the script — edit them there:
 | Stall threshold | 600s |
 | Deadline, `survey` | 3600s |
 | Deadline, `plan` | 2400s |
-| Deadline, `execute` | 1500s |
+| Deadline, `execute` | 2400s |
 | Deadline, `review-dev` | 1800s |
 | Deadline, every other mode | 900s |
 | Poll interval | 15s |

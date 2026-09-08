@@ -424,14 +424,14 @@ class TestLint(unittest.TestCase):
         self.assertIn("mode-unknown", self.codes(findings, "error"))
 
     def test_mode_known_and_aliases(self):
-        for mode in ("execute", "survey", "plan", "debug", "review",
-                     "review-dev", "verify", "implement"):
+        for mode in ("execute", "survey", "plan", "debug", "review-process",
+                     "review-dev", "review-doc", "verify", "implement"):
             findings = self.lint(self.wrap(
                 f'<step id="s1" role="w" mode="{mode}"><task>x</task></step>'))
             self.assertEqual(self.codes(findings, "error"), [], msg=mode)
 
     def test_interactive_modes_rejected(self):
-        for mode in ("ask", "brainstorm", "discuss", "organize"):
+        for mode in ("ask", "brainstorm", "discuss", "organize", "explain"):
             findings = self.lint(self.wrap(
                 f'<step id="s1" role="w" mode="{mode}"><task>x</task></step>'))
             self.assertIn(

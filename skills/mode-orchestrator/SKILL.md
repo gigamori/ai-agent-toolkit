@@ -74,15 +74,15 @@ Hardcoded mode list (rules bundled under `modes/`). Aliases: `verify` → `debug
 
 Autonomous — executed as a subagent turn:
 
-- `survey`, `plan`, `execute`, `debug`, `review`, `review-dev`
+- `survey`, `plan`, `execute`, `debug`, `review-process`, `review-dev`, `review-doc`
 
 Interactive — NOT executed; surfaced as a suggestion to run natively with role-mode:
 
-- `ask`, `discuss`, `brainstorm`, `organize`
+- `ask`, `discuss`, `brainstorm`, `organize`, `explain`
 
 If a step resolves to an interactive mode, do not run it; note it for the user to handle natively (interactive modes need a live human exchange, which an autonomous subagent cannot provide).
 
-The mode rules are bundled in this skill's `modes/` directory: `_meta.md` (role-less framework header), `_meta_role.md` (framework header for when a role is present), `_common.md`, and one `<mode>.md` for each of the 6 autonomous modes above. Read them from there — do not improvise the rules. The interactive modes are not bundled, since they are never executed.
+The mode rules are bundled in this skill's `modes/` directory: `_meta.md` (role-less framework header), `_meta_role.md` (framework header for when a role is present), `_common.md`, and one `<mode>.md` for each of the 7 autonomous modes above. Read them from there — do not improvise the rules. The interactive modes are not bundled, since they are never executed.
 
 ## Metadata, splitting, and model decision
 
@@ -138,9 +138,9 @@ Then append the step's instruction, the inputs as file paths (not inlined conten
 
 Append to **every** turn, as a further clarification: **if you reach an irreversible or outward-facing effect** — push, publish, delete, send outside this machine — **and no rule in force permits it** (CLAUDE.md, the settings allowlist, or an explicit permission in the todolist), do not perform it; return `blocked`. This is the self-judged half of `blocked` (Execution step 3 covers the machine-detected half), and it is the only half that operates at all on a harness with no permission layer.
 
-For a `review` / `review-dev` turn, additionally append: **any finding that leaves more than one acceptable option open must name exactly one recommended option, with the reason**. The recommendation is not a decision — it is hand-off information for the next turn. A fork left with no recommendation strands the run: a later `execute` turn is forbidden to choose (`proceed-on-ambiguity`), so review's open question and execute's obedience would end the run at a human with neither turn breaking a rule.
+For a `review-process` / `review-dev` / `review-doc` turn, additionally append: **any finding that leaves more than one acceptable option open must name exactly one recommended option, with the reason**. The recommendation is not a decision — it is hand-off information for the next turn. A fork left with no recommendation strands the run: a later `execute` turn is forbidden to choose (`proceed-on-ambiguity`), so review's open question and execute's obedience would end the run at a human with neither turn breaking a rule.
 
-For an **inserted decision turn** (Execution step 7), append this **in place of** the `review` / `review-dev` clause above — it runs as `review-dev`, but its job is to decide, not to recommend:
+For an **inserted decision turn** (Execution step 7), append this **in place of** the `review-process` / `review-dev` / `review-doc` clause above — it runs as `review-dev`, but its job is to decide, not to recommend:
 
 ```
 You are adjudicating a `## Decision request` raised by an earlier turn.
@@ -164,7 +164,7 @@ Finally, append the **reply contract** verbatim — it is what makes a turn's ou
 **The status vocabulary depends on the turn's mode.** Three shapes exist, and a turn is offered exactly one of them. Offering a value to a turn that can never legitimately produce it invites exactly the misclassification this contract exists to prevent.
 
 - `failed` means "the procedure ran and a planned check did not pass", and only an `execute` turn runs such a check — so only an `execute` turn is offered it.
-- `needs-decision` is offered to every autonomous mode **except an inserted decision turn**, which must not be able to raise a decision about a decision. Unlike `failed`, there is no mode where a fork cannot legitimately arise: `survey` finds a fact that changes the remaining steps, `plan` cannot pick an architecture, `execute` hits ambiguity, `review` / `review-dev` cannot name one recommendation, `debug` has several candidate fixes.
+- `needs-decision` is offered to every autonomous mode **except an inserted decision turn**, which must not be able to raise a decision about a decision. Unlike `failed`, there is no mode where a fork cannot legitimately arise: `survey` finds a fact that changes the remaining steps, `plan` cannot pick an architecture, `execute` hits ambiguity, `review-process` / `review-dev` / `review-doc` cannot name one recommendation, `debug` has several candidate fixes.
 
 All three shapes carry these placement rules verbatim. Every rule is a measured failure: the first two were both observed in one run of 36 turns; the third in the round that verified them, where a turn copied its deliverable's mandated footer into its reply — harmless that time (the orchestrator read the last line, as contracted), but a copied line landing *last* would displace the status and cost the turn (2026-08-13, finding G2):
 

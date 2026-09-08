@@ -56,11 +56,14 @@ STALL=600
 # Wall-clock budget per turn mode, in seconds.
 DEADLINE_SURVEY=3600
 DEADLINE_PLAN=2400
-DEADLINE_EXECUTE=1500
+DEADLINE_EXECUTE=2400
 DEADLINE_DEBUG=900
-DEADLINE_REVIEW=900
+DEADLINE_REVIEW_PROCESS=900
 DEADLINE_REVIEW_DEV=1800
 DEADLINE_DEFAULT=900
+
+# review-doc has no row on purpose: no turn of that mode has been measured
+# yet, so it takes DEADLINE_DEFAULT rather than a made-up budget.
 
 # Seconds between checks.
 POLL=15
@@ -131,13 +134,13 @@ done
 
 if [ -z "$DEADLINE" ]; then
   case "$MODE" in
-    survey)     DEADLINE=$DEADLINE_SURVEY ;;
-    plan)       DEADLINE=$DEADLINE_PLAN ;;
-    execute)    DEADLINE=$DEADLINE_EXECUTE ;;
-    debug)      DEADLINE=$DEADLINE_DEBUG ;;
-    review)     DEADLINE=$DEADLINE_REVIEW ;;
-    review-dev) DEADLINE=$DEADLINE_REVIEW_DEV ;;
-    *)          DEADLINE=$DEADLINE_DEFAULT ;;
+    survey)         DEADLINE=$DEADLINE_SURVEY ;;
+    plan)           DEADLINE=$DEADLINE_PLAN ;;
+    execute)        DEADLINE=$DEADLINE_EXECUTE ;;
+    debug)          DEADLINE=$DEADLINE_DEBUG ;;
+    review-process) DEADLINE=$DEADLINE_REVIEW_PROCESS ;;
+    review-dev)     DEADLINE=$DEADLINE_REVIEW_DEV ;;
+    *)              DEADLINE=$DEADLINE_DEFAULT ;;
   esac
 fi
 

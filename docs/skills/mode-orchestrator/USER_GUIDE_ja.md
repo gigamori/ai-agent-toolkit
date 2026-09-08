@@ -45,9 +45,9 @@ path/to/plan.md に mode-orchestrator を使って
 
 ## Mode
 
-**Autonomous**（subagent ターンとして実行）: `survey`, `plan`, `execute`, `debug`, `review`, `review-dev`。エイリアス: `verify` → `debug`, `implement` → `execute`。
+**Autonomous**（subagent ターンとして実行）: `survey`, `plan`, `execute`, `debug`, `review-process`, `review-dev`, `review-doc`。エイリアス: `verify` → `debug`, `implement` → `execute`。
 
-**Interactive**（実行しない — ネイティブ実行の提案として提示）: `ask`, `discuss`, `brainstorm`, `organize`。これらは autonomous subagent には提供できない、人間とのライブなやり取りを必要とする。
+**Interactive**（実行しない — ネイティブ実行の提案として提示）: `ask`, `discuss`, `brainstorm`, `organize`, `explain`。これらは autonomous subagent には提供できない、人間とのライブなやり取りを必要とする。
 
 mode は hybrid で決定: ステップが mode を名指ししていれば honor、なければステップ内容から適合 mode を推論する。
 
@@ -156,7 +156,7 @@ watchdog は報告するだけで、自分では何も停止しない。`TIMEOUT
 | 停滞閾値 | 600s |
 | 期限 `survey` | 3600s |
 | 期限 `plan` | 2400s |
-| 期限 `execute` | 1500s |
+| 期限 `execute` | 2400s |
 | 期限 `review-dev` | 1800s |
 | 期限 その他のモード | 900s |
 | ポーリング間隔 | 15s |

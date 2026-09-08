@@ -417,8 +417,9 @@ data shows and never speculates.</role>
 | `survey` | 事実収集ステップ（読み取り専用の調査） |
 | `debug` | 診断ステップ |
 | `plan` | 計画立案ステップ |
-| `review` | レビューステップ |
+| `review-process` | プロセスレビューステップ（サイクルを評価し教訓を抽出） |
 | `review-dev` | 開発成果物レビューステップ（設計主） |
+| `review-doc` | 文書成果物レビューステップ（レポート・仕様散文・ガイド） |
 
 エイリアス: `verify` → `debug`、`implement` → `execute`。`mode=` の無いステップは、
 規律を追加せずロールの下で走ります。未知のモード名は検証エラーです。
