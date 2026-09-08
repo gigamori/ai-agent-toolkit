@@ -1,267 +1,140 @@
 # Harness reference — Claude Code
 
 Read this when Step -1 resolved the harness to Claude Code. It defines the two
-harness-specific primitives that `SKILL.md`'s `## Execution` refers to:
-**P1 delegation** and **P2 time-bound**.
+primitives `SKILL.md`'s `## Execution` refers to — **P1 delegation** and
+**P2 time-bound** — plus the denial check.
 
 ## P1 — Delegation
 
-Delegate one turn to one general-purpose subagent, passing its `planned_override`.
-Before the call, its JSONL `turn` record is already in `index.md`; after it,
-append one `attempt` record with the actual override, unique delegation
-reference/transcript, reported/effective status, and file path. Never use the
-planned value as evidence that the call happened.
-
-Every autonomous turn has an override. A profile setup fault is `blocked`
-before delegation; a launch rejection yields no valid status and follows the
-shared aborted retry with the same effort/source/model/override. Never fall
-back across efforts or to the session model.
-
-The subagent writes its deliverable to the run directory as `NN-<mode>.md` and
-returns only a ≤3-line gist followed by the reply-contract status line (see
-`SKILL.md`'s Injection assembly and Execution step 3).
+- One turn = one general-purpose subagent call, passing `planned_override` as
+  the model. The `turn` record is in `index.md` before the call; append an
+  `attempt` record after it (actual override, delegation reference/transcript,
+  reported/effective status, file). A planned value is never evidence that the
+  call happened.
+- Every autonomous turn has an override. Profile fault → `blocked` before
+  delegation. Launch rejection → no valid status → the shared aborted retry
+  with the same effort/source/model/override. Never fall back across efforts
+  or to the session model.
+- The subagent writes `NN-<mode>.md` in the run directory and returns a
+  ≤3-line gist plus the reply-contract status line.
 
 ## P2 — Time-bound (the turn watchdog)
 
-**Start the turn watchdog in the same message as the delegation call**, as a
-background command:
+Start it in the same message as the delegation call, as a background command:
 
 ```
 exec bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable path> --desc "<the description given on the delegation call, verbatim>" --mode <the turn's mode>
 ```
 
-**The `exec` is load-bearing — do not drop it.** Without it the background
-command runs the watchdog as a child of a wrapper shell, and stopping the task
-kills only the wrapper: the stop reports success while the watchdog keeps
-polling to its full deadline and fires a stale verdict into a run that has
-already ended. Measured both arms 2026-08-28 — without `exec` the trace kept
-growing after the stop returned success; with it the process was gone and the
-trace frozen. `watchdog_test.sh` pins the `exec`.
+- `exec` is load-bearing. Without it, stopping the task kills only the wrapper
+  shell; the watchdog keeps polling and fires a stale verdict into a finished
+  run. `watchdog_test.sh` pins it.
+- `<this skill's dir>` is where this file was read from. Not at hand →
+  `blocked`; never scan for the script.
+- `--deliv -` for a turn that writes no file.
+- Every delegation gets its own `--desc`, re-runs and inserted turns included.
+  The description is the watchdog's only key.
+- An inserted decision turn is an ordinary turn: `--mode review-dev`
+  (`DEADLINE_REVIEW_DEV`), `--deliv` = its decision record. A
+  `--decider=human` wait delegates nothing, so no watchdog.
+- Thresholds live at the top of `scripts/watchdog.sh`. Do not pass the agent
+  id; the script resolves the transcript from `--desc`.
 
-`<this skill's dir>` is the directory this reference file was read from, so
-Step -1 already put it in hand — there is nothing to derive and no Claude Code
-counterpart to the Pi facet's P0 recipe (its CLI entry has no analogue here,
-since delegation goes through the subagent tool rather than a command). If the
-path is somehow not at hand, Step -1's bounded-resolution rule decides it: the
-run is `blocked`; never scan the filesystem for the script.
+Wakes:
 
-Use `--deliv -` for a turn that writes no file. **Every delegation in the run
-needs its own description**, re-runs and inserted turns of either loop included
-— that string is the watchdog's only key, so two turns sharing one can be
-confused for each other.
+- Exit word `TIMEOUT` or `STALL` — a trouble verdict, and the only
+  asynchronous wake the orchestrator has.
+- Writing the deliverable is not a wake. The file counts only if newer than
+  the watchdog's start (a re-run reuses the path).
+- Normal path: the turn's own completion notification. Stop the watchdog task
+  there. A verdict landing after a readable status is stale — ignore it, never
+  re-classify.
+- Start is unconditional. If the call returns synchronously with no subagent
+  (for example an out-of-enum `model` refused at the tool boundary), stop the
+  watchdog on reading that error; the re-run starts its own.
 
-An inserted **decision turn** (`SKILL.md` Execution step 7) is an ordinary
-delegated turn here and needs nothing new: it runs as `mode: review-dev`, so
-`--mode review-dev` gives it `DEADLINE_REVIEW_DEV` (1800 s, `scripts/watchdog.sh`
-— unchanged; whether a decision turn deserves its own budget is still open),
-and `--deliv` takes its decision record (`NNa-decision.md` in the simple
-case; the actual name is the next free suffix letter). A `--decider=human`
-wait involves no
-delegation at all, so there is no watchdog to start and no description to key:
-the orchestrator simply ends its turn at the step boundary.
+Late reply (SKILL.md Execution step 4):
 
-The watchdog is what bounds the turn in wall-clock time. The orchestrator is
-event-driven: it cannot poll, and the only asynchronous wake available to it is
-the completion of a background command it started itself. Without the watchdog
-a subagent that never returns leaves the run waiting indefinitely, which is the
-failure this whole mechanism exists to prevent.
-
-It exits with one word — `TIMEOUT` or `STALL` — and that exit is the wake. Both
-are trouble verdicts: the watchdog wakes you only when the turn is over its
-wall-clock budget or its subagent stopped generating. Thresholds live at the top
-of the script; do not pass the delegation call's agent id to it, since it
-resolves the transcript from `--desc` on its own.
-
-**Writing the deliverable is not a wake.** The watchdog watches the file and
-keeps monitoring after it appears: both verdict messages state whether the turn
-had written it, and a fresh write is recorded in the `--log` trace. Exiting there
-instead would wake you *before* the turn's own completion notification, with no
-defined meaning, and would leave the reply-composing tail of the turn — which
-comes after the file is written — with no time bound at all. "Written during
-this turn" still governs what the file check counts: the file must be newer than
-the watchdog's start, not merely present, because a re-run reuses the deliverable
-path, so on any second attempt the file is already there from the first.
-
-**The normal-path wake is the turn's own completion notification, and at that
-point you stop the watchdog task** — that is now the only way a well-behaved
-turn's watchdog ends. A verdict that lands after the turn already has a readable
-status is stale and must be ignored, never re-classified.
-
-**Starting is unconditional, and a launch that never happened still had a
-watchdog.** At compose time you cannot know whether the call will launch, and
-guessing wrong leaves a real subagent unwatched. When the call instead returns
-synchronously with no subagent, no transcript and no status — measured
-2026-08-28, an out-of-enum `model` refused at the tool boundary — **stop the
-watchdog on reading that error**: with nothing to resolve it degrades to
-deadline-only and fires `TIMEOUT` at the full mode budget, waking a run that has
-already stopped. The re-run starts its own under this same rule, since it exists
-to find out whether the rejection was transient.
-
-**The reverse ordering also exists, and it is not the same case.** The watchdog
-is a separate process racing the turn, so a verdict can fire *before* the reply
-and the reply still arrive. **Grace window for SKILL.md Execution step 4's
-late-reply clause on this harness: 120 s past the deadline.** A well-formed
-`status:` line already in hand within that window classifies the turn, and the
-verdict is recorded as superseded; past it, or with no reply, the turn is
-`aborted` and re-run once — subject to the one exception below. The window is
-not permission to wait — you classify with what you have when you classify.
-
-Measured 2026-08-27: a `pro`/sonnet documentation turn wrote its deliverable
-at 1393 s of the 1500 s `DEADLINE_EXECUTE` budget — a 7 % margin — and replied
-`ok` at ~1546 s, 46 s past the deadline. Two things follow and should not be
-merged. The ordering needed a rule, which is the clause above. Separately, a
-deliverable consuming 93 % of budget is evidence the deadline is tight for
-turns of that scale; that is a threshold-tuning question, still open, and
-**raising the deadline would not have defined the ordering** — it would only
-have made the same undefined case rarer with a longer fuse.
-
-**Past the window, a reply classifies the turn only on independently verified
-same-turn provenance.** The window is an evidence rule, not a wait budget: what
-it buys cheaply is the assurance that the reply came from this turn's own live
-subagent and not a confused or dead one. That assurance can be bought directly
-instead, from evidence outside the reply, and needs both halves — (1) the
-subagent confirmed still live at reply time (`ListAgents`), and (2) the turn's
-end state verified against the run itself: the deliverable newer than this
-attempt's delegation — not merely present, since a re-run reuses the path — and
-the planned check re-run. Never the report's own account of itself, which is
-self-attested. With one half or neither, the verdict stands and the turn is
-`aborted`. Record which path applied.
-
-Measured 2026-08-29: an `execute` turn ending in `pnpm build && pnpm package`
-wrote its deliverable at 1327 s of the same 1500 s budget and replied `ok`
-~223 s past the deadline — outside the window, and classified by that second
-path. Discarding it would have re-run a non-idempotent `execute` turn whose
-full gate, build and package had all passed.
-
-That same turn is the tuning question's second point: 1327 s of 1500 s, 88 %,
-for a turn whose tail was a build and a package. Two points, one turn each, do
-not fix a new value — what would is a handful of build-bearing `execute` turns
-measured under the same budget.
-
-**`DEADLINE_EXECUTE` was raised to 2400 s on 2026-09-08 by the maintainer's
-decision, not by that measurement.** The two points above stay stated against
-the 1500 s budget they were actually measured under — 1393 s and 1327 s are
-what happened, and rewriting them to the new denominator would fabricate a
-margin nobody observed. What the raise does is remove the pressure those two
-near-misses recorded; it does not answer the tuning question, which still wants
-a handful of build-bearing `execute` turns measured under one budget. The
-grace window is untouched at 120 s.
+- **Grace window: 120 s past the deadline.** A well-formed `status:` line
+  already in hand within it classifies the turn; record the verdict as
+  superseded. Not permission to wait.
+- Past the window, a reply classifies the turn only on independently verified
+  same-turn provenance, both halves required: (1) the subagent still live at
+  reply time (`ListAgents`); (2) the end state verified against the run — the
+  deliverable newer than this attempt's delegation, and the planned check
+  re-run. Never the report's own account of itself. One half or neither →
+  `aborted`. Record which path applied.
+- `DEADLINE_EXECUTE=2400` is a maintainer ruling, not a measurement. The only
+  data are two near-misses under the earlier 1500 s budget (1393 s, 1327 s);
+  the tuning question stays open until several build-bearing `execute` turns
+  are measured under one budget.
 
 ## `aborted` handling (Execution step 4)
 
-**The watchdog wakes first with `TIMEOUT` or `STALL`.** The turn is over its
-wall-clock budget, or its subagent stopped generating. Stop the turn and
-classify it `aborted`. Do not wait for a reply that the watchdog has already
-established is not coming. Do not try to read the stopped turn's output first:
-a subagent's output file is its entire transcript, and pulling that into the
-orchestrator's context to describe a turn that is being discarded anyway can
-end the run outright.
+Watchdog wakes first → stop the turn, classify `aborted`. Do not wait for the
+reply. Do not read the stopped turn's output: its output file is the whole
+transcript, and pulling it into the orchestrator's context can end the run.
 
 ### Re-run keying
 
-- The prompt is identical, but **the re-run's description must not be** — give
-  it a distinct one (e.g. suffix `(re-run)`). The description is the
-  watchdog's only key, and the aborted turn's own record is still on disk and
-  still recent; reuse the string and the re-run's watchdog can latch onto its
-  dead predecessor, whose transcript by definition stopped growing, and report
-  `STALL` immediately against a turn that is working fine.
-- The deliverable path, by contrast, stays the same on a re-run, and that is
-  fine: the watchdog requires the file to be newer than its own start, so a
-  partial file the aborted attempt managed to write is noted once in the trace
-  as stale and never counted as this turn's output. Pass the same `--deliv` you
-  passed the first time.
+- Same prompt, **distinct description** (e.g. suffix `(re-run)`). The dead
+  attempt's record is still recent; a reused key latches the new watchdog onto
+  a transcript that stopped growing → immediate false `STALL`.
+- Same `--deliv`. The newer-than-start rule discards the aborted attempt's
+  partial file.
 
 ## Denial check (after each turn's status line)
-
-After reading a turn's status line, run once:
 
 ```
 bash <this skill's dir>/scripts/deny_scan.sh --desc "<the delegation description, verbatim>"
 ```
 
-It resolves the turn's transcript the same way the watchdog does (the
-description is the key) and greps it for permission-denial tool results
-(`"is_error":true` plus the measured denial phrases). Verdicts:
-
-- `CLEAN` (exit 0) — keep the turn's self-reported status.
-- `DENIED <n>` (exit 1) — the turn's status is `blocked` regardless of what
-  its reply said (`ok`, `failed`, and `needs-decision` alike); record in the
-  run index that the denial was machine-detected. This is the backstop for a
-  turn that judged its own denial inessential and reported `ok` — a measured
-  incident, not a hypothetical. It is also what stops a permission wall from
-  entering the decision loop dressed as a choice.
+- `CLEAN` (exit 0) — keep the self-reported status.
+- `DENIED <n>` (exit 1) — status is `blocked` regardless of the reply (`ok`,
+  `failed`, `needs-decision` alike); record in the run index that the denial
+  was machine-detected.
 - `NO-TRANSCRIPT` (exit 2) — the check could not run; say so in the run
-  index. Do not treat it as `CLEAN`.
+  index. Not `CLEAN`.
 
-Unlike the watchdog this is not a race: the transcript is complete when the
-status line has arrived, so the scan runs synchronously after it.
+Synchronous, not a race: the transcript is complete once the status line has
+arrived.
 
-**Known fragility — serialization drift.** The scan matches the transcript's
-literal serialization (`"is_error":true`, no space) and the measured denial
-phrases. If a Claude Code update changes either, the scan stops detecting —
-silently, in the fail-open direction (the reply-contract clause remains as
-the only layer). `deny_scan_test.sh` runs on fixed fake transcripts, so it
-cannot notice such drift. Canary: after any Claude Code upgrade — or
-whenever a run's turn is *known* to have been denied — run the scan against
-a transcript that contains a real denial and confirm it still reports
-`DENIED`; a `CLEAN` there means the serialization moved and the patterns at
-the top of `deny_scan.sh` need re-measuring.
-
-**This canary has fired once, on 2026-08-12.** Two real Bash denials scanned
-`CLEAN` while `"is_error":true` still matched — only the phrasing had moved,
-to a `Permission to use <Tool> ... has been denied` template that neither
-pattern covered. The scan had been inert for an unknown stretch before
-anyone checked, and its test suite stayed green the whole time. Treat the
-canary as a real obligation, not a formality: it is the only thing that can
-catch this class of failure, and running it costs one command.
+**Serialization drift and the canary.** The scan matches the literal
+`"is_error":true` and the measured denial phrases; a Claude Code update can make
+it inert silently (fail-open), and `deny_scan_test.sh` runs on fixed fakes, so
+it cannot notice. After any Claude Code upgrade — or whenever a turn is known
+to have been denied — scan a transcript containing a real denial and confirm
+`DENIED`. A `CLEAN` there means the patterns at the top of `deny_scan.sh` need
+re-measuring. This has fired once (the phrasing moved to
+`Permission to use <Tool> ... has been denied`); treat it as an obligation.
 
 ### Running this skill itself under `claude -p`
 
-The permission layer applies to the orchestrator too, and the first thing it
-hits is `SKILL.md` Step -1's harness probe. Measured 2026-08-12: in a child
-`claude -p` with no allow rule for it, the probe is refused even when sent
-literally — the classifier returns `Contains expansion`, because `${VAR:-}`
-leaves nothing an allow prefix can match. A control run differing only in
-carrying a literal allow rule executed the same line and produced the probe
-output, so the difference is the rule, not the command text.
-
-Grant that one command before starting a headless run — either a narrow
-literal rule in the settings that run reads:
+The Step -1 probe is refused in a headless child unless a literal allow rule
+exists — the classifier returns `Contains expansion`, because `${VAR:-}` leaves
+nothing a prefix can match. Grant this one rule in the settings that run reads,
+or pass it as `--allowedTools`:
 
 ```
 "Bash(echo \"harness-probe:[${CLAUDE_CODE_SESSION_ID:-}] depth:[${MODE_ORCH_DEPTH:-}]\")"
 ```
 
-or the same string passed as `--allowedTools` on the invocation. Without it
-the run stops at Step -1 — which is Step -1 working as designed, not a
-defect to route around.
+Without it the run stops at Step -1, by design.
 
 ## Out-of-scope note
 
-No helper scripts beyond the turn watchdog (`scripts/watchdog.sh`, with
-`scripts/watchdog_test.sh` covering it) and the denial check
-(`scripts/deny_scan.sh`, with `scripts/deny_scan_test.sh`) — prompt assembly
-and the Step 0 gate are done in-prompt. Both are scripts on purpose: they are
-the parts of a turn that must behave identically every time, and re-typing
-them per turn would put the wall-clock bound and the denial evidence back
-under the same improvisation they exist to bound. Their tests ship with them
-for the same reason — a bound nobody re-checks is a bound that quietly stops
-holding.
+Only two helper scripts: `scripts/watchdog.sh` (+ `watchdog_test.sh`) and
+`scripts/deny_scan.sh` (+ `deny_scan_test.sh`). They are scripts because the
+wall-clock bound and the denial evidence must behave identically every turn;
+prompt assembly and the Step 0 gate stay in-prompt.
 
 ## Residual risks specific to this harness
 
-- The watchdog's own guarantee is bounded: it proves a turn exceeded a budget,
-  never that the turn was wrong. Its thresholds are wall-clock guesses, so they
-  are calibrated to over-wait rather than cut a slow turn short.
-- Since the watchdog no longer ends itself when the deliverable appears, a turn
-  whose watchdog is not stopped within the stall threshold of the child
-  completing produces a stale `STALL` wake, where the old deliverable-triggered
-  early exit produced none. The stale-verdict rule above discards it, so this is
-  noise rather than a defect — recorded here because an unrecorded new failure
-  shape reads as a real one.
-- `STALL` cannot distinguish a hung subagent from one that is thinking or
-  sitting in a long tool call — the transcript looks identical in all three.
-  The threshold is therefore set well above the longest tool call a turn is
-  expected to make, which means a genuine hang is detected late rather than
-  not at all. Lowering it trades that delay for turns killed while still
-  working.
+- The watchdog proves a turn exceeded a budget, never that it was wrong;
+  thresholds are calibrated to over-wait.
+- A watchdog not stopped within the stall threshold of the child completing
+  emits a stale `STALL`; the stale-verdict rule discards it — noise, not a
+  defect.
+- `STALL` cannot tell a hang from thinking or a long tool call. The threshold
+  sits above the longest expected tool call, so a real hang is detected late
+  rather than never.
