@@ -61,6 +61,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [compact-cc-log](skills/compact-cc-log/) | CC | — | 過去または実行中の Claude Code セッションを要約。title・`--session-id`・`--current`（実行中セッション。`scripts/transcript.py` が呼び出しターン自体を除外）でセッションを解決し、`compact-document` に委譲して圧縮 |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | 過去の Pi Coding Agent セッションログを、事前構築した DuckDB ビュー（会話・tool 呼び出し・ファイル変更・セッション系譜/bundle・compaction・in-file branch・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、subagent/skill-fork/handoff/fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。バッチ実行は `--backend`（harness から自動判定）で選ぶ2つの backend を持つ: run-cc は各ステップを独立した `claude -p` subagent として実行し、run-pi は claude を一切必要とせず pi CLI で実行する（pi では強制できない `schema=` と `on-error="debug"` は起動前に拒否）。run-llm プロトコルはホスト側エージェント自身の subagent 機能へ委譲する。本当に曖昧なフォークに当たったステップは黙って推測せず `DECISION:` 要求を発行する——run は人間の回答待ちで停止するか、`decider="llm"` なら裁定モデルがどちらの backend でも無人で解決する |
+| [officecli-isolate](skills/officecli-isolate/) | CC | [docs](docs/skills/officecli-isolate/) | officecli 公式のドキュメントスキル（`word` / `pptx` / `excel` とその scene layer）を child session で実行し、レイアウトの試行錯誤・スクリーンショット・CLI 出力を呼び出し側の context に一切入れない。入力の形で決まる 3 ケース——markdown / CSV からの新規作成、指示書による部分更新、styles・数式・theme・master を残したまま本文 / データ領域 / slide 範囲を差し替え——がそれぞれ専用の prompt template を持つ。child は呼び出し側が名指しした officecli スキルを 1 本だけ load し（推測はしない）、そのスキルの Delivery Gate を通し、固定ブロック（path・gate 結果・触った stable id・contact sheet の path）だけを返す。忠実性は呼び出し側が `check_office_text.py` で再検査する。`/officecli-isolate` の明示呼び出し限定で、自動起動しない |
 
 ### revert
 
@@ -117,14 +118,16 @@ ai-agent-toolkit/
 │   ├── inspect-cc-log/         スキル: CC ログ調査用の SQL ビュー群
 │   ├── compact-cc-log/         スキル: 過去/実行中の CC セッションを要約
 │   ├── inspect-pi-log/         スキル: Pi Coding Agent ログ調査用の SQL ビュー群
-│   └── xml-wf/                 スキル: 決定論的 XML v2 ワークフローランナー (wfrun)
+│   ├── xml-wf/                 スキル: 決定論的 XML v2 ワークフローランナー (wfrun)
+│   └── officecli-isolate/      スキル: officecli ドキュメントスキルを child session で実行
 ├── docs/
 │   ├── skills/                非 runtime のスキル文書 (ユーザガイド・authoring contract)
 │   │   ├── index.md           以下のスキル文書ディレクトリのインデックス
 │   │   ├── xml-wf/            xml-wf リファレンス README + ユーザガイド (EN/JA)
 │   │   ├── register-pi-tools/ register-pi-tools ユーザガイド (EN/JA)
 │   │   ├── mode-orchestrator/ mode-orchestrator ユーザガイド (EN/JA) + workflow spec 執筆ガイド
-│   │   └── compact-document/  compact-document authoring contract
+│   │   ├── compact-document/  compact-document authoring contract
+│   │   └── officecli-isolate/ officecli-isolate ユーザガイド (EN/JA) + authoring contract
 │   └── dev/                   リポジトリ全体の開発者向け文書 (単一スキルに属さないもの)
 │       ├── index.md           以下の開発者向け文書のインデックス
 │       ├── test-gate.md       skills/ に対するテスト知識ゲートと移行記録

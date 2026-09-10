@@ -61,6 +61,7 @@ contracts, indexed there and linked per skill in the **Docs** column below.
 | [compact-cc-log](skills/compact-cc-log/) | CC | — | Summarize a past or the current Claude Code session — resolves the session by title, `--session-id`, or `--current` (the running session, cutting the invoking turn out via `scripts/transcript.py`), then delegates to `compact-document` for compression |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | Investigate past Pi Coding Agent session logs with SQL over pre-built DuckDB views (conversation, tool calls, file changes, session lineage/bundles, compaction, in-file branches, per-session aggregates) — reconstruct a session, audit tool/subagent calls, trace a file's change history, or bundle a subagent/skill-fork/handoff/fork tree via a self-contained query script |
 | [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | Build, run, and resume XML v2 workflows: a task is decomposed into single-responsibility steps orchestrated deterministically by a bundled Python runner (`wfrun`) — not by an LLM. Batch execution has two backends selected by `--backend` (auto-detected from the harness): run-cc runs each step as an isolated `claude -p` subagent, run-pi runs it on the pi CLI with no claude install at all, refusing `schema=` and `on-error="debug"` up front because pi cannot enforce them. The run-llm protocol instead delegates steps through the hosting agent's own subagent facility. A step that hits a genuinely ambiguous fork raises a `DECISION:` request instead of silently guessing — the run stops for a human answer, or `decider="llm"` has an adjudicator model settle it unattended on either backend |
+| [officecli-isolate](skills/officecli-isolate/) | CC | [docs](docs/skills/officecli-isolate/) | Run officecli's official document skills (`word` / `pptx` / `excel` and their scene layers) in a child session so that layout trial-and-error, screenshots and CLI output never reach the caller's context. Three cases picked by input shape — create from markdown / CSV, partial update from an instruction document, or replace the body / data region / a slide range while keeping styles, formulas, theme and masters — each with its own prompt template. The child loads exactly one officecli skill named by the caller (never inferred), runs that skill's Delivery Gates, and returns a fixed block (paths, gate results, touched stable ids, contact-sheet path); the caller re-checks fidelity with `check_office_text.py`. Invoked explicitly as `/officecli-isolate`; never auto-triggered |
 
 ### revert
 
@@ -117,14 +118,16 @@ ai-agent-toolkit/
 │   ├── inspect-cc-log/         Skill: SQL views over CC logs for session investigation
 │   ├── compact-cc-log/         Skill: summarize a past or the current CC session
 │   ├── inspect-pi-log/         Skill: SQL views over Pi Coding Agent logs for session investigation
-│   └── xml-wf/                 Skill: deterministic XML v2 workflow runner (wfrun)
+│   ├── xml-wf/                 Skill: deterministic XML v2 workflow runner (wfrun)
+│   └── officecli-isolate/      Skill: run officecli document skills in a child session
 ├── docs/
 │   ├── skills/                Non-runtime skill docs (user guides, authoring contracts)
 │   │   ├── index.md           Index of the skill doc dirs below
 │   │   ├── xml-wf/            xml-wf reference README + user guide (EN/JA)
 │   │   ├── register-pi-tools/ register-pi-tools user guide (EN/JA)
 │   │   ├── mode-orchestrator/ mode-orchestrator user guide (EN/JA) + workflow-spec authoring
-│   │   └── compact-document/  compact-document authoring contract
+│   │   ├── compact-document/  compact-document authoring contract
+│   │   └── officecli-isolate/ officecli-isolate user guide (EN/JA) + authoring contract
 │   └── dev/                   Repo-level developer docs (owned by no single skill)
 │       ├── index.md           Index of the dev docs below
 │       ├── test-gate.md       The test-knowledge gate over skills/ and its migration record
