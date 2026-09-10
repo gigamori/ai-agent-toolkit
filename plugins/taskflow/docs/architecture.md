@@ -98,7 +98,7 @@ The router does NOT walk `project-notes/**/*.md` as a fallback — neither for `
 
 | Sub-action | Effect |
 |---|---|
-| `check` | Run drift / stale / approval-pending detection across 12 checks (`check_progress.py`). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
+| `check` | Run drift / stale / approval-pending detection across 16 checks (`check_progress.py`), then the always-on footers (`notes without summary: n of N`; unchecked anchor symbols when no query-lsp snapshot exists). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
 | `audit` | Classify each task by `## Next Steps` state: pending / completion_candidate / untracked / clean (`audit_progress.py`). Read-only. |
 | `rebuild` (alias `sync`) | Regenerate the `<!-- @table -->` block from task files (`rebuild_progress.py`). |
 | `start <id>` | Move a task `0_todo/ → 1_in_progress/` (also reopens `2_done/ → 1_in_progress/`). |

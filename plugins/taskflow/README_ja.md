@@ -126,7 +126,7 @@ writer が advisory write lock（`hooks/log_lock.py`）の取得を諦めるま�
 
 | sub-action | 効果 | 例 |
 |---|---|---|
-| `check` | drift / stale / 承認待ち検出。read-only。 | `/progress check` |
+| `check` | drift / stale / 承認待ち検出に加え、notes のデータ契約（flat layout、`summary:` ≤500 字、`anchors:` を query-lsp snapshot `<repo-root>/.lsp-cache/snapshot.json` または `--lsp-snapshot` で解決）を検査。末尾に必ず `notes without summary: n of N` を出す。read-only。 | `/progress check` |
 | `audit` | 各タスクを `## Next Steps` 状態で 4 区分（pending / completion candidate / untracked / clean）に分類。read-only。 | `/progress audit` |
 | `rebuild`（`sync` は別名） | progress.md のテーブル領域を task ファイル群から再生成。 | `/progress rebuild` |
 | `start` | `0_todo/ → 1_in_progress/` への移動（完了タスクの再開 `2_done/ → 1_in_progress/` も担当）。 | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
@@ -269,7 +269,7 @@ status 遷移は `/progress start` / `/progress approve` / `/progress unstart` �
 | 一覧確認 | `notesに何がある？` |
 | codebase 記録 | `このリポの構造をnotesにまとめて` |
 
-`project-notes/index.md` は 4 列テーブル（`File | Description | Tags | Updated`）で notes を管理する。notes 作成・更新時に LLM が（PreToolUse フックの促しを受けて）同期する。
+`project-notes/index.md` は 4 列テーブル（`File | Description | Tags | Updated`）で notes を管理する。notes 作成・更新時に LLM が（PreToolUse フックの促しを受けて）同期する。note の frontmatter には `summary:`（≤500 字、本文を開く前に読む判断材料）と `anchors:`（その note が語る code を repo 相対 `path` または `path::symbol` の list で示す）を置ける。`/progress check` が両方を検査し、layout は flat（`<category>/<name>.md`、sub-directory は `_archive/` 配下のみ）。
 
 project-router は project-notes を **pointer のみ**（`scripts/view_progress.py --notes-summary` が生成するコード側で上限を持つサマリ＝カテゴリ別 note 件数・`_archive` 件数・index drift 件数。ファイルを逐一列挙することはない＋`project-notes/index.md` の該当行の逐語コピー、ただし非権威の `_archive/` 行は除外。本文は返さない）で返すため、note 内容を要約・翻訳・confabulate して routing 結果に混入させない。本文が要るときはメインエージェントが直接読む。
 

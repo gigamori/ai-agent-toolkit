@@ -23,6 +23,16 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
   12. duplicate @table   — progress.md must hold exactly 1 @table region
   13. notes desc length  — project-notes/index.md Description must be ≤ 100
                            chars
+  14. notes nested dir   — a directory directly under one of the 5 active
+                           note categories (layout is flat; _archive/ exempt)
+  15. notes summary len  — frontmatter `summary:` must be ≤ 500 code points
+  16. notes anchor       — every `anchors:` entry is a repo-relative `path` or
+                           `path::symbol` that resolves (path: filesystem;
+                           symbol: query-lsp snapshot, --lsp-snapshot)
+
+Always-on footer lines (never findings, never affect the exit code):
+  notes without summary: n of N        (N excludes _archive/)
+  anchor symbols unchecked: n (...)    only when #16 had no snapshot to use
 
 Note: progress.md's Completed table lists every task in tasks/2_done/ — the
 file is never truncated (context-side truncation is view_progress.py's job and
@@ -40,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import re
 import sys
@@ -63,6 +74,13 @@ NOTES_REF_RE = re.compile(r"@(?:project-notes|notes)/([^\s)|`\]*]+)")
 TABLE_BEGIN = "<!-- @table:begin -->"
 TASK_STATUSES = ("0_todo", "1_in_progress", "2_done")
 NOTES_DESC_MAX = 100
+NOTES_SUMMARY_MAX = 500
+NOTES_FLAT_CATEGORIES = ("specs", "investigations", "checks", "procedures", "backlog")
+ANCHOR_SYMBOL_SEP = "::"
+# advisory while the corpus is being backfilled; flip to "violation" afterwards.
+ANCHOR_DANGLING_SEVERITY = "advisory"
+# query-lsp's snapshot location, relative to the repo root (parent of _projects/).
+LSP_SNAPSHOT_REL = Path(".lsp-cache") / "snapshot.json"
 SECTION_TO_STATUS = {
     "TODO": "0_todo",
     "In Progress": "1_in_progress",
@@ -337,6 +355,181 @@ def check_notes_index_desc_length(project_dir: Path, result: Result) -> None:
                 f"row '{row['file']}' Description is {len(desc)} chars, "
                 f"expected <= {NOTES_DESC_MAX}",
             )
+
+
+def walk_active_notes(notes_dir: Path) -> Iterator[Path]:
+    """walk_note_files minus `_archive/` — the population shared by every notes
+    hygiene check and count below (#14 nested dir, #15 summary length, the
+    coverage footer, #16 anchors). Archived material is a relocation target
+    and is not held to ongoing hygiene."""
+    for p in walk_note_files(notes_dir):
+        if p.relative_to(notes_dir).as_posix().startswith("_archive/"):
+            continue
+        yield p
+
+
+def check_notes_nested_dir(project_dir: Path, result: Result) -> None:
+    """#14 — layout is project-notes/<category>/*.md (flat). A directory
+    directly under one of the 5 active categories is run-dir / scratch
+    material that leaked in. Only a category's direct children are inspected,
+    so a sibling of the categories (e.g. project-notes/.qmd/) is never in
+    range. Reporting only: nothing here moves the directory.
+    """
+    notes_dir = project_dir / "project-notes"
+    for category in NOTES_FLAT_CATEGORIES:
+        cat_dir = notes_dir / category
+        if not cat_dir.is_dir():
+            continue
+        for entry in sorted(cat_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+            result.add(
+                "notes_nested_dir",
+                "violation",
+                str(entry),
+                f"'project-notes/{category}/{entry.name}/' is a directory; layout "
+                f"is project-notes/<category>/*.md (flat) — flatten its files into "
+                f"{category}/ or move the directory out of project-notes/",
+            )
+
+
+def note_summary(content: str) -> str | None:
+    """Frontmatter `summary:` value, or None when absent, blank, non-string, or
+    when the frontmatter block does not parse (#15 only measures a summary it
+    can actually read; an unreadable block counts as "no summary")."""
+    fm = parse_frontmatter(content)
+    if not fm:
+        return None
+    raw = fm.get("summary")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw
+
+
+def collect_note_summaries(notes_dir: Path) -> list[tuple[Path, str | None]]:
+    """One walk + parse per active note, shared by #15 and the coverage footer."""
+    out: list[tuple[Path, str | None]] = []
+    for p in walk_active_notes(notes_dir):
+        content = read_text(p)
+        out.append((p, note_summary(content) if content is not None else None))
+    return out
+
+
+def check_notes_summary_length(project_dir: Path, result: Result) -> None:
+    """#15 — frontmatter `summary:` must be <= NOTES_SUMMARY_MAX code points
+    (len() of a str). A missing summary is NOT a finding; coverage of that is
+    the always-on footer's job (notes_summary_coverage).
+    """
+    notes_dir = project_dir / "project-notes"
+    for p, summary in collect_note_summaries(notes_dir):
+        if summary is None:
+            continue
+        n = len(summary)
+        if n > NOTES_SUMMARY_MAX:
+            result.add(
+                "notes_summary_length",
+                "violation",
+                str(p),
+                f"frontmatter summary is {n} chars, expected <= {NOTES_SUMMARY_MAX} "
+                f"(read on demand, but meant to be readable without opening the body)",
+            )
+
+
+def notes_summary_coverage(project_dir: Path) -> tuple[int, int]:
+    """Footer input: (notes without a summary, active notes). Reported on every
+    run, separately from findings — a missing summary is not a violation and
+    must never become one by living in the findings list."""
+    summaries = collect_note_summaries(project_dir / "project-notes")
+    return sum(1 for _, s in summaries if s is None), len(summaries)
+
+
+def load_lsp_snapshot(path: Path) -> dict[str, list[dict]] | None:
+    """The `files` map of a query-lsp snapshot, re-keyed by `/`-separated
+    repo-relative path (the writer records str(Path.relative_to()), so keys
+    carry the host separator). None when the file is absent or not a snapshot.
+    """
+    content = read_text(path)
+    if content is None:
+        return None
+    try:
+        snap = json.loads(content)
+    except ValueError:
+        return None
+    files = snap.get("files") if isinstance(snap, dict) else None
+    if not isinstance(files, dict):
+        return None
+    return {
+        k.replace("\\", "/"): v.get("symbols", [])
+        for k, v in files.items()
+        if isinstance(v, dict)
+    }
+
+
+def snapshot_has_symbol(symbols: list[dict], name: str) -> bool:
+    """Same resolution as query-lsp's `symbol` subcommand: `Container.member`
+    matches on name + container, a bare name on name alone."""
+    if "." in name:
+        cont, _, base = name.rpartition(".")
+        if any(s.get("name") == base and s.get("container") == cont for s in symbols):
+            return True
+    return any(s.get("name") == name for s in symbols)
+
+
+def check_notes_anchor_dangling(
+    project_dir: Path, result: Result, snapshot_path: Path | None
+) -> int:
+    """#16 — every `anchors:` entry must be a repo-relative `path` or
+    `path::symbol` that resolves. Paths are tested against the filesystem
+    (repo root = parent of _projects/ = project_dir's grandparent); symbols
+    against a query-lsp snapshot.
+
+    Returns how many symbol anchors could NOT be tested because no snapshot
+    was given. The caller prints that count as a footer, so a missing snapshot
+    never reads as a pass. Severity is ANCHOR_DANGLING_SEVERITY.
+    """
+    notes_dir = project_dir / "project-notes"
+    repo_root = project_dir.parent.parent
+    files = load_lsp_snapshot(snapshot_path) if snapshot_path is not None else None
+    unchecked = 0
+
+    def report(p: Path, message: str) -> None:
+        result.add("notes_anchor_dangling", ANCHOR_DANGLING_SEVERITY, str(p), message)
+
+    for p in walk_active_notes(notes_dir):
+        content = read_text(p)
+        fm = parse_frontmatter(content) if content is not None else None
+        if not fm or "anchors" not in fm:
+            continue
+        anchors = fm["anchors"]
+        if not isinstance(anchors, list):
+            report(p, "anchors: must be a list of repo-relative 'path' or "
+                      "'path::symbol' entries")
+            continue
+
+        for raw in anchors:
+            if not isinstance(raw, str) or not raw.strip():
+                report(p, f"anchors: entry {raw!r} is not a non-empty string")
+                continue
+            path, _, symbol = raw.strip().partition(ANCHOR_SYMBOL_SEP)
+            path = path.strip().replace("\\", "/")
+            symbol = symbol.strip()
+            if not path or not (repo_root / path).exists():
+                report(p, f"anchor '{raw}': path '{path}' does not exist under {repo_root}")
+                continue
+            if not symbol:
+                continue
+            if files is None:
+                unchecked += 1
+                continue
+            symbols = files.get(path)
+            if symbols is None:
+                report(p, f"anchor '{raw}': '{path}' is not in the LSP snapshot "
+                          f"({snapshot_path})")
+                continue
+            if not snapshot_has_symbol(symbols, symbol):
+                report(p, f"anchor '{raw}': symbol '{symbol}' not found in '{path}' "
+                          f"(LSP snapshot {snapshot_path})")
+    return unchecked
 
 
 def check_task_stale(project_dir: Path, result: Result, threshold_days: int) -> None:
@@ -630,18 +823,27 @@ def check_duplicate_table_region(project_dir: Path, result: Result) -> None:
 # Output
 # ============================================================================
 
-SEVERITY_ORDER = {"drift": 0, "violation": 1, "stale": 2, "approval": 3}
+SEVERITY_ORDER = {"drift": 0, "violation": 1, "stale": 2, "approval": 3, "advisory": 4}
 SEVERITY_LABEL = {
     "drift": "DRIFT",
     "violation": "VIOLATION",
     "stale": "STALE",
     "approval": "PENDING",
+    "advisory": "ADVISORY",
 }
 
 
-def print_findings(result: Result) -> None:
+def print_findings(result: Result, footers: tuple[str, ...] = ()) -> None:
+    """Findings grouped by severity, then the always-on footer lines.
+
+    Footers sit outside the findings: they print even on an OK run and never
+    touch the exit code."""
     if not result.findings:
         print("OK: no drift, no violations, no stale tasks.")
+        if footers:
+            print()
+        for line in footers:
+            print(line)
         return
     by_sev: dict[str, list[Finding]] = {}
     for f in result.findings:
@@ -657,6 +859,8 @@ def print_findings(result: Result) -> None:
             print(f"  [{f.check}] {f.path}")
             print(f"    {f.message}")
         print()
+    for line in footers:
+        print(line)
 
 
 # ============================================================================
@@ -681,6 +885,17 @@ def main(argv: list[str] | None = None) -> int:
         default=14,
         help="Threshold in days for stale-task warnings (default: 14)",
     )
+    parser.add_argument(
+        "--lsp-snapshot",
+        type=Path,
+        default=None,
+        help=(
+            "query-lsp snapshot used to resolve path::symbol anchors "
+            f"(default: <repo-root>/{LSP_SNAPSHOT_REL.as_posix()}, where repo "
+            "root is the parent of _projects/). Missing file = symbol anchors "
+            "are reported as unchecked, never as resolved."
+        ),
+    )
     args = parser.parse_args(argv)
 
     project_dir: Path = args.project_dir.resolve()
@@ -688,10 +903,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: not a directory: {project_dir}", file=sys.stderr)
         return 2
 
+    snapshot: Path = args.lsp_snapshot or project_dir.parent.parent / LSP_SNAPSHOT_REL
+    snapshot = snapshot.resolve()
+
     result = Result()
     check_progress_task_links(project_dir, result)
     check_notes_index_consistency(project_dir, result)
     check_notes_index_desc_length(project_dir, result)
+    check_notes_nested_dir(project_dir, result)
+    check_notes_summary_length(project_dir, result)
+    unchecked = check_notes_anchor_dangling(
+        project_dir, result, snapshot if snapshot.is_file() else None
+    )
     check_task_stale(project_dir, result, args.stale_days)
     check_project_marker(project_dir, result)
     check_task_body_links(project_dir, result)
@@ -702,7 +925,13 @@ def main(argv: list[str] | None = None) -> int:
     check_duplicate_basename(project_dir, result)
     check_duplicate_table_region(project_dir, result)
 
-    print_findings(result)
+    without, total = notes_summary_coverage(project_dir)
+    footers = [f"notes without summary: {without} of {total}"]
+    if unchecked:
+        footers.append(
+            f"anchor symbols unchecked: {unchecked} (no LSP snapshot at {snapshot})"
+        )
+    print_findings(result, tuple(footers))
     return 1 if result.findings else 0
 
 

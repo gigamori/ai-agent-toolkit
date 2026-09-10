@@ -1,11 +1,20 @@
 ## Loading
 
-- At the start of work, read `project-notes/index.md` and select files relevant to the task.
+Notes reach you as pointers (`index.md` rows), never as a listing to scan.
+
+- Start from this turn's router result: `project_notes_relevant` (verbatim `index.md` rows, `_archive/` excluded) and `project_notes_summary` (counts). Do NOT read `index.md` in full.
+- Before opening a candidate note's body, read its frontmatter `summary:` and decide from that.
+- When the router rows are insufficient, pull narrowly:
+  1. Before editing or investigating a symbol: list the enclosing symbol and its depth-1 callers / callees with the `LSP` tool, then Grep `project-notes/` for those names and for their `path::symbol` form (the `anchors:` notation).
+  2. For a topic search, when `project-notes/.qmd/` exists: from `project-notes/`, run `qmd query "$(printf 'vec: %s\nlex: %s\nlex: %s' '<subject>' '<term>' '<term>')" --no-rerank -n 10`. Write the `vec:` subject and one `lex:` line per term yourself; no rerank. A `vec:` line must not contain a `-` right after whitespace (qmd rejects it as negation).
+  3. For a note's structure: Grep `^## ` and Read with offset / limit instead of the whole body.
 - If `index.md` is missing, fall back to walking `project-notes/<category>/*.md` and judging from filenames.
 
 ## Categories
 
 Notes live in one of 6 fixed categories. The folder is the source of truth for category — do NOT add a `category:` field to frontmatter.
+
+Layout is flat: `project-notes/<category>/<name>.md`. Only `_archive/` may hold sub-directories; `/progress check` reports any other nested directory.
 
 | Category | Purpose | Examples |
 |---|---|---|
@@ -25,6 +34,9 @@ kind: postmortem                 # optional: free-form subtype
 created: 2026-05-13              # recommended
 updated: 2026-05-13              # recommended
 tags: [extension, hardening]     # optional
+summary: >                       # recommended, ≤500 chars
+  One paragraph a model can read to judge relevance without opening the body.
+anchors: [src/x.py, src/x.py::main]   # optional: repo-relative path or path::symbol
 ---
 
 # Title
@@ -33,6 +45,10 @@ Body content.
 ```
 
 All frontmatter fields are optional. `created` / `updated` enable stale detection by `/progress check`.
+
+`summary` (≤500 chars) is judgment material: read on demand to decide whether the note is worth opening, without opening it. It is not the same as index.md's `Description` (≤100 chars) — Description exists only so the note can be found in the index listing.
+
+`anchors` lists the code a note is about, as repo-relative `/`-separated paths or `path::symbol` (`Class.method` for members). List only the code the note is about, not every path it mentions. `/progress check` reports an entry whose path does not exist or whose symbol is missing from the query-lsp snapshot.
 
 ## index.md format
 
@@ -96,3 +112,5 @@ When the user explicitly says "save this to notes" (or equivalent), skip the con
   - A handoff a **human** executes — an e2e / debug handoff whose tester is a person and whose filled-in result is a record worth keeping — is durable, and stays in `checks/`. The dividing line is who consumes it, not the word "handoff".
 - Do NOT add a `category:` field to frontmatter. The folder is the sole source of truth.
 - Do NOT exceed 100 characters in `Description` in `index.md`. Move detail to the note body.
+- Do NOT exceed 500 characters in frontmatter `summary:`.
+- Do NOT create sub-directories under a category other than `_archive/`.

@@ -127,7 +127,7 @@ Put `pj:<project>` near the beginning of the prompt — it is recognized at the 
 
 | Sub-action | Effect | Examples |
 |---|---|---|
-| `check` | Drift / stale / approval-pending detection. Read-only. | `/progress check` |
+| `check` | Drift / stale / approval-pending detection, plus the notes data contract (flat layout, `summary:` ≤500 chars, `anchors:` resolving against the query-lsp snapshot at `<repo-root>/.lsp-cache/snapshot.json` or `--lsp-snapshot`). Always ends with `notes without summary: n of N`. Read-only. | `/progress check` |
 | `audit` | Classify every task by `## Next Steps` state (pending / completion candidate / untracked / clean). Read-only. | `/progress audit` |
 | `rebuild` (alias `sync`) | Regenerate the progress.md table region from task files. | `/progress rebuild` |
 | `start` | Move a task `0_todo/ → 1_in_progress/` (also reopens a done task: `2_done/ → 1_in_progress/`). | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
@@ -270,7 +270,7 @@ Project-specific persistent knowledge, categorized by folder:
 | List | `what's in notes?` |
 | Record codebase structure | `summarize this repo's structure into notes` |
 
-`project-notes/index.md` is a 4-column table (`File | Description | Tags | Updated`) tracking notes; the LLM keeps it in sync (prompted by the PreToolUse hook) when notes are created or edited.
+`project-notes/index.md` is a 4-column table (`File | Description | Tags | Updated`) tracking notes; the LLM keeps it in sync (prompted by the PreToolUse hook) when notes are created or edited. A note's frontmatter may carry `summary:` (≤500 chars, read before opening the body) and `anchors:` (a list of repo-relative `path` or `path::symbol` entries naming the code the note is about); `/progress check` enforces both, and the layout is flat (`<category>/<name>.md`, sub-directories only under `_archive/`).
 
 The project-router surfaces project-notes as **pointers only** — a code-bounded summary (note counts by category, an `_archive` count, and an index-drift count, produced by `scripts/view_progress.py --notes-summary`; never a per-file list) plus the verbatim matching rows of `project-notes/index.md`, with `_archive/` rows excluded as non-authoritative — never note body contents, so it cannot summarize, translate, or confabulate note contents into the routing result. The main agent reads the note files themselves when needed.
 
