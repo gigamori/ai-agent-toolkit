@@ -77,8 +77,9 @@ NOTES_DESC_MAX = 100
 NOTES_SUMMARY_MAX = 500
 NOTES_FLAT_CATEGORIES = ("specs", "investigations", "checks", "procedures", "backlog")
 ANCHOR_SYMBOL_SEP = "::"
-# advisory while the corpus is being backfilled; flip to "violation" afterwards.
-ANCHOR_DANGLING_SEVERITY = "advisory"
+# "advisory" while a corpus is being backfilled; "violation" once its anchors
+# are in place (harness-taskflow backfilled 2026-09-10).
+ANCHOR_DANGLING_SEVERITY = "violation"
 # query-lsp's snapshot location, relative to the repo root (parent of _projects/).
 LSP_SNAPSHOT_REL = Path(".lsp-cache") / "snapshot.json"
 SECTION_TO_STATUS = {
