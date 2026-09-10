@@ -241,6 +241,8 @@ updated: 2026-05-14
 
 タスクは一時的。永続させるべき発見もある。`project-notes/` は永続知識をカテゴリ別に整理する場所だ。
 
+保存した note は自動で戻ってくる: 毎ターン、作業中の file に anchor された note や依頼内容に合う note の index 行が最大 8 行 Claude に渡される（`project-notes matched: M of N rows`）ので、index 全体を読まずに必要な note を開いてから答えられる。
+
 ```mermaid
 flowchart TD
     Q["あなた: 「これ Postgres と SQLite どっちがいい？比較して」"] --> R["Claude が回答"]

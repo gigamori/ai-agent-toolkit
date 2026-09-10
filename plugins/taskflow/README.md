@@ -106,6 +106,30 @@ How old (in seconds) a lock sidecar must be before another writer may break it a
 
 Both variables are read per call, and the Pi taskflow extension reads the same two names — set them identically on both sides, or the two harnesses will wait and expire on different schedules.
 
+### `TASKFLOW_QMD_BIN`
+
+Path of qmd's `bin/qmd` script, used by the per-turn project-notes push (see [project-notes](#project-notes)) when the project has a `project-notes/.qmd/` index. Unset (default) resolves the `qmd` on `PATH` and spawns the `node_modules/@tobilu/qmd/bin/qmd` next to it through `node` — the `.cmd` shim is never executed. A binary that cannot be resolved degrades the push to the lexical rank and is announced once per session.
+
+```json
+{
+  "env": {
+    "TASKFLOW_QMD_BIN": "/path/to/node_modules/@tobilu/qmd/bin/qmd"
+  }
+}
+```
+
+### `TASKFLOW_NOTES_PUSH`
+
+Which layers the per-turn project-notes push uses. `auto` (default): location (`anchors:` against the paths this turn named, read or wrote) + a qmd structured query when `project-notes/.qmd/` exists + the in-process lexical rank, merged by reciprocal rank fusion. `lexical`: location + lexical only, qmd never spawned. `off`: location only.
+
+```json
+{
+  "env": {
+    "TASKFLOW_NOTES_PUSH": "lexical"
+  }
+}
+```
+
 ## Usage
 
 ### Specifying a project
@@ -274,6 +298,10 @@ Project-specific persistent knowledge, categorized by folder:
 
 The project-router surfaces project-notes as **pointers only** — a code-bounded summary (note counts by category, an `_archive` count, and an index-drift count, produced by `scripts/view_progress.py --notes-summary`; never a per-file list) plus the verbatim matching rows of `project-notes/index.md`, with `_archive/` rows excluded as non-authoritative — never note body contents, so it cannot summarize, translate, or confabulate note contents into the routing result. The main agent reads the note files themselves when needed.
 
+Every turn, `session_init.py` also injects a `project-notes (index rows):` block — up to 8 verbatim `index.md` rows chosen by **location** (a note whose `anchors:` names a file this turn mentioned, read or wrote comes first; a note anchored in the same directory next, at most 4) and by **topic** (a qmd structured query over the note bodies when `project-notes/.qmd/` exists, fused by reciprocal rank fusion with an in-process lexical rank of Description + Tags), followed by `project-notes matched: M of N rows (K shown)`. `_archive/` rows are excluded and note bodies are never injected. The location signal comes from the `.reads` / `.touched` ledgers described under hooks; `TASKFLOW_NOTES_PUSH` and `TASKFLOW_QMD_BIN` are the knobs.
+
+To enable the topic layer for a project, install the `@tobilu/qmd` npm package (Node ≥ 22), then from `_projects/<project>/project-notes/` run `qmd init`, `qmd collection add .`, add `ignore: ["index.md", "_archive/**"]` to the collection entry in `.qmd/index.yml`, and run `qmd embed` (GPU recommended; on a Vulkan GPU that aborts during embedding, `GGML_VK_DISABLE_COOPMAT=1` in the environment is the known fix). Keep `project-notes/.qmd/` out of version control if you track `_projects/`. Re-run `qmd update` and `qmd embed` after editing notes; until then the push still works over whatever is indexed.
+
 #### Auto-save for investigation-style tasks
 
 When the user's intent is information gathering / comparison / structuring / investigation, the project-router detects it semantically and returns `project_notes_autosave: true`. The main agent delivers its primary answer, then asks the user whether to save — including a suggested category and slug. Only on approval are `project-notes/<category>/<slug>.md` and `project-notes/index.md` updated.
@@ -364,13 +392,15 @@ session start
 
 ### hooks
 
-Eight hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (two hooks), `Stop` (two hooks), `SessionStart:compact`, and `PreCompact`. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (the bounded advisory write lock, protocol v2) — are shared modules, not wired hooks themselves: `note_links.py` is imported by the Stop hook, and `log_lock.py` by the Stop hook and by `scripts/rebuild_progress.py`, which takes the same lock around its `progress.md` read→write window.
+Nine hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (three hooks), `Stop` (two hooks), `SessionStart:compact`, and `PreCompact`. `notes_push.py` (the per-turn project-notes push) is a further shared module imported by `session_init.py`, not a wired hook. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (the bounded advisory write lock, protocol v2) — are shared modules, not wired hooks themselves: `note_links.py` is imported by the Stop hook, and `log_lock.py` by the Stop hook and by `scripts/rebuild_progress.py`, which takes the same lock around its `progress.md` read→write window.
 
 **Where `_projects/` is resolved.** Every hook that needs the state tree walks up from the session's launch directory to the nearest ancestor that holds `_projects/_state` — the launch directory itself counts — and falls back to the launch directory when no ancestor qualifies. This matters because a hook process keeps the directory the session was **launched** in for the session's whole life (a `cd` in a Bash tool call does not move it): starting Claude Code inside a subdirectory of your workspace previously made the plugin no-op for that entire session, and now joins the workspace's existing tree instead. The one deliberate exception is the Stop hook's 7-day stale-marker cleanup, whose target stays pinned to the launch directory — a subdirectory-launched session simply skips that housekeeping, and the next session started at the workspace root performs it.
 
 #### UserPromptSubmit: session_init.py
 
 Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Progress Session]` into the LLM context. Creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` if missing.
+
+It also builds the per-turn `project-notes (index rows):` push block (see [project-notes](#project-notes)) through `hooks/notes_push.py`: location rows from the note `anchors:` matched against the paths this turn names, read (`.reads` ledger) or wrote (`.touched` ledger), then topic rows from a qmd structured query — spawned as `node <bin/qmd> query … --no-rerank --json` with a 4 s timeout, only when the project has a `project-notes/.qmd/` index — fused with the in-process lexical rank. When qmd is expected but cannot run, the topic layer is the lexical rank alone and a `[project-notes] vector layer unavailable: <reason>` line is injected once per session (`notes_push_notice` in the state file).
 
 Also handles guidelines injection: on the first turn of a session (and after compaction), the full content of `progress_guidelines.md`, `notes_guidelines.md`, and `tasks_guidelines.md` is injected. On subsequent turns, a reminder is injected to maintain attention to the guidelines at lower token cost — `guidelines_reminder.md` (default) or `guidelines_reminder_manifest.md` (`TASKFLOW_GUIDELINES_REMINDER=manifest`; see [Configuration](#taskflow_guidelines_reminder)).
 
@@ -409,6 +439,10 @@ Fires after a `Write`/`Edit` targeting a file under `_projects/<project>/tasks/<
 #### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
 
 Fires after every `Write` / `Edit` / `NotebookEdit` and file-touching `Bash` (`mv`/`cp`/`rm`, `>`/`>>` redirection, `tee`, and an in-place `sed -i`/`--in-place`). Appends the normalized repo-relative write target(s) to a per-session `_projects/_state/{session_id}.touched` ledger (append-only, lock-free). This ledger is the input the Stop capture hook uses to decide which tasks this session actually touched — it observes *this session's tool writes* rather than scanning the jsonl or a git diff, which avoids mis-stamping unrelated tasks. Subagent / fork internal writes fire with the parent `session_id`, so they land in the parent's ledger automatically — with two exclusions. The first follows from exactly that: a write under `_projects/_state/` is dropped, so the capture subagent's own judgment sidecar never appears in the ledger it feeds. The second is the workspace's own `tmp/`: that tree is scratch, and a mode-orchestrator run would otherwise bury the round's source edits under hundreds of its own artifact paths (a nested `sub/tmp/` is ordinary work and stays recorded). Heredoc bodies are stripped before the command is parsed, so text inside one is never mistaken for a redirection (a body's own writes are not recorded either, which is the long-standing accepted capture gap for `python -c open()` as well; `sed -i`/`--in-place` outside a heredoc body is recognized as of 2026-08-20, skipping any operand containing an unexpanded shell metacharacter such as `$f`); an unterminated heredoc falls back to parsing the command as written.
+
+#### PostToolUse: read_capture.py (matcher: Read)
+
+Fires after every `Read`. Appends the read file's repo-relative path to a per-session `_projects/_state/{session_id}.reads` ledger, truncated to its last 200 lines on every append. It is deliberately a separate file from `.touched`: that ledger's raw line count is the Stop hook's round cursor, so recording reads there would open a round on a read-only turn. The `.reads` tail — together with the `.touched` tail and the paths named in the prompt — is the location signal of the project-notes push; the same exclusions apply (`_projects/_state/`, `tmp/`, paths outside the state tree).
 
 #### PreCompact: precompact_flush.py
 

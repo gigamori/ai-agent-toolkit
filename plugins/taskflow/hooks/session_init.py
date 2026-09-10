@@ -61,6 +61,7 @@ import json, sys, os, re, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from touched_capture import _find_state_root  # noqa: E402
 from tstamp import now_iso  # noqa: E402
+from notes_push import build_notes_push  # noqa: E402
 
 PJ_PARSE_WINDOW = 500  # chars; pj: and norouter are only recognized within this prefix
 
@@ -496,6 +497,28 @@ if current_project:
           f'consult before non-trivial action.'
         )
 
+# Build project-notes push block (notes_push.py): verbatim index.md rows picked
+# by location (anchors: vs the paths this turn names / read / wrote) and topic
+# (qmd structured query when project-notes/.qmd/ exists, plus the in-process
+# lexical rank), with a `project-notes matched: M of N rows (K shown)` footer.
+# A qmd failure degrades to the lexical rank and is announced once per session
+# (notes_push_notice in the state file).
+notes_content = ''
+notes_notice = ''
+notes_notice_seen = bool(loaded.get('notes_push_notice', False))
+if current_project and not pj_discovery:
+  try:
+    notes_block, notes_reason = build_notes_push(
+      os.path.join(PROGRESS_ROOT, current_project), STATE_ROOT, user_prompt,
+      session_id, STATE_DIR)
+  except Exception:
+    notes_block, notes_reason = '', None
+  if notes_block:
+    notes_content = '\n\n' + notes_block
+  if notes_reason and not notes_notice_seen:
+    notes_notice = f'\n\n[project-notes] vector layer unavailable: {notes_reason}'
+    notes_notice_seen = True
+
 # Build bootstrap block. Gated on the same conditions that push a turn's
 # payload large enough to be persisted rather than delivered inline —
 # routing (11,614 chars) and guidelines (14,489 chars) fire once per session
@@ -525,6 +548,8 @@ new_state['indexed_project'] = current_project
 new_state['guidelines_loaded'] = state['guidelines_loaded'] or inject_guidelines_full
 new_state['project_rules_indexed'] = state['project_rules_indexed']
 new_state['origin'] = state['origin']
+if notes_notice_seen:
+  new_state['notes_push_notice'] = True
 os.makedirs(STATE_DIR, exist_ok=True)
 with open(state_path, 'w', encoding='utf-8') as f:
   json.dump(new_state, f, ensure_ascii=False)
@@ -564,7 +589,7 @@ else:
   result = {
     'hookSpecificOutput': {
       'hookEventName': 'UserPromptSubmit',
-      'additionalContext': f'[Progress Session] session_id={session_id} sid={session_id.replace("-", "")[-12:]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{bootstrap_content}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}{rules_content}'
+      'additionalContext': f'[Progress Session] session_id={session_id} sid={session_id.replace("-", "")[-12:]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{bootstrap_content}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}{rules_content}{notes_content}{notes_notice}'
     }
   }
 

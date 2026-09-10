@@ -2,12 +2,13 @@
 
 Notes reach you as pointers (`index.md` rows), never as a listing to scan.
 
-- Start from this turn's router result: `project_notes_relevant` (verbatim `index.md` rows, `_archive/` excluded) and `project_notes_summary` (counts). Do NOT read `index.md` in full.
+- Start from this turn's injected `project-notes (index rows):` block (verbatim `index.md` rows chosen by location — a note anchored on a file you named, read or wrote — and by topic, ending in `project-notes matched: M of N rows (K shown)`) and the router result: `project_notes_relevant` (verbatim rows) and `project_notes_summary` (counts). `_archive/` is excluded from both. Do NOT read `index.md` in full.
 - Before opening a candidate note's body, read its frontmatter `summary:` and decide from that.
 - When the router rows are insufficient, pull narrowly:
   1. Before editing or investigating a symbol: list the enclosing symbol and its depth-1 callers / callees with the `LSP` tool, then Grep `project-notes/` for those names and for their `path::symbol` form (the `anchors:` notation).
   2. For a topic search, when `project-notes/.qmd/` exists: from `project-notes/`, run `qmd query "$(printf 'vec: %s\nlex: %s\nlex: %s' '<subject>' '<term>' '<term>')" --no-rerank -n 10`. Write the `vec:` subject and one `lex:` line per term yourself; no rerank. A `vec:` line must not contain a `-` right after whitespace (qmd rejects it as negation).
   3. For a note's structure: Grep `^## ` and Read with offset / limit instead of the whole body.
+  4. When the `project-notes matched` footer shows more matches than rows shown, narrow by symbol (step 1) instead of asking for more rows.
 - If `index.md` is missing, fall back to walking `project-notes/<category>/*.md` and judging from filenames.
 
 ## Categories

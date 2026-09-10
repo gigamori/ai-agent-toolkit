@@ -150,6 +150,18 @@ user prompt
   │                      (full every turn if frontmatter inject_every_turn: true; absent if no rules.md)
   │     + ACTION_REQUIRED banner: every turn while progress.md is missing
   │     + fork_context: first turn of a forked session
+  │     + project_notes push (hooks/notes_push.py): `project-notes (index rows):` + up to K=8
+  │                      verbatim index.md rows + `project-notes matched: M of N rows (K shown)`.
+  │                      Order: L1 (a note whose anchors: path == a path this turn named /
+  │                      read (`.reads` tail) / wrote (`.touched` tail)) → L2 (same leaf
+  │                      directory, ≤ ⌈K/2⌉) → topic = outer RRF of the qmd structured query
+  │                      rank (`node <bin/qmd> query 'vec: …\nlex: …' --no-rerank --json`,
+  │                      4 s timeout, only when project-notes/.qmd/ exists) and the
+  │                      in-process lexical rank over Description+Tags. `_archive/` excluded,
+  │                      note bodies never read for output. qmd expected but failing →
+  │                      lexical only + `[project-notes] vector layer unavailable: <reason>`
+  │                      once per session (state `notes_push_notice`). Env: TASKFLOW_NOTES_PUSH
+  │                      off|lexical|auto, TASKFLOW_QMD_BIN.
   │     (when current_project is empty and not discovery → NOTHING is injected; router not invoked)
   │
   ▼ [LLM] detects [Progress Session] with a non-empty current_project
@@ -175,9 +187,12 @@ user prompt
   │
   ▼ task execution
   │
-  ▼ [PostToolUse hooks] on each Write / Edit / NotebookEdit / Bash:
+  ▼ [PostToolUse hooks] on each Write / Edit / NotebookEdit / Bash (and Read):
      • task_rebuild_progress.py — regenerate the progress.md table when a tasks/ file changed
      • touched_capture.py       — append the written path(s) to `{session_id}.touched`
+     • read_capture.py          — (Read only) append the read path to `{session_id}.reads`,
+                                  tail-truncated to 200 lines; never `.touched`, whose raw
+                                  line count is the round cursor
   │
   ▼ [PreCompact hook] precompact_flush.py — only when the conversation is compacted
      (manual /compact or auto; no matcher). NOT a compaction-specific mechanism: it is
@@ -495,7 +510,8 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
   "origin": "cc",
   "parent_session_id": "<parent session id if forked; absent otherwise>",
   "inherited_tasks": ["<task filenames inherited from the parent, if forked>"],
-  "exec_bind": ["<owning task basenames carried via [tasks:]; union-merged, append-only>"]
+  "exec_bind": ["<owning task basenames carried via [tasks:]; union-merged, append-only>"],
+  "notes_push_notice": "<true once the project-notes push has shown its qmd-degrade notice; absent otherwise>"
 }
 ```
 

@@ -105,6 +105,30 @@ writer が advisory write lock（`hooks/log_lock.py`）の取得を諦めるま�
 
 いずれも呼び出しごとに読み直される。Pi の taskflow 拡張も同じ 2 つの変数名を読むため、両者で同一の値を設定すること（異なる値では、2 つのハーネスが別々のスケジュールで待機・期限切れする）。
 
+### `TASKFLOW_QMD_BIN`
+
+qmd の `bin/qmd` スクリプトのパス。project に `project-notes/.qmd/` index があるとき、毎ターンの project-notes push（[project-notes](#project-notes) 参照）が使う。未設定（既定）なら `PATH` 上の `qmd` を解決し、その隣の `node_modules/@tobilu/qmd/bin/qmd` を `node` で起動する — `.cmd` shim は実行しない。解決できない場合、push は lexical rank へ degrade し、session につき 1 回だけ告知する。
+
+```json
+{
+  "env": {
+    "TASKFLOW_QMD_BIN": "/path/to/node_modules/@tobilu/qmd/bin/qmd"
+  }
+}
+```
+
+### `TASKFLOW_NOTES_PUSH`
+
+毎ターンの project-notes push がどの層を使うか。`auto`（既定）: 場所（`anchors:` と、そのターンが名指し・Read・書込した path の照合）＋ `project-notes/.qmd/` があるときの qmd 構造化 query ＋ プロセス内 lexical rank を reciprocal rank fusion で合成。`lexical`: 場所＋ lexical のみ（qmd は起動しない）。`off`: 場所のみ。
+
+```json
+{
+  "env": {
+    "TASKFLOW_NOTES_PUSH": "lexical"
+  }
+}
+```
+
 ## 使い方
 
 ### プロジェクト指定
@@ -273,6 +297,10 @@ status 遷移は `/progress start` / `/progress approve` / `/progress unstart` �
 
 project-router は project-notes を **pointer のみ**（`scripts/view_progress.py --notes-summary` が生成するコード側で上限を持つサマリ＝カテゴリ別 note 件数・`_archive` 件数・index drift 件数。ファイルを逐一列挙することはない＋`project-notes/index.md` の該当行の逐語コピー、ただし非権威の `_archive/` 行は除外。本文は返さない）で返すため、note 内容を要約・翻訳・confabulate して routing 結果に混入させない。本文が要るときはメインエージェントが直接読む。
 
+さらに `session_init.py` が毎ターン `project-notes (index rows):` block を注入する — `index.md` の行を逐語で最大 8 行、**場所**（そのターンが名指し・Read・書込した file を `anchors:` に持つ note が先頭、同じ directory に anchor する note がその次で最大 4 行）と **topic**（`project-notes/.qmd/` があるときの note 本文への qmd 構造化 query と、Description ＋ Tags のプロセス内 lexical rank を reciprocal rank fusion で合成）で選び、末尾に `project-notes matched: M of N rows (K shown)` を付ける。`_archive/` 行は除外し、note 本文は注入しない。場所信号の出所は hooks の節にある `.reads` / `.touched` ledger、調整軸は `TASKFLOW_NOTES_PUSH` と `TASKFLOW_QMD_BIN`。
+
+topic 層を project で有効にするには、npm package `@tobilu/qmd`（Node ≥ 22）を入れ、`_projects/<project>/project-notes/` で `qmd init`、`qmd collection add .` を実行し、`.qmd/index.yml` の collection に `ignore: ["index.md", "_archive/**"]` を足してから `qmd embed` を走らせる（GPU 推奨。Vulkan GPU で embed 中に abort する場合は環境変数 `GGML_VK_DISABLE_COOPMAT=1` が既知の対処）。`_projects/` を版管理するなら `project-notes/.qmd/` は ignore する。note を編集したら `qmd update` と `qmd embed` を再実行する（それまでも push は index 済みの範囲で動く）。
+
 #### 調査系タスクの自動保存
 
 ユーザーの意図が「情報収集・比較・整理・調査」である場合、project-router が意味ベースで検知し `project_notes_autosave: true` を返す。メインエージェントは応答本体を返したあと、カテゴリと slug の候補と共にユーザーに保存可否を確認する。承諾された場合のみ `project-notes/<category>/<slug>.md` と `project-notes/index.md` を更新する。
@@ -362,13 +390,15 @@ hook の書込と競合した場合は依然として無防備である。
 
 ### hook
 
-8 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（2 つ）/ `Stop`（2 つ）/ `SessionStart:compact` / `PreCompact` に wire されている。加えて `note_links.py`（note↔task link のデータ層）と `log_lock.py`（bounded advisory write lock、protocol v2）の 2 ファイルは共有モジュールであり、単体で wire された hook ではない：`note_links.py` は Stop hook が import し、`log_lock.py` は Stop hook に加えて `scripts/rebuild_progress.py` も import する（後者は `progress.md` の read→write 区間を同じロックで保護する）。
+9 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（3 つ）/ `Stop`（2 つ）/ `SessionStart:compact` / `PreCompact` に wire されている。`notes_push.py`（毎ターンの project-notes push）は `session_init.py` が import する共有モジュールで、wire された hook ではない。加えて `note_links.py`（note↔task link のデータ層）と `log_lock.py`（bounded advisory write lock、protocol v2）の 2 ファイルは共有モジュールであり、単体で wire された hook ではない：`note_links.py` は Stop hook が import し、`log_lock.py` は Stop hook に加えて `scripts/rebuild_progress.py` も import する（後者は `progress.md` の read→write 区間を同じロックで保護する）。
 
 **`_projects/` の解決先。** state ツリーを必要とする hook はいずれも、セッションの起動ディレクトリから祖先方向へ辿り、`_projects/_state` を持つ最も近いディレクトリを root とする（起動ディレクトリ自身も候補に含む）。該当する祖先が無ければ起動ディレクトリにフォールバックする。hook プロセスはセッションが**起動された**ディレクトリをセッションの生涯にわたって保持する（Bash ツール呼び出し中の `cd` では動かない）ため、ワークスペースのサブディレクトリで Claude Code を起動すると、従来はそのセッション全体でプラグインが no-op になっていた。現在はワークスペース既存のツリーに合流する。意図的な例外は Stop hook の 7 日 stale-marker クリーンアップだけで、その対象は起動ディレクトリに固定されたままである — サブディレクトリで起動したセッションはこの掃除を単にスキップし、次にワークスペース root で起動したセッションが実行する。
 
 #### UserPromptSubmit: session_init.py
 
 毎ターン実行。`_projects/_state/{session_id}.json` を管理し、`[Progress Session]` を LLM コンテキストに注入する。`_projects/` が存在しない場合は自動生成する（`_state/` とテンプレート `index.md` も同時作成）。
+
+毎ターンの `project-notes (index rows):` push block（[project-notes](#project-notes) 参照）も `hooks/notes_push.py` 経由でここが組み立てる: note の `anchors:` を、そのターンが名指し・Read（`.reads` ledger）・書込（`.touched` ledger）した path と照合した場所行、次に qmd 構造化 query（`node <bin/qmd> query … --no-rerank --json`、timeout 4 秒、project に `project-notes/.qmd/` index があるときのみ）とプロセス内 lexical rank を合成した topic 行。qmd が期待されるのに動かない場合は topic 層を lexical rank のみとし、`[project-notes] vector layer unavailable: <reason>` を session につき 1 回注入する（state file の `notes_push_notice`）。
 
 ガイドライン注入も担当: セッション初回ターン（および compact 後）に `progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md` の全文を注入し、以降のターンでは reminder のみを注入してトークンコストを削減する — `guidelines_reminder.md`（デフォルト）または `guidelines_reminder_manifest.md`（`TASKFLOW_GUIDELINES_REMINDER=manifest`。[設定](#taskflow_guidelines_reminder) 参照）。
 
@@ -407,6 +437,10 @@ hook の書込と競合した場合は依然として無防備である。
 #### PostToolUse: touched_capture.py (matcher: Write|Edit|NotebookEdit|Bash)
 
 すべての `Write` / `Edit` / `NotebookEdit` と、ファイルを触る `Bash`（`mv`/`cp`/`rm`、`>`/`>>` リダイレクト、`tee`、および in-place `sed -i`/`--in-place`）の直後に発火。書込先の正規化 repo-relative パスを per-session の `_projects/_state/{session_id}.touched` ledger（append-only、lock-free）に追記する。この ledger が、Stop の capture hook が「このセッションが実際に触った task」を判定する入力になる。jsonl スキャンや git diff ではなく **このセッションの tool 書込** を観測するため、無関係な task の誤 stamp を避けられる。サブエージェント / fork の内部書込は親の `session_id` で発火するため、自動的に親の ledger に入る — ただしその帰結として除外が 2 つある。1 つめは、`_projects/_state/` 配下への書込は落とすため、capture サブエージェント自身の判定 sidecar が、それが供給する ledger に現れることはない。2 つめはワークスペース直下の `tmp/` で、この tree は scratch であり、mode-orchestrator の run が自分の成果物パスを数百行積んでラウンドの実編集を埋めてしまうため落とす（入れ子の `sub/tmp/` は通常の作業として記録される）。heredoc の body はコマンド解析の前に除去されるため、body 内のテキストがリダイレクトと誤認されることはない（body 自身が行う書込も記録されない。これは `python -c open()` と同じく従来から明示受容している捕捉ギャップ。`sed -i`/`--in-place`（heredoc body 内を除く）は 2026-08-20 時点で認識対象であり、`$f` のような未展開のシェルメタ文字を含む operand はスキップされる）。未終端の heredoc は、コマンドを記述どおり解析する従来動作にフォールバックする。
+
+#### PostToolUse: read_capture.py (matcher: Read)
+
+すべての `Read` の直後に発火。読んだファイルの repo 相対 path を session ごとの `_projects/_state/{session_id}.reads` ledger に追記し、追記のたびに末尾 200 行へ切り詰める。`.touched` とは意図的に別ファイルにしてある: `.touched` の生の行数は Stop hook の round cursor なので、Read をそこに記録すると読むだけのターンで round が開いてしまう。`.reads` の末尾（`.touched` の末尾と prompt 中の path と併せて）が project-notes push の場所信号になる。除外規則は同じ（`_projects/_state/`、`tmp/`、state ツリー外の path）。
 
 #### PreCompact: precompact_flush.py
 
