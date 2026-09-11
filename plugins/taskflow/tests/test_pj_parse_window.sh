@@ -27,7 +27,7 @@ echo "=== Test: pj:/norouter parse window and charset ==="
 run_hook() {
   local prompt="$1"
   local payload
-  payload=$(python3 -c "
+  payload=$(uv run --no-project python -c "
 import json, sys
 print(json.dumps({'session_id': '$SID', 'prompt': sys.argv[1], 'transcript_path': ''}))
 " "$prompt")
@@ -38,7 +38,7 @@ mkdir -p "$STATE_DIR"
 
 extract_project() {
   local output="$1"
-  echo "$output" | python3 -c "
+  echo "$output" | uv run --no-project python -c "
 import sys, json, re
 data = sys.stdin.read().strip()
 if not data:
@@ -61,7 +61,7 @@ is_empty_output() {
 
 echo "[Case 1] pj: beyond 500-char window — should NOT be recognized"
 
-FILLER=$(python3 -c "print('x' * 480)")
+FILLER=$(uv run --no-project python -c "print('x' * 500)")
 PROMPT_WINDOW_OUT="${FILLER} pj:window-out-project do something"
 
 OUT=$(run_hook "$PROMPT_WINDOW_OUT")
@@ -95,7 +95,7 @@ fi
   echo ""
 echo "[Case 3] norouter beyond 500-char window — should NOT trigger bypass"
 
-FILLER=$(python3 -c "print('x' * 480)")
+FILLER=$(uv run --no-project python -c "print('x' * 500)")
 PROMPT_NOROUTER_OUT="pj:testproject ${FILLER} norouter"
 
 OUT=$(run_hook "$PROMPT_NOROUTER_OUT")

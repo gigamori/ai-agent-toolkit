@@ -314,6 +314,11 @@ def check_notes_index_consistency(project_dir: Path, result: Result) -> None:
     indexed = {r["file"] for r in rows}
     actual = {p.relative_to(notes_dir).as_posix() for p in walk_note_files(notes_dir)}
     for f in sorted(indexed - actual):
+        # An attachment row (a script or fixture that exists but is not a
+        # `.md` note) is allowed in index.md and is not drift; only a row
+        # whose file is gone is.
+        if (notes_dir / f).is_file():
+            continue
         result.add(
             "notes_index",
             "drift",

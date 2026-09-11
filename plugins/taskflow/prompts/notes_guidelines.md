@@ -65,7 +65,7 @@ Operational rules:
 - When a note's Description / Tags change → update the row.
 - When a note is deleted → remove the row.
 - `Description` MUST be ≤ 100 characters. Put longer summaries in the note body, not the index.
-- `File` includes the category prefix (e.g., `specs/api-design.md`).
+- `File` includes the category prefix (e.g., `specs/api-design.md`). A non-`.md` attachment that lives beside a note (a setup script, a fixture) may have a row too; it is not a note (never pushed, never counted), and `/progress check` accepts the row as long as the file exists.
 - `Updated` is `YYYY-MM-DD`, taken from the note's frontmatter `updated:` or file mtime.
 
 ## What to save

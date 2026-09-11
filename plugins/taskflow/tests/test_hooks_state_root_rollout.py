@@ -120,8 +120,21 @@ def _copy_plugin(dest_root: Path) -> Path:
     return tf / "hooks"
 
 
-def _git_show(rel: str) -> str | None:
-    r = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=str(REPO_ROOT),
+def _pre_rollout_rev() -> str:
+    r = subprocess.run(
+        ["git", "log", "--reverse", "--format=%H", "-S", "_find_state_root", "--",
+         "plugins/taskflow/hooks/session_progress_capture.py"],
+        cwd=str(REPO_ROOT), capture_output=True, text=True, encoding="utf-8",
+        errors="replace")
+    first = r.stdout.split()[0] if r.returncode == 0 and r.stdout.split() else ""
+    if not first:
+        die("no commit introduces _find_state_root into session_progress_capture.py; "
+            "the pre-rollout control cannot be located")
+    return f"{first}~1"
+
+
+def _git_show(rel: str, rev: str) -> str | None:
+    r = subprocess.run(["git", "show", f"{rev}:{rel}"], cwd=str(REPO_ROOT),
                        capture_output=True, text=True, encoding="utf-8",
                        errors="replace")
     return r.stdout if r.returncode == 0 else None
@@ -145,20 +158,21 @@ def make_builds(root: Path) -> dict[str, Path]:
     builds["pre03b"] = pre
 
     head = _copy_plugin(root / "builds" / "head")
+    rev = _pre_rollout_rev()
     replaced = []
     for py in sorted(head.glob("*.py")):
-        blob = _git_show(f"plugins/taskflow/hooks/{py.name}")
+        blob = _git_show(f"plugins/taskflow/hooks/{py.name}", rev)
         if blob is not None:
             io.open(py, "w", encoding="utf-8", newline="").write(blob)
             replaced.append(py.name)
     hsrc = io.open(head / "session_progress_capture.py", encoding="utf-8").read()
     if "SWEEP_STATE_DIR" in hsrc or "_find_state_root" in hsrc:
-        die("the HEAD blob of session_progress_capture.py already carries the "
-            "rollout — HEAD is not a pre-rollout control")
+        die(f"the {rev} blob of session_progress_capture.py already carries the "
+            "rollout — it is not a pre-rollout control")
     if "PROGRESS_ROOT = os.path.join(os.getcwd(), '_projects')" not in hsrc:
-        die("the HEAD blob of session_progress_capture.py does not carry the "
+        die(f"the {rev} blob of session_progress_capture.py does not carry the "
             "cwd-direct root — the control build is not what it claims")
-    ok(f"HEAD control build derived read-only via `git show` "
+    ok(f"pre-rollout control build derived read-only via `git show {rev}` "
        f"({len(replaced)} files)")
     builds["head"] = head
 

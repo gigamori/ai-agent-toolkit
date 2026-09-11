@@ -102,6 +102,23 @@ def test_nested_dir(root: Path) -> None:
           "project-notes/.qmd/ (outside the 5 categories) is not reported")
 
 
+def test_index_attachment_rows(root: Path) -> None:
+    print("--- notes_index: attachment rows ---")
+    ws, project_dir = make_workspace(root)
+    notes = project_dir / "project-notes"
+    (notes / "checks" / "setup.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    write_note(project_dir, "checks/c.md", "updated: 2026-01-01")
+    for rel in ("checks/c.md", "checks/setup.sh", "checks/gone.md", "checks/gone.sh"):
+        register(project_dir, rel)
+    result = cp.Result()
+    cp.check_notes_index_consistency(project_dir, result)
+    missing = sorted(f.message for f in result.findings if f.check == "notes_index" and "does not exist" in f.message)
+    check(len(missing) == 2 and all("gone." in m for m in missing),
+          f"an existing non-.md attachment row is not drift; a vanished .md or attachment row is (got {missing})")
+    check(not any("setup.sh" in f.message for f in result.findings),
+          "the attachment is neither listed as missing nor as unregistered")
+
+
 def test_summary_length_and_coverage(root: Path) -> None:
     print("--- notes_summary_length + coverage footer ---")
     ws, project_dir = make_workspace(root)
@@ -202,7 +219,7 @@ def test_main_footer_and_flag(root: Path) -> None:
 
 def main() -> int:
     print("=== check_progress.py notes data-contract checks (#14-#16 + footer) ===")
-    for t in (test_nested_dir, test_summary_length_and_coverage,
+    for t in (test_nested_dir, test_index_attachment_rows, test_summary_length_and_coverage,
               test_anchor_dangling, test_main_footer_and_flag):
         with tempfile.TemporaryDirectory() as d:
             t(Path(d))
