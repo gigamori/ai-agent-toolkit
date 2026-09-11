@@ -308,7 +308,13 @@ def _token_weight(kind: str, text: str, row: dict, boundary: re.Pattern | None) 
 
 
 def rank_lexical(rows: list[dict], subject: str) -> list[dict]:
-    """Rows with score > 0, score desc → Updated desc → index order."""
+    """Rows with score > 0, score desc → Updated desc → index order.
+
+    The IDF cut is per TOKEN: a CJK run and its bigram fallback form one
+    weight column and are cut together, never bigram by bigram. The cutoff
+    is IDF_CUTOFF * len(rows), so on a corpus of 3 or fewer active rows any
+    single hit already reaches it and this layer returns nothing; the
+    location and qmd layers are unaffected."""
     if not rows:
         return []
     tokens = subject_tokens(subject)

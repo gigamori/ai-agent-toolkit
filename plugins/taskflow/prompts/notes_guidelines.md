@@ -47,7 +47,7 @@ Body content.
 
 All frontmatter fields are optional. `created` / `updated` enable stale detection by `/progress check`.
 
-`summary` (≤500 chars) is judgment material: read on demand to decide whether the note is worth opening, without opening it. It is not the same as index.md's `Description` (≤100 chars) — Description exists only so the note can be found in the index listing.
+`summary` (≤500 chars) is judgment material: read on demand to decide whether the note is worth opening, without opening it. It is not the same as index.md's `Description` (≤100 chars) — Description exists only so the note can be found in the index listing. Its text is arbitrary: a consumer must never feed it to a regex or a `replace`-style replacement string unescaped (`$&`, `` $` ``, `$1` expand there).
 
 `anchors` lists the code a note is about, as repo-relative `/`-separated paths or `path::symbol` (`Class.method` for members). List only the code the note is about, not every path it mentions. `/progress check` reports an entry whose path does not exist or whose symbol is missing from the query-lsp snapshot.
 
