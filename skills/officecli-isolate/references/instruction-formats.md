@@ -70,7 +70,7 @@ summary.csv -> /Summary header=yes start=B2
 
 `header=yes` is officecli's `import --header`, which also sets an autofilter on the header row and freezes it. `## autofilter` and `## freeze` override that; without them, the import's own autofilter and freeze stay.
 
-A `## columns` number format applies to the column style; cells the import has already filled keep their own format, so the child sets the same format on the data cells as well.
+A `## columns` number format reaches both the column style and the cells the data already occupies, so the whole column displays alike.
 
 ## C. Replace scope (`replace`)
 

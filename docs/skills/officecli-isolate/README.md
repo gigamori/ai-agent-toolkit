@@ -9,5 +9,5 @@ Nothing here is read while the skill executes; the execution context is the skil
   [USER_GUIDE_ja.md](USER_GUIDE_ja.md).
 - **[AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md)** — maintenance obligations: why the
   skill is a containment shell around officecli's own skills, what the three prompt
-  templates must jointly satisfy, the return block, what the fidelity script sees and
-  cannot see, and how to test a change.
+  templates must jointly satisfy, the return block, what deliberately stays out of the
+  skill, and how to test a change.

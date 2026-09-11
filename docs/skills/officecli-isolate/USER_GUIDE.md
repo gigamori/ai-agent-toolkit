@@ -67,17 +67,15 @@ GATES: validate=ok issues=0 gate3=PASS
 TOUCHED: <stable path> : <old → new>
 BLOCKED: <edit> : <reason> | none
 CONTACT_SHEET: <png path> | n/a
-DEGRADED: <what the import could not carry> | none
-DRIFT: <object> : <old range → new range> : extended|left | none
-DECLARATION: <a few sentences on structure, what was kept, what was left out>
+DECLARATION: <a few sentences on structure, what was kept, anything it could not keep intact>
 ```
 
-Then the caller re-runs `officecli validate` and `view issues` on the file and runs `check_office_text.py`, which reads the file's text and checks it against your content (every line and number for `docx` / `xlsx`; every number for `pptx`, with headings not found and numbers not in the source listed for you) or against the instruction document's values (partial update). A failure goes back to the child once with the violation lines; a second failure is reported to you.
+Then the caller re-runs the child's own two gate commands on the saved file, `officecli validate` and `view issues`, and tells you whether they match what the block claims. Nothing else about the document is checked for you: what it says and how it looks are the loaded officecli skill's job, then yours.
 
 For `pptx` you are asked to look at the contact sheet and judge readability. The caller does not open it; that judgement is yours, and your remarks go back to the child. The sheet is made by the skill's own script, which sizes the grid from the slide count so that no row is cut off; a deck too large for one sheet comes as `-1.png`, `-2.png`, ... in slide order.
 
 ## What it does not do
 
-- The fidelity check reads text, table cells, chart data and raw cell values. It does not read images, speaker notes or formatting, so a value carried only by a picture is not checked.
+- Check the content itself. The child follows officecli's own skill for the format, which owns structure, wording and design, and runs that skill's delivery gates. Whether the result says what you meant is your call, on the file and the contact sheet.
 - The caller never runs officecli's design or edit commands itself, never reads the child's screenshots, and never edits your content, original or instruction files. If the child reports an input as insufficient, you fix the input.
 - One child handles one file. Two files are two launches.

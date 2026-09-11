@@ -67,17 +67,15 @@ GATES: validate=ok issues=0 gate3=PASS
 TOUCHED: <stable path> : <old → new>
 BLOCKED: <edit> : <reason> | none
 CONTACT_SHEET: <png path> | n/a
-DEGRADED: <取込が運べなかったもの> | none
-DRIFT: <object> : <old range → new range> : extended|left | none
-DECLARATION: <構成、残したもの、落としたものについて数文>
+DECLARATION: <構成、残したもの、そのまま残せなかったものについて数文>
 ```
 
-その後、呼び出し側がファイルに対して `officecli validate` と `view issues` を再実行し、`check_office_text.py` を走らせる。この script はファイルの text を読み、content と照合する（`docx` / `xlsx` は全行と全数値、`pptx` は全数値。見つからなかった見出しと正本に無い数値は判定せず一覧として示す）か、指示書の value と照合する（部分更新）。FAIL は違反行付きで child に 1 回だけ差し戻され、2 回目の FAIL は利用者に報告される。
+その後、呼び出し側は child 自身が走らせた 2 つの gate コマンド（`officecli validate` と `view issues`）を保存済みファイルに対して再実行し、ブロックの申告と一致するかを報告する。文書についてそれ以上の検査はしない。何が書かれているか、どう見えるかは load した officecli スキルの領分であり、その先は利用者の判断。
 
 `pptx` では contact sheet を見て可読性を判断するよう求められる。呼び出し側はその画像を開かない。判断は利用者のもので、指摘は child に戻される。sheet はスキル同梱の script が枚数から grid を決めて生成するので、行が切れることはない。1 枚に収まらないデッキはスライド順に `-1.png`、`-2.png`、… に分かれる。
 
 ## やらないこと
 
-- 忠実性照合が読むのは text、表セル、chart データ、セルの生値。画像・speaker notes・書式は読まないので、画像にしか無い値は照合されない。
+- 内容そのものの検査。child は format に対応する officecli 公式スキルに従い、構成・文言・デザインはそのスキルが所有し、その delivery gate を通す。意図どおりかどうかの判断は、ファイルと contact sheet を見る利用者のもの。
 - 呼び出し側は officecli の設計・編集コマンドを自分では実行せず、child のスクリーンショットを読まず、content / original / 指示書を編集しない。child が入力不足を報告したら、入力を直すのは利用者。
 - child 1 つはファイル 1 つ。2 ファイルなら 2 回起動する。

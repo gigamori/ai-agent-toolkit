@@ -17,7 +17,7 @@ rest are documented by their `SKILL.md` and the row in the repo
 | [mode-orchestrator](mode-orchestrator/) | [index.md](mode-orchestrator/index.md) → user guide (EN/JA), workflow-spec authoring guide | End users + spec authors |
 | [register-pi-tools](register-pi-tools/) | [USER_GUIDE.md](register-pi-tools/USER_GUIDE.md) / [USER_GUIDE_ja.md](register-pi-tools/USER_GUIDE_ja.md) | End users |
 | [xml-wf](xml-wf/) | [README.md](xml-wf/README.md) / [README_ja.md](xml-wf/README_ja.md) (reference), [USER_GUIDE.md](xml-wf/USER_GUIDE.md) / [USER_GUIDE_ja.md](xml-wf/USER_GUIDE_ja.md) | Reference readers + end users |
-| [officecli-isolate](officecli-isolate/) | [README.md](officecli-isolate/README.md) → user guide (EN/JA), [AUTHORING_CONTRACT.md](officecli-isolate/AUTHORING_CONTRACT.md) | End users + maintainers — the containment shell around officecli's own skills, the three prompt templates and their shared rules, the return block, what the fidelity script cannot see |
+| [officecli-isolate](officecli-isolate/) | [README.md](officecli-isolate/README.md) → user guide (EN/JA), [AUTHORING_CONTRACT.md](officecli-isolate/AUTHORING_CONTRACT.md) | End users + maintainers — the containment shell around officecli's own skills, the three prompt templates and their shared rules, the return block, and what deliberately stays out of this skill |
 
 ## Where a doc belongs
 

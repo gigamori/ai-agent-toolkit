@@ -22,7 +22,7 @@ Where the loaded skill asks for a fresh-eyes judge (pptx Gate 3) and the harness
 
 ## Return block
 
-Your final message is this block and nothing else: no code fence around it, no sentence before `STATUS:`, nothing after `DECLARATION:`. Every line is present on every run; write `none` or `n/a` rather than dropping a line. `TOUCHED`, `BLOCKED`, `DEGRADED` and `DRIFT` repeat once per item.
+Your final message is this block and nothing else: no code fence around it, no sentence before `STATUS:`, nothing after `DECLARATION:`. Every line is present on every run; write `none` or `n/a` rather than dropping a line. `TOUCHED` and `BLOCKED` repeat once per item.
 
 ```
 STATUS: done | blocked
@@ -31,9 +31,7 @@ GATES: validate=<ok|fail> issues=<count> gate3=<PASS|REJECT|not visually verifie
 TOUCHED: <stable path> : <old → new, one line> | none
 BLOCKED: <edit id or item> : <reason> | none
 CONTACT_SHEET: <absolute png path> | n/a
-DEGRADED: <content line or element> : <what was lost> | none
-DRIFT: <object> : <old range → new range> : <extended|left> | none
-DECLARATION: <at most 5 sentences: structure produced, what was kept, what was left out and why, anything unresolved>
+DECLARATION: <at most 5 sentences: structure produced, what was kept, anything you could not keep intact, anything unresolved>
 ```
 
 - `gate3` values: `PASS` = the last audit of the final file returned no finding (by the fresh auditor, or by you when no delegation tool exists); `REJECT` = the final file still carries a finding you could not resolve within the loaded skill's fix-verify limit; `not visually verified` = no screenshot could be judged and the HTML-text fallback was used; `n/a` = docx / xlsx, and a partial update that touched no layout property. A fix applied after the last independent audit and checked only by yourself is `REJECT` with the fix named under `DECLARATION`, not `PASS`.

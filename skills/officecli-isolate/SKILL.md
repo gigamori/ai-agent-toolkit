@@ -1,12 +1,14 @@
 ---
 name: officecli-isolate
 disable-model-invocation: true
-description: "Run officecli's official document skills (word / pptx / excel and their scene layers such as pitch-deck, academic-paper, financial-model, data-dashboard) inside a child session so that layout trial-and-error, screenshots and CLI output never enter the caller's context. Three cases, picked by input shape: create a new docx / xlsx / pptx from markdown or CSV, partially update an existing file from an instruction document, or replace the body / data region / a slide range while keeping the file's styles, formulas, theme and masters. The child loads exactly one officecli skill named by the caller, runs that skill's Delivery Gates, and returns a fixed block (paths, gate results, touched element ids, contact-sheet path); the caller re-checks fidelity with a script. Use when an Office document must be created or edited through officecli without polluting the current session, or when the user mentions officecli-isolate, child session for officecli, or context-isolated document generation."
+description: "Run officecli's official document skills (word / pptx / excel and their scene layers such as pitch-deck, academic-paper, financial-model, data-dashboard) inside a child session so that layout trial-and-error, screenshots and CLI output never enter the caller's context. Three cases, picked by input shape: create a new docx / xlsx / pptx from markdown or CSV, partially update an existing file from an instruction document, or replace the body, a data region or a slide range while keeping the rest of the file. The child loads exactly one officecli skill named by the caller, builds or edits the document under that skill and its Delivery Gates, and returns one fixed block: output path, gate results, touched element ids, contact-sheet path. Use when an Office document must be created or edited through officecli without polluting the current session, or when the user mentions officecli-isolate, child session for officecli, or context-isolated document generation."
 ---
 
 # Isolate officecli
 
-Every officecli document job runs in a **child session**. The caller (this session) resolves inputs, picks one prompt template, launches one child per artifact, and checks what comes back. Design rules, CLI recipes and QA gates are not restated here: the child loads them with `officecli load_skill <name>`.
+Every officecli document job runs in a **child session**. The caller (this session) resolves inputs, picks one prompt template, launches one child per artifact, and takes back a short fixed block.
+
+What the document should look like, which commands build it and when it is good enough all belong to the officecli skill the child loads (`officecli load_skill <name>`). This skill adds three things and nothing else: routing a job to a template, containment, and the reply format.
 
 ## Inputs
 
@@ -57,7 +59,7 @@ The user's explicit genre wins. Without one, use the base. A name outside this t
    | `{original_path}` | absolute path of the existing file (`none` for create) |
    | `{instruction_path}` | absolute path of the instruction document, or `none` |
    | `{output_path}` | absolute path of the file to write |
-   | `{findings}` | `none` on the first attempt; on a relaunch, the violation lines from step 3 of "After return" |
+   | `{findings}` | `none` on the first attempt; on a relaunch, the user's remarks or the missing return-block lines, one per line |
    | `{skill_dir}` | absolute path of this skill's directory |
 
 4. Launch **one general-purpose subagent per artifact** with the resolved template as its entire prompt. No model override. Pass nothing else: no conversation excerpts, no upstream files. The template tells the child to read [common.md](references/common.md) and the instruction formats itself.
@@ -67,31 +69,21 @@ The user's explicit genre wins. Without one, use the base. A name outside this t
 
 1. The final message must be the return block defined in [common.md](references/common.md) (`STATUS:` first, `DECLARATION:` last, every line present; a code fence around the block is tolerated). A malformed block: relaunch once with `{findings}` = `return block incomplete: <missing lines>`. Still malformed → report to the user and stop.
 2. `STATUS: blocked` → report the reason to the user; nothing else to check.
-3. Re-check what the child reported, cheaply, on the saved file:
+3. Re-check the child's two gate claims on the saved file, cheaply:
 
    ```bash
    officecli validate "<output>"
    officecli view "<output>" issues
    ```
 
-   Then the fidelity script (this is the check the child's self-report cannot replace). `${CLAUDE_SKILL_DIR}` is this skill's directory, the same path as `{skill_dir}`:
-
-   | Case | Command |
-   |------|---------|
-   | create / replace, docx / xlsx | `uv run --script ${CLAUDE_SKILL_DIR}/scripts/check_office_text.py "<output>" --source "<content>" --mode verbatim` |
-   | create, pptx | `uv run --script ${CLAUDE_SKILL_DIR}/scripts/check_office_text.py "<output>" --source "<content>" --mode rewrite` |
-   | replace, pptx | `uv run --script ${CLAUDE_SKILL_DIR}/scripts/check_office_text.py "<output>" --source "<content>" --mode rewrite --slides <range>` (the `range:` of the scope document) |
-   | update-partial | `uv run --script ${CLAUDE_SKILL_DIR}/scripts/check_office_text.py "<output>" --instruction "<instruction>"` |
-
-   Several CSVs: repeat `--source` per file. `xlsx` replace: `--source` per mapped CSV. The script reads native table cells, chart data and raw cell values, so a value the text view hides still counts; a `FAIL` names a value that is absent from the file.
-4. `FAIL` → relaunch the same case once with the violation lines as `{findings}`. A second `FAIL` → report the lines to the user and stop.
-5. `pptx`: hand the `CONTACT_SHEET` path to the user and ask them to judge readability. Do not open the image yourself. When `GATES` carries `gate3=REJECT`, hand over the unresolved `slide N: ...` lines from `DECLARATION` with it; the user decides whether to accept the deck or send those lines back. Remarks go back to the child as `{findings}` (one more launch; the re-run passes step 3 again).
+   A result that contradicts `GATES` goes to the user with the block.
+4. `pptx`: hand the `CONTACT_SHEET` path to the user and ask them to judge the deck. Do not open the image yourself. When `GATES` carries `gate3=REJECT`, hand over the unresolved `slide N: ...` lines from `DECLARATION` with it; the user decides whether to accept the deck or send remarks back. Remarks go back to the child as `{findings}` (one more launch; the re-run passes step 3 again).
 
 ## Report to the user
 
 - The return block, verbatim
-- `validate` / `view issues` results from step 3
-- The script's verdict and its listings (`rewrite` mode lists headings not found and numbers not in the source; they are for the reader, not a verdict)
+- The `validate` / `view issues` results from step 3, and whether they match `GATES`
+- For pptx: the contact-sheet path, and the unresolved `gate3` lines when there are any
 
 ## What the caller never does
 
@@ -99,3 +91,4 @@ The user's explicit genre wins. Without one, use the base. A name outside this t
 - Read screenshots, PNGs, batch payloads or `load_skill` output. One image in this context is what this skill exists to prevent.
 - Launch one child for two artifacts, or stack two genres on one artifact.
 - Edit the content, original or instruction files. If the child reports them insufficient, the user fixes them.
+- Judge the document's content or design. That is the loaded skill's job, then the user's.
