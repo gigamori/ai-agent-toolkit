@@ -155,6 +155,25 @@ def test_query_doc() -> None:
           f"one lex line per term: ASCII words minus stopwords, CJK split on hiragana (got {lines[1:]})")
 
 
+def test_timeout_env() -> None:
+    print("--- resolve_qmd_timeout ---")
+    check(np.resolve_qmd_timeout({}) == 6.0, f"default budget is 6 s (got {np.resolve_qmd_timeout({})})")
+    check(np.resolve_qmd_timeout({"TASKFLOW_QMD_TIMEOUT": "2.5"}) == 2.5, "TASKFLOW_QMD_TIMEOUT overrides the budget")
+    check(np.resolve_qmd_timeout({"TASKFLOW_QMD_TIMEOUT": "abc"}) == 6.0, "a non-numeric value falls back to the default")
+    check(np.resolve_qmd_timeout({"TASKFLOW_QMD_TIMEOUT": "0"}) == 6.0, "a non-positive value falls back to the default")
+    seen = {}
+
+    def runner(cmd, **kw):
+        seen["timeout"] = kw.get("timeout")
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+
+    try:
+        np.run_qmd("BIN", "NOTES", "vec: x", 5, timeout=np.resolve_qmd_timeout({"TASKFLOW_QMD_TIMEOUT": "9"}), runner=runner)
+    except subprocess.TimeoutExpired:
+        pass
+    check(seen.get("timeout") == 9.0, f"the resolved budget reaches the spawn call (got {seen.get('timeout')})")
+
+
 def test_qmd_rank() -> None:
     print("--- qmd_rank / run_qmd ---")
     results = [
@@ -265,6 +284,7 @@ def main() -> int:
     test_subject_text()
     test_anchors_parser()
     test_query_doc()
+    test_timeout_env()
     test_qmd_rank()
     for t in (test_prompt_paths, test_location, test_ledger_tail, test_lexical, test_rrf_and_compose, test_build_end_to_end):
         with tempfile.TemporaryDirectory() as d:

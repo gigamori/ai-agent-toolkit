@@ -25,7 +25,13 @@ is the lexical rank alone and the caller shows one notice per session.
 
 Config (env): TASKFLOW_NOTES_PUSH = off | lexical | auto (default);
 TASKFLOW_QMD_BIN = path of qmd's `bin/qmd` (default: resolved next to the `qmd` on
-PATH). qmd is spawned as `node <bin/qmd>` — never through a `.cmd` shim.
+PATH); TASKFLOW_QMD_TIMEOUT = seconds the qmd query may take (default 6). qmd is
+spawned as `node <bin/qmd>` — never through a `.cmd` shim.
+
+Cost, accepted explicitly (user ruling 2026-09-12): the query runs synchronously on
+the prompt-injection path every turn of an onboarded project, measured 2.7-2.9 s on the
+reference machine (GPU embedding, 79-210 docs). The timeout is a shared contract
+constant with the Pi extension; change it on both sides or not at all.
 
 stdlib only: hooks run under `uv run --no-project`.
 """
@@ -42,7 +48,8 @@ import subprocess
 K_ROWS = 8
 L2_CAP = math.ceil(K_ROWS / 2)
 LEDGER_TAIL = 40
-QMD_TIMEOUT_S = 4.0
+QMD_TIMEOUT_S = 6.0
+TIMEOUT_ENV = 'TASKFLOW_QMD_TIMEOUT'
 QMD_MARGIN = 8
 RRF_K = 60
 VEC_MAX_CHARS = 1000
@@ -363,6 +370,18 @@ def resolve_qmd_bin(env: dict | None = None) -> str | None:
     return cand if os.path.isfile(cand) else None
 
 
+def resolve_qmd_timeout(env: dict | None = None) -> float:
+    """Seconds allowed for one qmd query: TASKFLOW_QMD_TIMEOUT when it parses
+    as a positive number, else QMD_TIMEOUT_S."""
+    env = os.environ if env is None else env
+    raw = env.get(TIMEOUT_ENV, '').strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return QMD_TIMEOUT_S
+    return value if value > 0 else QMD_TIMEOUT_S
+
+
 def sanitize_vec(text: str) -> str:
     """One line, no `"`, and no `-` right after whitespace: qmd rejects the
     latter in a vec: line as an unsupported negation (exit 1)."""
@@ -541,12 +560,13 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
         if not bin_path:
             reason = f'qmd binary not found (set {BIN_ENV})'
         else:
+            timeout = resolve_qmd_timeout(env)
             try:
                 results = run_qmd(bin_path, notes_dir, build_query_doc(subject),
-                                  K_ROWS + QMD_MARGIN, runner=runner)
+                                  K_ROWS + QMD_MARGIN, timeout=timeout, runner=runner)
                 qmd_files, qmd_hits = qmd_rank(results)
             except subprocess.TimeoutExpired:
-                reason = f'qmd timeout after {QMD_TIMEOUT_S:g}s'
+                reason = f'qmd timeout after {timeout:g}s'
             except (QmdError, OSError, ValueError) as e:
                 reason = str(e) or e.__class__.__name__
 

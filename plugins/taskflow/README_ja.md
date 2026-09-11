@@ -129,6 +129,18 @@ qmd の `bin/qmd` スクリプトのパス。project に `project-notes/.qmd/` i
 }
 ```
 
+### `TASKFLOW_QMD_TIMEOUT`
+
+毎ターンの project-notes push が 1 回の qmd query に許す秒数。既定 `6`。query は `project-notes/.qmd/` index を持つ project の毎ターン、prompt 注入経路で同期に走る — 参照 machine（GPU embedding、79〜210 note）で 2.7〜2.9 秒の実測で、これは明示的に受容したコスト。予算は cold / busy な machine を有界にするためのもので、通常経路の調整ではない。超過したターンは lexical rank へ fallback し、session につき 1 回告知する。数値でない・正でない値は既定に戻る。Pi の taskflow 拡張も同じ名前を読むため、両側で同一に設定すること。
+
+```json
+{
+  "env": {
+    "TASKFLOW_QMD_TIMEOUT": "6"
+  }
+}
+```
+
 ## 使い方
 
 ### プロジェクト指定
@@ -398,7 +410,7 @@ hook の書込と競合した場合は依然として無防備である。
 
 毎ターン実行。`_projects/_state/{session_id}.json` を管理し、`[Progress Session]` を LLM コンテキストに注入する。`_projects/` が存在しない場合は自動生成する（`_state/` とテンプレート `index.md` も同時作成）。
 
-毎ターンの `project-notes (index rows):` push block（[project-notes](#project-notes) 参照）も `hooks/notes_push.py` 経由でここが組み立てる: note の `anchors:` を、そのターンが名指し・Read（`.reads` ledger）・書込（`.touched` ledger）した path と照合した場所行、次に qmd 構造化 query（`node <bin/qmd> query … --no-rerank --json`、timeout 4 秒、project に `project-notes/.qmd/` index があるときのみ）とプロセス内 lexical rank を合成した topic 行。qmd が期待されるのに動かない場合は topic 層を lexical rank のみとし、`[project-notes] vector layer unavailable: <reason>` を session につき 1 回注入する（state file の `notes_push_notice`）。
+毎ターンの `project-notes (index rows):` push block（[project-notes](#project-notes) 参照）も `hooks/notes_push.py` 経由でここが組み立てる: note の `anchors:` を、そのターンが名指し・Read（`.reads` ledger）・書込（`.touched` ledger）した path と照合した場所行、次に qmd 構造化 query（`node <bin/qmd> query … --no-rerank --json`、timeout は `TASKFLOW_QMD_TIMEOUT` 秒で既定 6、project に `project-notes/.qmd/` index があるときのみ）とプロセス内 lexical rank を合成した topic 行。qmd が期待されるのに動かない場合は topic 層を lexical rank のみとし、`[project-notes] vector layer unavailable: <reason>` を session につき 1 回注入する（state file の `notes_push_notice`）。
 
 ガイドライン注入も担当: セッション初回ターン（および compact 後）に `progress_guidelines.md`、`notes_guidelines.md`、`tasks_guidelines.md` の全文を注入し、以降のターンでは reminder のみを注入してトークンコストを削減する — `guidelines_reminder.md`（デフォルト）または `guidelines_reminder_manifest.md`（`TASKFLOW_GUIDELINES_REMINDER=manifest`。[設定](#taskflow_guidelines_reminder) 参照）。
 

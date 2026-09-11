@@ -130,6 +130,18 @@ Which layers the per-turn project-notes push uses. `auto` (default): location (`
 }
 ```
 
+### `TASKFLOW_QMD_TIMEOUT`
+
+Seconds one qmd query of the per-turn project-notes push may take. Default: `6`. The query runs synchronously on the prompt-injection path every turn of a project that has a `project-notes/.qmd/` index — an accepted cost, measured at 2.7–2.9 s on the reference machine (GPU embedding, 79–210 notes) — so the budget exists to bound a cold or busy machine, not the normal case. On expiry the push falls back to the lexical rank for that turn and announces it once per session. A non-numeric or non-positive value falls back to the default. The Pi taskflow extension reads the same name — set it identically on both sides.
+
+```json
+{
+  "env": {
+    "TASKFLOW_QMD_TIMEOUT": "6"
+  }
+}
+```
+
 ## Usage
 
 ### Specifying a project
@@ -400,7 +412,7 @@ Nine hook scripts run automatically when the plugin is enabled, wired in `hooks/
 
 Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Progress Session]` into the LLM context. Creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` if missing.
 
-It also builds the per-turn `project-notes (index rows):` push block (see [project-notes](#project-notes)) through `hooks/notes_push.py`: location rows from the note `anchors:` matched against the paths this turn names, read (`.reads` ledger) or wrote (`.touched` ledger), then topic rows from a qmd structured query — spawned as `node <bin/qmd> query … --no-rerank --json` with a 4 s timeout, only when the project has a `project-notes/.qmd/` index — fused with the in-process lexical rank. When qmd is expected but cannot run, the topic layer is the lexical rank alone and a `[project-notes] vector layer unavailable: <reason>` line is injected once per session (`notes_push_notice` in the state file).
+It also builds the per-turn `project-notes (index rows):` push block (see [project-notes](#project-notes)) through `hooks/notes_push.py`: location rows from the note `anchors:` matched against the paths this turn names, read (`.reads` ledger) or wrote (`.touched` ledger), then topic rows from a qmd structured query — spawned as `node <bin/qmd> query … --no-rerank --json` with a timeout of `TASKFLOW_QMD_TIMEOUT` seconds (default 6), only when the project has a `project-notes/.qmd/` index — fused with the in-process lexical rank. When qmd is expected but cannot run, the topic layer is the lexical rank alone and a `[project-notes] vector layer unavailable: <reason>` line is injected once per session (`notes_push_notice` in the state file).
 
 Also handles guidelines injection: on the first turn of a session (and after compaction), the full content of `progress_guidelines.md`, `notes_guidelines.md`, and `tasks_guidelines.md` is injected. On subsequent turns, a reminder is injected to maintain attention to the guidelines at lower token cost — `guidelines_reminder.md` (default) or `guidelines_reminder_manifest.md` (`TASKFLOW_GUIDELINES_REMINDER=manifest`; see [Configuration](#taskflow_guidelines_reminder)).
 

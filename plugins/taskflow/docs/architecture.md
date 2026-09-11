@@ -156,7 +156,9 @@ user prompt
   │                      read (`.reads` tail) / wrote (`.touched` tail)) → L2 (same leaf
   │                      directory, ≤ ⌈K/2⌉) → topic = outer RRF of the qmd structured query
   │                      rank (`node <bin/qmd> query 'vec: …\nlex: …' --no-rerank --json`,
-  │                      4 s timeout, only when project-notes/.qmd/ exists) and the
+  │                      timeout TASKFLOW_QMD_TIMEOUT s, default 6 — the synchronous
+  │                      2.7-2.9 s per-turn cost is accepted explicitly — only when
+  │                      project-notes/.qmd/ exists) and the
   │                      in-process lexical rank over Description+Tags. `_archive/` excluded,
   │                      note bodies never read for output. qmd expected but failing →
   │                      lexical only + `[project-notes] vector layer unavailable: <reason>`
