@@ -33,6 +33,10 @@ Inspects a project's progress.md, tasks/, and project-notes/ for:
 Always-on footer lines (never findings, never affect the exit code):
   notes without summary: n of N        (N excludes _archive/)
   anchor symbols unchecked: n (...)    only when #16 had no snapshot to use
+  near-duplicate note pairs: n         cross-category slug-core overlap; the
+                                       pairs print under it. Merging duplicates
+                                       was ruled out, so this can never become a
+                                       finding: it would never clear.
 
 Note: progress.md's Completed table lists every task in tasks/2_done/ — the
 file is never truncated (context-side truncation is view_progress.py's job and
@@ -77,6 +81,14 @@ NOTES_DESC_MAX = 100
 NOTES_SUMMARY_MAX = 500
 NOTES_FLAT_CATEGORIES = ("specs", "investigations", "checks", "procedures", "backlog")
 ANCHOR_SYMBOL_SEP = "::"
+# Two notes covering one fact under different categories (a spec and the
+# handoff that transcribed it) are invisible to every other check: both files
+# exist, both are indexed, neither is wrong. Calibrated on ONE measured pair, so
+# the false-positive rate over a real corpus is unknown - hence footer, not
+# finding.
+NEAR_DUP_JACCARD_MIN = 0.6
+NEAR_DUP_ROLE_PREFIXES = ("sibling-handoff-", "handoff-")
+NEAR_DUP_DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 # "advisory" while a corpus is being backfilled; "violation" once its anchors
 # are in place (harness-taskflow backfilled 2026-09-10).
 ANCHOR_DANGLING_SEVERITY = "violation"
@@ -447,6 +459,49 @@ def notes_summary_coverage(project_dir: Path) -> tuple[int, int]:
     must never become one by living in the findings list."""
     summaries = collect_note_summaries(project_dir / "project-notes")
     return sum(1 for _, s in summaries if s is None), len(summaries)
+
+
+def slug_core(stem: str) -> frozenset[str]:
+    """Token set of a note filename with its role prefix and trailing ISO date
+    removed, so a spec and the handoff that transcribes it reduce to the same
+    words."""
+    s = stem.lower()
+    for prefix in NEAR_DUP_ROLE_PREFIXES:
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    s = NEAR_DUP_DATE_SUFFIX_RE.sub("", s)
+    return frozenset(t for t in s.split("-") if t)
+
+
+def near_duplicate_pairs(project_dir: Path) -> list[tuple[str, str, float]]:
+    """Footer input: (file a, file b, Jaccard) for notes in DIFFERENT categories
+    whose slug cores overlap at NEAR_DUP_JACCARD_MIN or more, file order sorted.
+    Same-category repetition is a naming convention, not a near-duplicate."""
+    notes_dir = project_dir / "project-notes"
+    entries: list[tuple[str, str, frozenset[str]]] = []
+    for p in walk_note_files(notes_dir):
+        rel = p.relative_to(notes_dir).as_posix()
+        category = rel.split("/", 1)[0]
+        if category == "_archive":
+            continue
+        core = slug_core(p.stem)
+        if core:
+            entries.append((rel, category, core))
+
+    pairs: list[tuple[str, str, float]] = []
+    for i, (rel_a, cat_a, core_a) in enumerate(entries):
+        for rel_b, cat_b, core_b in entries[i + 1:]:
+            if cat_a == cat_b:
+                continue
+            union = core_a | core_b
+            if not union:
+                continue
+            j = len(core_a & core_b) / len(union)
+            if j >= NEAR_DUP_JACCARD_MIN:
+                lo, hi = sorted((rel_a, rel_b))
+                pairs.append((lo, hi, round(j, 2)))
+    return sorted(pairs)
 
 
 def load_lsp_snapshot(path: Path) -> dict[str, list[dict]] | None:
@@ -933,6 +988,9 @@ def main(argv: list[str] | None = None) -> int:
 
     without, total = notes_summary_coverage(project_dir)
     footers = [f"notes without summary: {without} of {total}"]
+    near_dups = near_duplicate_pairs(project_dir)
+    footers.append(f"near-duplicate note pairs: {len(near_dups)}")
+    footers.extend(f"  {a} ~ {b} ({j})" for a, b, j in near_dups)
     if unchecked:
         footers.append(
             f"anchor symbols unchecked: {unchecked} (no LSP snapshot at {snapshot})"

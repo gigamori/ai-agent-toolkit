@@ -182,10 +182,8 @@ def test_qmd_rank() -> None:
         {"file": "qmd://project-notes/specs/n1.md", "score": 0.3, "ftsScores": {}, "vectorScores": {"v": 0.1}},
         {"file": "qmd://project-notes/specs/n3.md", "score": 0.2, "ftsScores": {}, "vectorScores": [0.4]},
     ]
-    order, hits = np.qmd_rank(results)
+    order = np.qmd_rank(results)
     check(order == ["specs/n2.md", "specs/n1.md", "specs/n3.md"], f"files deduped in rank order, uri prefix stripped (got {order})")
-    check(hits == {"specs/n2.md", "specs/n3.md"},
-          f"a hit needs a BM25 score or a vector score >= tau; keys absent = hit (got {hits})")
 
     def runner_ok(cmd, **kw):
         check(cmd[0] == "node" and "--no-rerank" in cmd and "--json" in cmd and kw.get("cwd") == "NOTES",
@@ -205,15 +203,10 @@ def test_qmd_rank() -> None:
         check("exit 1" in str(e), "non-zero exit raises QmdError with the code")
 
 
-def test_rrf_and_compose(root: Path) -> None:
-    print("--- rrf_merge / compose / render ---")
+def test_union_and_compose(root: Path) -> None:
+    print("--- union_interleave / compose / render ---")
     ws, _, notes = make_ws(root)
     rows = rows_of(notes)
-    updated = {r["file"]: r["updated"] for r in rows}
-    merged = np.rrf_merge(["specs/n1.md", "specs/n2.md"], ["specs/n2.md", "specs/n3.md"], updated)
-    check(merged == ["specs/n2.md", "specs/n1.md", "specs/n3.md"],
-          f"a file in both lists wins, then ties resolve by Updated desc (got {merged})")
-    check(np.rrf_merge([], ["specs/n3.md"], updated) == ["specs/n3.md"], "an empty list passes the other through")
     ui = np.union_interleave(["specs/n1.md", "specs/n2.md"], ["specs/n2.md", "specs/n3.md"])
     check(ui == ["specs/n1.md", "specs/n3.md", "specs/n2.md"],
           f"union_interleave alternates and drops the duplicate from list b (got {ui})")
@@ -226,10 +219,23 @@ def test_rrf_and_compose(root: Path) -> None:
     shown, matched = np.compose(rows, l1, l2, ["specs/n5.md"], {"specs/n5.md"}, k=4)
     check([r["file"] for r in shown] == ["specs/n1.md", "specs/n2.md", "specs/n3.md", "specs/n4.md"],
           f"L1 first, L2 capped at ceil(K/2)... within K, no duplicates (got {[r['file'] for r in shown]})")
-    check(matched == 5, f"M counts L1 ∪ L2 ∪ topic hits uncapped (got {matched})")
+    check(matched == 5, f"M counts L1 ∪ L2 ∪ the rows either topic layer returned, uncapped (got {matched})")
     text = np.render(shown, matched, len(rows))
     check(text.startswith(np.HEADER + "\n| specs/n1.md |"), "block starts with the header and verbatim rows")
     check(text.endswith("project-notes matched: 5 of 5 rows (4 shown)"), f"footer carries M, N and K shown (got {text.splitlines()[-1]!r})")
+
+
+def test_contract_literals() -> None:
+    print("--- boundary contract literals ---")
+    check(np.K_ROWS == 8,
+          f"K is 8 in the notes data contract; changing it is a consumer-propagating change (got {np.K_ROWS})")
+    check(np.L2_CAP == 4,
+          f"L2 cap is 4 in the notes data contract; changing it is a consumer-propagating change (got {np.L2_CAP})")
+    check(np.HEADER == "project-notes (index rows):",
+          f"consumers transcribe this header literal; changing it is a consumer-propagating change (got {np.HEADER!r})")
+    footer = np.render([], 0, 0).splitlines()[-1]
+    check(footer == "project-notes matched: 0 of 0 rows (0 shown)",
+          f"consumers transcribe this footer literal; changing it is a consumer-propagating change (got {footer!r})")
 
 
 def test_build_end_to_end(root: Path) -> None:
@@ -242,6 +248,8 @@ def test_build_end_to_end(root: Path) -> None:
     env_auto = {"TASKFLOW_QMD_BIN": str(fake_bin), "TASKFLOW_NOTES_PUSH": "auto"}
 
     def runner(cmd, **kw):
+        check(cmd[cmd.index("-n") + 1] == str(np.K_ROWS + np.QMD_MARGIN),
+              f"qmd is asked for K_ROWS + QMD_MARGIN rows; widening the window is a measured change (got {cmd})")
         return subprocess.CompletedProcess(cmd, 0, stdout='[{"file": "qmd://project-notes/specs/n5.md"}]', stderr="")
 
     (notes / ".qmd").mkdir()
@@ -251,7 +259,7 @@ def test_build_end_to_end(root: Path) -> None:
     check(lines[0] == np.HEADER and lines[1].startswith("| specs/n1.md |") and lines[2].startswith("| specs/n2.md |"),
           f"L1 row from the .reads ledger, then its L2 sibling, come first (got {lines[:3]})")
     check(lines[3].startswith("| specs/n5.md |") and lines[4].startswith("| specs/n3.md |"),
-          f"qmd (n5) and lexical (n3) results merge by outer RRF, tie by Updated desc (got {lines[3:5]})")
+          f"qmd (n5) and lexical (n3) results merge by taking the two lists alternately (got {lines[3:5]})")
     check(lines[-1] == "project-notes matched: 4 of 5 rows (4 shown)", f"footer (got {lines[-1]!r})")
 
     (notes / ".qmd").rmdir()
@@ -293,7 +301,8 @@ def main() -> int:
     test_query_doc()
     test_timeout_env()
     test_qmd_rank()
-    for t in (test_prompt_paths, test_location, test_ledger_tail, test_lexical, test_rrf_and_compose, test_build_end_to_end):
+    test_contract_literals()
+    for t in (test_prompt_paths, test_location, test_ledger_tail, test_lexical, test_union_and_compose, test_build_end_to_end):
         with tempfile.TemporaryDirectory() as d:
             t(Path(d))
     print()

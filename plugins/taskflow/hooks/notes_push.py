@@ -10,8 +10,9 @@ Three retrieval layers, composed in this order (design: notes-retrieval-locality
 
     L1  location, exact file   note `anchors:` path == a path this turn touches
     L2  location, directory    same leaf directory; at most ceil(K/2) rows
-    T   topic                  outer RRF of (qmd structured query rank, in-process
-                               lexical rank); qmd only when project-notes/.qmd/ exists
+    T   topic                  union of (qmd structured query rank, in-process lexical
+                               rank) taken alternately, neither scored against the
+                               other; qmd only when project-notes/.qmd/ exists
 
 "A path this turn touches" = paths named in the prompt ∪ the tail of the session's
 `.reads` ledger (read_capture.py) ∪ the tail of its `.touched` ledger
@@ -50,12 +51,10 @@ L2_CAP = math.ceil(K_ROWS / 2)
 LEDGER_TAIL = 40
 QMD_TIMEOUT_S = 6.0
 TIMEOUT_ENV = 'TASKFLOW_QMD_TIMEOUT'
-QMD_MARGIN = 8
-RRF_K = 60
+QMD_MARGIN = 24
 VEC_MAX_CHARS = 1000
 LEX_TERMS_MAX = 12
 IDF_CUTOFF = 0.30
-VECTOR_TAU = 0.3
 QMD_DIR = '.qmd'
 MODE_ENV = 'TASKFLOW_NOTES_PUSH'
 BIN_ENV = 'TASKFLOW_QMD_BIN'
@@ -444,56 +443,24 @@ def _result_file(result: dict) -> str:
     return f.replace('\\', '/')
 
 
-def _result_is_hit(result: dict) -> bool:
-    """With --explain, a hit is a non-empty BM25 score set or a vector score
-    >= VECTOR_TAU; without those keys every returned file counts."""
-    fts = [v for k, v in result.items() if 'fts' in k.lower()]
-    vec = [v for k, v in result.items() if 'vector' in k.lower()]
-    if not fts and not vec:
-        return True
-    if any(v for v in fts):
-        return True
-    for v in vec:
-        vals = v.values() if isinstance(v, dict) else (v if isinstance(v, list) else [v])
-        try:
-            if any(float(x) >= VECTOR_TAU for x in vals):
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
-
-
-def qmd_rank(results: list[dict]) -> tuple[list[str], set[str]]:
-    """(ordered distinct files, hit files) from qmd chunk results."""
+def qmd_rank(results: list[dict]) -> list[str]:
+    """Ordered distinct files from qmd chunk results. Every file qmd returned
+    counts: the per-backend scores live under the `explain` key, and thresholding
+    one layer while the other stays unthresholded makes M harder to define than
+    either pure rule."""
     order: list[str] = []
-    hits: set[str] = set()
     for r in results:
         f = _result_file(r)
         if not f:
             continue
         if f not in order:
             order.append(f)
-        if _result_is_hit(r):
-            hits.add(f)
-    return order, hits
+    return order
 
 
 # ---------------------------------------------------------------------------
 # composition
 # ---------------------------------------------------------------------------
-
-def rrf_merge(list_a: list[str], list_b: list[str], updated_of: dict[str, str]) -> list[str]:
-    """Outer RRF with equal weights, 1/(RRF_K + rank); ties Updated desc, then
-    first-seen order. An empty list contributes nothing."""
-    scores: dict[str, float] = {}
-    for lst in (list_a, list_b):
-        for rank, f in enumerate(lst):
-            scores[f] = scores.get(f, 0.0) + 1.0 / (RRF_K + rank + 1)
-    files = list(scores)
-    files.sort(key=lambda f: updated_of.get(f, ''), reverse=True)
-    files.sort(key=lambda f: -scores[f])
-    return files
-
 
 def union_interleave(list_a: list[str], list_b: list[str]) -> list[str]:
     """Union of what the two layers returned, alternating a, b, a, b, ... and
@@ -512,8 +479,9 @@ def union_interleave(list_a: list[str], list_b: list[str]) -> list[str]:
 
 
 def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
-            hits: set[str], k: int = K_ROWS) -> tuple[list[dict], int]:
-    """(shown rows, M). Order L1 → L2 (≤ L2_CAP) → topic; a row appears once."""
+            returned: set[str], k: int = K_ROWS) -> tuple[list[dict], int]:
+    """(shown rows, M). Order L1 → L2 (≤ L2_CAP) → topic; a row appears once.
+    M counts the rows either topic layer returned, plus the location matches."""
     by_file = {r['file']: r for r in rows}
     shown: list[dict] = []
     seen: set[str] = set()
@@ -530,7 +498,7 @@ def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
     for f in topic:
         if f in by_file:
             add(by_file[f])
-    matched = {r['file'] for r in l1} | {r['file'] for r in l2} | (hits & set(by_file))
+    matched = {r['file'] for r in l1} | {r['file'] for r in l2} | (returned & set(by_file))
     return shown, len(matched)
 
 
@@ -569,7 +537,6 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
     lexical_files = [r['file'] for r in lexical]
 
     qmd_files: list[str] = []
-    qmd_hits: set[str] = set()
     reason: str | None = None
     if mode == 'auto' and subject and os.path.isdir(os.path.join(notes_dir, QMD_DIR)):
         bin_path = resolve_qmd_bin(env)
@@ -580,12 +547,12 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
             try:
                 results = run_qmd(bin_path, notes_dir, build_query_doc(subject),
                                   K_ROWS + QMD_MARGIN, timeout=timeout, runner=runner)
-                qmd_files, qmd_hits = qmd_rank(results)
+                qmd_files = qmd_rank(results)
             except subprocess.TimeoutExpired:
                 reason = f'qmd timeout after {timeout:g}s'
             except (QmdError, OSError, ValueError) as e:
                 reason = str(e) or e.__class__.__name__
 
     topic = union_interleave(qmd_files, lexical_files)
-    shown, matched = compose(rows, l1, l2, topic, qmd_hits | set(lexical_files))
+    shown, matched = compose(rows, l1, l2, topic, set(qmd_files) | set(lexical_files))
     return render(shown, matched, len(rows)), reason

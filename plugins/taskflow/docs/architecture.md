@@ -154,12 +154,13 @@ user prompt
   │                      verbatim index.md rows + `project-notes matched: M of N rows (K shown)`.
   │                      Order: L1 (a note whose anchors: path == a path this turn named /
   │                      read (`.reads` tail) / wrote (`.touched` tail)) → L2 (same leaf
-  │                      directory, ≤ ⌈K/2⌉) → topic = outer RRF of the qmd structured query
+  │                      directory, ≤ ⌈K/2⌉) → topic = the union of the qmd structured query
   │                      rank (`node <bin/qmd> query 'vec: …\nlex: …' --no-rerank --json`,
-  │                      timeout TASKFLOW_QMD_TIMEOUT s, default 6 — the synchronous
-  │                      2.7-2.9 s per-turn cost is accepted explicitly — only when
-  │                      project-notes/.qmd/ exists) and the
-  │                      in-process lexical rank over Description+Tags. `_archive/` excluded,
+  │                      K + QMD_MARGIN rows requested, timeout TASKFLOW_QMD_TIMEOUT s,
+  │                      default 6 — the synchronous 2.7-2.9 s per-turn cost is accepted
+  │                      explicitly — only when project-notes/.qmd/ exists) and the
+  │                      in-process lexical rank over Description+Tags, taken alternately so
+  │                      neither list is scored against the other. `_archive/` excluded,
   │                      note bodies never read for output. qmd expected but failing →
   │                      lexical only + `[project-notes] vector layer unavailable: <reason>`
   │                      once per session (state `notes_push_notice`). Env: TASKFLOW_NOTES_PUSH

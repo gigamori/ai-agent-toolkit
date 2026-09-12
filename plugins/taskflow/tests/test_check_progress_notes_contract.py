@@ -217,10 +217,48 @@ def test_main_footer_and_flag(root: Path) -> None:
           "the dangling finding prints under its severity label")
 
 
+def test_near_duplicate_pairs(root: Path) -> None:
+    print("--- near-duplicate note pairs (footer) ---")
+    ws, project_dir = make_workspace(root)
+    for rel in ("specs/context-side-done-rows-cap.md",
+                "procedures/sibling-handoff-taskflow-context-done-rows-cap-2026-08-03.md",
+                "specs/kanban-port-derivation.md",
+                "specs/kanban-port-derivation-2.md",
+                "procedures/release-runbook.md",
+                "_archive/context-side-done-rows-cap-old.md"):
+        write_note(project_dir, rel, "created: 2026-01-01")
+        register(project_dir, rel)
+
+    pairs = cp.near_duplicate_pairs(project_dir)
+    found = {(a, b) for a, b, _ in pairs}
+
+    measured = ("procedures/sibling-handoff-taskflow-context-done-rows-cap-2026-08-03.md",
+                "specs/context-side-done-rows-cap.md")
+    check(measured in found,
+          f"the measured spec/handoff pair is detected; the role prefix and trailing date are stripped before comparing (got {sorted(found)})")
+    check(next(j for a, b, j in pairs if (a, b) == measured) >= cp.NEAR_DUP_JACCARD_MIN,
+          "the measured pair scores at or above the threshold the predicate is calibrated on")
+    check(not any("kanban-port-derivation" in a for a, _, _ in pairs),
+          f"two notes in the SAME category are a naming convention, not a near-duplicate (got {sorted(found)})")
+    check(not any("release-runbook" in a or "release-runbook" in b for a, b, _ in pairs),
+          f"unrelated notes in different categories do not pair (got {sorted(found)})")
+    check(not any("_archive/" in a or "_archive/" in b for a, b, _ in pairs),
+          f"_archive/ is not authoritative and never pairs (got {sorted(found)})")
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = cp.main([str(project_dir)])
+    text = out.getvalue()
+    check("near-duplicate note pairs: 1" in text,
+          f"the count prints as an always-on footer (got {text!r})")
+    check(rc == 0,
+          f"merging duplicates was ruled out, so a detected pair must never drive a non-zero exit (got {rc})")
+
+
 def main() -> int:
-    print("=== check_progress.py notes data-contract checks (#14-#16 + footer) ===")
+    print("=== check_progress.py notes data-contract checks (#14-#16 + footers) ===")
     for t in (test_nested_dir, test_index_attachment_rows, test_summary_length_and_coverage,
-              test_anchor_dangling, test_main_footer_and_flag):
+              test_anchor_dangling, test_main_footer_and_flag, test_near_duplicate_pairs):
         with tempfile.TemporaryDirectory() as d:
             t(Path(d))
     print()
