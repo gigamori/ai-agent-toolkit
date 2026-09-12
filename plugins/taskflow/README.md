@@ -120,7 +120,7 @@ Path of qmd's `bin/qmd` script, used by the per-turn project-notes push (see [pr
 
 ### `TASKFLOW_NOTES_PUSH`
 
-Which layers the per-turn project-notes push uses. `auto` (default): location (`anchors:` against the paths this turn named, read or wrote) + a qmd structured query when `project-notes/.qmd/` exists + the in-process lexical rank, merged by reciprocal rank fusion. `lexical`: location + lexical only, qmd never spawned. `off`: location only.
+Which layers the per-turn project-notes push uses. `auto` (default): location (`anchors:` against the paths this turn named, read or wrote) + a qmd structured query when `project-notes/.qmd/` exists + the in-process lexical rank, merged as the union of both lists taken alternately. `lexical`: location + lexical only, qmd never spawned. `off`: location only.
 
 ```json
 {
@@ -310,7 +310,7 @@ Project-specific persistent knowledge, categorized by folder:
 
 The project-router surfaces project-notes as **pointers only** — a code-bounded summary (note counts by category, an `_archive` count, and an index-drift count, produced by `scripts/view_progress.py --notes-summary`; never a per-file list) plus the verbatim matching rows of `project-notes/index.md`, with `_archive/` rows excluded as non-authoritative — never note body contents, so it cannot summarize, translate, or confabulate note contents into the routing result. The main agent reads the note files themselves when needed.
 
-Every turn, `session_init.py` also injects a `project-notes (index rows):` block — up to 8 verbatim `index.md` rows chosen by **location** (a note whose `anchors:` names a file this turn mentioned, read or wrote comes first; a note anchored in the same directory next, at most 4) and by **topic** (a qmd structured query over the note bodies when `project-notes/.qmd/` exists, fused by reciprocal rank fusion with an in-process lexical rank of Description + Tags), followed by `project-notes matched: M of N rows (K shown)`. `_archive/` rows are excluded and note bodies are never injected. The location signal comes from the `.reads` / `.touched` ledgers described under hooks; `TASKFLOW_NOTES_PUSH` and `TASKFLOW_QMD_BIN` are the knobs.
+Every turn, `session_init.py` also injects a `project-notes (index rows):` block — up to 8 verbatim `index.md` rows chosen by **location** (a note whose `anchors:` names a file this turn mentioned, read or wrote comes first; a note anchored in the same directory next, at most 4) and by **topic** (a qmd structured query over the note bodies when `project-notes/.qmd/` exists, unioned with an in-process lexical rank of Description + Tags by taking the two lists alternately), followed by `project-notes matched: M of N rows (K shown)`. `_archive/` rows are excluded and note bodies are never injected. The location signal comes from the `.reads` / `.touched` ledgers described under hooks; `TASKFLOW_NOTES_PUSH` and `TASKFLOW_QMD_BIN` are the knobs.
 
 To enable the topic layer for a project, install the `@tobilu/qmd` npm package (Node ≥ 22), then from `_projects/<project>/project-notes/` run `qmd init`, `qmd collection add .`, add `ignore: ["index.md", "_archive/**"]` to the collection entry in `.qmd/index.yml`, and run `qmd embed` (GPU recommended; on a Vulkan GPU that aborts during embedding, `GGML_VK_DISABLE_COOPMAT=1` in the environment is the known fix). Keep `project-notes/.qmd/` out of version control if you track `_projects/`. Re-run `qmd update` and `qmd embed` after editing notes; until then the push still works over whatever is indexed.
 

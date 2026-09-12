@@ -495,6 +495,22 @@ def rrf_merge(list_a: list[str], list_b: list[str], updated_of: dict[str, str]) 
     return files
 
 
+def union_interleave(list_a: list[str], list_b: list[str]) -> list[str]:
+    """Union of what the two layers returned, alternating a, b, a, b, ... and
+    never scoring across them. Each layer therefore holds every other slot, so
+    neither can push the other's top hits out of the block. Dropping the scores
+    is the point: with equal-weight RRF a layer that does not contain the wanted
+    row still contributes its own top rows against it."""
+    b_only = [f for f in list_b if f not in set(list_a)]
+    out: list[str] = []
+    for i in range(max(len(list_a), len(b_only))):
+        if i < len(list_a):
+            out.append(list_a[i])
+        if i < len(b_only):
+            out.append(b_only[i])
+    return out
+
+
 def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
             hits: set[str], k: int = K_ROWS) -> tuple[list[dict], int]:
     """(shown rows, M). Order L1 → L2 (≤ L2_CAP) → topic; a row appears once."""
@@ -570,7 +586,6 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
             except (QmdError, OSError, ValueError) as e:
                 reason = str(e) or e.__class__.__name__
 
-    updated_of = {r['file']: r['updated'] for r in rows}
-    topic = rrf_merge(qmd_files, lexical_files, updated_of)
+    topic = union_interleave(qmd_files, lexical_files)
     shown, matched = compose(rows, l1, l2, topic, qmd_hits | set(lexical_files))
     return render(shown, matched, len(rows)), reason

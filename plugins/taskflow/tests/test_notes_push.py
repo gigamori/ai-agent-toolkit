@@ -214,6 +214,13 @@ def test_rrf_and_compose(root: Path) -> None:
     check(merged == ["specs/n2.md", "specs/n1.md", "specs/n3.md"],
           f"a file in both lists wins, then ties resolve by Updated desc (got {merged})")
     check(np.rrf_merge([], ["specs/n3.md"], updated) == ["specs/n3.md"], "an empty list passes the other through")
+    ui = np.union_interleave(["specs/n1.md", "specs/n2.md"], ["specs/n2.md", "specs/n3.md"])
+    check(ui == ["specs/n1.md", "specs/n3.md", "specs/n2.md"],
+          f"union_interleave alternates and drops the duplicate from list b (got {ui})")
+    check(np.union_interleave([], ["specs/n3.md"]) == ["specs/n3.md"],
+          "union_interleave passes a single list through")
+    check(np.union_interleave(["specs/n1.md"], []) == ["specs/n1.md"],
+          "union_interleave passes the other single list through")
     l1 = [rows[0]]
     l2 = [rows[1], rows[2], rows[3], rows[4], rows[0]]
     shown, matched = np.compose(rows, l1, l2, ["specs/n5.md"], {"specs/n5.md"}, k=4)
