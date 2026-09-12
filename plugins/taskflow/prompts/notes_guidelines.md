@@ -1,15 +1,16 @@
 ## Loading
 
-Notes reach you as pointers (`index.md` rows), never as a listing to scan.
+The injected `project-notes (index rows):` block is the ONLY source of notes. It carries verbatim
+`index.md` rows chosen deterministically — by location (a note anchored on a file you named, read or
+wrote) and by topic — and ends in `project-notes matched: M of N rows (K shown)`. `_archive/` is
+excluded from it.
 
-- Start from this turn's injected `project-notes (index rows):` block (verbatim `index.md` rows chosen by location — a note anchored on a file you named, read or wrote — and by topic, ending in `project-notes matched: M of N rows (K shown)`) and the router result: `project_notes_relevant` (verbatim rows) and `project_notes_summary` (counts). `_archive/` is excluded from both. Do NOT read `index.md` in full.
-- Before opening a candidate note's body, read its frontmatter `summary:` and decide from that.
-- When the router rows are insufficient, pull narrowly:
-  1. Before editing or investigating a symbol: list the enclosing symbol and its depth-1 callers / callees with the `LSP` tool, then Grep `project-notes/` for those names and for their `path::symbol` form (the `anchors:` notation).
-  2. For a topic search, when `project-notes/.qmd/` exists: from `project-notes/`, run `qmd query "$(printf 'vec: %s\nlex: %s\nlex: %s' '<subject>' '<term>' '<term>')" --no-rerank -n 10`. Write the `vec:` subject and one `lex:` line per term yourself; no rerank. A `vec:` line must not contain a `-` right after whitespace (qmd rejects it as negation).
-  3. For a note's structure: Grep `^## ` and Read with offset / limit instead of the whole body.
-  4. When the `project-notes matched` footer shows more matches than rows shown, narrow by symbol (step 1) instead of asking for more rows.
-- If `index.md` is missing, fall back to walking `project-notes/<category>/*.md` and judging from filenames.
+- Open notes only from that block. Read a candidate's frontmatter `summary:` first and decide from
+  that before opening its body.
+- Do NOT read `index.md`. Do NOT Grep, `ls`, or walk `project-notes/`. Do NOT run `qmd`. Do NOT use
+  the `LSP` tool to find notes. Note selection is not your job on this build.
+- The router returns no note rows on this build.
+- When the block does not carry what you need, say so and answer without it. Do not go looking.
 
 ## Categories
 

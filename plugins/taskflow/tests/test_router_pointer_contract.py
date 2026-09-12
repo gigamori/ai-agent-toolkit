@@ -63,9 +63,9 @@ def main():
     ok("located '### For apply' template block")
 
     if POINTER_FIELD in template:
-        ok(f"apply template contains pointer field '{POINTER_FIELD}'")
+        bad(f"apply template still emits note field '{POINTER_FIELD}' (replace build)")
     else:
-        bad(f"apply template missing pointer field '{POINTER_FIELD}'")
+        ok(f"apply template has no note field '{POINTER_FIELD}' (replace build)")
 
     if BODY_LEAK_FIELD in template:
         bad(f"apply template leaks note body field '{BODY_LEAK_FIELD}'")
@@ -78,9 +78,9 @@ def main():
         ok(f"'{BODY_LEAK_FIELD}' absent from the entire router definition")
 
     if NOTES_SUMMARY_FIELD in template:
-        ok(f"apply template contains bounded field '{NOTES_SUMMARY_FIELD}'")
+        bad(f"apply template still emits note field '{NOTES_SUMMARY_FIELD}' (replace build)")
     else:
-        bad(f"apply template missing bounded field '{NOTES_SUMMARY_FIELD}'")
+        ok(f"apply template has no note field '{NOTES_SUMMARY_FIELD}' (replace build)")
 
     for field in RETIRED_UNBOUNDED_FIELDS:
         if field in template:

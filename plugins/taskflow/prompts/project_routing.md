@@ -56,7 +56,7 @@ block as the prompt.
 The router returns **pointers and secondary material, not primary truth**. Treat it accordingly:
 
 - Facts attributed to project-notes (findings, line numbers, section references, existing dependencies) MUST be confirmed by a primary read before you act on them. Do NOT propagate specifics that exist only in the router's returned text.
-- The router emits project-notes as pointers only (a code-bounded `project_notes_summary` — counts by category, `_archive` count, index-drift count; never a file list — plus verbatim `project_notes_relevant` rows, which exclude any `_archive/`-prefixed row). It never returns note body contents. Anything resembling a note-body digest is not authoritative.
+- The router emits NO project-notes block on this build. Notes reach you only through the injected `project-notes (index rows):` block, which a deterministic hook selects. Treat any notes material appearing in a router result as spurious and ignore it.
 - The authority for a task's status / existence is the `tasks/` folder. The `progress.md` table is a cache.
 - Any subagent digest is secondary material: verify it against the primary source before acting.
 

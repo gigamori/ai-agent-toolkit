@@ -30,19 +30,20 @@ Two separate guarantees apply to every emitted block. Do not conflate them:
   against confabulation: you never compose text that isn't a direct copy of something you read.
 - **(ii) Bounded population (code-only).** How MUCH of a population reaches your output is decided
   exclusively by a deterministic script, never by you. When a block's source is a script's stdout
-  (e.g. `--- progress ---`, `--- project_notes_summary ---`), that stdout — not the underlying file —
+  (e.g. `--- progress ---`), that stdout — not the underlying file —
   IS the source for (i); you MUST NOT select, drop, reorder, renumber, or "restore" omitted items by
   reading the underlying file yourself. You have no discretion over population size anywhere in this
   agent's output.
 
-**Explicit exemption from (ii): `tasks_in_progress_relevant` and `project_notes_relevant`.** Selecting
+**Explicit exemption from (ii): `tasks_in_progress_relevant`.** Selecting
 *which* rows are relevant to `prompt_summary` is a semantic judgment — that is your job, not a
 script's (AI-target: population bound = code / verifiable; relevance selection = LLM / judgment).
-These two fields have no size cap. If their combined size becomes a problem in practice, the fix is
-better `Tags` design in the source `index.md`, not a cap added here.
+That field has no size cap.
 
-- Do NOT read or emit project-notes body files — return pointers only (`project_notes_summary` +
-  verbatim `index.md` rows via `project_notes_relevant`).
+- Do NOT read, select, or emit anything from `project-notes/`. Note selection is not this agent's
+  job on this build: the main agent receives notes exclusively through the injected
+  `project-notes (index rows):` block, chosen by a deterministic hook.
+  You MUST NOT substitute a directory walk, `ls`, `Glob`, `Grep`, or any other enumeration for it.
 - If you cannot emit something verbatim, return its path instead.
 
 ## Input
@@ -138,45 +139,14 @@ Note: `stale_hint` is an mtime-based approximation. The authoritative staleness 
 
 This step does NOT perform full drift / lockstep analysis. Defer to `/progress check`.
 
-## Step 5: project-notes inspection (pointer-only)
+## Step 5: project-notes — not this agent's job
 
-The router does NOT read project-notes body files. It returns pointers only.
+This build removes note selection from the router. Emit no notes block and read nothing under
+`project-notes/` (not `index.md`, not a body file, not a directory listing). The main agent gets its
+notes from the injected `project-notes (index rows):` block instead.
 
-1. `project_notes_summary` — run:
-
-   ```
-   uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/view_progress.py" "_projects/<project>" --notes-summary
-   ```
-
-   - exit 0 → the `--- project_notes_summary ---` block is this stdout, verbatim (counts only —
-     never individual note paths; per Output fidelity (ii), you have no discretion over which notes
-     this counts).
-   - non-zero exit, or the command cannot be run at all → emit exactly one line:
-     `unavailable: <reason>`. **You MUST NOT substitute a directory walk, `ls`, `Glob`, or any other
-     enumeration as a fallback here** — an improvised listing is exactly the unbounded-population
-     defect this field exists to prevent. Unlike the `--- progress ---` fallback in Step 3 (which
-     falls back to reading `progress.md`, a single bounded file), there is no bounded fallback source
-     for a notes summary; `unavailable` plus the reason is the complete and correct output.
-
-2. `project_notes_relevant` — read `_projects/<project>/project-notes/index.md` (the 4-column index:
-   `File | Description | Tags | Updated`) and copy **verbatim** the rows whose `Description` / `Tags`
-   match `prompt_summary`. Do NOT summarize, translate, reorder, or merge (Output fidelity (i); size is
-   exempt from (ii) — see the Output fidelity section above).
-
-   **Exclude every row whose `File` starts with `_archive/`**, even if it matches `prompt_summary`.
-   `_archive/` is documented as non-authoritative (`notes_guidelines.md`); a resolved/superseded row
-   surfacing indistinguishably from a live one is the confabulation-adjacent failure this exclusion
-   prevents. If the user's `prompt_summary` explicitly asks about history, past decisions, or archived
-   material, you may still tell them such notes exist (their count is visible in
-   `project_notes_summary`) and point them at `_archive/` directly — you simply never quote an
-   archived row's content here.
-
-   "none" if `index.md` is missing or no non-archived row matches.
-
-Do NOT read note body files. Do NOT walk the tree as a fallback for `project_notes_relevant` either —
-population and drift are `project_notes_summary`'s job (backed by `check_progress.py`'s own
-note-set definition); an unregistered note is the domain of `/progress check` drift detection, not
-the router.
+`project_notes_autosave` (Step 2b) is unaffected — it decides whether the main agent should OFFER to
+save a new note, which is a write-side decision, not selection.
 
 ## Step 6: Emit the result
 
@@ -216,10 +186,5 @@ progress_exists: true | false
 --- stale_hint ---
 <one-line note if any tasks/1_in_progress/ files are >14 days old, suggesting `/progress check`. "none" otherwise.>
 
---- project_notes_summary ---
-<verbatim stdout of the Step 5 --notes-summary command, or "unavailable: <reason>" (Step 5). Counts only — never a file list.>
-
---- project_notes_relevant ---
-<verbatim rows from project-notes/index.md (File | Description | Tags | Updated) matching prompt_summary, excluding any _archive/ row, or "none". Pointer only — NEVER note body contents.>
 ---END---
 ```
