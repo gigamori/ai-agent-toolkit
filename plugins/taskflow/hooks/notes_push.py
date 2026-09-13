@@ -514,7 +514,7 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
     """(block text, degrade reason). '' block when the project has no
     project-notes/index.md. The reason is non-None only when qmd was expected
     (mode auto and `.qmd/` present) but did not deliver; the caller decides
-    whether to surface it (once per session)."""
+    whether to surface it (every turn the degrade persists)."""
     env = os.environ if env is None else env
     mode = env.get(MODE_ENV, 'auto').strip().lower()
     if mode not in MODES:

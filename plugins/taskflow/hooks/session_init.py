@@ -501,11 +501,14 @@ if current_project:
 # by location (anchors: vs the paths this turn names / read / wrote) and topic
 # (qmd structured query when project-notes/.qmd/ exists, plus the in-process
 # lexical rank), with a `project-notes matched: M of N rows (K shown)` footer.
-# A qmd failure degrades to the lexical rank and is announced once per session
-# (notes_push_notice in the state file).
+# A qmd failure degrades to the lexical rank and is announced on EVERY turn it
+# persists. It used to be announced once per session; that was measured to hide a
+# four-day outage across several sessions, because the cause (a process whose
+# ancestry predates the env registration qmd needs) does not clear on its own and
+# the single notice scrolls away. The reason string is carried per turn, so a
+# change of cause is visible too.
 notes_content = ''
 notes_notice = ''
-notes_notice_seen = bool(loaded.get('notes_push_notice', False))
 if current_project and not pj_discovery:
   try:
     notes_block, notes_reason = build_notes_push(
@@ -515,9 +518,8 @@ if current_project and not pj_discovery:
     notes_block, notes_reason = '', None
   if notes_block:
     notes_content = '\n\n' + notes_block
-  if notes_reason and not notes_notice_seen:
+  if notes_reason:
     notes_notice = f'\n\n[project-notes] vector layer unavailable: {notes_reason}'
-    notes_notice_seen = True
 
 # Build bootstrap block. Gated on the same conditions that push a turn's
 # payload large enough to be persisted rather than delivered inline —
@@ -548,8 +550,6 @@ new_state['indexed_project'] = current_project
 new_state['guidelines_loaded'] = state['guidelines_loaded'] or inject_guidelines_full
 new_state['project_rules_indexed'] = state['project_rules_indexed']
 new_state['origin'] = state['origin']
-if notes_notice_seen:
-  new_state['notes_push_notice'] = True
 os.makedirs(STATE_DIR, exist_ok=True)
 with open(state_path, 'w', encoding='utf-8') as f:
   json.dump(new_state, f, ensure_ascii=False)

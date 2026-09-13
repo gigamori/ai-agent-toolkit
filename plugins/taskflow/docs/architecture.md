@@ -163,7 +163,7 @@ user prompt
   │                      neither list is scored against the other. `_archive/` excluded,
   │                      note bodies never read for output. qmd expected but failing →
   │                      lexical only + `[project-notes] vector layer unavailable: <reason>`
-  │                      once per session (state `notes_push_notice`). Env: TASKFLOW_NOTES_PUSH
+  │                      on every turn the degrade persists. Env: TASKFLOW_NOTES_PUSH
   │                      off|lexical|auto, TASKFLOW_QMD_BIN.
   │     (when current_project is empty and not discovery → NOTHING is injected; router not invoked)
   │
@@ -514,7 +514,6 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
   "parent_session_id": "<parent session id if forked; absent otherwise>",
   "inherited_tasks": ["<task filenames inherited from the parent, if forked>"],
   "exec_bind": ["<owning task basenames carried via [tasks:]; union-merged, append-only>"],
-  "notes_push_notice": "<true once the project-notes push has shown its qmd-degrade notice; absent otherwise>"
 }
 ```
 

@@ -138,23 +138,28 @@ def test_push_block(root: Path) -> None:
     check(ROW_N1 in ctx3 and ROW_N2 not in ctx3, "mode off keeps location rows only")
 
 
-def test_notice_once(root: Path) -> None:
-    print("--- degrade notice once per session ---")
+def test_notice_repeats(root: Path) -> None:
+    print("--- degrade notice repeats while the degrade persists ---")
     ws = build_ws(root)
     (ws / "_projects" / PROJECT / "project-notes" / ".qmd").mkdir()
     env = {"TASKFLOW_QMD_BIN": str(ws / "no-such-qmd")}
     ctx = run_hook(ws, "kanban", env)
     check(NOTICE in ctx and "not found" in ctx, "an unresolvable qmd binary is announced")
     check(ROW_N2 in ctx, "the lexical layer still delivers rows on degrade")
-    check(state_of(ws).get("notes_push_notice") is True, "the notice flag is persisted in the state file")
     ctx2 = run_hook(ws, "kanban", env)
-    check(NOTICE not in ctx2 and HEADER in ctx2, "the second turn keeps the block but not the notice")
+    check(NOTICE in ctx2 and HEADER in ctx2,
+          "the notice repeats on a later turn; announcing once per session hid a four-day outage because the cause does not clear on its own")
+    check("notes_push_notice" not in state_of(ws),
+          "no once-per-session flag is persisted; a flag would re-introduce the suppression this check exists to prevent")
+    ctx3 = run_hook(ws, "kanban", {})
+    check(NOTICE not in ctx3 and HEADER in ctx3,
+          "a turn that does not degrade carries no notice, so the repeat is driven by the degrade and not by the block")
 
 
 def main() -> int:
     print("=== session_init.py project-notes push tests ===")
     before = real_state_snapshot()
-    for t in (test_push_block, test_notice_once):
+    for t in (test_push_block, test_notice_repeats):
         with tempfile.TemporaryDirectory() as d:
             assert_isolated(Path(d))
             t(Path(d))
