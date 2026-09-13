@@ -348,7 +348,7 @@ def check_notes_index_consistency(project_dir: Path, result: Result) -> None:
 
 def check_notes_index_desc_length(project_dir: Path, result: Result) -> None:
     """#13 — project-notes/index.md Description cell must be <= NOTES_DESC_MAX
-    chars (prompts/notes_guidelines.md lines 50, 98).
+    chars (prompts/notes_guidelines.md, "## index.md format" and "## Prohibitions").
 
     Counted over the rendered cell (parse_notes_index_rows already unescapes
     "\\|"), not the raw markdown row.

@@ -1,36 +1,38 @@
 ## Loading
 
-The injected `project-notes (index rows):` block is the ONLY source of notes. It carries verbatim
-`index.md` rows chosen deterministically — by location (a note anchored on a file you named, read or
-wrote) and by topic — and ends in `project-notes matched: M of N rows (K shown)`. `_archive/` is
-excluded from it.
+⟦NOTES-ROUTE⟧ Notes reach you by exactly two routes:
 
-- Open notes only from that block. Read a candidate's frontmatter `summary:` first and decide from
-  that before opening its body.
-- Do NOT read `index.md`. Do NOT Grep, `ls`, or walk `project-notes/` as a substitute for the block.
-  Do NOT run `qmd` yourself. Topic selection is not your job on this build.
-- The router returns no note rows on this build.
-- When the block does not carry what you need, say so and answer without it. Do not go looking —
-  except on the symbol path below, which is the one sanctioned pull.
+| Route | Use it | Act |
+|---|---|---|
+| block | every turn | Read the injected `project-notes (index rows):` block. |
+| symbol | while editing or investigating a named symbol | Resolve that symbol's depth-1 neighbours, then Grep `project-notes/` for their names. |
 
-### Symbol path — the one place you go looking
+Outside ⟦NOTES-ROUTE⟧ do not go looking: do not read `index.md`, do not `ls` or walk
+`project-notes/`, do not run `qmd`. The router returns no note rows on this build. When neither
+route yields what you need, say so and answer without it.
 
-Use it only while editing or investigating a specific symbol. It reaches notes the block cannot: the
-push layer matches `anchors:` at file and directory granularity only, so a note anchored on a
-neighbouring symbol in a file you are not touching never appears there.
+### Route: block
 
-1. The `LSP` tool is deferred — it cannot be called until its schema is fetched. Load it first with
-   `ToolSearch` (`select:LSP`). Skipping this is why the step was never once executed after it was
-   written. Pi uses `query-lsp` instead, which needs no such load.
-   The tool also needs a language server for the file type, and it errors with
-   `Command '<server>' not found` when there is none — measured absent for Python on the reference
-   machine 2026-09-14. On that error say so and move on: do NOT fall back to a Grep sweep of
-   `project-notes/`, which is the substitute the block already replaces.
-2. Enumerate the enclosing symbol and its depth-1 callers / callees.
+The block carries verbatim `index.md` rows chosen deterministically — by location (a note anchored
+on a file you named, read or wrote) and by topic — and ends in
+`project-notes matched: M of N rows (K shown)`. `_archive/` is excluded. `M` above `K` means rows
+were cut, so the symbol route is worth taking when you are on a symbol.
+
+Read a candidate's frontmatter `summary:` before opening its body.
+
+### Route: symbol
+
+The block matches `anchors:` at file and directory granularity, so a note anchored on a symbol in a
+file you are not touching cannot appear in it.
+
+1. Fetch the tool's schema before the first call: `ToolSearch` (`select:LSP`). `LSP` is deferred and
+   is not callable without this. Pi uses `query-lsp`, which needs no fetch.
+2. Enumerate the enclosing symbol and its depth-1 callers and callees.
 3. Grep `project-notes/` for those names and for `path::symbol`. Read a hit's frontmatter `summary:`
-   before deciding to open its body.
-4. When the block's location rows overflow `K`, narrow them the same way. `project-notes matched:
-   M of N rows (K shown)` is how you see that they overflowed: `M` above `K` means rows were cut.
+   before opening its body.
+
+The tool also needs a language server for the file type. On `Command '<server>' not found`, report
+that this route is unavailable and continue on the block alone.
 
 ## Categories
 
