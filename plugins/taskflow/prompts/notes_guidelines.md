@@ -22,6 +22,10 @@ neighbouring symbol in a file you are not touching never appears there.
 1. The `LSP` tool is deferred — it cannot be called until its schema is fetched. Load it first with
    `ToolSearch` (`select:LSP`). Skipping this is why the step was never once executed after it was
    written. Pi uses `query-lsp` instead, which needs no such load.
+   The tool also needs a language server for the file type, and it errors with
+   `Command '<server>' not found` when there is none — measured absent for Python on the reference
+   machine 2026-09-14. On that error say so and move on: do NOT fall back to a Grep sweep of
+   `project-notes/`, which is the substitute the block already replaces.
 2. Enumerate the enclosing symbol and its depth-1 callers / callees.
 3. Grep `project-notes/` for those names and for `path::symbol`. Read a hit's frontmatter `summary:`
    before deciding to open its body.
