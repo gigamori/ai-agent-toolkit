@@ -55,6 +55,7 @@ QMD_MARGIN = 24
 VEC_MAX_CHARS = 1000
 LEX_TERMS_MAX = 12
 IDF_CUTOFF = 0.30
+VECTOR_TAU = 0.3
 QMD_DIR = '.qmd'
 MODE_ENV = 'TASKFLOW_NOTES_PUSH'
 BIN_ENV = 'TASKFLOW_QMD_BIN'
@@ -443,19 +444,42 @@ def _result_file(result: dict) -> str:
     return f.replace('\\', '/')
 
 
-def qmd_rank(results: list[dict]) -> list[str]:
-    """Ordered distinct files from qmd chunk results. Every file qmd returned
-    counts: the per-backend scores live under the `explain` key, and thresholding
-    one layer while the other stays unthresholded makes M harder to define than
-    either pure rule."""
+def _result_is_hit(result: dict) -> bool:
+    """A hit is a non-empty BM25 score set or a vector score >= VECTOR_TAU.
+    `--explain --json` nests both under `explain` (top-level keys are docid,
+    explain, file, line, score, snippet, title), so read them there: scanning the
+    top level finds neither and silently counts every result as a hit."""
+    explain = result.get('explain')
+    if not isinstance(explain, dict):
+        return True
+    fts = explain.get('ftsScores')
+    vec = explain.get('vectorScores')
+    if fts is None and vec is None:
+        return True
+    if fts:
+        return True
+    vals = vec.values() if isinstance(vec, dict) else (vec if isinstance(vec, list) else [vec])
+    try:
+        return any(float(x) >= VECTOR_TAU for x in vals)
+    except (TypeError, ValueError):
+        return False
+
+
+def qmd_rank(results: list[dict]) -> tuple[list[str], set[str]]:
+    """(ordered distinct files, hit files) from qmd chunk results. Every returned
+    file keeps its rank; only M is thresholded, per the design's
+    `M = |L1 u L2 u BM25 hit u vector >= tau_vec|`."""
     order: list[str] = []
+    hits: set[str] = set()
     for r in results:
         f = _result_file(r)
         if not f:
             continue
         if f not in order:
             order.append(f)
-    return order
+        if _result_is_hit(r):
+            hits.add(f)
+    return order, hits
 
 
 # ---------------------------------------------------------------------------
@@ -479,9 +503,10 @@ def union_interleave(list_a: list[str], list_b: list[str]) -> list[str]:
 
 
 def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
-            returned: set[str], k: int = K_ROWS) -> tuple[list[dict], int]:
+            hits: set[str], k: int = K_ROWS) -> tuple[list[dict], int]:
     """(shown rows, M). Order L1 → L2 (≤ L2_CAP) → topic; a row appears once.
-    M counts the rows either topic layer returned, plus the location matches."""
+    M is the design's |L1 u L2 u BM25 hit u vector >= tau_vec|, so a qmd row that
+    is weak-vector-only still ranks but does not count."""
     by_file = {r['file']: r for r in rows}
     shown: list[dict] = []
     seen: set[str] = set()
@@ -498,7 +523,7 @@ def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
     for f in topic:
         if f in by_file:
             add(by_file[f])
-    matched = {r['file'] for r in l1} | {r['file'] for r in l2} | (returned & set(by_file))
+    matched = {r['file'] for r in l1} | {r['file'] for r in l2} | (hits & set(by_file))
     return shown, len(matched)
 
 
@@ -537,6 +562,7 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
     lexical_files = [r['file'] for r in lexical]
 
     qmd_files: list[str] = []
+    qmd_hits: set[str] = set()
     reason: str | None = None
     if mode == 'auto' and subject and os.path.isdir(os.path.join(notes_dir, QMD_DIR)):
         bin_path = resolve_qmd_bin(env)
@@ -547,12 +573,12 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
             try:
                 results = run_qmd(bin_path, notes_dir, build_query_doc(subject),
                                   K_ROWS + QMD_MARGIN, timeout=timeout, runner=runner)
-                qmd_files = qmd_rank(results)
+                qmd_files, qmd_hits = qmd_rank(results)
             except subprocess.TimeoutExpired:
                 reason = f'qmd timeout after {timeout:g}s'
             except (QmdError, OSError, ValueError) as e:
                 reason = str(e) or e.__class__.__name__
 
     topic = union_interleave(qmd_files, lexical_files)
-    shown, matched = compose(rows, l1, l2, topic, set(qmd_files) | set(lexical_files))
+    shown, matched = compose(rows, l1, l2, topic, qmd_hits | set(lexical_files))
     return render(shown, matched, len(rows)), reason

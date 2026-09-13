@@ -177,13 +177,24 @@ def test_timeout_env() -> None:
 def test_qmd_rank() -> None:
     print("--- qmd_rank / run_qmd ---")
     results = [
-        {"file": "qmd://project-notes/specs/n2.md", "score": 1, "ftsScores": {"q": 1.2}},
+        {"file": "qmd://project-notes/specs/n2.md", "score": 1, "explain": {"ftsScores": [1.2]}},
         {"file": "qmd://project-notes/specs/n2.md", "score": 0.5},
-        {"file": "qmd://project-notes/specs/n1.md", "score": 0.3, "ftsScores": {}, "vectorScores": {"v": 0.1}},
-        {"file": "qmd://project-notes/specs/n3.md", "score": 0.2, "ftsScores": {}, "vectorScores": [0.4]},
+        {"file": "qmd://project-notes/specs/n1.md", "score": 0.3,
+         "explain": {"ftsScores": [], "vectorScores": {"v": 0.1}}},
+        {"file": "qmd://project-notes/specs/n3.md", "score": 0.2,
+         "explain": {"ftsScores": [], "vectorScores": [0.4]}},
     ]
-    order = np.qmd_rank(results)
+    order, hits = np.qmd_rank(results)
     check(order == ["specs/n2.md", "specs/n1.md", "specs/n3.md"], f"files deduped in rank order, uri prefix stripped (got {order})")
+    check(hits == {"specs/n2.md", "specs/n3.md"},
+          f"a hit needs a BM25 score or a vector score >= VECTOR_TAU; a result with neither key counts (got {hits})")
+    check("specs/n1.md" in order and "specs/n1.md" not in hits,
+          "a weak-vector-only result still holds its rank and only drops out of M")
+
+    flat = [{"file": "qmd://project-notes/specs/n1.md", "score": 0.3,
+             "ftsScores": [], "vectorScores": {"v": 0.1}}]
+    check(np.qmd_rank(flat)[1] == {"specs/n1.md"},
+          "scores at the TOP level are not the shape qmd emits, so the predicate must not find them there; reading the top level is what made VECTOR_TAU dead once")
 
     def runner_ok(cmd, **kw):
         check(cmd[0] == "node" and "--no-rerank" in cmd and "--json" in cmd and kw.get("cwd") == "NOTES",
@@ -219,7 +230,7 @@ def test_union_and_compose(root: Path) -> None:
     shown, matched = np.compose(rows, l1, l2, ["specs/n5.md"], {"specs/n5.md"}, k=4)
     check([r["file"] for r in shown] == ["specs/n1.md", "specs/n2.md", "specs/n3.md", "specs/n4.md"],
           f"L1 first, L2 capped at ceil(K/2)... within K, no duplicates (got {[r['file'] for r in shown]})")
-    check(matched == 5, f"M counts L1 ∪ L2 ∪ the rows either topic layer returned, uncapped (got {matched})")
+    check(matched == 5, f"M is L1 ∪ L2 ∪ BM25 hit ∪ vector ≥ VECTOR_TAU, uncapped (got {matched})")
     text = np.render(shown, matched, len(rows))
     check(text.startswith(np.HEADER + "\n| specs/n1.md |"), "block starts with the header and verbatim rows")
     check(text.endswith("project-notes matched: 5 of 5 rows (4 shown)"), f"footer carries M, N and K shown (got {text.splitlines()[-1]!r})")

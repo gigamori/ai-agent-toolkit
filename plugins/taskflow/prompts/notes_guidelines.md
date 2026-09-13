@@ -7,10 +7,26 @@ excluded from it.
 
 - Open notes only from that block. Read a candidate's frontmatter `summary:` first and decide from
   that before opening its body.
-- Do NOT read `index.md`. Do NOT Grep, `ls`, or walk `project-notes/`. Do NOT run `qmd`. Do NOT use
-  the `LSP` tool to find notes. Note selection is not your job on this build.
+- Do NOT read `index.md`. Do NOT Grep, `ls`, or walk `project-notes/` as a substitute for the block.
+  Do NOT run `qmd` yourself. Topic selection is not your job on this build.
 - The router returns no note rows on this build.
-- When the block does not carry what you need, say so and answer without it. Do not go looking.
+- When the block does not carry what you need, say so and answer without it. Do not go looking —
+  except on the symbol path below, which is the one sanctioned pull.
+
+### Symbol path — the one place you go looking
+
+Use it only while editing or investigating a specific symbol. It reaches notes the block cannot: the
+push layer matches `anchors:` at file and directory granularity only, so a note anchored on a
+neighbouring symbol in a file you are not touching never appears there.
+
+1. The `LSP` tool is deferred — it cannot be called until its schema is fetched. Load it first with
+   `ToolSearch` (`select:LSP`). Skipping this is why the step was never once executed after it was
+   written. Pi uses `query-lsp` instead, which needs no such load.
+2. Enumerate the enclosing symbol and its depth-1 callers / callees.
+3. Grep `project-notes/` for those names and for `path::symbol`. Read a hit's frontmatter `summary:`
+   before deciding to open its body.
+4. When the block's location rows overflow `K`, narrow them the same way. `project-notes matched:
+   M of N rows (K shown)` is how you see that they overflowed: `M` above `K` means rows were cut.
 
 ## Categories
 
