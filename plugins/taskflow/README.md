@@ -33,7 +33,7 @@ Every variable below is read from the process environment. Export it in the shel
 
 Two properties of the `settings.json` route matter before you rely on it (measured on Claude Code 2026-09-14 with `TASKFLOW_QMD_TIMEOUT`; the loader is not per-variable, but only that one was exercised):
 
-- **A new value applies without restarting the session.** The next turn already sees it — hooks included, and so does the qmd child process `notes_push.py` spawns.
+- **A new value applies without restarting the session.** The next turn already sees it, hooks included. The qmd child inherits whatever the hook has, since `run_qmd` spawns it without an `env=` argument — that is the subprocess default read off the source, not a separately measured claim.
 - **Deleting the key does NOT unset it in a running session.** The value survives in the session's environment until something overwrites it or the session restarts. In the measured case a deleted key stayed live for eight hours, across a byte-identical revert of the file it came from. Correct a bad value by writing the right one, not by removing the wrong one.
 
 ### `TASKFLOW_PROJECT_ROOTS`
@@ -149,7 +149,7 @@ Seconds one qmd query of the per-turn project-notes push may take. Default: `6`.
 }
 ```
 
-The cold case is not hypothetical. On the reference machine a first query taken after the caches went cold measured 8.83 s against 2.7–2.8 s warm (one observation), and a session started in that state degraded its first turn and recovered on the next. Raise the value if losing the vector layer on turn 1 matters. The notice names the budget that expired — `qmd timeout after 6s` — so a timeout is distinguishable from the other degrade causes.
+The cold case is not hypothetical. On the reference machine one query measured 8.83 s against 2.7–2.8 s for every other call in the same run (one observation) — it was the first call of a freshly started process, and what makes that call slow was not identified. A session started 16 s after its harness launched degraded its first turn and recovered on the next. Raise the value if losing the vector layer on turn 1 matters. The notice names the budget that expired — `qmd timeout after 6s` — so a timeout is distinguishable from the other degrade causes.
 
 ## Usage
 
