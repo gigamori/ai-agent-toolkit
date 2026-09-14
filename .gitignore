@@ -35,3 +35,6 @@ plugins/rule-inject/hooks/when_detection.json
 
 # General (non-project) LLM notes — local only
 notes/
+
+# query-lsp Stage 0 snapshot — regenerable, machine-local
+.lsp-cache/
