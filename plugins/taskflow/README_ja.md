@@ -138,7 +138,7 @@ qmd の `bin/qmd` スクリプトのパス。project に `project-notes/.qmd/` i
 
 ### `TASKFLOW_QMD_TIMEOUT`
 
-毎ターンの project-notes push が 1 回の qmd query に許す秒数。既定 `6`。query は `project-notes/.qmd/` index を持つ project の毎ターン、prompt 注入経路で同期に走る — 参照 machine（GPU embedding、79〜210 note）で 2.7〜2.9 秒の実測で、これは明示的に受容したコスト。予算は cold / busy な machine を有界にするためのもので、通常経路の調整ではない。超過したターンは lexical rank へ fallback し、起きたターンのたびに告知する。数値でない・正でない値は既定に戻る。Pi の taskflow 拡張も同じ名前を読むため、両側で同一に設定すること。
+毎ターンの project-notes push が 1 回の qmd query に許す秒数。既定 `6`。query は `project-notes/.qmd/` index を持つ project の毎ターン、prompt 注入経路で同期に走る — 参照 machine（GPU embedding、79〜210 note）で 2.7〜2.9 秒の実測で、これは明示的に受容したコスト。予算は cold / busy な machine を有界にするためのもので、通常経路の調整ではない。超過したターンは lexical rank へ fallback し、起きたターンのたびに告知する。数値でない・正でない値は既定に戻る。Pi の taskflow 拡張も同じ名前を読むため両側で同一に設定すること。ただし経路は同じではない — Pi の設定には `env` ブロックが無く、拡張はプロセス環境からのみ値を取る。両側に効かせるには OS レベルのユーザ環境変数を使うことになり、既に動いているプロセスは起動時の値を持ち続ける。
 
 ```json
 {

@@ -139,7 +139,7 @@ Which layers the per-turn project-notes push uses. `auto` (default): location (`
 
 ### `TASKFLOW_QMD_TIMEOUT`
 
-Seconds one qmd query of the per-turn project-notes push may take. Default: `6`. The query runs synchronously on the prompt-injection path every turn of a project that has a `project-notes/.qmd/` index — an accepted cost, measured at 2.7–2.9 s on the reference machine (GPU embedding, 79–210 notes) — so the budget exists to bound a cold or busy machine, not the normal case. On expiry the push falls back to the lexical rank for that turn and announces it on every turn it happens. A non-numeric or non-positive value falls back to the default. The Pi taskflow extension reads the same name — set it identically on both sides.
+Seconds one qmd query of the per-turn project-notes push may take. Default: `6`. The query runs synchronously on the prompt-injection path every turn of a project that has a `project-notes/.qmd/` index — an accepted cost, measured at 2.7–2.9 s on the reference machine (GPU embedding, 79–210 notes) — so the budget exists to bound a cold or busy machine, not the normal case. On expiry the push falls back to the lexical rank for that turn and announces it on every turn it happens. A non-numeric or non-positive value falls back to the default. The Pi taskflow extension reads the same name — set it identically on both sides, but not by the same route: Pi's settings have no `env` block, so its extension takes the value from the process environment only. Setting it for both therefore means the OS-level user environment, and a process already running keeps the value it started with.
 
 ```json
 {
