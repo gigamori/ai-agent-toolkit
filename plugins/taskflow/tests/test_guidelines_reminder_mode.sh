@@ -26,7 +26,7 @@ fi
 
 echo ""
 echo "[Case 7] NOTES route names agree across full and manifest"
-notes_routes() { grep -E '^(- )?NOTES:' "$1" | grep -oE 'query-lsp|incoming-calls|outgoing-calls|ToolSearch|select:LSP' | sort -u; }
+notes_routes() { grep -E '^(- )?NOTES:' "$1" | grep -oE 'query-lsp|incoming-calls|outgoing-calls|ToolSearch|select:LSP|repo-relative|::<name>' | sort -u; }
 FULL_R=$(notes_routes "$FULL_MD")
 MANIFEST_R=$(notes_routes "$MANIFEST_MD")
 if [ "$FULL_R" = "$MANIFEST_R" ]; then

@@ -29,8 +29,11 @@ file you are not touching cannot appear in it.
    its procedure rather than one restated here. Pi calls `query-lsp` natively.
 2. Enumerate the enclosing symbol and its depth-1 callers and callees — `incoming-calls` and
    `outgoing-calls`. Both are live-only, so batch them instead of starting a session per query.
-3. Grep `project-notes/` for those names and for `path::symbol`. Read a hit's frontmatter `summary:`
-   before opening its body.
+   Keep only peers whose returned `path` is repo-relative; an absolute one is stdlib or a
+   dependency, and most of what comes back is.
+3. Grep `project-notes/` for `::<name>`, once per kept peer. Never grep the bare name — names like
+   `set`, `add` and `append` match prose across most of the corpus, which buries the block route
+   instead of extending it. Read a hit's frontmatter `summary:` before opening its body.
 
 The route needs a language server for the file type. When `query-lsp` is unavailable, or exits
 non-zero before returning symbols, report that this route is unavailable and continue on the block
