@@ -264,7 +264,7 @@ def test_build_end_to_end(root: Path) -> None:
         return subprocess.CompletedProcess(cmd, 0, stdout='[{"file": "qmd://project-notes/specs/n5.md"}]', stderr="")
 
     (notes / ".qmd").mkdir()
-    block, reason = np.build_notes_push(str(project), str(ws), "pj:proj kanban", SID, str(state), env_auto, runner)
+    block, reason, probe = np.build_notes_push(str(project), str(ws), "pj:proj kanban", SID, str(state), env_auto, runner)
     lines = block.splitlines()
     check(reason is None, "no degrade reason when qmd answers")
     check(lines[0] == np.HEADER and lines[1].startswith("| specs/n1.md |") and lines[2].startswith("| specs/n2.md |"),
@@ -274,7 +274,7 @@ def test_build_end_to_end(root: Path) -> None:
     check(lines[-1] == "project-notes matched: 4 of 5 rows (4 shown)", f"footer (got {lines[-1]!r})")
 
     (notes / ".qmd").rmdir()
-    block2, reason2 = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state), env_auto, runner)
+    block2, reason2, _ = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state), env_auto, runner)
     check(reason2 is None and "| specs/n5.md |" not in block2 and "| specs/n3.md |" in block2,
           "without project-notes/.qmd/ qmd is not consulted, no notice, lexical still ranks")
 
@@ -283,26 +283,60 @@ def test_build_end_to_end(root: Path) -> None:
     def runner_timeout(cmd, **kw):
         raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
 
-    block3, reason3 = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state), env_auto, runner_timeout)
+    block3, reason3, _ = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state), env_auto, runner_timeout)
     check(reason3 is not None and "timeout" in reason3, f"a qmd timeout degrades with a reason (got {reason3!r})")
     check("| specs/n3.md |" in block3, "the lexical rank still fills the topic layer on degrade")
 
-    block4, reason4 = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state),
+    block4, reason4, _ = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state),
                                           {"TASKFLOW_QMD_BIN": str(ws / "nope"), "TASKFLOW_NOTES_PUSH": "auto"}, runner)
     check(reason4 is not None and "not found" in reason4, f"an unresolvable binary degrades with a reason (got {reason4!r})")
 
-    block5, reason5 = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state),
+    block5, reason5, _ = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state),
                                           {"TASKFLOW_NOTES_PUSH": "off"}, runner)
     check(reason5 is None and "| specs/n1.md |" in block5 and "| specs/n3.md |" not in block5,
           "mode off keeps the location layer only")
 
-    block6, _ = np.build_notes_push(str(project), str(ws), "pj:proj -y", SID, str(state), env_auto, runner)
+    block6, _, _ = np.build_notes_push(str(project), str(ws), "pj:proj -y", SID, str(state), env_auto, runner)
     check("| specs/n1.md |" in block6 and "| specs/n5.md |" not in block6,
           "an all-mechanism prompt skips the topic layer but keeps location rows")
 
-    check(np.build_notes_push(str(ws / "_projects" / "none"), str(ws), "x", SID, str(state), env_auto, runner) == ("", None),
+    check(np.build_notes_push(str(ws / "_projects" / "none"), str(ws), "x", SID, str(state), env_auto, runner) == ("", None, None),
           "a project without project-notes/index.md yields no block")
     check("_archive/old.md" not in block and "_archive/old.md" not in block3, "_archive/ rows never appear")
+
+
+def test_symbol_route_due() -> None:
+    print("--- symbol_route_due ---")
+    code = ["src/a.py"]
+    prose = ["docs/a.md"]
+
+    check(np.symbol_route_due(code, matched=9, shown=8) is True,
+          "a code turn whose block overflowed is the turn the symbol route is written for")
+    check(np.symbol_route_due(code, matched=8, shown=8) is False,
+          "a block that fit needs no symbol route; M == K is not overflow")
+    check(np.symbol_route_due(prose, matched=9, shown=8) is False,
+          "overflow on a turn touching no code is not a symbol-route turn")
+    check(np.symbol_route_due([], matched=9, shown=8) is False,
+          "overflow with no location signal at all is not a symbol-route turn")
+    check(np.symbol_route_due(["src/a.TS"], matched=9, shown=8) is True,
+          "the suffix test ignores case so a shouted extension still counts")
+
+
+def test_probe_shape(root: Path) -> None:
+    print("--- probe shape ---")
+    ws, project, notes = make_ws(root)
+    state = ws / "_projects" / "_state"
+    write(state / f"{SID}.reads", "src/a.py\n")
+    env_off = {"TASKFLOW_NOTES_PUSH": "off"}
+
+    _, _, probe = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state), env_off)
+    check(sorted(probe) == ["code", "due", "k", "m"],
+          f"the probe carries the verdict and the three numbers that decided it (got {sorted(probe)})")
+    check(probe["code"] == 1, f"one code path came from the .reads ledger (got {probe['code']})")
+    check(probe["due"] is (probe["m"] > probe["k"]),
+          "due agrees with the overflow it is derived from")
+    check(np.symbol_route_due(["src/a.py"], probe["m"], probe["k"]) == probe["due"],
+          "the probe's verdict is the predicate's, not a second implementation")
 
 
 def main() -> int:
@@ -313,7 +347,9 @@ def main() -> int:
     test_timeout_env()
     test_qmd_rank()
     test_contract_literals()
-    for t in (test_prompt_paths, test_location, test_ledger_tail, test_lexical, test_union_and_compose, test_build_end_to_end):
+    test_symbol_route_due()
+    for t in (test_prompt_paths, test_location, test_ledger_tail, test_lexical, test_union_and_compose, test_build_end_to_end,
+                test_probe_shape):
         with tempfile.TemporaryDirectory() as d:
             t(Path(d))
     print()

@@ -90,6 +90,9 @@ GUIDELINES_REMINDER_MANIFEST_MD = os.path.join(
 
 PARENT_SCAN_LINES = 50  # transcript head lines scanned for parent detection
 
+SYMBOL_ROUTE_KEY = 'symbol_route_probe'
+SYMBOL_ROUTE_MAX = 100  # turns kept; a long session must not grow the state file
+
 # Bootstrap block: a compact, ASCII-only invariant placed first in the
 # injected context (see the module docstring's "bootstrap" entry and
 # `tmp/runs/2026-09-02_taskflow-review-followup/02-plan.md`
@@ -509,13 +512,14 @@ if current_project:
 # change of cause is visible too.
 notes_content = ''
 notes_notice = ''
+notes_probe = None
 if current_project and not pj_discovery:
   try:
-    notes_block, notes_reason = build_notes_push(
+    notes_block, notes_reason, notes_probe = build_notes_push(
       os.path.join(PROGRESS_ROOT, current_project), STATE_ROOT, user_prompt,
       session_id, STATE_DIR)
   except Exception:
-    notes_block, notes_reason = '', None
+    notes_block, notes_reason, notes_probe = '', None, None
   if notes_block:
     notes_content = '\n\n' + notes_block
   if notes_reason:
@@ -550,6 +554,17 @@ new_state['indexed_project'] = current_project
 new_state['guidelines_loaded'] = state['guidelines_loaded'] or inject_guidelines_full
 new_state['project_rules_indexed'] = state['project_rules_indexed']
 new_state['origin'] = state['origin']
+
+# Symbol-route observation (notes_push.symbol_route_due). Denominator for
+# "did the model take the route on a turn the route was written for" — the
+# answer side is read back off the session transcript, so only the turn and
+# the numbers that decided it are kept here. Never injected: a model that
+# could see the flag would stop being the thing it measures.
+if notes_probe:
+  probes = loaded.get(SYMBOL_ROUTE_KEY)
+  probes = probes if isinstance(probes, list) else []
+  probes.append({'ts': now_iso(), **notes_probe})
+  new_state[SYMBOL_ROUTE_KEY] = probes[-SYMBOL_ROUTE_MAX:]
 os.makedirs(STATE_DIR, exist_ok=True)
 with open(state_path, 'w', encoding='utf-8') as f:
   json.dump(new_state, f, ensure_ascii=False)

@@ -156,10 +156,52 @@ def test_notice_repeats(root: Path) -> None:
           "a turn that does not degrade carries no notice, so the repeat is driven by the degrade and not by the block")
 
 
+def build_overflow_ws(root: Path, anchor: str) -> Path:
+    ws = build_ws(root)
+    project = ws / "_projects" / PROJECT
+    write(ws / anchor, "x\n")
+    rows = ["| File | Description | Tags | Updated |", "|---|---|---|---|"]
+    for i in range(1, 13):
+        rows.append(f"| specs/m{i}.md | overflow row {i} | m{i} | 2025-11-01 |")
+        write(project / "project-notes" / "specs" / f"m{i}.md",
+              f"---\nanchors: [{anchor}]\n---\n\n# m{i}\n")
+    write(project / "project-notes" / "index.md", "\n".join(rows) + "\n")
+    write(ws / "_projects" / "_state" / f"{SID}.reads", anchor + "\n")
+    return ws
+
+
+def test_symbol_route_probe(root: Path) -> None:
+    print("--- symbol-route probe lands in the state file, never in the context ---")
+    ws = build_overflow_ws(root, "src/b.py")
+    ctx = run_hook(ws, "続き")
+    probes = state_of(ws).get("symbol_route_probe")
+
+    check(isinstance(probes, list) and len(probes) == 1,
+          f"one turn appends one probe entry (got {probes!r})")
+    entry = probes[0]
+    check(entry["due"] is True and entry["m"] > entry["k"] and entry["code"] >= 1,
+          f"a code turn whose block overflowed is recorded as due (got {entry!r})")
+    check("symbol_route_probe" not in ctx,
+          "the probe is never injected; a model that could read the flag would stop being what it measures")
+
+    run_hook(ws, "続き")
+    check(len(state_of(ws)["symbol_route_probe"]) == 2, "a second turn appends rather than replaces")
+
+
+def test_symbol_route_probe_negative(root: Path) -> None:
+    print("--- the same overflow on a prose turn is not due ---")
+    ws = build_overflow_ws(root, "docs/b.md")
+    run_hook(ws, "続き")
+    entry = state_of(ws)["symbol_route_probe"][0]
+    check(entry["m"] > entry["k"] and entry["code"] == 0 and entry["due"] is False,
+          f"overflow alone does not make a turn due; the code clause is load-bearing (got {entry!r})")
+
+
 def main() -> int:
     print("=== session_init.py project-notes push tests ===")
     before = real_state_snapshot()
-    for t in (test_push_block, test_notice_repeats):
+    for t in (test_push_block, test_notice_repeats, test_symbol_route_probe,
+              test_symbol_route_probe_negative):
         with tempfile.TemporaryDirectory() as d:
             assert_isolated(Path(d))
             t(Path(d))

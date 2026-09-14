@@ -65,6 +65,8 @@ QMD_URI_PREFIX = 'qmd://'
 EXCLUDED_PATH_PREFIXES = ('_projects/', 'tmp/')
 ARCHIVE_PREFIX = '_archive/'
 HEADER = 'project-notes (index rows):'
+CODE_SUFFIXES = ('.py', '.ts', '.tsx', '.js', '.jsx', '.sh', '.ps1', '.go', '.rs',
+                 '.java', '.rb', '.c', '.h', '.cpp', '.cs', '.kt', '.swift')
 
 FM_RE = re.compile(r'^---\r?\n(.*?)\r?\n---\r?\n', re.DOTALL)
 ANCHORS_KEY_RE = re.compile(r'^anchors:\s*(.*)$')
@@ -527,6 +529,19 @@ def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
     return shown, len(matched)
 
 
+def symbol_route_due(paths: list[str], matched: int, shown: int) -> bool:
+    """Whether this is a turn the guideline's symbol route is written for: the
+    block overflowed AND the turn is on code.
+
+    Observation only. Nothing injected depends on this — a model shown the flag
+    would stop being the thing the flag measures.
+    """
+    if matched <= shown:
+        return False
+
+    return any(p.lower().endswith(CODE_SUFFIXES) for p in paths)
+
+
 def render(shown: list[dict], matched: int, total: int) -> str:
     lines = [HEADER] + [r['raw'] for r in shown]
     lines.append(f'project-notes matched: {matched} of {total} rows ({len(shown)} shown)')
@@ -535,11 +550,13 @@ def render(shown: list[dict], matched: int, total: int) -> str:
 
 def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: str,
                      state_dir: str, env: dict | None = None,
-                     runner=subprocess.run) -> tuple[str, str | None]:
-    """(block text, degrade reason). '' block when the project has no
+                     runner=subprocess.run) -> tuple[str, str | None, dict | None]:
+    """(block text, degrade reason, probe). '' block when the project has no
     project-notes/index.md. The reason is non-None only when qmd was expected
     (mode auto and `.qmd/` present) but did not deliver; the caller decides
-    whether to surface it (every turn the degrade persists)."""
+    whether to surface it (every turn the degrade persists). The probe records
+    this turn's symbol-route observation and is never injected — see
+    symbol_route_due()."""
     env = os.environ if env is None else env
     mode = env.get(MODE_ENV, 'auto').strip().lower()
     if mode not in MODES:
@@ -550,7 +567,7 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
         with open(os.path.join(notes_dir, 'index.md'), 'r', encoding='utf-8', errors='replace') as f:
             rows = active_rows(parse_index_rows(f.read()))
     except OSError:
-        return '', None
+        return '', None, None
 
     paths = turn_paths(prompt, repo_root, state_dir, session_id)
     l1, l2 = location_matches(rows, notes_dir, paths)
@@ -581,4 +598,8 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
 
     topic = union_interleave(qmd_files, lexical_files)
     shown, matched = compose(rows, l1, l2, topic, qmd_hits | set(lexical_files))
-    return render(shown, matched, len(rows)), reason
+
+    probe = {'due': symbol_route_due(paths, matched, len(shown)),
+             'code': sum(1 for p in paths if p.lower().endswith(CODE_SUFFIXES)),
+             'm': matched, 'k': len(shown)}
+    return render(shown, matched, len(rows)), reason, probe
