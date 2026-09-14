@@ -25,14 +25,17 @@ Read a candidate's frontmatter `summary:` before opening its body.
 The block matches `anchors:` at file and directory granularity, so a note anchored on a symbol in a
 file you are not touching cannot appear in it.
 
-1. Fetch the tool's schema before the first call: `ToolSearch` (`select:LSP`). `LSP` is deferred and
-   is not callable without this. Pi uses `query-lsp`, which needs no fetch.
-2. Enumerate the enclosing symbol and its depth-1 callers and callees.
+1. Invoke the `query-lsp` skill. It carries its own CLI and resolves the language server; follow
+   its procedure rather than one restated here. Pi calls `query-lsp` natively.
+2. Enumerate the enclosing symbol and its depth-1 callers and callees — `incoming-calls` and
+   `outgoing-calls`. Both are live-only, so batch them instead of starting a session per query.
 3. Grep `project-notes/` for those names and for `path::symbol`. Read a hit's frontmatter `summary:`
    before opening its body.
 
-The tool also needs a language server for the file type. On `Command '<server>' not found`, report
-that this route is unavailable and continue on the block alone.
+The route needs a language server for the file type. When `query-lsp` is unavailable, or exits
+non-zero before returning symbols, report that this route is unavailable and continue on the block
+alone. Never stand in a symbol list you inferred yourself: an unrun route costs recall, a guessed
+one sends the Grep after names that do not exist.
 
 ## Categories
 

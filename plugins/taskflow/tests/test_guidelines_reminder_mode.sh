@@ -24,6 +24,17 @@ else
   fail "Case 5: (b) block MISMATCH — manifest drifted from full"
 fi
 
+echo ""
+echo "[Case 7] NOTES route names agree across full and manifest"
+notes_routes() { grep -E '^(- )?NOTES:' "$1" | grep -oE 'query-lsp|incoming-calls|outgoing-calls|ToolSearch|select:LSP' | sort -u; }
+FULL_R=$(notes_routes "$FULL_MD")
+MANIFEST_R=$(notes_routes "$MANIFEST_MD")
+if [ "$FULL_R" = "$MANIFEST_R" ]; then
+  pass "Case 7: NOTES route names match ($(echo $FULL_R))"
+else
+  fail "Case 7: NOTES route MISMATCH — full names [$(echo $FULL_R)], manifest names [$(echo $MANIFEST_R)]. One file changed the symbol route and the other did not; the two are worded differently on purpose, so only the tool and subcommand names are compared."
+fi
+
 TMP="$(mktemp -d)"
 echo ""
 echo "=== isolated tmpdir: $TMP ==="
