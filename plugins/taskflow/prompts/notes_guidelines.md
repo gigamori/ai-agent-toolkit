@@ -5,11 +5,12 @@
 | Route | Use it | Act |
 |---|---|---|
 | block | every turn | Read the injected `project-notes (index rows):` block. |
-| symbol | while editing or investigating a named symbol | Resolve that symbol's depth-1 neighbours, then Grep `project-notes/` for their names. |
+| symbol | while editing or investigating a named symbol | Resolve that symbol's depth-1 neighbours, then Grep `project-notes/` for `::<name>`. |
 
-Outside ⟦NOTES-ROUTE⟧ do not go looking: do not read `index.md`, do not `ls` or walk
-`project-notes/`, do not run `qmd`. The router returns no note rows on this build. When neither
-route yields what you need, say so and answer without it.
+⟦NOTES-ROUTE⟧ Reads of `project-notes/` are exactly three: the injected block; a `::<name>` Grep
+for a peer `query-lsp` returned; and opening a file one of those two named. Anything else — running `qmd`
+yourself included — is going looking, whatever the tool. The router returns no note rows on this
+build. When neither route yields what you need, say so and answer without it.
 
 ### Route: block
 
@@ -35,10 +36,13 @@ file you are not touching cannot appear in it.
    `set`, `add` and `append` match prose across most of the corpus, which buries the block route
    instead of extending it. Read a hit's frontmatter `summary:` before opening its body.
 
-The route needs a language server for the file type. When `query-lsp` is unavailable, or exits
-non-zero before returning symbols, report that this route is unavailable and continue on the block
-alone. Never stand in a symbol list you inferred yourself: an unrun route costs recall, a guessed
-one sends the Grep after names that do not exist.
+The route needs a language server for the file type. Two outcomes end it early, and they are not
+the same thing to report. If `query-lsp` did not answer — refused, absent, timed out, exited
+non-zero, anything that leaves you without its output — the route is unavailable: say so and
+continue on the block alone. If it answered and the repo-relative filter left no peer, the route
+ran and found nothing: say that instead, and continue on the block alone. In neither case stand in
+a symbol list from anywhere else: an unrun route costs recall, a guessed one sends the Grep after
+names that do not exist.
 
 ## Categories
 
@@ -128,7 +132,7 @@ When `project_notes_autosave: false`, do NOT ask (respond normally).
 ## Slug rules
 
 - kebab-case, under 30 characters, noun phrase capturing the content.
-- When digging deeper into a topic already covered by an existing note, propose appending to that file rather than creating a new one (mention this in the confirmation step).
+- When a note you reached this turn already covers the topic, propose appending to it rather than creating a new one (mention this in the confirmation step). Reaching it means one of the three reads above; there is no fourth way to learn a note exists.
 
 ## Manual save (explicit user instruction)
 
