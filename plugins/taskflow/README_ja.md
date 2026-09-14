@@ -29,6 +29,13 @@ claude --plugin-dir ./plugins/taskflow
 
 ## 設定
 
+以下の変数はすべてプロセス環境から読む。シェルで export するか、Claude Code で恒久設定するなら `settings.json` の `env` ブロックに置く: `~/.claude/settings.json` は全 project、workspace の `.claude/settings.json` または `.claude/settings.local.json` はその workspace だけに効く。
+
+`settings.json` 経由に頼る前に知っておくべき性質が 2 つある（2026-09-14 に Claude Code 上で `TASKFLOW_QMD_TIMEOUT` を用いて実測。loader は変数ごとではないが、実際に動かしたのはこの 1 変数のみ）:
+
+- **新しい値は session を再起動しなくても効く。** 次のターンでもう反映されており、hook も、`notes_push.py` が spawn する qmd 子プロセスも同じ値を見る。
+- **キーを削除しても稼働中の session からは消えない。** 値は session の環境に残り、別の値で上書きするか session を再起動するまで生き続ける。実測では、削除したキーが元ファイルの byte 同一な revert をまたいで 8 時間生存した。誤った値を直すときは、消すのではなく正しい値を書くこと。
+
 ### `TASKFLOW_PROJECT_ROOTS`
 
 セミコロン区切りの `_projects/` ルートディレクトリ一覧。skill とスクリプトがこの変数を参照し、複数リポジトリにまたがるプロジェクトデータを検索する。
@@ -140,6 +147,8 @@ qmd の `bin/qmd` スクリプトのパス。project に `project-notes/.qmd/` i
   }
 }
 ```
+
+cold のケースは机上の話ではない。参照 machine では、キャッシュが冷えた後の初回 query が warm の 2.7〜2.8 秒に対し 8.83 秒だった（観測 1 件）。その状態で起動した session は 1 ターン目が degrade し、次のターンで回復した。ターン 1 で vector 層を失うことが問題なら値を上げること。告知は超過した予算を名前に含む（`qmd timeout after 6s`）ので、timeout は他の degrade 原因と区別できる。
 
 ## 使い方
 
