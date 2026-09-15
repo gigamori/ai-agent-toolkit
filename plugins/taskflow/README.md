@@ -453,6 +453,10 @@ The file is human-authored (no model-autonomous writes); the agent proposes a di
 
 Fires before a `Write`/`Edit` targeting a file under `_projects/<project>/project-notes/` (excluding `index.md` itself). Injects a `[Project Notes Index Rule]` reminder via `additionalContext`, instructing the LLM to keep `project-notes/index.md` in sync after the operation (add a row for new files, update on Description/Tags change, remove on delete).
 
+#### PreToolUse: notes_scan_gate.py (matcher: Grep)
+
+Denies a `Grep` whose `path` lies inside a `project-notes/` tree (`_archive/` included) and whose `pattern` does not contain `::`. That shape is the corpus scan the note rule forbids — the symbol route's step 3 greps `::<name>` per peer, and nothing else may enumerate the corpus. The denial is a `permissionDecision: "deny"` carrying the rule as its reason, so a blocked agent is told what is allowed instead of retrying blind. Scope: this closes the `Grep` tool only. `Read` is never denied, because a note reached legitimately (via the block or a `::` Grep) is opened with `Read` and the hook cannot tell that file's provenance; `Glob`→`Read`, a `grep`/`rg`/`cat` run through `Bash`, and a subagent's own calls all pass. The guarantee is "a Grep-tool corpus scan is impossible", not "a corpus scan is impossible".
+
 #### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit|Bash)
 
 Fires after a `Write`/`Edit` targeting a file under `_projects/<project>/tasks/<status>/`, or a `Bash` command referencing such a path (e.g. the `mv` used by `/progress start` / `approve` / `unstart` — a rename alone never triggers `Write`/`Edit`). Runs `scripts/rebuild_progress.py` to regenerate the `progress.md` table region for that project, so the task index stays current without a manual `/progress rebuild`.

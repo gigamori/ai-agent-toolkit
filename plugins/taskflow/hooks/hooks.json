@@ -9,6 +9,15 @@
             "command": "uv run --no-project python ${CLAUDE_PLUGIN_ROOT}/hooks/notes_index_reminder.py"
           }
         ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project python ${CLAUDE_PLUGIN_ROOT}/hooks/notes_scan_gate.py"
+          }
+        ]
       }
     ],
     "SessionStart": [

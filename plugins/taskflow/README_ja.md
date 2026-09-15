@@ -451,6 +451,10 @@ hook の書込と競合した場合は依然として無防備である。
 
 `_projects/<project>/project-notes/` 配下のファイル（`index.md` 自身は除く）への `Write`/`Edit` 直前に発火。`additionalContext` 経由で `[Project Notes Index Rule]` リマインダーを注入し、操作後に `project-notes/index.md` を同期するよう LLM に指示する（新規ファイルは行追加、Description/Tags 変更時は該当行更新、削除時は該当行除去）。
 
+#### PreToolUse: notes_scan_gate.py (matcher: Grep)
+
+`path` が `project-notes/` 配下（`_archive/` 含む）で、かつ `pattern` に `::` を含まない `Grep` を拒否する。この形は note ルールが禁じる corpus 走査そのもの — symbol 経路の手順 3 は peer ごとに `::<name>` を grep するもので、それ以外に corpus を列挙してよい手段は無い。拒否は `permissionDecision: "deny"` で、理由としてルール本文を運ぶため、止められたエージェントは闇雲に再試行せず何が許されるかを知る。適用範囲: 閉じるのは `Grep` tool だけ。`Read` は決して拒否しない — 正規に到達した note（block または `::` Grep 経由）は `Read` で開かれ、hook はそのファイルの由来を判別できないため。`Glob`→`Read`、`Bash` 経由の `grep`/`rg`/`cat`、subagent 自身の呼び出しはいずれも通る。保証は「Grep tool による corpus 走査が不可能」であって「corpus 走査が不可能」ではない。
+
 #### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit|Bash)
 
 `_projects/<project>/tasks/<status>/` 配下のファイルへの `Write`/`Edit` 直後、または当該パスを参照する `Bash` コマンド（例: `/progress start` / `approve` / `unstart` が使う `mv` — rename 単独では `Write`/`Edit` が発火しない）の直後に発火。`scripts/rebuild_progress.py` を実行して該当プロジェクトの `progress.md` テーブル領域を再生成し、手動の `/progress rebuild` なしでタスクインデックスを最新に保つ。
