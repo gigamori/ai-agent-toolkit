@@ -453,7 +453,7 @@ hook の書込と競合した場合は依然として無防備である。
 
 #### PreToolUse: notes_scan_gate.py (matcher: Grep)
 
-`path` が `project-notes/` 配下（`_archive/` 含む）で、かつ `pattern` に `::` を含まない `Grep` を拒否する。この形は note ルールが禁じる corpus 走査そのもの — symbol 経路の手順 3 は peer ごとに `::<name>` を grep するもので、それ以外に corpus を列挙してよい手段は無い。拒否は `permissionDecision: "deny"` で、理由としてルール本文を運ぶため、止められたエージェントは闇雲に再試行せず何が許されるかを知る。適用範囲: 閉じるのは `Grep` tool だけ。`Read` は決して拒否しない — 正規に到達した note（block または `::` Grep 経由）は `Read` で開かれ、hook はそのファイルの由来を判別できないため。`Glob`→`Read`、`Bash` 経由の `grep`/`rg`/`cat`、subagent 自身の呼び出しはいずれも通る。保証は「Grep tool による corpus 走査が不可能」であって「corpus 走査が不可能」ではない。
+`path` が `project-notes/` 配下（`_archive/` 含む）で、かつ `pattern` に `::` を含まない `Grep` を拒否する。この形は note ルールが禁じる corpus 走査そのもの — symbol 経路の手順 3 は peer ごとに `::<name>` を grep するもので、それ以外に corpus を列挙してよい手段は無い。拒否は `permissionDecision: "deny"` で、理由としてルール本文を運ぶため、止められたエージェントは闇雲に再試行せず何が許されるかを知る。適用範囲: 閉じるのは `Grep` tool だけ。`Read` は決して拒否しない — 正規に到達した note（block または `::` Grep 経由）は `Read` で開かれ、hook はそのファイルの由来を判別できないため。`Glob`→`Read` と `Bash` 経由の `grep`/`rg`/`cat` は通る。subagent 自身の呼び出しは**通らない** — `touched_capture.py` が subagent の書込を見るのと同じく、親の登録で拒否される。保証は「Grep tool による corpus 走査が不可能」であって「corpus 走査が不可能」ではない。運用上の注意: matcher 集合はセッション起動時に固定されるので、稼働中のセッションにこの hook を足しても効かない。
 
 #### PostToolUse: task_rebuild_progress.py (matcher: Write|Edit|Bash)
 

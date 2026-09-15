@@ -21,11 +21,20 @@ What this gate does NOT close, measured in the 2026-09-15 remediation arm:
     Bash grep/rg/cat/find     — no reader-side path extractor exists;
                                 touched_capture.extract_bash_paths takes WRITE
                                 targets only (`>`/`tee`/`mv|cp|rm`/`sed -i`)
-    a subagent's own calls    — the parent's hooks do not reach them
+
+A subagent's own calls DO reach this hook: measured 2026-09-15, a Grep a
+general-purpose subagent issued was denied by the parent's registration, the
+same way touched_capture already sees subagent writes under the parent's
+session_id.
 
 So the guarantee is "a Grep tool corpus scan is impossible", not "a corpus
 scan is impossible". The remaining routes stay a wording matter and are
 observed, not blocked.
+
+One deployment fact: the matcher set is fixed when a session starts, so adding
+this hook does not take effect in a session already running. Measured the same
+day — in a session predating the registration, a Write still fired the
+Write|Edit hook while a Grep on project-notes went through untouched.
 
 stdlib only: hooks run under `uv run --no-project`.
 """
