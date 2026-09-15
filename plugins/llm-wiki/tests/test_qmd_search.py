@@ -274,3 +274,48 @@ def test_ensure_collection_passes_no_timeout(tmp_path, monkeypatch):
         "build partway rather than make it faster, so _QUERY_TIMEOUT bounds "
         "the query only"
     )
+
+
+def _staged_run(codes):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+
+        class _R:
+            returncode = codes[len(calls) - 1]
+            stdout = ""
+            stderr = "boom"
+        return _R()
+
+    return fake_run, calls
+
+
+def test_ensure_collection_raises_when_embed_exits_nonzero(tmp_path, monkeypatch):
+    _make_wiki(tmp_path)
+    fake_run, calls = _staged_run([0, 0, 3221226505])
+    monkeypatch.setattr(qs.subprocess, "run", fake_run)
+    monkeypatch.setattr(qs.shutil, "which", lambda b: "/resolved/qmd")
+
+    with pytest.raises(qs.QmdError) as excinfo:
+        qs.ensure_collection(tmp_path, "qmd")
+
+    assert "3221226505" in str(excinfo.value), (
+        "the exit status must reach the caller: a silent embed failure leaves the "
+        "index with no vectors while every layer above reports success"
+    )
+    assert calls[-1][1] == "embed"
+
+
+def test_ensure_collection_tolerates_nonzero_collection_add(tmp_path, monkeypatch):
+    _make_wiki(tmp_path)
+    fake_run, calls = _staged_run([0, 1, 0])
+    monkeypatch.setattr(qs.subprocess, "run", fake_run)
+    monkeypatch.setattr(qs.shutil, "which", lambda b: "/resolved/qmd")
+
+    qs.ensure_collection(tmp_path, "qmd")
+
+    assert [c[1] for c in calls] == ["init", "collection", "embed"], (
+        "re-adding an existing collection exits non-zero on qmd 2.5.3 and stays "
+        "tolerated; only embed is checked"
+    )

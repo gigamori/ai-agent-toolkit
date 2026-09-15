@@ -209,7 +209,14 @@ def ensure_collection(root, qmd_bin) -> None:
 
     Idempotent by design: re-``init`` returns success and re-``collection add`` of
     the same path returns a non-zero "already exists" that is intentionally
-    tolerated (verified on qmd 2.5.3). Only an UNRUNNABLE binary is fatal.
+    tolerated (verified on qmd 2.5.3).
+
+    ``embed`` is the exception: its exit status IS checked. Unlike the other two it
+    has no benign non-zero, and a failed embed leaves the index with no vectors
+    while ``query`` keeps exiting 0 on the BM25 half — so tolerating it reports a
+    built index that cannot answer. Observed on an AMD Radeon 780M, where the
+    embedding pass aborts with 0xC0000409 unless ``GGML_VK_DISABLE_COOPMAT=1`` is
+    in the environment.
 
     **Blocks with NO ceiling, by choice.** ``qmd embed`` is one-time index
     construction whose cost scales with the wiki; a timeout here would abort the
@@ -223,9 +230,12 @@ def ensure_collection(root, qmd_bin) -> None:
     try:
         _run(qmd_bin, ["init"], root)
         _run(qmd_bin, ["collection", "add", wiki_dir], root)
-        _run(qmd_bin, ["embed"], root)
+        cp = _run(qmd_bin, ["embed"], root)
     except OSError as e:  # binary missing / not executable
         raise QmdError(f"qmd is not runnable: {e}") from e
+    if cp.returncode != 0:
+        raise QmdError(f"qmd embed exited {cp.returncode}: "
+                       f"{cp.stderr.strip()[:200]}")
 
 
 def update(root, qmd_bin) -> None:
