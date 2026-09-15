@@ -8,13 +8,30 @@ PASS=0; FAIL=0
 ok(){ echo "  [o] $1"; PASS=$((PASS+1)); }
 ng(){ echo "  [x] $1"; FAIL=$((FAIL+1)); }
 
-TMP_RAW="$(mktemp -d)"
+TMP_RAW="$(mktemp -d)" || { echo "ABORT: mktemp -d failed" >&2; exit 2; }
+[ -n "$TMP_RAW" ] && [ -d "$TMP_RAW" ] || { echo "ABORT: mktemp -d yielded no usable dir ('$TMP_RAW')" >&2; exit 2; }
 NATIVE_TMP="$(cygpath -m "$TMP_RAW")"
 NATIVE_TMP_BS="${NATIVE_TMP//\//\\}"
 DRIVE_LETTER=$(echo "${NATIVE_TMP:0:1}" | tr 'A-Z' 'a-z')
 TMP="/$DRIVE_LETTER${NATIVE_TMP:2}"
 echo "=== isolated tmpdir: $TMP (native: $NATIVE_TMP) ==="
-cd "$TMP"
+cd "$TMP" || { echo "ABORT: cd '$TMP' failed" >&2; rm -rf "$TMP_RAW"; exit 2; }
+
+case "$TMP" in
+  "$REPO_ROOT"|"$REPO_ROOT"/*)
+    echo "ABORT: temp workspace $TMP is INSIDE the repo tree ($REPO_ROOT);" \
+         "the hooks' ancestor walk would resolve into the real _projects/_state." >&2
+    cd /; rm -rf "$TMP"; exit 2 ;;
+esac
+d="$TMP"
+while :; do
+  if [ -d "$d/_projects/_state" ]; then
+    echo "ABORT: ancestor $d of temp workspace holds _projects/_state;" \
+         "the hooks' ancestor walk would reach it." >&2
+    cd /; rm -rf "$TMP"; exit 2
+  fi
+  p="$(dirname "$d")"; [ "$p" = "$d" ] && break; d="$p"
+done
 
 STATE_SNAPSHOT_BEFORE=$(find "$REPO_ROOT/_projects/_state" -type f 2>/dev/null | wc -l)
 

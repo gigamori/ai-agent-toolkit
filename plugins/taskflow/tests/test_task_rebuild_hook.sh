@@ -4,9 +4,33 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOK="$REPO_ROOT/plugins/taskflow/hooks/task_rebuild_progress.py"
-PROJECTS_DIR="$REPO_ROOT/_projects"
-PROJECT_NAME="_test-rebuild-hook-$$"
+REAL_STATE_DIR="$REPO_ROOT/_projects/_state"
+REAL_STATE_BEFORE=$(ls -1 "$REAL_STATE_DIR" 2>/dev/null | wc -l)
+
+TMP="$(mktemp -d)" || { echo "ABORT: mktemp -d failed" >&2; exit 2; }
+[ -n "$TMP" ] && [ -d "$TMP" ] || { echo "ABORT: mktemp -d yielded no usable dir ('$TMP')" >&2; exit 2; }
+cd "$TMP" || { echo "ABORT: cd '$TMP' failed" >&2; rm -rf "$TMP"; exit 2; }
+
+case "$TMP" in
+  "$REPO_ROOT"|"$REPO_ROOT"/*)
+    echo "ABORT: temp workspace $TMP is INSIDE the repo tree ($REPO_ROOT);" \
+         "the hooks' ancestor walk would resolve into the real _projects/_state." >&2
+    cd /; rm -rf "$TMP"; exit 2 ;;
+esac
+d="$TMP"
+while :; do
+  if [ -d "$d/_projects/_state" ]; then
+    echo "ABORT: ancestor $d of temp workspace holds _projects/_state;" \
+         "the hooks' ancestor walk would reach it." >&2
+    cd /; rm -rf "$TMP"; exit 2
+  fi
+  p="$(dirname "$d")"; [ "$p" = "$d" ] && break; d="$p"
+done
+
+PROJECTS_DIR="$TMP/_projects"
+PROJECT_NAME="_test-rebuild-hook"
 PROJECT_DIR="$PROJECTS_DIR/$PROJECT_NAME"
+mkdir -p "$PROJECTS_DIR/_state"
 
 to_win() {
   if command -v cygpath >/dev/null 2>&1; then
@@ -22,7 +46,7 @@ invoke_hook() {
   local win_path
   win_path=$(to_win "$1")
   local tool_name="${2:-Write}"
-  echo "{\"session_id\":\"$FAKE_SESSION\",\"tool_name\":\"$tool_name\",\"tool_input\":{\"file_path\":\"$win_path\",\"content\":\"dummy\"}}" | uv run python "$(to_win "$HOOK")" 2>/dev/null || true
+  echo "{\"session_id\":\"$FAKE_SESSION\",\"tool_name\":\"$tool_name\",\"tool_input\":{\"file_path\":\"$win_path\",\"content\":\"dummy\"}}" | uv run --no-project python "$(to_win "$HOOK")" 2>/dev/null || true
 }
 
 PASS=0
@@ -32,7 +56,24 @@ pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 
 cleanup() {
-  rm -rf "$PROJECT_DIR"
+  cd "$REPO_ROOT"
+  rm -rf "$TMP"
+  if [ -e "$REAL_STATE_DIR/$FAKE_SESSION.json" ]; then
+    fail "synthetic session leaked into the real state dir: $FAKE_SESSION.json"
+  else
+    pass "real _projects/_state/ carries no $FAKE_SESSION artifact"
+  fi
+  if [ -d "$REPO_ROOT/_projects/$PROJECT_NAME" ]; then
+    fail "test project leaked into the real _projects/ tree: $PROJECT_NAME"
+  else
+    pass "real _projects/ carries no $PROJECT_NAME directory"
+  fi
+  REAL_STATE_AFTER=$(ls -1 "$REAL_STATE_DIR" 2>/dev/null | wc -l)
+  if [ "$REAL_STATE_BEFORE" = "$REAL_STATE_AFTER" ]; then
+    pass "real _projects/_state/ file count unchanged ($REAL_STATE_BEFORE -> $REAL_STATE_AFTER)"
+  else
+    fail "real _projects/_state/ file count CHANGED ($REAL_STATE_BEFORE -> $REAL_STATE_AFTER)"
+  fi
   echo ""
   if [ "$FAIL" -eq 0 ]; then
     echo "All $PASS tests passed."
@@ -169,6 +210,13 @@ if [ -z "$OUTPUT_NONTASK" ]; then
   pass "non-task path produces no output"
   else
   fail "non-task path produced output: $OUTPUT_NONTASK"
+  fi
+
+OUTPUT_LIVE=$(invoke_hook "$TASK2")
+if echo "$OUTPUT_LIVE" | grep -q 'auto-rebuild'; then
+  pass "Scenario 5: positive marker — the same invocation shape still produces output for a task path, so the silence above is a verdict, not a dead hook"
+  else
+  fail "Scenario 5: hook produced nothing for a task path; the non-task silence assertion is vacuous"
   fi
 
   echo ""

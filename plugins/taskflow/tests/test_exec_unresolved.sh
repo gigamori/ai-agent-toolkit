@@ -11,8 +11,25 @@ export TASKFLOW_CAPTURE_EXPIRY_S=0
 
 HOOK="$REPO_ROOT/plugins/taskflow/hooks/session_progress_capture.py"
 
-TMP="$(mktemp -d)"
-cd "$TMP"
+TMP="$(mktemp -d)" || { echo "ABORT: mktemp -d failed" >&2; exit 2; }
+[ -n "$TMP" ] && [ -d "$TMP" ] || { echo "ABORT: mktemp -d yielded no usable dir ('$TMP')" >&2; exit 2; }
+cd "$TMP" || { echo "ABORT: cd '$TMP' failed" >&2; rm -rf "$TMP"; exit 2; }
+
+case "$TMP" in
+  "$REPO_ROOT"|"$REPO_ROOT"/*)
+    echo "ABORT: temp workspace $TMP is INSIDE the repo tree ($REPO_ROOT);" \
+         "the hooks' ancestor walk would resolve into the real _projects/_state." >&2
+    cd /; rm -rf "$TMP"; exit 2 ;;
+esac
+d="$TMP"
+while :; do
+  if [ -d "$d/_projects/_state" ]; then
+    echo "ABORT: ancestor $d of temp workspace holds _projects/_state;" \
+         "the hooks' ancestor walk would reach it." >&2
+    cd /; rm -rf "$TMP"; exit 2
+  fi
+  p="$(dirname "$d")"; [ "$p" = "$d" ] && break; d="$p"
+done
 PROJECTS_DIR="$TMP/_projects"
 STATE_DIR="$PROJECTS_DIR/_state"
 

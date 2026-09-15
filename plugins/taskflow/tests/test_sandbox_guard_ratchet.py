@@ -6,23 +6,7 @@ from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
 
-ALLOWLIST = {
-    "test_bind_skip_no_anchor.sh",
-    "test_capture_late_sidecar.sh",
-    "test_cross_project_binding.sh",
-    "test_e2e_capture_bind.sh",
-    "test_exec_unresolved.sh",
-    "test_guidelines_reminder_mode.sh",
-    "test_note_links_apply.sh",
-    "test_pj_parse_window.sh",
-    "test_precompact_flush.sh",
-    "test_rebuild_hook_path_notation.sh",
-    "test_round_binding.sh",
-    "test_round_f1_integrity.sh",
-    "test_rules_injection.sh",
-    "test_sid_binding_gate.sh",
-    "test_task_rebuild_hook.sh",
-}
+ALLOWLIST = set()
 
 
 RE_COMMENT = re.compile(r"^\s*#")

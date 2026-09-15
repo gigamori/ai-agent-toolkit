@@ -3,21 +3,65 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-cd "$REPO_ROOT"
+REAL_STATE_DIR="$REPO_ROOT/_projects/_state"
+REAL_STATE_BEFORE=$(ls -1 "$REAL_STATE_DIR" 2>/dev/null | wc -l)
 HOOK="$REPO_ROOT/plugins/taskflow/hooks/session_init.py"
-STATE_DIR="$REPO_ROOT/_projects/_state"
-PROJ="rulestest$$"
-PROJ2="rulestestnone$$"
-PROJ_DIR="$REPO_ROOT/_projects/$PROJ"
-SID="rulesinj$$-0000-0000-0000-000000000000"
+
+TMP="$(mktemp -d)" || { echo "ABORT: mktemp -d failed" >&2; exit 2; }
+[ -n "$TMP" ] && [ -d "$TMP" ] || { echo "ABORT: mktemp -d yielded no usable dir ('$TMP')" >&2; exit 2; }
+cd "$TMP" || { echo "ABORT: cd '$TMP' failed" >&2; rm -rf "$TMP"; exit 2; }
+
+case "$TMP" in
+  "$REPO_ROOT"|"$REPO_ROOT"/*)
+    echo "ABORT: temp workspace $TMP is INSIDE the repo tree ($REPO_ROOT);" \
+         "the hooks' ancestor walk would resolve into the real _projects/_state." >&2
+    cd /; rm -rf "$TMP"; exit 2 ;;
+esac
+d="$TMP"
+while :; do
+  if [ -d "$d/_projects/_state" ]; then
+    echo "ABORT: ancestor $d of temp workspace holds _projects/_state;" \
+         "the hooks' ancestor walk would reach it." >&2
+    cd /; rm -rf "$TMP"; exit 2
+  fi
+  p="$(dirname "$d")"; [ "$p" = "$d" ] && break; d="$p"
+done
+
+STATE_DIR="$TMP/_projects/_state"
+PROJ="rulestest"
+PROJ2="rulestestnone"
+PROJ_DIR="$TMP/_projects/$PROJ"
+SID="rulesinj0-0000-4000-8000-000000000000"
 STATE_FILE="$STATE_DIR/$SID.json"
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 cleanup() {
-  rm -f "$STATE_FILE"
-  rm -rf "$PROJ_DIR"
+  cd "$REPO_ROOT"
+  rm -rf "$TMP"
+  LEAKED=""
+  for f in "$REAL_STATE_DIR/$SID".*; do
+    [ -e "$f" ] && LEAKED="$LEAKED $(basename "$f")"
+  done
+  if [ -z "$LEAKED" ]; then
+    pass "real _projects/_state/ carries no $SID artifact (queried at full 36-char width)"
+  else
+    fail "synthetic session leaked into the real state dir:$LEAKED"
+  fi
+  for p in "$REPO_ROOT/_projects/$PROJ" "$REPO_ROOT/_projects/$PROJ2"; do
+    if [ -d "$p" ]; then
+      fail "test project leaked into the real _projects/ tree: $p"
+    else
+      pass "real _projects/ carries no $(basename "$p") directory"
+    fi
+  done
+  REAL_STATE_AFTER=$(ls -1 "$REAL_STATE_DIR" 2>/dev/null | wc -l)
+  if [ "$REAL_STATE_BEFORE" = "$REAL_STATE_AFTER" ]; then
+    pass "real _projects/_state/ file count unchanged ($REAL_STATE_BEFORE -> $REAL_STATE_AFTER)"
+  else
+    fail "real _projects/_state/ file count CHANGED ($REAL_STATE_BEFORE -> $REAL_STATE_AFTER)"
+  fi
   echo ""
   if [ "$FAIL" -eq 0 ]; then echo "All $PASS tests passed."; else echo "$FAIL failed, $PASS passed."; fi
   [ "$FAIL" -eq 0 ] || exit 1
@@ -149,6 +193,11 @@ echo "[Case 4] no rules.md → no rules block"
 STATE4="{\"project\":\"$PROJ2\",\"rules_loaded\":true,\"indexed_project\":\"$PROJ2\",\"guidelines_loaded\":true,\"project_rules_indexed\":\"\",\"origin\":\"cc\"}"
 OUT=$(run_hook "no rules here" "$STATE4" | ctx)
 
+if [ -n "$(echo "$OUT" | tr -d '[:space:]')" ]; then
+  pass "Case 4: positive marker — the hook still injected context for the rules-less project, so the absent rules block is a verdict, not a skipped hook"
+else
+  fail "Case 4: hook produced NO context; the no-rules-block assertion below is vacuous"
+fi
 if echo "$OUT" | grep -q "Project Rules"; then
   fail "Case 4: rules block present when no rules.md"
 else
