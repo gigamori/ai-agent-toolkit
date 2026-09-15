@@ -31,6 +31,16 @@ Injection blocks per turn (decided from state file flags):
                        full body is injected every turn instead. See project-notes
                        spec project-rules-injection.md.
   - action_req         (every turn while progress.md missing): scaffold banner
+  - progress_digest    (ordinary turns only — absent whenever bootstrap fires):
+                       capped `## In Progress` rows from progress.md
+                       (progress_digest.py, IN_PROGRESS_ROWS_MAX rows), with a
+                       `in-progress: <shown> of <total> rows shown` footer.
+                       Dropped in favor of a one-line omission notice when the
+                       assembled additionalContext would exceed
+                       INLINE_BUDGET_U16 u16 code units (the digest never causes
+                       that crossing).
+  - notes_notice       (every turn the project-notes qmd layer degrades):
+                       `[project-notes] vector layer unavailable: <reason>`
 
 State file schema (v2.5):
   {
@@ -50,7 +60,8 @@ causing one full re-injection on the first turn after upgrade.
 Special tokens in user prompt:
   pj:<name>   set/switch project
   pj:none     clear project
-  pj:?        discovery (list projects, independent of current project)
+  pj:?        discovery (list projects, independent of current project);
+              emits discovery=1 in the [Progress Session] header
   norouter    bypass hook entirely for this turn
 """
 import json, sys, os, re, glob
@@ -62,6 +73,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from touched_capture import _find_state_root  # noqa: E402
 from tstamp import now_iso  # noqa: E402
 from notes_push import build_notes_push  # noqa: E402
+from progress_digest import build_digest, u16len, INLINE_BUDGET_U16  # noqa: E402
 
 PJ_PARSE_WINDOW = 500  # chars; pj: and norouter are only recognized within this prefix
 
@@ -103,11 +115,13 @@ SYMBOL_ROUTE_MAX = 100  # turns kept; a long session must not grow the state fil
 BOOTSTRAP_MAX_CHARS = 1200
 BOOTSTRAP_BLOCK = (
   "[taskflow bootstrap - read this block before anything else]\n"
-  "1. ROUTER: if current_project above is non-empty, invoke the subagent\n"
-  "   taskflow:project-router (Agent tool) BEFORE answering. If it is empty, do\n"
-  "   not invoke it. Build a JSON object with fields session_id, state_file,\n"
-  "   current_project, leading_lines, prompt_summary and pass ONLY that JSON\n"
-  "   object as the prompt - no other text. prompt_summary carries the\n"
+  "1. ROUTER: if the header above carries discovery=1, invoke the subagent\n"
+  "   taskflow:project-router (Agent tool) to rank projects for pj:?, whether or\n"
+  "   not current_project is set. Otherwise, if current_project is non-empty,\n"
+  "   invoke it to route this turn BEFORE answering. If neither holds, do not\n"
+  "   invoke it. Build a JSON object with fields session_id, state_file,\n"
+  "   current_project, discovery, leading_lines, prompt_summary and pass ONLY\n"
+  "   that JSON object as the prompt - no other text. prompt_summary carries the\n"
   "   instruction's meaning only - never leading lines, skill names, command\n"
   "   names or tool names.\n"
   "2. RESPONSE LEADING LINES: when a project is assigned, include\n"
@@ -535,9 +549,29 @@ if current_project and not pj_discovery:
 # ~4,000-char case delivered inline, already carrying
 # guidelines_reminder.md's own ROUTER line, so it needs no bootstrap block
 # and pays nothing.
+heavy_turn = inject_rules or inject_guidelines_full or inject_index or inject_rules_full
 bootstrap_content = ''
-if inject_rules or inject_guidelines_full or inject_index or inject_rules_full:
+if heavy_turn:
   bootstrap_content = '\n\n' + BOOTSTRAP_BLOCK
+
+# Build progress digest block (progress_digest.py): capped `## In Progress`
+# rows from progress.md, subject to the §3.4-style budget guard applied below
+# at final assembly. Never built on a heavy turn — on that branch
+# project_routing.md or the full guidelines already exceed the inline budget
+# alone, so only a 2,000-unit preview is delivered and a digest would deliver
+# a partial table with its footer cut off, worse than absence (design
+# router-role-division.md §3.5, "never both"). Absent on discovery turns too:
+# a discovery turn is not asking about this project's progress.
+progress_content = ''
+if current_project and not pj_discovery and not heavy_turn:
+  try:
+    with open(os.path.join(PROGRESS_ROOT, current_project, 'progress.md'),
+              'r', encoding='utf-8') as f:
+      digest = build_digest(f.read(), current_project)
+  except Exception:
+    digest = ''
+  if digest:
+    progress_content = '\n\n' + digest
 
 # Persist updated state. We mark rules_loaded and indexed_project regardless of
 # read success — if a file is genuinely broken, we don't want to retry every turn.
@@ -601,10 +635,39 @@ if is_new_session and loaded.get('inherited_tasks'):
 if not current_project and not pj_discovery:
   result = {}
 else:
+  discovery_field = ' discovery=1' if pj_discovery else ''
+  # Hoisted so the two assemble() calls on the guard path below are the same
+  # function of the same inputs — a second now_iso() call would make the
+  # measured string and the delivered string differ in iso_ts as well as in
+  # progress_block, which is not what "evaluate the same assembly again" means.
+  iso_ts = now_iso()
+
+  def assemble(progress_block):
+    return (
+      f'[Progress Session] session_id={session_id} sid={session_id.replace("-", "")[-12:]} '
+      f'state_file={state_path} current_project={current_project}{discovery_field} '
+      f'iso_ts={iso_ts}{bootstrap_content}{fork_context}{action_required}{progress_block}'
+      f'{index_content}{routing_content}{guidelines_content}{rules_content}{notes_content}{notes_notice}'
+    )
+
+  # §3.4 budget guard: assemble once WITH the digest; only if that assembly
+  # would exceed INLINE_BUDGET_U16 does the digest get replaced by the
+  # one-line omission notice and the assembly redone. The guard's contract is
+  # "the digest never causes the crossing" — nothing more: a turn that
+  # already exceeds the budget without any digest still exceeds it, and this
+  # branch does not touch that case. Two full assemblies, never a
+  # `.replace()` on the assembled string — the digest text is file-derived
+  # and can recur elsewhere in the payload.
+  additional_context = assemble(progress_content)
+  if progress_content and u16len(additional_context) > INLINE_BUDGET_U16:
+    progress_content = (
+      '\n\n[Project Progress] In Progress digest omitted (context budget)')
+    additional_context = assemble(progress_content)
+
   result = {
     'hookSpecificOutput': {
       'hookEventName': 'UserPromptSubmit',
-      'additionalContext': f'[Progress Session] session_id={session_id} sid={session_id.replace("-", "")[-12:]} state_file={state_path} current_project={current_project} iso_ts={now_iso()}{bootstrap_content}{fork_context}{action_required}{index_content}{routing_content}{guidelines_content}{rules_content}{notes_content}{notes_notice}'
+      'additionalContext': additional_context
     }
   }
 

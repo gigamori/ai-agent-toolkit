@@ -44,11 +44,20 @@ printf '# testpj\n\nテスト用プロジェクト\n' > _projects/testpj/index.m
 printf '# Progress: testpj\n\n<!-- @table:begin -->\n<!-- @table:end -->\n' > _projects/testpj/progress.md
 
 run_si(){ echo "$1" | uv run --no-project python "$SI_WIN" 2>/dev/null; }
+header_line(){
+  printf '%s' "$1" | uv run --no-project python -c \
+    "import json,sys
+d=json.load(sys.stdin)
+ctx=d.get('hookSpecificOutput',{}).get('additionalContext','')
+sys.stdout.write(ctx.split(chr(10)+chr(10))[0])"
+}
 
 SID_A="11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 SID_B="22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 PARENT="aaaaaaaa-1111-4111-8111-111111111111"
 CHILD="bcbcbcbc-2222-4222-8222-222222222222"
+SID_C="33333333-cccc-4ccc-8ccc-cccccccccccc"
+SID_D="44444444-dddd-4ddd-8ddd-dddddddddddd"
 
 echo ""
 echo "--- injection: with pj: active, session_init injects [Progress Session] + index ---"
@@ -79,6 +88,12 @@ if echo "$OUT1b" | grep -q 'ROUTER: \[Progress Session\]' && echo "$OUT1b" | gre
 else
   ng "AC-6機構(有): turn2 の注入に ROUTER cue が無い。OUT1b=$OUT1b"
   fi
+HDR1b="$(header_line "$OUT1b")"
+if ! echo "$HDR1b" | grep -q 'discovery=1'; then
+  ok "F5対照: 非discoveryターン(pj:testpj)の header に discovery=1 が無い。HDR=$HDR1b"
+else
+  ng "F5対照: 非discoveryターンの header に discovery=1 が漏れた。HDR=$HDR1b"
+  fi
 
 echo ""
 echo "--- fork inheritance: a transcript with the parent marker plus parent state yields the inherited project and inherited_tasks ---"
@@ -102,6 +117,57 @@ else
   fi
 else
   ng "H2: fork継承が働かない。OUT=$OUT3"
+  fi
+
+echo ""
+echo "--- G4 discovery arm 1: pj:? with a project already set carries discovery=1, suppresses the notes push, and keeps the project in state ---"
+mkdir -p _projects/testpj/project-notes
+printf '{"session_id":"%s","project":"testpj","rules_loaded":true,"guidelines_loaded":true,"indexed_project":"testpj"}' "$SID_C" \
+  > "_projects/_state/${SID_C}.json"
+printf '| File | Description | Tags | Updated |\n|------|-------------|------|---------|\n| notes.md | testpj discovery-arm note fixture | | 2026-09-01 |\n' \
+  > "_projects/testpj/project-notes/index.md"
+printf '# note\n' > "_projects/testpj/project-notes/notes.md"
+OUT4=$(run_si "{\"session_id\":\"$SID_C\",\"prompt\":\"pj:? どれが近い\"}")
+HDR4="$(header_line "$OUT4")"
+if echo "$HDR4" | grep -q 'discovery=1'; then
+  ok "G4-1: 既存project(testpj)ありのdiscoveryターン header に discovery=1 を含む。HDR=$HDR4"
+else
+  ng "G4-1: discoveryターンの header に discovery=1 が無い。HDR=$HDR4"
+  fi
+if echo "$OUT4" | grep -q 'ROUTER: \[Progress Session\]'; then
+  ok "G4-1: ROUTER cue が同ターンに存在"
+else
+  ng "G4-1: ROUTER cue が無い。OUT4=$OUT4"
+  fi
+if ! echo "$OUT4" | grep -q 'project-notes matched:'; then
+  ok "G4-1: project-notes push block はdiscoveryターンで非注入(project-notes/index.mdは実在するのに、footer 'project-notes matched:' が無い)"
+else
+  ng "G4-1: discoveryターンなのにproject-notes push blockが注入された。OUT4=$OUT4"
+  fi
+if grep -q '"project": "testpj"' "_projects/_state/${SID_C}.json"; then
+  ok "G4-1: positive marker — state json は discoveryターン後も project=testpj を保持"
+else
+  ng "G4-1: state json の project が失われた。$(cat "_projects/_state/${SID_C}.json")"
+  fi
+
+echo ""
+echo "--- G4 discovery arm 2: pj:? with no prior project still carries discovery=1 and writes state ---"
+OUT5=$(run_si "{\"session_id\":\"$SID_D\",\"prompt\":\"pj:? どれが近い\"}")
+HDR5="$(header_line "$OUT5")"
+if [ -n "$OUT5" ]; then
+  ok "G4-2: 出力が空でない"
+else
+  ng "G4-2: 出力が空"
+  fi
+if echo "$HDR5" | grep -q 'discovery=1'; then
+  ok "G4-2: project未設定のdiscoveryターンでも header に discovery=1 を含む。HDR=$HDR5"
+else
+  ng "G4-2: discoveryターンの header に discovery=1 が無い。HDR=$HDR5"
+  fi
+if [ -f "_projects/_state/${SID_D}.json" ]; then
+  ok "G4-2: positive marker — state json が書かれた"
+else
+  ng "G4-2: state json が書かれなかった"
   fi
 
 echo ""
@@ -132,13 +198,13 @@ else
 echo ""
 echo "=== measured non-contact with the real _projects/_state/ (reads the real directory, not the cwd argument) ==="
 LEAKED=""
-for s in "$SID_A" "$SID_B" "$PARENT" "$CHILD"; do
+for s in "$SID_A" "$SID_B" "$PARENT" "$CHILD" "$SID_C" "$SID_D"; do
   for f in "$REAL_STATE_DIR/$s".*; do
     [ -e "$f" ] && LEAKED="$LEAKED $(basename "$f")"
 done
 done
 if [ -z "$LEAKED" ]; then
-  ok "実 _projects/_state/ に合成 session の成果物なし（4 SID を full 36 字で照会）"
+  ok "実 _projects/_state/ に合成 session の成果物なし（6 SID を full 36 字で照会）"
 else
   ng "実 _projects/_state/ に合成 session が leak した:$LEAKED"
   fi

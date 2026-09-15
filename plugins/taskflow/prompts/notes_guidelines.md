@@ -110,33 +110,24 @@ Operational rules:
 - Operational runbooks, SOPs → `procedures/`
 - Feature / issue backlogs, candidate ideas → `backlog/`
 
-## Auto-save flow
+## Saving
 
-When the router returns `project_notes_autosave: true`, the main agent should:
+Save in the turn that produced the material, without asking for confirmation. "What to save" above
+decides whether a turn produced any; "Prohibitions" below overrides this section whenever both apply,
+and then you neither save nor ask.
 
-1. Answer the user's request normally (deliver the investigation result as the main response).
-2. At the end of the response, ask for save confirmation in this form:
+1. Answer the user's request normally (deliver the result as the main response).
+2. In the same turn, write `_projects/<project>/project-notes/<category>/<slug>.md` with
+   frontmatter + H1 + body. Always include source paths / line numbers when summarizing code.
 
-   > Save this investigation result as `_projects/<project>/project-notes/<category>/<slug>.md`?
-   > Suggested category: `<category>`
-   > Suggested slug: `<kebab-case-slug>`
-
-3. Only if the user approves:
-   - Create the file with frontmatter + H1 + body. Always include source paths / line numbers when summarizing code.
-   - Append a row to `project-notes/index.md`.
-
-4. If the user declines or does not respond, do NOT save.
-
-When `project_notes_autosave: false`, do NOT ask (respond normally).
+The decision is yours, taken at the end of the turn against those two sections. Nothing signals it to
+you, and there is no confirmation step to wait for. A user who says not to save is an instruction like
+any other and outranks this section.
 
 ## Slug rules
 
 - kebab-case, under 30 characters, noun phrase capturing the content.
-- When a note you reached this turn already covers the topic, propose appending to it rather than creating a new one (mention this in the confirmation step). Reaching it means one of the three reads above; there is no fourth way to learn a note exists.
-
-## Manual save (explicit user instruction)
-
-When the user explicitly says "save this to notes" (or equivalent), skip the confirmation step and save immediately. Ask only if category or slug is genuinely ambiguous.
+- When a note you reached this turn already covers the topic, append to it rather than creating a new one. Reaching it means one of the three reads above; there is no fourth way to learn a note exists.
 
 ## Prohibitions
 

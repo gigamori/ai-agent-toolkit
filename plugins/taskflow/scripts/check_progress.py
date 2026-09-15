@@ -188,8 +188,9 @@ def parse_progress_table_rows(progress_md: str) -> list[dict]:
     """Extract task ref rows from progress.md table region.
 
     LOCKSTEP: the section-heading regex below is shared with
-    view_progress.py::SECTION_RE and the titles emitted by
-    rebuild_progress.py::render_section. Change all three together.
+    view_progress.py::SECTION_RE, the titles emitted by
+    rebuild_progress.py::render_section, and hooks/progress_digest.py's own
+    copy of SECTION_RE. Change all four together.
     """
     rows: list[dict] = []
     section: str | None = None

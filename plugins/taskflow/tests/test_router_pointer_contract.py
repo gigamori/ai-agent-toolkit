@@ -12,7 +12,11 @@ RETIRED_UNBOUNDED_FIELDS = (
     "project_notes_list",
     "tasks_todo_list",
     "tasks_in_progress_list",
+    "tasks_in_progress_relevant",
 )
+RETIRED_ROUTER_FIELDS = ("project_notes_autosave",)
+RETIRED_BLOCK_MARKERS = ("--- progress ---", "--- index ---")
+POINTER_RELEVANT_LITERAL = "[tasks-rel:"
 NO_FALLBACK_WALK_PHRASE = "MUST NOT substitute a directory walk"
 BOUNDED_POPULATION_PHRASE = "decided exclusively by a deterministic script"
 RELEVANT_EXEMPTION_PHRASE = "Explicit exemption from (ii)"
@@ -91,6 +95,23 @@ def main():
             bad(f"'{field}' still appears somewhere in the router definition")
         else:
             ok(f"'{field}' absent from the entire router definition")
+
+    for field in RETIRED_ROUTER_FIELDS:
+        if field in text:
+            bad(f"'{field}' still appears somewhere in the router definition (retired router field)")
+        else:
+            ok(f"'{field}' absent from the entire router definition (retired router field)")
+
+    for marker in RETIRED_BLOCK_MARKERS:
+        if marker in text:
+            bad(f"'{marker}' still appears somewhere in the router definition (retired block marker)")
+        else:
+            ok(f"'{marker}' absent from the entire router definition (retired block marker)")
+
+    if POINTER_RELEVANT_LITERAL in template:
+        ok(f"apply template carries the '{POINTER_RELEVANT_LITERAL}' pointer")
+    else:
+        bad(f"apply template is missing the '{POINTER_RELEVANT_LITERAL}' pointer")
 
     if NO_FALLBACK_WALK_PHRASE in text:
         ok("router definition prohibits a directory-walk fallback for the notes summary")

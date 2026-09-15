@@ -152,7 +152,8 @@ def gather_tasks(project_dir: Path) -> dict[str, list[TaskRow]]:
 def render_section(title: str, date_col: str, rows: list[TaskRow]) -> list[str]:
     # LOCKSTEP: the section titles and the header/separator shape emitted here are
     # parsed by check_progress.py::parse_progress_table_rows and sliced by
-    # view_progress.py::find_completed_rows. Change all three together.
+    # view_progress.py::find_completed_rows and hooks/progress_digest.py's own
+    # find_in_progress_rows. Change all four together.
     lines: list[str] = []
     lines.append(f"## {title}")
     lines.append("")

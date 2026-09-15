@@ -12,23 +12,22 @@ The body of the response follows the user's input language.
 
 ### Discovery via `pj:?`
 
-When the user prompt contains `pj:?`, this is a discovery request. The main agent MUST:
+When the user prompt contains `pj:?`, this is a discovery request and the `[Progress Session]` header carries `discovery=1`. The main agent MUST:
 
-1. Read `_projects/index.md` and rank each project by relevance to the user's input using these similarity labels:
-   - `strong` — direct keyword / scope overlap
-   - `related` — same domain or adjacent area
-   - `weak` — some shared vocabulary but different focus
-   - `far` — different domain (include only when the project list is short)
-2. Display the ranked list in the format: `- <project> — <label>: <one-line reason>`
-3. Do NOT clear or change the active project — `pj:?` is a query, not a switch.
+1. Invoke the project router for that turn (see "Running the project router"). The router reads `_projects/index.md` and ranks the projects by meaning. You do not read that file and you do not rank.
+2. Display the router's candidate lines as they came back: `- <project> — <label>: <one-line reason>`
+3. Do NOT clear or change the active project — `pj:?` is a query, not a switch. It is available whether or not a project is currently assigned.
 
 After seeing the candidates, the user can type `pj:<name>` to select one.
 
 ## Running the project router
 
-When a session has a `state_file` path injected via `[Progress Session]` **and `current_project` is non-empty**, invoke the project-router subagent using the procedure below before starting to answer the user's input.
+When a session has a `state_file` path injected via `[Progress Session]`, invoke the project-router subagent using the procedure below before starting to answer the user's input, on either of these two turn shapes:
 
-When `current_project` is empty, do NOT invoke the router. Proceed directly to the user's request without project context.
+- the header carries `discovery=1` — invoke the router to rank projects for `pj:?`, whether or not `current_project` is set;
+- otherwise `current_project` is non-empty — invoke the router to route this turn.
+
+When neither holds — no `discovery=1` and an empty `current_project` — do NOT invoke the router. Proceed directly to the user's request without project context.
 
 ### Steps
 
@@ -42,13 +41,15 @@ block as the prompt.
      "session_id": "extracted from [Progress Session]",
      "state_file": "extracted from [Progress Session]",
      "current_project": "extracted from [Progress Session]",
+     "discovery": <true when the [Progress Session] header carries discovery=1, false otherwise>,
      "leading_lines": "the leading lines of the user input (near the beginning, before the body; pj:/mode: etc. may appear in any order, not necessarily the literal first line)",
      "prompt_summary": "the meaning of the instruction — what the user asks to be done (≤ 50 chars). Never restate what leading_lines already carries (pj:/mode: etc.), and never include skill/command names, flags, or tool names"
    }
    ```
 2. Invoke the subagent via the Agent tool: `subagent_type: taskflow:project-router`, `prompt: <JSON context block>`. If the runtime lacks a subagent mechanism, the main agent runs the same procedure itself by reading the spec in the body of `agents/project-router.md`.
-4. Handling the result:
-   - `action: apply` → use the returned context (progress, tasks, project-notes, etc.) as the premise for task execution.
+3. Handling the result:
+   - `action: discovery` → display the candidate lines and stop. Do not route, and do not change the active project.
+   - `action: apply` → the router returns judgments and pointers only (`progress_exists`, an optional `[tasks-rel:]` line, `stale_hint`). Use them as the premise for task execution, and open a file only when you are going to work on it.
    - `action: skip` → skip project management and proceed to the task.
 
 ### Secondary-source discipline (router result handling)
@@ -56,7 +57,9 @@ block as the prompt.
 The router returns **pointers and secondary material, not primary truth**. Treat it accordingly:
 
 - Facts attributed to project-notes (findings, line numbers, section references, existing dependencies) MUST be confirmed by a primary read before you act on them. Do NOT propagate specifics that exist only in the router's returned text.
-- The router emits NO project-notes block on this build. Notes reach you only through the injected `project-notes (index rows):` block, which a deterministic hook selects. Treat any notes material appearing in a router result as spurious and ignore it.
+- The router emits NO project-notes block, NO progress view, and NO project index on this build. Each of those reaches you from a deterministic hook instead: notes as the injected `project-notes (index rows):` block, progress as the injected `[Project Progress: <project>]` digest, the index as `[Project Index: <project>]` on project switch. Treat any such material appearing in a router result as spurious and ignore it.
+- `[tasks-rel: <file>.md ...]` is the router's list of tasks this turn may be about. It is a pointer, not a record of work. Do NOT copy it into your own response.
+- `[tasks: <file>.md ...]` in your response means you actually did that task's work this turn. Reading a candidate the router pointed at is not doing its work, so a file you only opened does NOT go in `[tasks:]`.
 - The authority for a task's status / existence is the `tasks/` folder. The `progress.md` table is a cache.
 - Any subagent digest is secondary material: verify it against the primary source before acting.
 
@@ -68,7 +71,7 @@ When the project is empty (pj unassigned), only discovery (`pj:?`) is available.
 
 - Do NOT auto-assign or infer a project based on keywords or conversation context.
 - Do NOT perform any project management operations (task creation, progress tracking, project-notes saving, or scaffold creation).
-- Proceed with the user's request without project context.
+- Invoke the project router only on a `discovery=1` turn. On any other turn with an empty project, do not invoke it; proceed with the user's request without project context.
 - Project management becomes available when the user explicitly assigns a project via `pj:<name>`.
 
 ## Interaction with Plan mode

@@ -1,13 +1,13 @@
 ## Loading
 
-- The `--- progress ---` block returned by the project router is the canonical progress view for the turn. Use it as-is; do NOT re-read `progress.md` to obtain the same content.
-- Outside a router turn, get the view with:
+- The `[Project Progress: <project>]` block the hook injects on an ordinary turn is that turn's In Progress view. Code decides how many rows it carries, and the `in-progress: <shown> of <total> rows shown` footer states what was cut.
+- When you need more than the digest carries — the In Progress rows it cut, the TODO or Completed tables, or a turn where the block is absent or replaced by `[Project Progress] In Progress digest omitted (context budget)` — get the view with:
   `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/view_progress.py" "<project-root>"` (add `--all` only when the user explicitly asks for the whole completion history).
 - Read `progress.md` directly ONLY when you are about to edit one of its free-text sections.
 - progress.md is split into two regions:
   - **Free-text sections** (Architecture / Key Decisions & Policies / Open Issues / Reference Materials): hand-editable; LLM and human both edit.
   - **Table region** (between `<!-- @table:begin -->` and `<!-- @table:end -->`): auto-generated from `tasks/<status>/*.md` files. Do NOT hand-edit content inside this block.
-  - The Completed section lists EVERY file in `tasks/2_done/` — the file is never truncated. Only the context view is bounded (`view_progress.py`, default 10 rows); never write a view back into `progress.md`.
+  - The Completed section lists EVERY file in `tasks/2_done/` — the file is never truncated. The views into it are what is bounded (`view_progress.py`, default 10 Completed rows; the injected digest, a code-set In Progress row cap); never write a view back into `progress.md`.
 
 ## Single authority
 

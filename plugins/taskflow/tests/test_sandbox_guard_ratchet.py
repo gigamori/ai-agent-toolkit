@@ -33,6 +33,7 @@ RE_GUARD_INSIDE_REPO = re.compile(r"\$\{?REPO_ROOT\}?\"?/\*")
 RE_GUARD_ANCESTOR_PROBE = re.compile(
     r"-d\s+\"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/_projects/_state\"")
 RE_EXIT_2 = re.compile(r"\bexit\s+2\b")
+RE_CLAUDE_P = re.compile(r"claude\s+-p\b")
 
 
 def read_text(path):
@@ -101,6 +102,10 @@ def has_guards(lines):
     return inside_repo and ancestor and aborts
 
 
+def has_claude_p(lines):
+    return any(RE_CLAUDE_P.search(ln) for ln in lines)
+
+
 def classify(text):
     lines = code_lines(text)
     hits = invocation_lines(lines)
@@ -108,6 +113,7 @@ def classify(text):
         "in_scope": bool(hits),
         "evidence": hits[0] if hits else "",
         "guards": has_guards(lines) if hits else False,
+        "nested_claude_p": has_claude_p(lines),
     }
 
 
@@ -155,6 +161,18 @@ set -uo pipefail
 echo "nothing invoked here"
 """
 
+SYN_NESTED_CLAUDE_P = """#!/usr/bin/env bash
+set -uo pipefail
+CLAUDE="claude -p --dangerously-skip-permissions --model haiku"
+$CLAUDE "do something" > out.json
+"""
+
+SYN_CLAUDE_P_MENTION_ONLY = """#!/usr/bin/env bash
+# reference: the real nested driver runs claude -p --dangerously-skip-permissions
+set -uo pipefail
+echo "nothing invoked here"
+"""
+
 
 def self_check(report):
     ok = True
@@ -186,6 +204,24 @@ def self_check(report):
         report("  FAIL  a commented-out invocation was scored in scope "
                "(evidence: %s) -- comment stripping is broken" % r["evidence"])
 
+    r = classify(SYN_NESTED_CLAUDE_P)
+    if r["nested_claude_p"] and not r["in_scope"]:
+        report("  PASS  synthetic nested `claude -p` body is flagged, and not "
+               "scored as a direct hook invocation")
+    else:
+        ok = False
+        report("  FAIL  synthetic nested `claude -p` body scored "
+               "nested_claude_p=%s in_scope=%s -- the detector is a no-op"
+               % (r["nested_claude_p"], r["in_scope"]))
+
+    r = classify(SYN_CLAUDE_P_MENTION_ONLY)
+    if not r["nested_claude_p"]:
+        report("  PASS  comment-only mention of `claude -p` is NOT flagged")
+    else:
+        ok = False
+        report("  FAIL  a commented-out `claude -p` mention was flagged -- "
+               "comment stripping is broken")
+
     return ok
 
 
@@ -207,7 +243,7 @@ def main():
     report("=== classification: %d .sh files under plugins/taskflow/tests/ ==="
            % len(scripts))
 
-    in_scope, out_scope = [], []
+    in_scope, nested_claude_p, out_scope = [], [], []
     for path in scripts:
         text, replaced = read_text(path)
         if replaced:
@@ -216,12 +252,17 @@ def main():
         r = classify(text)
         if r["in_scope"]:
             in_scope.append((path.name, r))
+        elif r["nested_claude_p"]:
+            nested_claude_p.append(path.name)
         else:
             out_scope.append(path.name)
 
     for name, r in in_scope:
         report("  IN   %-40s guards=%-5s | %s"
                % (name, r["guards"], r["evidence"][:80]))
+    for name in sorted(nested_claude_p):
+        report("  NESTED-CLAUDE-P  %-40s requires the test_self_run worktree "
+               "procedure; never part of a bare sweep" % name)
     for name in out_scope:
         report("  OUT  %-40s invokes no file under plugins/taskflow/hooks/" % name)
 
@@ -258,6 +299,8 @@ def main():
 
     report("  in scope:        %d   (guarded %d / unguarded %d)"
            % (len(in_scope), len(guarded), len(unguarded)))
+    report("  nested claude -p: %d   (requires the test_self_run worktree "
+           "procedure; never part of a bare sweep)" % len(nested_claude_p))
     report("  out of scope:    %d" % len(out_scope))
     report("  allowlist size:  %d" % len(ALLOWLIST))
     report("")
@@ -275,6 +318,9 @@ def main():
     report("      plugins/taskflow/scripts/, and anything sourced from outside are out.")
     report("    * this is a presence check on source text: it proves the guard block is")
     report("      written, never that it runs or aborts correctly.")
+    report("    * the nested claude -p bucket is a literal-substring check on source text")
+    report("      too: a driver spawning claude through a variable built at runtime, or a")
+    report("      differently-spelled CLI invocation, is scored OUT rather than flagged.")
 
     sys.stdout.write("\n".join(report_lines) + "\n")
     if failures:

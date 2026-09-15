@@ -17,6 +17,9 @@ import check_progress as cp  # noqa: E402
 import rebuild_progress as rp  # noqa: E402
 import view_progress as vp  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+import progress_digest as pd  # noqa: E402
+
 PASS = 0
 FAIL = 0
 
@@ -481,6 +484,32 @@ def test_notes_summary_matches_check_progress(root: Path) -> None:
     )
 
 
+def test_lockstep_digest_byte_identity(root: Path) -> None:
+    print("--- LOCKSTEP: hooks/progress_digest.py table shapes match view_progress.py ---")
+    check(
+        pd.TABLE_BEGIN == vp.TABLE_BEGIN,
+        "TABLE_BEGIN is byte-identical between view_progress.py and "
+        "hooks/progress_digest.py (check_progress.py::parse_progress_table_rows "
+        "and rebuild_progress.py::render_section build the same shape inline and "
+        "are not compared here)",
+    )
+    check(
+        pd.TABLE_END == vp.TABLE_END,
+        "TABLE_END is byte-identical between view_progress.py and "
+        "hooks/progress_digest.py",
+    )
+    check(
+        pd.SECTION_RE.pattern == vp.SECTION_RE.pattern,
+        "SECTION_RE.pattern is byte-identical between view_progress.py and "
+        "hooks/progress_digest.py",
+    )
+    check(
+        pd.SEPARATOR_RE.pattern == vp.SEPARATOR_RE.pattern,
+        "SEPARATOR_RE.pattern is byte-identical between view_progress.py and "
+        "hooks/progress_digest.py",
+    )
+
+
 def main() -> int:
     print("=== context-side Completed-row cap unit tests ===")
     tests = (
@@ -500,6 +529,7 @@ def main() -> int:
         test_notes_summary_missing_index,
         test_notes_summary_mutually_exclusive,
         test_notes_summary_matches_check_progress,
+        test_lockstep_digest_byte_identity,
     )
     for fn in tests:
         with tempfile.TemporaryDirectory() as d:

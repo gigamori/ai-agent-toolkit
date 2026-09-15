@@ -19,8 +19,10 @@ file. Everything else (free-text sections, TODO / In Progress tables, markers)
 is passed through byte for byte.
 
 LOCKSTEP: the section-heading regex below mirrors
-check_progress.py::parse_progress_table_rows and the section titles emitted by
-rebuild_progress.py::render_section. Change all three together.
+check_progress.py::parse_progress_table_rows, the section titles emitted by
+rebuild_progress.py::render_section, and ../hooks/progress_digest.py's own
+copies of TABLE_BEGIN/TABLE_END/SECTION_RE/SEPARATOR_RE. Change all four
+together.
 
 Configuration (CLI > env > default):
   --limit N        keep the N most recent Completed rows (0 = unlimited)
@@ -65,6 +67,7 @@ TABLE_BEGIN = "<!-- @table:begin -->"
 TABLE_END = "<!-- @table:end -->"
 
 # LOCKSTEP: check_progress.py::parse_progress_table_rows / rebuild_progress.py::render_section
+# / ../hooks/progress_digest.py's own TABLE_BEGIN/TABLE_END/SECTION_RE/SEPARATOR_RE
 SECTION_RE = re.compile(r"^##\s+(TODO|In Progress|Completed)\s*$")
 SEPARATOR_RE = re.compile(r"^\|[-\s|:]+\|\s*$")
 

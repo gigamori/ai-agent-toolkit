@@ -137,6 +137,92 @@ No allowlist file exists. The migration completed in one pass, so there were no 
 freeze; the gate still reads `tests/.knowledge-allowlist` if one is ever added and prints the
 count either way.
 
+## Router role-division gate additions — scope calls and uncovered configurations
+
+Six gates added or extended over the four retired router invariants and the new
+progress-digest hook, each demonstrated with a recorded RED before being counted as a
+gate. Scope calls, and what each cannot see:
+
+- **`test_router_pointer_contract.py`** gained a whole-file (not apply-template-only)
+  absence check for the retired fields/markers and a presence check for the
+  `[tasks-rel:` pointer. It is a text match over `agents/project-router.md` alone: it
+  cannot see whether a router run actually emits the pointer, whether the pointer names
+  the right tasks, or whether the main agent honours it.
+- **`test_session_init_bootstrap.py`** gained four fixture-driven arms (A-D) plus one
+  literal anchor (`INLINE_BUDGET_U16 == 10000`) tying the budget constant to the pinned
+  harness version. Not covered: checkout-path length (a longer checkout raises every
+  measured total; the fixtures use a temp path, not the real one), row lengths beyond
+  the fixtures' own (the Task column is an uncapped H1; arm B exercises the guard, not
+  a bound), the `notes_notice` layer's unbounded exception-message arm (`str(e)`, no
+  cap), the manifest reminder variant (untested; safe by monotonicity, it is smaller
+  than the full variant the arms use), and any `inject_every_turn: true` project (a
+  supported configuration where the digest is never built, because that branch is
+  always the heavy-turn branch). Arm A was under-sized against the row-cap decision's
+  own worst arm until a later review of it found: its fixture carried the digest and the full
+  guidelines reminder only, omitting the project-rules manifest block, the qmd-degrade
+  notice, and a notes-push block sized to the worst known case, so it measured 7,855 u16
+  (headroom 2,145) against the plan's declared worst-arm margin of 370 — the canary the
+  `IN_PROGRESS_ROWS_MAX = 5` decision is staked on fired roughly 1,775 u16 late. Arm A now
+  seeds a three-heading `rules.md` (manifest variant, `project_rules_indexed` pre-set so
+  the turn stays ordinary), an 8-row notes-push fixture sized to the survey's synthetic
+  maximum, and a nonexistent `TASKFLOW_QMD_BIN` against a `project-notes/.qmd/` directory
+  to force the degrade notice — the three blocks the worst arm counts. Measured after the
+  resize: total 9,638 u16, headroom 362, against the plan's worst-arm figure of
+  9,630/370 (the ~8 u16 spread is the fixture's own project name and temp `state_file=`
+  path, both checkout-local).
+- **`test_guidelines_reminder_mode.sh`** is unchanged; its existing RED/GREEN control
+  in `test_sh_fail_propagation.py` already exercises the class this router change
+  touches. Reproducing that control by hand once (`ROUTER:|RESPONSE` to
+  `ROUTEQ:|RESPONSE`) surfaced a reproduction hazard worth recording: a naive
+  whole-line `sed` substitution perturbs BOTH occurrences of the pattern (one per
+  reminder file's own grep line) and the gate stays vacuously green, because both
+  extractions then agree on the same (wrong) value. The suite's own Python control
+  perturbs only the first occurrence in the file (`str.replace(old, new, 1)`); a
+  hand reproduction has to match that exactly or it proves nothing.
+- **`test_freshsession_mechanisms.sh`** gained two discovery arms and one negative
+  assertion on the existing non-discovery arm. A whole-payload substring match for
+  `discovery=1` is unsound in both directions here: the reminder's own `ROUTER:` line
+  and `project_routing.md`'s own prose both contain the literal `discovery=1` /
+  `project-notes (index rows):` as English description of the mechanism, not as the
+  field or block itself, on turns where those files are injected. Every discovery
+  assertion in this suite is scoped to the decoded header line (everything before the
+  first real blank line in the JSON-decoded `additionalContext`), and the
+  notes-push-absence assertion is scoped to the render footer literal
+  (`project-notes matched:`), which is safe on THIS fixture only because the one prose
+  occurrence of that literal (`prompts/notes_guidelines.md`) reaches the payload solely
+  via `inject_guidelines_full`, false here because `guidelines_loaded` is pre-seeded
+  true; a fresh-session discovery fixture would need the same care the `discovery=1`
+  checks already take. The assertion discriminates even on a fixture whose single
+  project-notes row matches nothing: `notes_push.py::render` (:545-548) emits the
+  `HEADER` and the `M of N (K shown)` footer unconditionally whenever
+  `project-notes/index.md` exists, `M`/`K` simply reading `0` when nothing matched.
+  Not covered: whether the model actually invokes the router on a discovery turn
+  (prompt-level, unmeasured here).
+- **`test_carry_only_backstop.sh`** gained four arms over the exec-bind carry's
+  interaction with the `[tasks-rel:]` pointer and `EXEC_PARSE_WINDOW`. Two of the four
+  are self-contained vacuity controls (a bare pointer binds nothing; a bare carry does
+  bind), so the pair is what demonstrates the co-existence and displacement arms are
+  discriminating rather than trivially true. Not covered: how often a real assistant
+  response places a long `[tasks-rel:]` line ahead of its `[tasks:]` line in production
+  (prompt-level, unmeasured here).
+- **`test_progress_session_header_contract.py`** (widened while landing this change to scan the
+  `[Progress Session]` f-string's full continuation span, not just its first physical
+  line) matches the pattern `(\w+)=\{` against that span to name
+  the emitter's fields. `discovery=1` reaches the header through the separate
+  `{discovery_field}` variable, whose content is a string literal rather than a
+  `key={value}` token, so `emitted_fields()` can never name `discovery`. Nothing fails
+  today because no document quotes `discovery=<...>` inside the `[Progress Session]`
+  pattern; the day one does, the gate reports it as stale rather than catching the
+  actual omission.
+- **`test_progress_view_cap.py`** gained a byte-identity check between
+  `hooks/progress_digest.py` and `scripts/view_progress.py`'s `TABLE_BEGIN`,
+  `TABLE_END`, `SECTION_RE.pattern` and `SEPARATOR_RE.pattern`. It compares exactly two
+  of the progress-table parsing's four copies: `check_progress.py::parse_progress_table_rows`
+  and `rebuild_progress.py::render_section` build the same shape inline (a literal
+  `re.match` and f-string rows, respectively) and are not comparable by symbol. Nothing
+  enforces those two against the other two; a `LOCKSTEP` comment is the only remaining
+  link.
+
 ## Not built, deliberately
 
 - No id scheme linking a test to an entry in the constraints document.

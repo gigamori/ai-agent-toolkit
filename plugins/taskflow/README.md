@@ -73,7 +73,7 @@ Selects which per-turn guidelines reminder variant `session_init.py` injects: `f
 
 ### `TASKFLOW_CONTEXT_DONE_ROWS_MAX`
 
-Caps how many Completed rows enter an agent's **context**. `progress.md` itself always lists every task in `tasks/2_done/`; `scripts/view_progress.py` prints a truncated copy to stdout, and that copy is what the project router returns and what the main agent should read. Default: `10`. Set to `0` for unlimited. When rows are dropped, a `[context view]` footnote reports how many.
+Caps how many Completed rows enter an agent's **context**. `progress.md` itself always lists every task in `tasks/2_done/`; `scripts/view_progress.py` prints a truncated copy to stdout, and that copy is what the main agent should read when it needs more than the injected In Progress digest carries. The project router runs the script to judge but returns none of its output. Default: `10`. Set to `0` for unlimited. When rows are dropped, a `[context view]` footnote reports how many.
 
 ```json
 {
@@ -317,20 +317,20 @@ Project-specific persistent knowledge, categorized by folder:
 
 `project-notes/index.md` is a 4-column table (`File | Description | Tags | Updated`) tracking notes; the LLM keeps it in sync (prompted by the PreToolUse hook) when notes are created or edited. A note's frontmatter may carry `summary:` (≤500 chars, read before opening the body) and `anchors:` (a list of repo-relative `path` or `path::symbol` entries naming the code the note is about); `/progress check` enforces both, and the layout is flat (`<category>/<name>.md`, sub-directories only under `_archive/`).
 
-The project-router surfaces project-notes as **pointers only** — a code-bounded summary (note counts by category, an `_archive` count, and an index-drift count, produced by `scripts/view_progress.py --notes-summary`; never a per-file list) plus the verbatim matching rows of `project-notes/index.md`, with `_archive/` rows excluded as non-authoritative — never note body contents, so it cannot summarize, translate, or confabulate note contents into the routing result. The main agent reads the note files themselves when needed.
+The project-router surfaces **no project-notes at all**. Note selection left the router when the deterministic per-turn push replaced it; the agent now reads nothing under `project-notes/` — not `index.md`, not a body file, not a directory listing — and returns no notes block, so it cannot summarize, translate, or confabulate note contents into the routing result. Notes reach the main agent through the injected `project-notes (index rows):` block described next, and through the `query-lsp` symbol route; the main agent reads note bodies itself.
 
 Every turn, `session_init.py` also injects a `project-notes (index rows):` block — up to 8 verbatim `index.md` rows chosen by **location** (a note whose `anchors:` names a file this turn mentioned, read or wrote comes first; a note anchored in the same directory next, at most 4) and by **topic** (a qmd structured query over the note bodies when `project-notes/.qmd/` exists, unioned with an in-process lexical rank of Description + Tags by taking the two lists alternately), followed by `project-notes matched: M of N rows (K shown)`. `_archive/` rows are excluded and note bodies are never injected. `M` counts the location matches plus the qmd rows that cleared a BM25 or vector-score floor, so it can exceed the `K` rows actually shown. The location signal comes from the `.reads` / `.touched` ledgers described under hooks; `TASKFLOW_NOTES_PUSH` and `TASKFLOW_QMD_BIN` are the knobs. Notes reach the agent by two routes and no others: this block, and — while it is editing or investigating a named symbol — enumerating that symbol's depth-1 callers and callees through the `query-lsp` skill (`incoming-calls` / `outgoing-calls`), keeping only the peers whose path is repo-relative, and grepping `project-notes/` for `::<name>` per peer. That route degrades to the block alone when `query-lsp` is unavailable, so a project without it loses recall but nothing else. The second route exists because the block matches `anchors:` at file and directory granularity, so a note anchored on a symbol in an untouched file cannot appear in it.
 
 To enable the topic layer for a project, install the `@tobilu/qmd` npm package (Node ≥ 22), then from `_projects/<project>/project-notes/` run `qmd init`, `qmd collection add .`, add `ignore: ["index.md", "_archive/**"]` to the collection entry in `.qmd/index.yml`, and run `qmd embed` (GPU recommended; on a Vulkan GPU that aborts during embedding, `GGML_VK_DISABLE_COOPMAT=1` in the environment is the known fix). Keep `project-notes/.qmd/` out of version control if you track `_projects/`. Re-run `qmd update` and `qmd embed` after editing notes; until then the push still works over whatever is indexed.
 
-#### Auto-save for investigation-style tasks
+#### Saving reusable knowledge, in the same turn
 
-When the user's intent is information gathering / comparison / structuring / investigation, the project-router detects it semantically and returns `project_notes_autosave: true`. The main agent delivers its primary answer, then asks the user whether to save — including a suggested category and slug. Only on approval are `project-notes/<category>/<slug>.md` and `project-notes/index.md` updated.
+When a turn produced reusable project knowledge, the main agent writes it to `project-notes/<category>/<slug>.md` in that same turn and does not ask for confirmation. Nothing signals this: there is no router field and no approval step. The judgement is the agent's own, taken at the end of the turn against two sections of `taskflow/prompts/notes_guidelines.md` — `## What to save` decides whether the turn produced any, and `## Prohibitions` overrides the save whenever both apply, in which case the agent neither saves nor asks. `project-notes/index.md` is updated in the same turn.
 
-See `taskflow/agents/project-router.md` `Step 2b` for the detection conditions, and the "auto-save flow" section of `taskflow/prompts/notes_guidelines.md` for the save flow.
+See the `## Saving`, `## What to save` and `## Prohibitions` sections of `taskflow/prompts/notes_guidelines.md`.
 
-- Fires for: "investigate this repo's structure", "compare options A and B", "organize how X works"
-- Does NOT fire for: questions / confirmations ("what is X?", "how does the auth flow work?"), debugging / troubleshooting, artifact-primary or trivial edits ("fix a typo in the README"), or explicit refusal ("don't save")
+- Saved: repository investigations, option comparisons, codebase-understanding memos, test specifications, runbooks, backlog candidates
+- Not saved: anything derivable from code, single-session scratch memos, LLM-to-LLM handoffs (those go to `_projects/<project>/llm-handoff/`), and anything the user says not to save — a user instruction outranks this rule
 
 ## Directory layout
 
@@ -398,7 +398,7 @@ session start
   │     not needed → run the task only
   │     needed     → read/write progress.md / tasks / project-notes
   │
-  ├─ [LLM] project_notes_autosave judgement ─→ for investigation intents, prompts to save after the main response
+  ├─ [LLM] end-of-turn save judgement ─→ reusable knowledge produced this turn is written to project-notes/ in the same turn, no confirmation
   │
   ├─ task execution
   │     ├─ [PreToolUse:Write|Edit] writing a project-notes/ file ─→ injects the project-notes/index.md sync rule
@@ -420,6 +420,8 @@ Nine hook scripts run automatically when the plugin is enabled, wired in `hooks/
 #### UserPromptSubmit: session_init.py
 
 Runs every turn. Manages `_projects/_state/{session_id}.json` and injects `[Progress Session]` into the LLM context. Creates `_projects/`, `_projects/_state/`, and a template `_projects/index.md` if missing.
+
+On an ordinary turn it also injects a `[Project Progress: <project>]` block through `hooks/progress_digest.py`: the `## In Progress` table header, separator and up to `IN_PROGRESS_ROWS_MAX` (5) data rows sliced out of `progress.md`, closed by `in-progress: <shown> of <total> rows shown`. It is absent on the turns that carry `project_routing.md` or the full guidelines, because those payloads already exceed the harness's inline-delivery budget on their own and the digest would arrive truncated; it is absent on `pj:?` discovery turns; and it is replaced by the single line `[Project Progress] In Progress digest omitted (context budget)` when the whole assembled payload would otherwise cross that budget. Anything the digest cut — further In Progress rows, the TODO or Completed tables — the agent gets by running `scripts/view_progress.py`.
 
 It also builds the per-turn `project-notes (index rows):` push block (see [project-notes](#project-notes)) through `hooks/notes_push.py`: location rows from the note `anchors:` matched against the paths this turn names, read (`.reads` ledger) or wrote (`.touched` ledger), then topic rows from a qmd structured query — spawned as `node <bin/qmd> query … --no-rerank --json` with a timeout of `TASKFLOW_QMD_TIMEOUT` seconds (default 6), only when the project has a `project-notes/.qmd/` index — fused with the in-process lexical rank. When qmd is expected but cannot run, the topic layer is the lexical rank alone and a `[project-notes] vector layer unavailable: <reason>` line is injected on **every** turn the degrade persists. It used to be injected once per session; that was measured to hide a four-day outage across several sessions, because the usual cause — a process whose ancestry predates the environment registration qmd needs — does not clear on its own and one notice scrolls away. The reason travels with each line, so a change of cause is visible too.
 

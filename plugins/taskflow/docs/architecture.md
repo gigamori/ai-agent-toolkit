@@ -8,9 +8,9 @@ Internal design document for developers — read this when you need to understan
 
 | Type | Role | Lifetime | Audience | Context injection |
 |---|---|---|---|---|
-| `progress.md` | Task index: TODO / In Progress / Completed tables + free-text sections (Architecture / Key Decisions / Open Issues / Reference Materials) | Project lifetime | Human + AI | On apply, subagent returns the verbatim stdout of `view_progress.py` (the file's Completed table truncated to the most recent rows), not the file itself |
-| `tasks/` | One file per task; status by folder (`0_todo`/`1_in_progress`/`2_done`); body + append-only `<!-- @log -->` block | Task lifetime | AI + Human | Subagent lists `1_in_progress/`, selectively reads files relevant to the prompt, and returns them |
-| `project-notes/` | Project-specific persistent knowledge, organized by category (`specs/`, `investigations/`, `checks/`, `procedures/`, `backlog/`, `_archive/`) | Project lifetime | AI | Subagent returns **pointers only** — a code-bounded `project_notes_summary` (counts by category, `_archive` count, index-drift count; never a file list) plus verbatim matching rows of `index.md` (`_archive/`-prefixed rows excluded); it does NOT read or return note bodies (the main agent reads note files itself when needed) |
+| `progress.md` | Task index: TODO / In Progress / Completed tables + free-text sections (Architecture / Key Decisions / Open Issues / Reference Materials) | Project lifetime | Human + AI | The hook injects a capped `## In Progress` digest every ordinary turn (`hooks/progress_digest.py`, `IN_PROGRESS_ROWS_MAX` rows, `in-progress: <shown> of <total> rows shown` footer). The subagent reads `view_progress.py`'s stdout to judge but returns none of it. Anything beyond the digest — the rows it cut, the TODO or Completed tables — the main agent gets by running `view_progress.py` itself |
+| `tasks/` | One file per task; status by folder (`0_todo`/`1_in_progress`/`2_done`); body + append-only `<!-- @log -->` block | Task lifetime | AI + Human | Subagent lists `1_in_progress/`, may read a body to judge which tasks the turn is about, and returns their filenames only, on a `[tasks-rel: <file>.md ...]` pointer line — never a body. The main agent opens a named file only when it is going to work on it |
+| `project-notes/` | Project-specific persistent knowledge, organized by category (`specs/`, `investigations/`, `checks/`, `procedures/`, `backlog/`, `_archive/`) | Project lifetime | AI | Subagent returns nothing from here and reads nothing under `project-notes/` (`agents/project-router.md` Step 5). Notes reach the main agent only through the hook-injected `project-notes (index rows):` block (`hooks/notes_push.py`), plus the `query-lsp` symbol route described under project-notes below |
 | `plans/`, `memory/` | Auto-archived copies of the Claude config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`) | Archive | Human | Never injected. Not to be referenced. |
 
 ### Role boundaries
@@ -71,9 +71,9 @@ Transitioning into `2_done/` requires explicit human approval. The subagent emit
 
 Each project has a `project-notes/index.md` — a four-column table: `File | Description | Tags | Updated`. The `File` column includes the category prefix (e.g., `specs/api-design.md`).
 
-The subagent surfaces project-notes as **pointers only**: (a) `project_notes_summary`, the stdout of `view_progress.py --notes-summary` — counts by category, an `_archive` count, and an index-drift count (unregistered / missing), never a per-file list (`router-context-payload-cap.md`); and (b) `project_notes_relevant`, the verbatim rows of `index.md` whose Description / Tags match the prompt summary, with any `_archive/`-prefixed row excluded. It does NOT read note body files, and does NOT summarize, translate, or merge. The main agent reads the note files themselves when it needs their contents.
+The subagent surfaces no project-notes at all. Note selection left the router at `c6f9cdb`; `agents/project-router.md` Step 5 now forbids reading anything under `project-notes/` — not `index.md`, not a body file, not a directory listing — and forbids emitting a notes block. The two fields that used to carry it, `project_notes_summary` and `project_notes_relevant`, are retired and their absence from the agent definition is asserted by `tests/test_router_pointer_contract.py`. The main agent receives index rows from the deterministic per-turn push instead (`hooks/notes_push.py`, the `project-notes (index rows):` block), and reads note bodies itself.
 
-Population size for (a) is decided exclusively by the script, never by the subagent (verbatim vs. bounded-population split, `agents/project-router.md` §Output fidelity). (b)'s row *selection* is a semantic judgment and is deliberately exempt from any size cap — see the same section.
+The verbatim vs. bounded-population split still governs the subagent (`agents/project-router.md` §Output fidelity): how much of any population reaches its output is a script's decision, never the subagent's. Its one explicit exemption is now the `[tasks-rel:]` pointer — which active tasks are relevant to `prompt_summary` is a semantic judgment, so that line has no size cap. Note-row population size is no longer the subagent's concern at all; `hooks/notes_push.py` decides it (`K = 8`).
 
 ### Fixed taxonomy
 
@@ -90,7 +90,7 @@ Category is the **folder name**, not a frontmatter field. Move the file to chang
 
 ### No fallback walk
 
-The router does NOT walk `project-notes/**/*.md` as a fallback — neither for `project_notes_summary` (whose count is `view_progress.py --notes-summary`'s job; on script failure the router emits `unavailable: <reason>`, never an improvised listing) nor for `project_notes_relevant`. If a note exists on disk, it has a row in `index.md`; an unregistered note is drift, detected by `/progress check`, not the router. (The walk-the-tree fallback documented in `notes_guidelines.md` applies to the main agent's own note loading, not to the router.)
+The router reads nothing under `project-notes/` on this build, so the question of a fallback walk does not arise for it: no `Glob`, no `Grep`, no `ls`, no `index.md` read (`agents/project-router.md` Step 5). If a note exists on disk, it has a row in `index.md`; an unregistered note is drift, detected by `/progress check`. The note routes documented in `notes_guidelines.md` are the main agent's own, not the router's.
 
 ## `/progress` operations
 
@@ -129,7 +129,8 @@ user prompt
   │  │   2. otherwise keep the current value from state_file (no inference)
   │  │
   │  └─ injection (only when current_project is non-empty, or `pj:?` discovery):
-  │     "[Progress Session] session_id=... state_file=... current_project=..."
+  │     "[Progress Session] session_id=... state_file=... current_project=... [discovery=1]"
+  │     (discovery=1 is emitted on `pj:?` turns only; the field is absent otherwise)
   │     + bootstrap: BOOTSTRAP_BLOCK (ROUTER / RESPONSE-LEADING-LINES / TRUNCATION,
   │                  ASCII-only, ≤1200 chars) — placed first, immediately after the
   │                  header and ahead of fork_context/ACTION_REQUIRED/everything else,
@@ -150,6 +151,19 @@ user prompt
   │                      (full every turn if frontmatter inject_every_turn: true; absent if no rules.md)
   │     + ACTION_REQUIRED banner: every turn while progress.md is missing
   │     + fork_context: first turn of a forked session
+  │     + progress_digest (hooks/progress_digest.py): `[Project Progress: <project>]` +
+  │                      the `## In Progress` header, separator and up to
+  │                      IN_PROGRESS_ROWS_MAX (=5) data rows from progress.md, +
+  │                      `in-progress: <shown> of <total> rows shown`. Ordinary turns
+  │                      only — never on a heavy turn (the bootstrap branch: inject_rules
+  │                      / inject_guidelines_full / inject_index / inject_rules_full),
+  │                      because that turn's payload already exceeds the inline budget
+  │                      and a digest would arrive with its footer cut off; never on a
+  │                      discovery turn. Replaced by the one-line
+  │                      `[Project Progress] In Progress digest omitted (context budget)`
+  │                      when the whole assembled additionalContext would exceed
+  │                      INLINE_BUDGET_U16 (10,000 UTF-16 code units) — the guard's only
+  │                      contract is that the digest never causes the crossing.
   │     + project_notes push (hooks/notes_push.py): `project-notes (index rows):` + up to K=8
   │                      verbatim index.md rows + `project-notes matched: M of N rows (K shown)`.
   │                      Order: L1 (a note whose anchors: path == a path this turn named /
@@ -167,22 +181,26 @@ user prompt
   │                      off|lexical|auto, TASKFLOW_QMD_BIN.
   │     (when current_project is empty and not discovery → NOTHING is injected; router not invoked)
   │
-  ▼ [LLM] detects [Progress Session] with a non-empty current_project
-  │  1. build a JSON context block (router spec lives in agents/project-router.md; do NOT inline it)
-  │  2. invoke the project-router subagent via the Agent tool (subagent_type: taskflow:project-router)
+  ▼ [LLM] detects [Progress Session] carrying discovery=1, or a non-empty current_project
+  │  1. build a JSON context block — session_id, state_file, current_project, discovery,
+  │     leading_lines, prompt_summary (router spec lives in agents/project-router.md; do NOT inline it)
+  │  2. invoke the project-router subagent via the Agent tool (subagent_type: taskflow:project-router).
+  │     discovery=1 wins whether or not current_project is set; neither condition → do not invoke
   │
   ▼ [project-router subagent] runs on an isolated generation path (model: sonnet)
-  │  1. determine the project (read-only; current_project is non-empty by gate)
+  │  1. determine the turn type: discovery / routing / nothing to route
+  │  D. discovery turns only: read _projects/index.md and rank every row by MEANING
+  │     (never keyword or slug overlap) as strong / related / weak / far, one line each;
+  │     then stop — a discovery turn runs no other step
   │  2. applicability decision (skip / apply)
-  │  2b. project_notes_autosave decision (true for investigation / analysis intents)
-  │  3. on apply: read index.md; run view_progress.py for the progress block
-  │     (the 3 guideline files are injected by the hook, NOT read by the subagent)
-  │  4. tasks: list 1_in_progress/, selectively read relevant files;
-  │     emit stale_hint if any are >14 days old
-  │  5. project-notes: run view_progress.py --notes-summary for the bounded summary
-  │     (counts only); relevant rows via index.md excluding _archive/ (no fallback walk
-  │     for either)
-  │  6. return a structured result (no auto-promotion in v0.2.2)
+  │  3. on apply: read index.md only if the project's scope must be settled; run
+  │     view_progress.py for its own judgment. Nothing this step reads is emitted —
+  │     the digest and the index reach the main agent from hooks
+  │  4. tasks: choose by meaning which In Progress tasks the turn is about; may read a
+  │     body to decide, never emits one; emit stale_hint if any are >14 days old
+  │  5. project-notes: nothing. Reads nothing under project-notes/, emits no notes block
+  │  6. return judgments and pointers only — action, project, progress_exists,
+  │     an optional [tasks-rel:] line, stale_hint (no auto-promotion in v0.2.2)
   │
   ▼ [LLM] receives the subagent result
   │  - apply → use as context for executing the task

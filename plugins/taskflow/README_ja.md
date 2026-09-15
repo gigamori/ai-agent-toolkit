@@ -72,7 +72,7 @@ Claude Code で恒久設定するには `settings.json` に追加:
 
 ### `TASKFLOW_CONTEXT_DONE_ROWS_MAX`
 
-エージェントの**コンテキスト**に入る Completed 行数の上限。`progress.md` 自体は常に `tasks/2_done/` の全件を保持し、`scripts/view_progress.py` が truncate した写しを stdout に出力する。project router が返すのも、メインエージェントが読むべきなのも、その写しのほう。既定値: `10`。`0` で無制限。行が落ちた場合のみ `[context view]` 脚注が省略件数を示す。
+エージェントの**コンテキスト**に入る Completed 行数の上限。`progress.md` 自体は常に `tasks/2_done/` の全件を保持し、`scripts/view_progress.py` が truncate した写しを stdout に出力する。注入される In Progress digest より広い範囲が要るとき、メインエージェントが読むべきなのはその写し。project router は判断のために script を走らせるが、その出力を返すことはない。既定値: `10`。`0` で無制限。行が落ちた場合のみ `[context view]` 脚注が省略件数を示す。
 
 ```json
 {
@@ -316,20 +316,20 @@ status 遷移は `/progress start` / `/progress approve` / `/progress unstart` �
 
 `project-notes/index.md` は 4 列テーブル（`File | Description | Tags | Updated`）で notes を管理する。notes 作成・更新時に LLM が（PreToolUse フックの促しを受けて）同期する。note の frontmatter には `summary:`（≤500 字、本文を開く前に読む判断材料）と `anchors:`（その note が語る code を repo 相対 `path` または `path::symbol` の list で示す）を置ける。`/progress check` が両方を検査し、layout は flat（`<category>/<name>.md`、sub-directory は `_archive/` 配下のみ）。
 
-project-router は project-notes を **pointer のみ**（`scripts/view_progress.py --notes-summary` が生成するコード側で上限を持つサマリ＝カテゴリ別 note 件数・`_archive` 件数・index drift 件数。ファイルを逐一列挙することはない＋`project-notes/index.md` の該当行の逐語コピー、ただし非権威の `_archive/` 行は除外。本文は返さない）で返すため、note 内容を要約・翻訳・confabulate して routing 結果に混入させない。本文が要るときはメインエージェントが直接読む。
+project-router は project-notes を **一切返さない**。note の選別は決定論の毎ターン push に置き換わって router から外れており、agent は `project-notes/` 配下を何も読まない（`index.md` も本文も directory 一覧も）し、notes block も返さない。したがって note 内容を要約・翻訳・confabulate して routing 結果に混入させることがない。note がメインエージェントに届く経路は、次に述べる `project-notes (index rows):` block と `query-lsp` の symbol 経路の 2 つで、本文はメインエージェントが直接読む。
 
 さらに `session_init.py` が毎ターン `project-notes (index rows):` block を注入する — `index.md` の行を逐語で最大 8 行、**場所**（そのターンが名指し・Read・書込した file を `anchors:` に持つ note が先頭、同じ directory に anchor する note がその次で最大 4 行）と **topic**（`project-notes/.qmd/` があるときの note 本文への qmd 構造化 query と、Description ＋ Tags のプロセス内 lexical rank を交互に取った和集合で合成）で選び、末尾に `project-notes matched: M of N rows (K shown)` を付ける。`_archive/` 行は除外し、note 本文は注入しない。`M` は場所一致に加え、BM25 または vector score の下限を越えた qmd 行を数えるので、実際に載る `K` 行を上回りうる。場所信号の出所は hooks の節にある `.reads` / `.touched` ledger、調整軸は `TASKFLOW_NOTES_PUSH` と `TASKFLOW_QMD_BIN`。note に到達する経路は 2 つだけで、他は無い: この block と、名指しした symbol を編集・調査する間の経路（`query-lsp` skill の `incoming-calls` / `outgoing-calls` で depth-1 の callers / callees を列挙し、path が repo 相対の peer だけを残して `::<name>` で `project-notes/` を Grep）。この経路は `query-lsp` が使えないとき block だけに degrade するので、query-lsp を持たない project では recall が落ちるだけで他に影響しない。後者があるのは、block が `anchors:` を file / directory 粒度でしか照合せず、触っていない file の symbol に anchor された note は block に現れえないため。
 
 topic 層を project で有効にするには、npm package `@tobilu/qmd`（Node ≥ 22）を入れ、`_projects/<project>/project-notes/` で `qmd init`、`qmd collection add .` を実行し、`.qmd/index.yml` の collection に `ignore: ["index.md", "_archive/**"]` を足してから `qmd embed` を走らせる（GPU 推奨。Vulkan GPU で embed 中に abort する場合は環境変数 `GGML_VK_DISABLE_COOPMAT=1` が既知の対処）。`_projects/` を版管理するなら `project-notes/.qmd/` は ignore する。note を編集したら `qmd update` と `qmd embed` を再実行する（それまでも push は index 済みの範囲で動く）。
 
-#### 調査系タスクの自動保存
+#### 再利用可能な知識の同ターン保存
 
-ユーザーの意図が「情報収集・比較・整理・調査」である場合、project-router が意味ベースで検知し `project_notes_autosave: true` を返す。メインエージェントは応答本体を返したあと、カテゴリと slug の候補と共にユーザーに保存可否を確認する。承諾された場合のみ `project-notes/<category>/<slug>.md` と `project-notes/index.md` を更新する。
+そのターンが再利用可能な project 知識を生んだなら、メインエージェントは同じターンのうちに `project-notes/<category>/<slug>.md` へ書き、確認は取らない。これを知らせる信号は無い — router の field も承認ステップも存在しない。判断はエージェント自身のもので、ターン末に `taskflow/prompts/notes_guidelines.md` の 2 節に照らして下す: `## What to save` が「そのターンが対象を生んだか」を決め、`## Prohibitions` は両方が当たるとき保存に優先する（このとき保存も確認もしない）。`project-notes/index.md` も同じターンで更新する。
 
-判定条件の詳細は `taskflow/agents/project-router.md` の `Step 2b`、保存フローの詳細は `taskflow/prompts/notes_guidelines.md` の「自動保存フロー」節を参照。
+詳細は `taskflow/prompts/notes_guidelines.md` の `## Saving` / `## What to save` / `## Prohibitions` 節を参照。
 
-- 発火する例: 「このrepoの構造を調べて」「A案とB案を比較して」「○○の運用を整理して」
-- 発火しない例: 質問・確認（「○○って何？」「認証フローはどうなってる？」）、デバッグ・トラブルシュート、artifact 主体や単発些末な編集（「READMEのtypo直して」）、明示拒否（「保存しないで」）
+- 保存する: repo 調査、案の比較、codebase 理解メモ、テスト仕様、運用手順、backlog 候補
+- 保存しない: code から導ける情報、単一セッション限りのメモ、LLM 間 handoff（`_projects/<project>/llm-handoff/` へ）、およびユーザが保存するなと言ったもの — ユーザ指示はこの規則に優先する
 
 ## ディレクトリ構造
 
@@ -396,7 +396,7 @@ hook の書込と競合した場合は依然として無防備である。
   │     不要 → タスク実行のみ
   │     必要 → progress.md / tasks / project-notes を読み書き
   │
-  ├─ [LLM] project_notes_autosave判定 ─→ 調査系意図なら応答後に保存確認を提示
+  ├─ [LLM] ターン末の保存判断 ─→ そのターンが生んだ再利用可能な知識を同ターンで project-notes/ へ書く（確認なし）
   │
   ├─ タスク実行
   │     ├─ [PreToolUse:Write|Edit] project-notes/ ファイル書込 ─→ project-notes/index.md 同期ルールを注入
@@ -418,6 +418,8 @@ hook の書込と競合した場合は依然として無防備である。
 #### UserPromptSubmit: session_init.py
 
 毎ターン実行。`_projects/_state/{session_id}.json` を管理し、`[Progress Session]` を LLM コンテキストに注入する。`_projects/` が存在しない場合は自動生成する（`_state/` とテンプレート `index.md` も同時作成）。
+
+通常ターンではさらに `hooks/progress_digest.py` 経由で `[Project Progress: <project>]` block を注入する: `progress.md` から切り出した `## In Progress` の表 header・separator と最大 `IN_PROGRESS_ROWS_MAX`（5）行の data 行、末尾に `in-progress: <shown> of <total> rows shown`。`project_routing.md` や guidelines 全文が載るターンでは注入しない（その payload だけで harness の inline 配送予算を超えており、digest は途中で切れて届くため）。`pj:?` の discovery ターンでも注入しない。組み上げた payload 全体が予算を超えるときは `[Project Progress] In Progress digest omitted (context budget)` の 1 行に差し替わる。digest が落とした範囲（残りの In Progress 行、TODO / Completed の表）は `scripts/view_progress.py` を実行して取る。
 
 毎ターンの `project-notes (index rows):` push block（[project-notes](#project-notes) 参照）も `hooks/notes_push.py` 経由でここが組み立てる: note の `anchors:` を、そのターンが名指し・Read（`.reads` ledger）・書込（`.touched` ledger）した path と照合した場所行、次に qmd 構造化 query（`node <bin/qmd> query … --no-rerank --json`、timeout は `TASKFLOW_QMD_TIMEOUT` 秒で既定 6、project に `project-notes/.qmd/` index があるときのみ）とプロセス内 lexical rank を合成した topic 行。qmd が期待されるのに動かない場合は topic 層を lexical rank のみとし、`[project-notes] vector layer unavailable: <reason>` を **degrade が続く限り毎ターン** 注入する。以前は session につき 1 回だったが、主な原因（qmd が必要とする環境変数の登録より前に起動された祖先を持つ process）は自然には解消せず、1 回の告知は流れてしまうため、**4 日間複数 session にわたって見逃されたことが実測された**。reason は行ごとに付くので、原因が変わったことも見える。
 

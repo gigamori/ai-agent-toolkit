@@ -16,15 +16,27 @@ HOOKS_SRC = REPO_ROOT / "plugins" / "taskflow" / "hooks"
 PROMPTS_SRC = REPO_ROOT / "plugins" / "taskflow" / "prompts"
 REAL_STATE = REPO_ROOT / "_projects" / "_state"
 
+sys.path.insert(0, str(HOOKS_SRC))
+from progress_digest import u16len, INLINE_BUDGET_U16, IN_PROGRESS_ROWS_MAX  # noqa: E402
+
 BOOTSTRAP_MARKER = "[taskflow bootstrap - read this block before anything else]"
 PROJECT_INDEX_MARKER = "[Project Index:"
 ACTION_REQUIRED_MARKER = "!!ACTION_REQUIRED"
 GUIDELINES_REMINDER_MARKER = "[taskflow guidelines reminder]"
+PROGRESS_SESSION_MARKER = "[Progress Session]"
 
 SID_LARGE = "b1c2d3e4-f5a6-4789-9abc-def012345601"
 SID_SMALL = "c2d3e4f5-a6b7-4890-9abc-def012345602"
 SID_EVERY_TURN = "d3e4f5a6-b7c8-4901-9abc-def012345603"
+SID_DIGEST_A = "e4f5a6b7-c8d9-4012-9abc-def012345604"
+SID_DIGEST_B = "f5a6b7c8-d9e0-4123-9abc-def012345605"
+SID_DIGEST_C = "a6b7c8d9-e0f1-4234-9abc-def012345606"
+SID_DIGEST_D = "b7c8d9e0-f1a2-4345-9abc-def012345607"
 PROJECT = "e2e-bootstrap-fixture"
+
+DIGEST_HEADER_LITERAL = f"[Project Progress: {PROJECT}]"
+OMISSION_NOTICE = "[Project Progress] In Progress digest omitted (context budget)"
+NOTES_PUSH_HEADER = "project-notes (index rows):"
 
 PASS = 0
 FAIL = 0
@@ -88,10 +100,13 @@ def mirror_hooks_and_prompts(dest: Path) -> Path:
     return hooks
 
 
-def run_session_init(hooks: Path, cwd: Path, payload: dict) -> subprocess.CompletedProcess:
+def run_session_init(hooks: Path, cwd: Path, payload: dict,
+                      extra_env: dict | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUTF8"] = "1"
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["uv", "run", "--no-project", "python", str(hooks / "session_init.py")],
         cwd=str(cwd), input=json.dumps(payload), capture_output=True,
@@ -159,6 +174,106 @@ def every_turn_rules_fixture(root: Path, session_id: str) -> None:
     }
     with open(state_dir / f"{session_id}.json", "w", encoding="utf-8") as f:
         json.dump(state, f)
+
+
+def seed_ordinary_state(root: Path, session_id: str, project: str,
+                         project_rules_indexed: str = "") -> None:
+    proj_dir = root / "_projects" / project
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    with open(proj_dir / "index.md", "w", encoding="utf-8", newline="\n") as f:
+        f.write("| Project | Description | Target |\n|---------|-------------|--------|\n"
+                 "| x | small | none |\n")
+    state_dir = root / "_projects" / "_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "project": project,
+        "rules_loaded": True,
+        "indexed_project": project,
+        "guidelines_loaded": True,
+        "project_rules_indexed": project_rules_indexed,
+        "origin": "cc",
+    }
+    with open(state_dir / f"{session_id}.json", "w", encoding="utf-8") as f:
+        json.dump(state, f)
+
+
+def write_project_rules(root: Path, project: str, headings: list[str]) -> None:
+    proj_dir = root / "_projects" / project
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    body = "\n\n".join(f"## {h}\n\nRule text for {h}." for h in headings) + "\n"
+    with open(proj_dir / "rules.md", "w", encoding="utf-8", newline="\n") as f:
+        f.write(body)
+
+
+def make_in_progress_row(n: int, task_text: str) -> str:
+    return f"| {n} | MID | {task_text} | 2026-09-01 | @tasks/1_in_progress/task{n}.md |"
+
+
+def padded_task_text(n: int, target_u16: int) -> str:
+    overhead = u16len(make_in_progress_row(n, ""))
+    fill = max(target_u16 - overhead, 1)
+    return "T" * fill
+
+
+def build_progress_md(row_lines: list[str]) -> str:
+    lines = [
+        "<!-- @table:begin -->",
+        "## TODO",
+        "| # | Priority | Task | Created | Link |",
+        "|---|----------|------|---------|------|",
+        "",
+        "## In Progress",
+        "| # | Priority | Task | Updated | Link |",
+        "|---|----------|------|---------|------|",
+    ]
+    lines.extend(row_lines)
+    lines.extend([
+        "",
+        "## Completed",
+        "| # | Priority | Task | Completed | Link |",
+        "|---|----------|------|-----------|------|",
+        "<!-- @table:end -->",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def write_progress_md(root: Path, project: str, row_lines: list[str]) -> None:
+    proj_dir = root / "_projects" / project
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    with open(proj_dir / "progress.md", "w", encoding="utf-8", newline="\n") as f:
+        f.write(build_progress_md(row_lines))
+
+
+def seed_notes_l1_rows(root: Path, project: str, session_id: str,
+                        n_rows: int, desc_len: int) -> None:
+    proj_dir = root / "_projects" / project
+    notes_dir = proj_dir / "project-notes"
+    specs_dir = notes_dir / "specs"
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    state_dir = root / "_projects" / "_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    index_lines = ["| File | Description | Tags | Updated |",
+                   "|------|-------------|------|---------|"]
+    touched_lines = []
+    for i in range(1, n_rows + 1):
+        rel = f"specs/note{i}.md"
+        with open(specs_dir / f"note{i}.md", "w", encoding="utf-8", newline="\n") as f:
+            f.write(f"---\nanchors: [{rel}]\n---\n\n# note {i}\n")
+        desc = (f"note{i} " + "d" * desc_len)[:desc_len]
+        index_lines.append(f"| {rel} | {desc} | | 2026-09-01 |")
+        touched_lines.append(rel)
+    with open(notes_dir / "index.md", "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(index_lines) + "\n")
+    with open(state_dir / f"{session_id}.touched", "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(touched_lines) + "\n")
+
+
+def digest_block_slice(ctx: str) -> str:
+    start = ctx.find(DIGEST_HEADER_LITERAL)
+    if start == -1:
+        return ""
+    stop = ctx.find(GUIDELINES_REMINDER_MARKER, start)
+    return ctx[start: stop if stop != -1 else len(ctx)]
 
 
 def extract_bootstrap_block(hooks: Path) -> tuple[str, int]:
@@ -256,6 +371,137 @@ def main() -> int:
               "bootstrap marker present when only inject_rules_full is true "
               "(inject_rules/inject_guidelines_full/inject_index all false)")
 
+    check(INLINE_BUDGET_U16 == 10000,
+          "INLINE_BUDGET_U16 == 10000, the harness anchor (CC 2.1.270 NEr); "
+          "a NEr change or a same-pass edit of the constant plus a fixture "
+          "must fail this")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        assert_isolated(root)
+        hooks = mirror_hooks_and_prompts(root)
+        seed_ordinary_state(root, SID_DIGEST_A, PROJECT, project_rules_indexed=PROJECT)
+        write_project_rules(root, PROJECT, [
+            "Design Decisions, Rationale and Long-Term Architecture Notes",
+            "Testing, Verification and Continuous Integration Requirements",
+            "Commit Discipline and Code Review Workflow Constraints Overview",
+        ])
+        seed_notes_l1_rows(root, PROJECT, SID_DIGEST_A, n_rows=8, desc_len=252)
+        (root / "_projects" / PROJECT / "project-notes" / ".qmd").mkdir(
+            parents=True, exist_ok=True)
+        write_progress_md(root, PROJECT,
+                           [make_in_progress_row(i, padded_task_text(i, 190))
+                            for i in range(1, 10)])
+
+        r = run_session_init(hooks, root, {
+            "session_id": SID_DIGEST_A,
+            "prompt": "continue please, no project token here",
+            "transcript_path": "",
+        }, extra_env={"TASKFLOW_QMD_BIN": str(root / "no-such-qmd")})
+        ctx = additional_context(r.stdout)
+        check(bool(ctx), f"arm A additionalContext is non-empty (rc={r.returncode})")
+        check(DIGEST_HEADER_LITERAL in ctx,
+              "arm A: digest header present on an ordinary turn (representative worst case)")
+        block = digest_block_slice(ctx)
+        row_count = block.count("@tasks/1_in_progress/task")
+        check(row_count == IN_PROGRESS_ROWS_MAX,
+              f"arm A: exactly IN_PROGRESS_ROWS_MAX={IN_PROGRESS_ROWS_MAX} data rows "
+              f"present in the digest (got {row_count})")
+        check("in-progress: 5 of 9 rows shown" in ctx,
+              "arm A: footer literal 'in-progress: 5 of 9 rows shown' present "
+              "(written out, never interpolated from IN_PROGRESS_ROWS_MAX)")
+        check(f"[Project Rules reminder: {PROJECT}]" in ctx,
+              "arm A: project-rules manifest block present (part of the worst-arm composition)")
+        check(NOTES_PUSH_HEADER in ctx,
+              "arm A: project-notes push block present (part of the worst-arm composition)")
+        check("[project-notes] vector layer unavailable: qmd binary not found "
+              "(set TASKFLOW_QMD_BIN)" in ctx,
+              "arm A: notes_notice degrade block present (qmd unresolved against a "
+              "present project-notes/.qmd/, the worst known degrade arm)")
+        total_u16 = u16len(ctx)
+        check(total_u16 <= INLINE_BUDGET_U16,
+              f"arm A: u16len(ctx)={total_u16} <= INLINE_BUDGET_U16={INLINE_BUDGET_U16} "
+              f"(headroom={INLINE_BUDGET_U16 - total_u16})")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        assert_isolated(root)
+        hooks = mirror_hooks_and_prompts(root)
+        seed_ordinary_state(root, SID_DIGEST_B, PROJECT)
+        seed_notes_l1_rows(root, PROJECT, SID_DIGEST_B, n_rows=1, desc_len=20)
+        write_progress_md(root, PROJECT,
+                           [make_in_progress_row(i, padded_task_text(i, 1800))
+                            for i in range(1, 6)])
+
+        r = run_session_init(hooks, root, {
+            "session_id": SID_DIGEST_B,
+            "prompt": "continue please, no project token here",
+            "transcript_path": "",
+        })
+        ctx = additional_context(r.stdout)
+        check(bool(ctx), f"arm B additionalContext is non-empty (rc={r.returncode})")
+        check(DIGEST_HEADER_LITERAL not in ctx,
+              "arm B: digest header ABSENT (the inline-budget guard fired on "
+              "row-length overflow)")
+        check(OMISSION_NOTICE in ctx,
+              "arm B: omission notice present in place of the digest")
+        check(PROGRESS_SESSION_MARKER in ctx,
+              "arm B positive marker: the hook ran ([Progress Session] header present)")
+        check(NOTES_PUSH_HEADER in ctx,
+              "arm B positive marker: the project-notes push block ran "
+              "('project-notes (index rows):' present)")
+        total_u16 = u16len(ctx)
+        check(total_u16 <= INLINE_BUDGET_U16,
+              f"arm B: post-guard u16len(ctx)={total_u16} <= INLINE_BUDGET_U16={INLINE_BUDGET_U16}")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        assert_isolated(root)
+        hooks = mirror_hooks_and_prompts(root)
+        seed_ordinary_state(root, SID_DIGEST_C, PROJECT)
+        write_progress_md(root, PROJECT,
+                           [make_in_progress_row(i, "small task") for i in range(1, 4)])
+
+        r = run_session_init(hooks, root, {
+            "session_id": SID_DIGEST_C,
+            "prompt": "continue please, no project token here",
+            "transcript_path": "",
+        })
+        ctx = additional_context(r.stdout)
+        check(bool(ctx), f"arm C additionalContext is non-empty (rc={r.returncode})")
+        check(DIGEST_HEADER_LITERAL in ctx,
+              "arm C: digest header present when total rows are under the cap")
+        block = digest_block_slice(ctx)
+        row_count = block.count("@tasks/1_in_progress/task")
+        check(row_count == 3,
+              f"arm C: exactly 3 data rows present in the digest (got {row_count})")
+        check("in-progress: 3 of 3 rows shown" in ctx,
+              "arm C: footer literal 'in-progress: 3 of 3 rows shown' present")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        assert_isolated(root)
+        hooks = mirror_hooks_and_prompts(root)
+        proj_dir = root / "_projects" / PROJECT
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        with open(proj_dir / "index.md", "w", encoding="utf-8", newline="\n") as f:
+            f.write("| Project | Description | Target |\n|---------|-------------|--------|\n"
+                     "| x | small | none |\n")
+        write_progress_md(root, PROJECT,
+                           [make_in_progress_row(i, "small task") for i in range(1, 3)])
+
+        r = run_session_init(hooks, root, {
+            "session_id": SID_DIGEST_D,
+            "prompt": f"pj:{PROJECT} start work",
+            "transcript_path": "",
+        })
+        ctx = additional_context(r.stdout)
+        check(bool(ctx), f"arm D additionalContext is non-empty (rc={r.returncode})")
+        check(BOOTSTRAP_MARKER in ctx,
+              "arm D: BOOTSTRAP_BLOCK present on a heavy/fresh-session turn")
+        check(DIGEST_HEADER_LITERAL not in ctx,
+              "arm D: digest ABSENT on the same turn as BOOTSTRAP_BLOCK (never both)")
+
     after = real_state_snapshot()
     check(after == before,
           f"real _projects/_state/ is unchanged (before={before!r}, after={after!r})")
@@ -265,6 +511,14 @@ def main() -> int:
           "synthetic turn-2 session id absent from real _projects/_state/")
     check(not (REAL_STATE / f"{SID_EVERY_TURN}.json").exists(),
           "synthetic inject_rules_full session id absent from real _projects/_state/")
+    check(not (REAL_STATE / f"{SID_DIGEST_A}.json").exists(),
+          "synthetic digest arm A session id absent from real _projects/_state/")
+    check(not (REAL_STATE / f"{SID_DIGEST_B}.json").exists(),
+          "synthetic digest arm B session id absent from real _projects/_state/")
+    check(not (REAL_STATE / f"{SID_DIGEST_C}.json").exists(),
+          "synthetic digest arm C session id absent from real _projects/_state/")
+    check(not (REAL_STATE / f"{SID_DIGEST_D}.json").exists(),
+          "synthetic digest arm D session id absent from real _projects/_state/")
 
     print()
     if FAIL == 0:

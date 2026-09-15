@@ -246,10 +246,10 @@ Saved notes come back on their own: every turn, Claude is handed up to 8 index r
 ```mermaid
 flowchart TD
     Q["You: 'compare Postgres vs SQLite for this'"] --> R["Claude answers"]
-    R --> S{"Was this investigation /<br/>comparison / structuring?"}
-    S -- yes --> T["Claude offers to save it,<br/>suggesting a category + name"]
-    T -- you approve --> U["Saved to project-notes/&lt;category&gt;/…<br/>and added to the notes index"]
+    R --> S{"Did this turn produce knowledge<br/>worth reusing later?"}
+    S -- yes --> T["Claude saves it in the same turn<br/>to project-notes/&lt;category&gt;/…<br/>and adds it to the notes index"]
     S -- "no (a question, a quick fix)" --> V["Nothing saved"]
+    S -- "you said not to save" --> V
 ```
 
 | Category | For |
@@ -267,9 +267,9 @@ How to use it, in plain language:
 |---|---|
 | "save this research to notes" | Claude files it and updates the notes index |
 | "what's in notes?" | Claude lists the relevant notes (titles only) |
-| "summarize this repo's structure into notes" | Claude investigates, then offers to save |
+| "summarize this repo's structure into notes" | Claude investigates and files the result |
 
-For investigation-style requests, Claude will *proactively offer* to save — you always approve first, and it only saves on a yes. Plain questions, debugging, and trivial edits don't trigger the offer.
+Claude saves on its own when a turn produced something worth reusing — in that same turn, without asking. Plain questions, debugging, and trivial edits produce nothing to save, so nothing is written. Tell Claude not to save and it won't; your instruction outranks the rule.
 
 ### What does *not* go into notes: LLM-to-LLM handoffs
 

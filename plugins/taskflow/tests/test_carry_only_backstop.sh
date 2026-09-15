@@ -136,6 +136,13 @@ count_note() {
   grep -cF "$2" "$1" 2>/dev/null || true
 }
 
+stop_msg() {
+  export TASKFLOW_CAPTURE_EXPIRY_S="$1"
+  TASKFLOW_SID="$SID" TASKFLOW_MSG="$2" \
+    uv run --no-project python -c "import json,os,sys;d={'session_id':os.environ['TASKFLOW_SID'],'last_assistant_message':os.environ.get('TASKFLOW_MSG','')};sys.stdout.write(json.dumps(d))" \
+    | uv run --no-project python "$(to_win "$HOOK")"
+}
+
 echo "=== carry-only backstop ==="
 echo "  project=$PROJ  tag=$SID_TAG  (isolated tempdir: $TMP)"
 echo ""
@@ -302,6 +309,66 @@ stop 0   >/dev/null
 grep -qF "(referenced) owner of $ND4REL via reverse-index; capture expired (r1)" "$TD4" \
   && pass "the (referenced) note-owner binding still applies to a task under tasks/2_done/" \
   || fail "(referenced) binding lost for a done-task note owner: $(grep -F "[s:$SID_TAG]" "$TD4")"
+
+echo ""
+echo "=== G5: exec-binding co-existence and EXEC_PARSE_WINDOW displacement ==="
+
+echo "co-existence: [tasks-rel: a.md] [tasks: b.md] both within window -> b.md bound, a.md untouched"
+reset_state
+TG1A="$PDIR/tasks/1_in_progress/2026-09-02_g5-pointer.md"; mk "$TG1A"
+TG1B="$PDIR/tasks/1_in_progress/2026-09-02_g5-carry.md"; mk "$TG1B"
+OG1=$(stop_msg 999 "[tasks-rel: 2026-09-02_g5-pointer.md] [tasks: 2026-09-02_g5-carry.md]")
+echo "$OG1" | grep -q "auto-bound: _projects/$PROJ/tasks/1_in_progress/2026-09-02_g5-carry.md" \
+  && pass "co-existence: positive marker - the [tasks:] carry (b.md) was auto-bound" \
+  || fail "co-existence: no auto-bind reported for the [tasks:] carry: $OG1"
+[ "$(count_note "$TG1B" '(auto) executed via [tasks:] carry')" = "1" ] \
+  && pass "co-existence: the carry target's @log gained the exec-bind line" \
+  || fail "co-existence: the carry target's @log is missing the exec-bind line"
+[ "$(count_note "$TG1A" '(auto) executed via [tasks:] carry')" = "0" ] \
+  && pass "co-existence: the pointer-only target's @log gained nothing from the carry" \
+  || fail "co-existence: the pointer-only target unexpectedly gained an exec-bind line"
+
+echo ""
+echo "control (pointer only): [tasks-rel: a.md] alone -> no exec-bind, round still opens via a touched write"
+reset_state
+TG2="$PDIR/tasks/1_in_progress/2026-09-02_g5-pointer-only.md"; mk "$TG2"
+write_touched "$TG2"
+OG2=$(stop_msg 999 "[tasks-rel: 2026-09-02_g5-pointer-only.md]")
+echo "$OG2" | grep -q 'Spawn the async capture subagent' \
+  && pass "control(pointer only): positive marker - the touched write opened a capture round" \
+  || fail "control(pointer only): positive marker missing - no round opened: $OG2"
+[ "$(count_note "$TG2" '(auto) executed via [tasks:] carry')" = "0" ] \
+  && pass "control(pointer only): no exec-bind line from a bare [tasks-rel:] carry" \
+  || fail "control(pointer only): unexpected exec-bind line from a bare [tasks-rel:] carry"
+echo "$OG2" | grep -q "auto-bound: _projects/$PROJ/tasks/1_in_progress/2026-09-02_g5-pointer-only.md" \
+  && fail "control(pointer only): an auto-bound EXEC report fired with no [tasks:] carry: $OG2" \
+  || pass "control(pointer only): no auto-bound EXEC report for this task"
+
+echo ""
+echo "control (carry only, vacuity control): [tasks: b.md] alone -> b.md bound"
+reset_state
+TG3="$PDIR/tasks/1_in_progress/2026-09-02_g5-carry-only.md"; mk "$TG3"
+OG3=$(stop_msg 999 "[tasks: 2026-09-02_g5-carry-only.md]")
+echo "$OG3" | grep -q "auto-bound: _projects/$PROJ/tasks/1_in_progress/2026-09-02_g5-carry-only.md" \
+  && pass "control(carry only) vacuity: a bare [tasks:] carry DOES bind (the harness can observe a bind at all)" \
+  || fail "control(carry only) vacuity: no auto-bind reported for a bare [tasks:] carry: $OG3"
+
+echo ""
+echo "displacement: [tasks-rel: ...] padded so [tasks:] starts >= EXEC_PARSE_WINDOW -> silent bind loss"
+reset_state
+TG4="$PDIR/tasks/1_in_progress/2026-09-02_g5-displaced.md"; mk "$TG4"
+write_touched "$TG4"
+PAD=$(printf 'x%.0s' $(seq 1 520))
+OG4=$(stop_msg 999 "[tasks-rel: ${PAD}.md] [tasks: 2026-09-02_g5-displaced.md]")
+echo "$OG4" | grep -q 'Spawn the async capture subagent' \
+  && pass "displacement: positive marker - the touched write opened a capture round" \
+  || fail "displacement: positive marker missing - no round opened: $OG4"
+[ "$(count_note "$TG4" '(auto) executed via [tasks:] carry')" = "0" ] \
+  && pass "displacement: no exec-bind line when [tasks:] starts past EXEC_PARSE_WINDOW" \
+  || fail "displacement: exec-bind line appeared despite the [tasks:] displacement"
+echo "$OG4" | grep -q "auto-bound: _projects/$PROJ/tasks/1_in_progress/2026-09-02_g5-displaced.md" \
+  && fail "displacement: an auto-bound EXEC report fired despite the [tasks:] displacement: $OG4" \
+  || pass "displacement: no auto-bound EXEC report (the silent bind loss is reproduced)"
 
 echo ""
 echo "=== Done ==="

@@ -37,10 +37,17 @@ def bad(msg: str) -> None:
 
 
 def emitted_fields() -> set[str]:
-    src = EMITTER.read_text(encoding="utf-8")
-    line = next((l for l in src.splitlines() if "[Progress Session] session_id=" in l
-                 and "{" in l), "")
-    return set(re.findall(r"(\w+)=\{", line))
+    lines = EMITTER.read_text(encoding="utf-8").splitlines()
+    start = next((i for i, l in enumerate(lines)
+                  if "[Progress Session] session_id=" in l and "{" in l), -1)
+    if start < 0:
+        return set()
+    span = [lines[start]]
+    for l in lines[start + 1:]:
+        if not l.lstrip().startswith(("f'", 'f"')):
+            break
+        span.append(l)
+    return set(re.findall(r"(\w+)=\{", "\n".join(span)))
 
 
 def quoted_fields(text: str) -> set[str]:

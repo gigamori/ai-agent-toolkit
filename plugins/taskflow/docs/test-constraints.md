@@ -62,6 +62,20 @@ no check fails when it drifts.
 - haiku-class models under-judge the `/progress` router's main-verb and word-boundary
   fallback; the router sampling suites need a sonnet-class model to measure the router
   rather than the model. Observed 2026-07-18.
+- A `UserPromptSubmit` hook's `additionalContext` string is compared against a fixed
+  constant `NEr = 10000` as `if (e.length <= s) return e`: a string at or under 10,000
+  UTF-16 code units (JS `String.length`, not Python codepoints and not UTF-8 bytes) is
+  delivered inline; one unit over collapses the whole payload to a 2,000-UTF-16-unit
+  preview, cut back to the nearest preceding line break. Both figures are read directly
+  from the shipped Claude Code binary at version 2.1.270, not measured by running a
+  hook — a harness upgrade can move either without anything in this repository
+  detecting it. Observed 2026-09-15.
+- The em dash constraint above (win32 / cp932) also reaches a test's own PASS/FAIL
+  message text, not only a hook's stderr: `print()`-ing an assertion message
+  containing U+2014 under the default console codepage raises `UnicodeEncodeError`
+  from inside the test's own `ok()`/ `bad()` helper, which looks like the assertion
+  logic crashed rather than a codec mismatch. Observed 2026-09-15 while adding
+  `tests/test_session_init_bootstrap.py`'s harness-anchor assertion message.
 
 ## Sibling implementation — the Pi taskflow extension
 
