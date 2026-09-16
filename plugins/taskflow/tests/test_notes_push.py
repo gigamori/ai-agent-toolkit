@@ -231,10 +231,10 @@ def test_union_and_compose(root: Path) -> None:
     check([r["file"] for r in shown] == ["specs/n1.md", "specs/n2.md", "specs/n3.md", "specs/n4.md"],
           f"L1 first, L2 capped at ceil(K/2)... within K, no duplicates (got {[r['file'] for r in shown]})")
     check(matched == 5, f"M is L1 ∪ L2 ∪ every row either topic layer returned, uncapped (got {matched})")
-    check(strong == 5, f"S is L1 ∪ L2 ∪ the qmd rows above the score floor (got {strong})")
+    check(strong == 2, f"S is L1 ∪ the qmd rows above the score floor; the L2 rows are not counted (got {strong})")
     text = np.render(shown, matched, strong, len(rows))
     check(text.startswith(np.HEADER + "\n| specs/n1.md |"), "block starts with the header and verbatim rows")
-    check(text.endswith("project-notes matched: 5 of 5 rows (4 shown, 5 strong)"), f"footer carries M, N, K shown and S strong (got {text.splitlines()[-1]!r})")
+    check(text.endswith("project-notes matched: 5 of 5 rows (4 shown, 2 strong)"), f"footer carries M, N, K shown and S strong (got {text.splitlines()[-1]!r})")
 
     weak = ["specs/n2.md", "specs/n3.md", "specs/n4.md"]
     shown_w, matched_w, strong_w = np.compose(rows, [rows[0]], [], weak, set(), set(weak), k=2)
@@ -247,6 +247,15 @@ def test_union_and_compose(root: Path) -> None:
           f"the same rows as qmd hits raise S with M (got M={matched_s} S={strong_s} K={len(shown_s)})")
     check(np.symbol_route_due(["src/a.py"], strong_s, len(shown_s)) is True,
           "the same overflow made of strong candidates is a symbol-route turn")
+
+    l2_only = [rows[1], rows[2], rows[3], rows[4]]
+    shown_d, matched_d, strong_d = np.compose(rows, [rows[0]], l2_only, [], set(), set(), k=2)
+    check(matched_d > len(shown_d) and strong_d <= len(shown_d),
+          f"the directory layer alone overflows M but never S (got M={matched_d} S={strong_d} K={len(shown_d)})")
+    check(strong_d == 1,
+          f"S counts the one exact-file row and no L2 row, shown or capped away (got S={strong_d}, L1 rows=1, L2 rows={len(l2_only)})")
+    check(np.symbol_route_due(["src/a.py"], strong_d, len(shown_d)) is False,
+          "a block overflowing only by same-directory candidates is not a symbol-route turn")
 
 
 def test_contract_literals() -> None:
@@ -284,8 +293,8 @@ def test_build_end_to_end(root: Path) -> None:
           f"L1 row from the .reads ledger, then its L2 sibling, come first (got {lines[:3]})")
     check(lines[3].startswith("| specs/n5.md |") and lines[4].startswith("| specs/n3.md |"),
           f"qmd (n5) and lexical (n3) results merge by taking the two lists alternately (got {lines[3:5]})")
-    check(lines[-1] == "project-notes matched: 4 of 5 rows (4 shown, 3 strong)",
-          f"M counts the lexical row n3, S does not (got {lines[-1]!r})")
+    check(lines[-1] == "project-notes matched: 4 of 5 rows (4 shown, 2 strong)",
+          f"M counts the lexical row n3 and the L2 row n2, S counts neither (got {lines[-1]!r})")
 
     (notes / ".qmd").rmdir()
     block2, reason2, _ = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state), env_auto, runner)

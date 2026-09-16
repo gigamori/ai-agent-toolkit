@@ -8,10 +8,10 @@ Builds the block session_init.py injects each turn:
 
 M and S are two candidate counts over the same turn. M = |L1 ∪ L2 ∪ ((qmd hit ∪ the
 rows the lexical rank returned) ∩ index rows)| — every candidate any layer returned.
-S = |L1 ∪ L2 ∪ (qmd hit ∩ index rows)| — the same union without the lexical tail, so
-only a location match or a qmd row that cleared the score floor counts. M reached 60%
-of the corpus on a live turn (`matched 50/83`) and stopped signalling truncation; S is
-the number the truncation signal keys on.
+S = |L1 ∪ (qmd hit ∩ index rows)| — the exact-file location layer and the qmd rows that
+cleared the score floor; the directory layer L2 and the lexical tail are not counted.
+M reached 60% of the corpus on a live turn (`matched 50/83`) and stopped signalling
+truncation; S is the number the truncation signal keys on.
 
 Three retrieval layers, composed in this order (design: notes-retrieval-locality-qmd.md §4):
 
@@ -29,7 +29,8 @@ Contract kept from the router: rows are index.md lines verbatim, `_archive/` row
 excluded, note bodies are never read for output (anchors are read from frontmatter
 only). Degrade: when qmd is expected (`.qmd/` present, mode auto) but cannot run
 (binary unresolved, spawn failure, non-zero exit, timeout, bad JSON), the topic layer
-is the lexical rank alone and the caller shows one notice per session.
+is the lexical rank alone and the caller announces it on every turn the degrade
+persists.
 
 Config (env): TASKFLOW_NOTES_PUSH = off | lexical | auto (default);
 TASKFLOW_QMD_BIN = path of qmd's `bin/qmd` (default: resolved next to the `qmd` on
@@ -477,7 +478,7 @@ def _result_is_hit(result: dict) -> bool:
 def qmd_rank(results: list[dict]) -> tuple[list[str], set[str]]:
     """(ordered distinct files, hit files) from qmd chunk results. Every returned
     file keeps its rank; the threshold decides only which files join the STRONG
-    count `S = |L1 u L2 u BM25 hit u vector >= tau_vec|`. The wider count M takes
+    count `S = |L1 u BM25 hit u vector >= tau_vec|`. The wider count M takes
     every file either layer returned, so it does not read this set alone."""
     order: list[str] = []
     hits: set[str] = set()
@@ -519,9 +520,9 @@ def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
 
     M = |L1 u L2 u ((strong_hits u weak_hits) & index rows)| — every candidate any
     layer returned, nothing thresholded away.
-    S = |L1 u L2 u (strong_hits & index rows)| — the lexical tail excluded, so a row
-    enters only by a location match or a qmd score above the floor. With qmd off or
-    degraded, strong_hits is empty and S is the location union alone."""
+    S = |L1 u (strong_hits & index rows)| — the directory layer L2 and the lexical tail
+    excluded, so a row enters only by an exact-file location match or a qmd score above
+    the floor. With qmd off or degraded, strong_hits is empty and S is L1 alone."""
     by_file = {r['file']: r for r in rows}
     shown: list[dict] = []
     seen: set[str] = set()
@@ -538,10 +539,11 @@ def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
     for f in topic:
         if f in by_file:
             add(by_file[f])
-    location = {r['file'] for r in l1} | {r['file'] for r in l2}
+    exact = {r['file'] for r in l1}
+    location = exact | {r['file'] for r in l2}
     indexed = set(by_file)
     matched = location | ((strong_hits | weak_hits) & indexed)
-    strong = location | (strong_hits & indexed)
+    strong = exact | (strong_hits & indexed)
     return shown, len(matched), len(strong)
 
 

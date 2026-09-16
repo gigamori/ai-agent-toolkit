@@ -15,10 +15,12 @@ build. When neither route yields what you need, say so and answer without it.
 ### Route: block
 
 The block carries verbatim `index.md` rows chosen deterministically — by location (a note anchored
-on a file you named, read or wrote) and by topic — and ends in
-`project-notes matched: M of N rows (K shown, S strong)`. `_archive/` is excluded. `M` counts every
-candidate; `S` counts the strong ones — the location matches plus `qmd`'s own hits, and the location
-matches alone when `qmd` is absent or degraded. `S` above `K` means strong rows were cut, so the
+on a file you named, read or wrote, then one anchored elsewhere in that file's directory) and by
+topic — and ends in `project-notes matched: M of N rows (K shown, S strong)`. `_archive/` is
+excluded. `M` counts every candidate, both location tiers included; `S` counts the strong ones — a
+note anchored on the file itself plus `qmd`'s own hits, and a note anchored on the file itself alone
+when `qmd` is absent or degraded. A note anchored only elsewhere in the directory may still take a
+row in the block, and never counts toward `S`. `S` above `K` means strong rows were cut, so the
 symbol route is worth taking when you are on a symbol. `M` above `K` holds on nearly every turn and
 tells you nothing.
 
