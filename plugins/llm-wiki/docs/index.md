@@ -1,4 +1,4 @@
-# llm-wiki internal docs (v0.1.4)
+# llm-wiki internal docs (v0.1.5)
 
 Maintenance documents for developers working on the plugin. User-facing documents live at the
 plugin root: [README](../README.md) / [README_ja](../README_ja.md),

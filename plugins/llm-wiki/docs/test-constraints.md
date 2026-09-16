@@ -1,4 +1,4 @@
-# llm-wiki test constraints (v0.1.4)
+# llm-wiki test constraints (v0.1.5)
 
 Facts about the world outside this repository that `plugins/llm-wiki/tests/` depends on.
 A test file cannot state these: it is read by agents that have only this checkout, and a

@@ -1,4 +1,4 @@
-# llm-wiki test knowledge gate (v0.1.4)
+# llm-wiki test knowledge gate (v0.1.5)
 
 Two mechanical rules over the plugin's test suites, the command that enforces them, and the
 scope decisions taken when they were introduced.
