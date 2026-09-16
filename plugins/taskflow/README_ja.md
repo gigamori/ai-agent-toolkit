@@ -27,6 +27,44 @@ claude --plugin-dir ./plugins/taskflow
 
 > **Claude Code 専用。** taskflow の毎ターン project routing は `UserPromptSubmit` の `additionalContext` 注入に依存している。Cursor の third-party 互換で auto-map される `beforeSubmitPrompt` は LLM コンテキスト注入を持たない（block 専用）ため、taskflow は Cursor 上では動作しない。背景は `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md`（開発リポジトリの設計メモ。プラグインには同梱されない）を参照。
 
+### 古い workspace の移行
+
+upgrade で壊れるものは無い。古い release で書かれた workspace を現行の前提に揃える one-time script が 2 本ある。どちらも既定は dry run で、既に適合しているものは skip するので、再実行してよい。
+
+#### task log の session tag — 0.2.8 以前で書かれたもの
+
+`@log` の各 entry は、それを書いた session を `[s:<hex>]` で持つ。0.2.8 までは session id の先頭 8 hex で、これは衝突する。現在は dehyphenate した id の末尾 12 hex。古い entry は短い tag のまま残り、どの session を指すのか引き直せない。
+
+```bash
+# dry run — 何を書き換えるか報告するだけで、書き込まない
+uv run python <taskflow>/scripts/migrate_sid_tags.py --root <workspace>
+# 報告を読んでから適用
+uv run python <taskflow>/scripts/migrate_sid_tags.py --root <workspace> --write
+```
+
+`--root` の既定は現在の directory で、`_projects/` を持つ必要がある。tag を書き換えるのは、その 8 桁が `_projects/_state/` 配下のちょうど 1 つの session state file に解決したときだけ — まず prefix で、次に stem 自身の末尾 8 桁で照合する。2 つ以上に当たる tag と、1 つも当たらない tag（state file が既に sweep された場合）は報告して放置するので、古い workspace では部分的な移行になることを見込んで報告を読むこと。
+
+`@log` の append-only 規則を免除するのはここだけである。task ファイルは gitignored で復元手段が無いため、変更する file はすべて事前に `<name>.md.bak-sidmigrate` として隣にコピーする。触るのは対になった `<!-- @log:begin -->` / `<!-- @log:end -->` の間だけで、legacy tag を持つのに marker が対になっていない file は推測せず stderr に名前を出して skip する。
+
+#### project-notes の frontmatter — 0.3.0 以前で書かれたもの
+
+既存の `project-notes/` は本 release の恩恵を新規 note ほど受けられない。毎ターンの push（[project-notes](#project-notes) 参照）は、以前は存在しなかった frontmatter 2 field を読む: `summary:`（本文を開かずに判断するための text）と `anchors:`（turn との場所一致を成立させる repo 相対 path）。どちらも無い note は topic 層からしか届かず、100 code point 上限より前に書かれた `index.md` の Description は注入行で切り詰められる。
+
+この 2 つを埋めるのが `scripts/backfill_notes.py`。workspace ごとに 1 回実行する:
+
+```bash
+# dry run — manifest を書くだけで、何も編集しない
+uv run --script <taskflow>/scripts/backfill_notes.py <workspace>
+# manifest を読んでから適用
+uv run --script <taskflow>/scripts/backfill_notes.py <workspace> --apply
+```
+
+`<workspace>` は `_projects/` を持つ directory で、その配下の全 project が対象になる。Stage 1 は Claude に 1 call あたり 8 note ずつ `summary:` / `index.md` の Description / `anchors:` list を問い、`<workspace>/tmp/notes-backfill/<timestamp>/<project>-manifest.json` に書く。Stage 2（`--apply`）はその manifest を契約の上限に照らして検証し、note と `index.md` を編集する。契約を満たす `summary:` と `anchors:` key を持ち Description が 100 code point 以内の note は skip し、`index.md` 自身と `_archive/` 配下も対象外なので、途中まで移行した workspace に再実行してよい。
+
+必要なのは `uv`、起動できる `claude` binary（PATH 上のものが shell shim の場合 — Windows はそうなる — は `CLAUDE_BIN` を設定する）、および network。note ごとの判断は model が行うため。実行後は `scripts/check_progress.py <workspace>/_projects/<project>` で検証する（summary の長さ、summary の充足率、dangling anchor を報告する）。
+
+この上に topic 層を有効化するかは別の任意手順 — [project-notes](#project-notes) を参照。
+
 ## 設定
 
 以下の変数はすべてプロセス環境から読む。シェルで export するか、Claude Code で恒久設定するなら `settings.json` の `env` ブロックに置く: `~/.claude/settings.json` は全 project、workspace の `.claude/settings.json` または `.claude/settings.local.json` はその workspace だけに効く。

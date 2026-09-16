@@ -27,6 +27,44 @@ No manual setup is required. `_projects/`, `_projects/_state/`, and a template `
 
 > **Claude Code only.** taskflow's per-turn project routing depends on `UserPromptSubmit`'s `additionalContext` injection. Cursor's `beforeSubmitPrompt` (the third-party auto-mapped equivalent) cannot inject context into the LLM, so taskflow does not work on Cursor. See `_projects/harness-taskflow/project-notes/procedures/claude-plugin-to-cursor-compat.md` (development-repo design notes; not shipped with the plugin) for background.
 
+### Migrating an older workspace
+
+Nothing breaks on upgrade. Two one-time scripts bring a workspace written under an older release up to what this one expects. Both are dry-run by default and both skip what already conforms, so either can be re-run.
+
+#### Session tags in task logs — written under 0.2.8 or earlier
+
+A `@log` entry carries the session that wrote it as `[s:<hex>]`. Up to 0.2.8 that was the session id's first 8 hex digits, which collide; it is now the last 12 of the dehyphenated id. Old entries keep their short tags, and nothing reads them back to the session they name.
+
+```bash
+# dry run — reports what it would rewrite, writes nothing
+uv run python <taskflow>/scripts/migrate_sid_tags.py --root <workspace>
+# read the report, then apply
+uv run python <taskflow>/scripts/migrate_sid_tags.py --root <workspace> --write
+```
+
+`--root` defaults to the current directory and must hold `_projects/`. The script rewrites a tag only when its 8 digits resolve to exactly one session state file under `_projects/_state/` — first by prefix, then by the stem's own tail-8. A tag matching two or more, or none (its state file has since been swept), is reported and left alone, so expect a partial migration on an old workspace and read the report.
+
+This is the one place the append-only rule over `@log` is waived. Because task files are gitignored and therefore unrecoverable, every file it changes is copied to `<name>.md.bak-sidmigrate` next to itself first. It only touches text between balanced `<!-- @log:begin -->` / `<!-- @log:end -->` markers; a file that carries legacy tags without those markers is named on stderr and skipped rather than guessed at.
+
+#### project-notes frontmatter — written under 0.3.0 or earlier
+
+Existing `project-notes/` get less out of the release than new ones do. The per-turn push (see [project-notes](#project-notes)) reads two frontmatter fields that did not exist before: `summary:`, which is the text a reader judges a note by without opening it, and `anchors:`, the repo-relative paths that make the location layer match a turn at all. A note with neither is reachable only through the topic layer, and `index.md` Descriptions written before the 100-code-point cap are truncated in the injected row.
+
+`scripts/backfill_notes.py` fills both in, once per workspace:
+
+```bash
+# dry run — writes only a manifest, edits nothing
+uv run --script <taskflow>/scripts/backfill_notes.py <workspace>
+# read the manifest, then apply
+uv run --script <taskflow>/scripts/backfill_notes.py <workspace> --apply
+```
+
+`<workspace>` is the directory holding `_projects/`; every project under it is processed. Stage 1 asks Claude, eight notes per call, for a `summary:`, an `index.md` Description and an `anchors:` list, and writes `<workspace>/tmp/notes-backfill/<timestamp>/<project>-manifest.json`. Stage 2 (`--apply`) validates that manifest against the contract limits and edits the notes and `index.md`. A note already carrying a conforming `summary:`, an `anchors:` key and a Description within 100 code points is skipped, as are `index.md` itself and everything under `_archive/`, so a partially migrated workspace can be re-run.
+
+It needs `uv`, a `claude` binary it can launch (set `CLAUDE_BIN` if the one on PATH is a shell shim, as it is on Windows) and network access, since the judgement per note is the model's. Verify afterwards with `scripts/check_progress.py <workspace>/_projects/<project>`, which reports summary length, summary coverage and dangling anchors.
+
+Enabling the topic layer on top of this is a separate, optional step — see [project-notes](#project-notes).
+
 ## Configuration
 
 Every variable below is read from the process environment. Export it in the shell, or — to set it permanently for Claude Code — put it in the `env` block of a `settings.json`: `~/.claude/settings.json` applies to every project, a workspace's `.claude/settings.json` or `.claude/settings.local.json` to that workspace only.
