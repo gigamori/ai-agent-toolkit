@@ -37,6 +37,9 @@ Always-on footer lines (never findings, never affect the exit code):
                                        pairs print under it. Merging duplicates
                                        was ruled out, so this can never become a
                                        finding: it would never clear.
+  vector coverage: n of N docs         embed progress read from `qmd status`;
+                                       printed only where project-notes/.qmd/
+                                       holds a local qmd index and qmd answers.
 
 Note: progress.md's Completed table lists every task in tasks/2_done/ — the
 file is never truncated (context-side truncation is view_progress.py's job and
@@ -57,6 +60,8 @@ import datetime
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -94,6 +99,23 @@ NEAR_DUP_DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 ANCHOR_DANGLING_SEVERITY = "violation"
 # query-lsp's snapshot location, relative to the repo root (parent of _projects/).
 LSP_SNAPSHOT_REL = Path(".lsp-cache") / "snapshot.json"
+# qmd resolution is DUPLICATED from hooks/notes_push.py (resolve_qmd_bin,
+# BIN_ENV, QMD_REL_BIN) rather than imported, the way pj_rules.py duplicates
+# session_init.py: scripts/ and hooks/ are standalone. notes_push.py is the
+# canonical - change it there first.
+QMD_BIN_ENV = "TASKFLOW_QMD_BIN"
+QMD_REL_BIN = os.path.join("node_modules", "@tobilu", "qmd", "bin", "qmd")
+QMD_DIR = ".qmd"
+# A local index exists only where qmd's own findLocalConfigPath would stop:
+# .qmd/index.yaml (or .yml). Without one, qmd walks UP and reports an ancestor's
+# or the global ~/.cache index - someone else's numbers under this project's name.
+QMD_LOCAL_CONFIGS = ("index.yaml", "index.yml")
+# `qmd status` is one user-invoked sqlite read, not the per-turn query path, so
+# it does not share TASKFLOW_QMD_TIMEOUT (a contract constant with the Pi
+# extension). Any overrun prints no footer line and never fails the check.
+QMD_STATUS_TIMEOUT_S = 10.0
+QMD_TOTAL_RE = re.compile(r"^\s*Total:\s+(\d+)\b", re.MULTILINE)
+QMD_PENDING_RE = re.compile(r"^\s*(?:\x1b\[[0-9;]*m)?Pending:\s+(\d+)\b", re.MULTILINE)
 SECTION_TO_STATUS = {
     "TODO": "0_todo",
     "In Progress": "1_in_progress",
@@ -460,6 +482,62 @@ def notes_summary_coverage(project_dir: Path) -> tuple[int, int]:
     must never become one by living in the findings list."""
     summaries = collect_note_summaries(project_dir / "project-notes")
     return sum(1 for _, s in summaries if s is None), len(summaries)
+
+
+def resolve_qmd_bin(env: dict | None = None) -> str | None:
+    """Path of qmd's `bin/qmd` JS entry, or None. Never the `.cmd` shim: it is
+    spawned as `node <bin/qmd>`."""
+    env = os.environ if env is None else env
+    explicit = env.get(QMD_BIN_ENV, "").strip()
+    if explicit:
+        return explicit if os.path.isfile(explicit) else None
+    which = shutil.which("qmd", path=env.get("PATH"))
+    if not which:
+        return None
+    cand = os.path.join(os.path.dirname(which), QMD_REL_BIN)
+    return cand if os.path.isfile(cand) else None
+
+
+def parse_qmd_status(stdout: str) -> tuple[int, int] | None:
+    """Footer input from `qmd status`: (docs with usable vectors, docs indexed).
+
+    `Total:` is the active document count. `Pending:` is the count of those docs
+    whose vectors are missing or incomplete for the embed model in force, and it
+    is omitted entirely at zero. `Vectors:` is deliberately NOT used - it counts
+    chunks (789 for 82 docs on the reference corpus), not documents."""
+    total_m = QMD_TOTAL_RE.search(stdout)
+    if not total_m:
+        return None
+    total = int(total_m.group(1))
+    pending_m = QMD_PENDING_RE.search(stdout)
+    pending = int(pending_m.group(1)) if pending_m else 0
+    if pending > total:
+        return None
+    return total - pending, total
+
+
+def qmd_vector_coverage(project_dir: Path, env: dict | None = None,
+                        runner=subprocess.run) -> tuple[int, int] | None:
+    """Footer input: (n, N) from `qmd status`, or None to print no line at all.
+
+    None covers every arm in which the number would be absent or wrong: no local
+    qmd index, no resolvable binary, spawn failure, non-zero exit, timeout, and
+    output the parser does not recognise. The check never fails on qmd."""
+    notes_dir = project_dir / "project-notes"
+    if not any((notes_dir / QMD_DIR / name).is_file() for name in QMD_LOCAL_CONFIGS):
+        return None
+    bin_path = resolve_qmd_bin(env)
+    if not bin_path:
+        return None
+    try:
+        cp = runner(["node", bin_path, "status"], cwd=str(notes_dir),
+                    capture_output=True, timeout=QMD_STATUS_TIMEOUT_S,
+                    encoding="utf-8", errors="replace")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if cp.returncode != 0:
+        return None
+    return parse_qmd_status(cp.stdout or "")
 
 
 def slug_core(stem: str) -> frozenset[str]:
@@ -996,6 +1074,9 @@ def main(argv: list[str] | None = None) -> int:
         footers.append(
             f"anchor symbols unchecked: {unchecked} (no LSP snapshot at {snapshot})"
         )
+    coverage = qmd_vector_coverage(project_dir)
+    if coverage is not None:
+        footers.append(f"vector coverage: {coverage[0]} of {coverage[1]} docs")
     print_findings(result, tuple(footers))
     return 1 if result.findings else 0
 

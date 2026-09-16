@@ -114,6 +114,7 @@ from note_links import (  # noqa: E402
     normalize_note_rel,
     resolve_note_owner,
 )
+from qmd_index import NO_QMD, follow_index  # noqa: E402
 from touched_capture import _find_state_root  # noqa: E402
 from tstamp import now_iso  # noqa: E402
 
@@ -1927,6 +1928,34 @@ def main() -> int:
             if _p not in unlinked:
                 unlinked.append(_p)
     novel_notes = [n for n in unlinked if n not in tried_notes]
+
+    # --- qmd index follow-up (notes-retrieval-rollout-plan.md §4 「増分」) ----
+    # A round that wrote notes leaves the project's qmd index behind the tree.
+    # `hooks/qmd_index.py` owns the mechanics; this block owns only the
+    # question "did THIS ROUND write a note, and for which project".
+    #
+    # Round-scoped on purpose: the scan above is whole-session (`touched`)
+    # because its two consumers need it that way, and reusing it here would
+    # re-run the follow-up on every later Stop of the session for notes indexed
+    # rounds ago. `new_slice` is this round's ledger slice — the same input
+    # `compute_round_active` scans for note owners.
+    #
+    # One project per round (blast cap): the ordering below is deterministic —
+    # the primary project first, then the rest by name — and the loop ends at
+    # the first project `follow_index` did not decline for want of a `.qmd/`
+    # dir. A project not onboarded to qmd is passed over, never serviced; a
+    # `TASKFLOW_NOTES_PUSH` that is not `auto` ends the loop on the first
+    # project, which is the whole point of that gate.
+    round_note_projects = [
+        name for name, root in project_roots.items()
+        if _scan_note_writes(new_slice, name, root, reverse_indexes[name])[0]
+    ]
+    if round_note_projects:
+        ordered = [n for n in (project,) if n in round_note_projects]
+        ordered += sorted(n for n in round_note_projects if n != project)
+        for _name in ordered:
+            if follow_index(project_roots[_name], sid_tag, round_n) != NO_QMD:
+                break
 
     # W5 (§1.9): the round baseline as it stood when this Stop STARTED, taken
     # before `compute_round_active` raises `log_seen` for anything it judges

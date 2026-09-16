@@ -115,7 +115,13 @@ Both variables are read per call, and the Pi taskflow extension reads the same t
 
 ### `TASKFLOW_QMD_BIN`
 
-Path of qmd's `bin/qmd` script, used by the per-turn project-notes push (see [project-notes](#project-notes)) when the project has a `project-notes/.qmd/` index. Unset (default) resolves the `qmd` on `PATH` and spawns the `node_modules/@tobilu/qmd/bin/qmd` next to it through `node` — the `.cmd` shim is never executed. A binary that cannot be resolved degrades the push to the lexical rank and is announced on every turn the degrade persists.
+Path of qmd's `bin/qmd` script. Unset (default) resolves the `qmd` on `PATH` and spawns the `node_modules/@tobilu/qmd/bin/qmd` next to it through `node` — the `.cmd` shim is never executed. Three paths use it, each with its own gate:
+
+- the per-turn project-notes push (see [project-notes](#project-notes)), when the project has a `project-notes/.qmd/` directory. A binary that cannot be resolved degrades the push to the lexical rank and is announced on every turn the degrade persists.
+- the Stop-hook qmd index follow-up (see [hooks](#hooks)), on the same directory gate.
+- `/progress check`'s `vector coverage:` footer, gated instead on a `project-notes/.qmd/index.yaml` or `index.yml` **file** — a bare directory would let qmd walk up and report an ancestor's or the global index under this project's name. An unresolvable binary prints no footer line and changes nothing else.
+
+Neither of the latter two paths reads `TASKFLOW_QMD_TIMEOUT`: the follow-up's `qmd update` is fixed at 5 s and the footer's `qmd status` at 10 s, neither overridable.
 
 ```json
 {
@@ -128,6 +134,8 @@ Path of qmd's `bin/qmd` script, used by the per-turn project-notes push (see [pr
 ### `TASKFLOW_NOTES_PUSH`
 
 Which layers the per-turn project-notes push uses. `auto` (default): location (`anchors:` against the paths this turn named, read or wrote) + a qmd structured query when `project-notes/.qmd/` exists + the in-process lexical rank, merged as the union of both lists taken alternately. `lexical`: location + lexical only, qmd never spawned. `off`: location only.
+
+The same axis gates the Stop-hook qmd index follow-up (see [hooks](#hooks)): only `auto` lets it run, so `lexical` and `off` both mean "never spawn qmd for this tree", maintenance writes included.
 
 ```json
 {
@@ -172,7 +180,7 @@ Put `pj:<project>` near the beginning of the prompt — it is recognized at the 
 
 | Sub-action | Effect | Examples |
 |---|---|---|
-| `check` | Drift / stale / approval-pending detection, plus the notes data contract (flat layout, `summary:` ≤500 chars, `anchors:` resolving against the query-lsp snapshot at `<repo-root>/.lsp-cache/snapshot.json` or `--lsp-snapshot`). Always ends with `notes without summary: n of N`. Read-only. | `/progress check` |
+| `check` | Drift / stale / approval-pending detection, plus the notes data contract (flat layout, `summary:` ≤500 chars, `anchors:` resolving against the query-lsp snapshot at `<repo-root>/.lsp-cache/snapshot.json` or `--lsp-snapshot`). Ends with always-on footers, none of which is a finding or affects the exit code: `notes without summary: n of N`, `near-duplicate note pairs: n`, `anchor symbols unchecked: n` when no query-lsp snapshot was available, and `vector coverage: n of N docs` — `Total - Pending` over `Total` as `qmd status` reports them, both in documents, printed only where `project-notes/.qmd/index.yaml` (or `index.yml`) exists and qmd answers. Read-only. | `/progress check` |
 | `audit` | Classify every task by `## Next Steps` state (pending / completion candidate / untracked / clean). Read-only. | `/progress audit` |
 | `rebuild` (alias `sync`) | Regenerate the progress.md table region from task files. | `/progress rebuild` |
 | `start` | Move a task `0_todo/ → 1_in_progress/` (also reopens a done task: `2_done/ → 1_in_progress/`). | `/progress start 2026-05-14_xxx`<br>`/progress 着手 migration` |
@@ -321,7 +329,7 @@ The project-router surfaces **no project-notes at all**. Note selection left the
 
 Every turn, `session_init.py` also injects a `project-notes (index rows):` block — up to 8 verbatim `index.md` rows chosen by **location** (a note whose `anchors:` names a file this turn mentioned, read or wrote comes first; a note anchored in the same directory next, at most 4) and by **topic** (a qmd structured query over the note bodies when `project-notes/.qmd/` exists, unioned with an in-process lexical rank of Description + Tags by taking the two lists alternately), followed by `project-notes matched: M of N rows (K shown, S strong)`. `_archive/` rows are excluded and note bodies are never injected. `M` is the candidate count — both location tiers unioned with every row the topic layer returned, qmd rows and lexical rows alike — so it can exceed the `K` rows actually shown without meaning that good candidates were cut. `S` is the narrower count: the exact-file location matches — the first tier only, never the same-directory rows — unioned with only the qmd rows that cleared a BM25 or vector-score floor, leaving the lexical tail out; with no qmd index, or while the vector layer is degraded, it is the exact-file location matches alone. A same-directory row may still take one of the `K` rows and always counts toward `M`; it is simply never strong. `S` above `K` is the reading that strong candidates overflowed the block. The location signal comes from the `.reads` / `.touched` ledgers described under hooks; `TASKFLOW_NOTES_PUSH` and `TASKFLOW_QMD_BIN` are the knobs. Notes reach the agent by two routes and no others: this block, and — while it is editing or investigating a named symbol — enumerating that symbol's depth-1 callers and callees through the `query-lsp` skill (`incoming-calls` / `outgoing-calls`), keeping only the peers whose path is repo-relative, and grepping `project-notes/` for `::<name>` per peer. That route degrades to the block alone when `query-lsp` is unavailable, so a project without it loses recall but nothing else. The second route exists because the block matches `anchors:` at file and directory granularity, so a note anchored on a symbol in an untouched file cannot appear in it.
 
-To enable the topic layer for a project, install the `@tobilu/qmd` npm package (Node ≥ 22), then from `_projects/<project>/project-notes/` run `qmd init`, `qmd collection add .`, add `ignore: ["index.md", "_archive/**"]` to the collection entry in `.qmd/index.yml`, and run `qmd embed` (GPU recommended; on a Vulkan GPU that aborts during embedding, `GGML_VK_DISABLE_COOPMAT=1` in the environment is the known fix). Keep `project-notes/.qmd/` out of version control if you track `_projects/`. Re-run `qmd update` and `qmd embed` after editing notes; until then the push still works over whatever is indexed.
+To enable the topic layer for a project, install the `@tobilu/qmd` npm package (Node ≥ 22), then from `_projects/<project>/project-notes/` run `qmd init`, `qmd collection add .`, add `ignore: ["index.md", "_archive/**"]` to the collection entry in `.qmd/index.yml`, and run `qmd embed` (GPU recommended; on a Vulkan GPU that aborts during embedding, `GGML_VK_DISABLE_COOPMAT=1` in the environment is the known fix). Keep `project-notes/.qmd/` out of version control if you track `_projects/`. From then on the Stop hook keeps the index following the tree whenever a round wrote a note (see [hooks](#hooks)); a full regeneration (`qmd embed -f`) is never issued for you and stays a manual command. The push always works over whatever is indexed at the time.
 
 #### Saving reusable knowledge, in the same turn
 
@@ -413,7 +421,7 @@ session start
 
 ### hooks
 
-Nine hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (three hooks), `Stop` (two hooks), `SessionStart:compact`, and `PreCompact`. `notes_push.py` (the per-turn project-notes push) is a further shared module imported by `session_init.py`, not a wired hook. Two further files — `note_links.py` (the note↔task link data layer) and `log_lock.py` (the bounded advisory write lock, protocol v2) — are shared modules, not wired hooks themselves: `note_links.py` is imported by the Stop hook, and `log_lock.py` by the Stop hook and by `scripts/rebuild_progress.py`, which takes the same lock around its `progress.md` read→write window.
+Nine hook scripts run automatically when the plugin is enabled, wired in `hooks/hooks.json` across `UserPromptSubmit`, `PreToolUse`, `PostToolUse` (three hooks), `Stop` (two hooks), `SessionStart:compact`, and `PreCompact`. `notes_push.py` (the per-turn project-notes push) is a further shared module imported by `session_init.py`, not a wired hook. Three further files — `note_links.py` (the note↔task link data layer), `qmd_index.py` (the qmd index follow-up driver) and `log_lock.py` (the bounded advisory write lock, protocol v2) — are shared modules, not wired hooks themselves: `note_links.py` and `qmd_index.py` are imported by the Stop hook, and `log_lock.py` by the Stop hook and by `scripts/rebuild_progress.py`, which takes the same lock around its `progress.md` read→write window.
 
 **Where `_projects/` is resolved.** Every hook that needs the state tree walks up from the session's launch directory to the nearest ancestor that holds `_projects/_state` — the launch directory itself counts — and falls back to the launch directory when no ancestor qualifies. This matters because a hook process keeps the directory the session was **launched** in for the session's whole life (a `cd` in a Bash tool call does not move it): starting Claude Code inside a subdirectory of your workspace previously made the plugin no-op for that entire session, and now joins the workspace's existing tree instead. The one deliberate exception is the Stop hook's 7-day stale-marker cleanup, whose target stays pinned to the launch directory — a subdirectory-launched session simply skips that housekeeping, and the next session started at the workspace root performs it.
 
@@ -502,6 +510,12 @@ When a session does task work whose result lands **outside** the task's own `tas
 ##### note↔task links (`@notes` block)
 
 When a session writes a durable `project-notes/` deliverable, the progress-capture subagent maps it to its owning task and the hook records the link on the **task** side — an auto-managed `<!-- @notes:begin/end -->` block in the task file listing project-relative note paths (`note_links.py`). The link travels with the task file when the project directory is renamed or moved, and stale entries (a note whose file no longer exists) are skipped when the reverse index is built.
+
+##### qmd index follow-up (`qmd_index.py`)
+
+A round that wrote a `project-notes/` deliverable leaves that project's qmd index behind the tree, and the same Stop brings it forward through `hooks/qmd_index.py`. Two gates, both required: `TASKFLOW_NOTES_PUSH` must be `auto` (its default), and the project must have a `project-notes/.qmd/` directory. Under them the hook runs `node <bin/qmd> update` synchronously with a fixed 5-second ceiling — an overrun is dropped and the Stop continues — and then spawns `node <bin/qmd> embed --no-gpu` detached, so the embed outlives the hook instead of holding the session end. `--no-gpu` is part of the contract, not a preference: the Stop path must not contend for a GPU a foreground session may be using. `qmd embed -f` is never reachable from here, so regenerating a whole collection stays a manual command.
+
+Two caps bound the blast radius. **One project per round**: the projects this round wrote notes into are ordered with the session's own project first and the rest by name, and the loop stops at the first that has a `.qmd/` directory — a project without one is passed over, never serviced. **One embed at a time per project**, enforced by `project-notes/.qmd/embed.lock`, a JSON file holding the spawned pid plus the session tag and round number that spawned it. The lock blocks while that pid is alive (an embed is running, possibly from another session) or while it names this session's current round; anything else is stale and the lock is retaken. The file is never deleted — liveness is read off the pid — so a leftover `embed.lock` is self-clearing and needs no cleanup path. `update` still runs when the lock blocks: it is cheap, and holding the lexical half behind a possibly minutes-long embed would keep the freshest notes out of that layer for the whole window.
 
 ## Known issues
 

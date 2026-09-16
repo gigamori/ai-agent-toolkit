@@ -98,7 +98,7 @@ The router reads nothing under `project-notes/` on this build, so the question o
 
 | Sub-action | Effect |
 |---|---|
-| `check` | Run drift / stale / approval-pending detection across 16 checks (`check_progress.py`), then the always-on footers (`notes without summary: n of N`; unchecked anchor symbols when no query-lsp snapshot exists). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
+| `check` | Run drift / stale / approval-pending detection across 16 checks (`check_progress.py`), then the always-on footers (`notes without summary: n of N`; `near-duplicate note pairs: n`; unchecked anchor symbols when no query-lsp snapshot exists; `vector coverage: n of N docs` = `Total - Pending` / `Total` from `node <bin/qmd> status`, run in `project-notes/` with a 10 s ceiling and gated on a `project-notes/.qmd/index.yaml` or `index.yml` FILE, since a bare directory would let qmd resolve an ancestor's or the global index — every qmd failure arm prints no line and leaves the exit code alone). Read-only — deletion of anything it reports (e.g. dead lock sidecars) is `scripts/clean_locks.py`'s job. |
 | `audit` | Classify each task by `## Next Steps` state: pending / completion_candidate / untracked / clean (`audit_progress.py`). Read-only. |
 | `rebuild` (alias `sync`) | Regenerate the `<!-- @table -->` block from task files (`rebuild_progress.py`). |
 | `start <id>` | Move a task `0_todo/ → 1_in_progress/` (also reopens `2_done/ → 1_in_progress/`). |
@@ -339,7 +339,27 @@ session end
         are replaced only when the next round is requested), so a subagent slower than the
         expiry keeps its summary and its note links instead of having every entry
         membership-skipped (§1.9, W5).
-     5. round-active set → request capture: A_r = task md written in this round's ledger slice
+     5. qmd index follow-up (`hooks/qmd_index.py`): for each project this round's ledger
+        slice wrote a `project-notes/` deliverable into — round-scoped on purpose, since the
+        whole-session `touched` scan would re-fire the follow-up on every later Stop for notes
+        indexed rounds ago. Two gates, both required: `TASKFLOW_NOTES_PUSH` == `auto` (the
+        retrieval layer's own axis, normalized the same way `notes_push.build_notes_push`
+        normalizes it — transcribed from that call site, not shared, since the rule is not a
+        function there; no axis of its own is added) and a `project-notes/.qmd/` DIRECTORY.
+        Then `node <bin/qmd> update` SYNCHRONOUSLY, ceiling `UPDATE_TIMEOUT_S` = 5 s (NOT
+        `TASKFLOW_QMD_TIMEOUT`, which is the query path's Pi-shared contract constant), and
+        `node <bin/qmd> embed --no-gpu` DETACHED (`EMBED_ARGS`; `-f` is absent and must stay
+        absent — it rebuilds every embedding in the collection). Every failure arm is a silent
+        skip: the Stop path never fails on index maintenance. Two caps: ONE project per round
+        (candidates ordered primary-project-first then by name, the loop stopping at the first
+        that is not declined for want of `.qmd/`) and ONE embed at a time per project, on
+        `project-notes/.qmd/embed.lock` — JSON `{pid, sid, round}`, blocking while that pid is
+        alive or while it names THIS session's THIS round, retaken otherwise, and never deleted
+        (liveness is decided from the pid, so a leftover file is self-clearing and no cleanup
+        path can race the spawn). `update` runs even when the lock blocks: the cap is on the
+        CPU-bound half, and holding the cheap lexical refresh behind a minutes-long embed would
+        leave the freshest notes out of the `lex:` layer for that whole window.
+     6. round-active set → request capture: A_r = task md written in this round's ledger slice
         ∪ owners of the notes written in it (resolved through the reverse index — work that
         reaches a task only via a project-note) ∪ this Stop's `[tasks:]` exec carry, MINUS tasks
         the agent already logged itself this round (`count_sid_lines` > `log_seen` — the reason
@@ -399,7 +419,7 @@ session end
         a capture request without a ledger entry. `touched_tasks` and `note_writes` in the JSON
         context are the classified authority; the capture subagent receives that context, not a
         separate contract based on the diagnostic line.
-     6. expiry (30 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
+     7. expiry (30 s, `TASKFLOW_CAPTURE_EXPIRY_S`): if no sidecar appears, the deterministic
         backstop takes over for THAT ROUND's closed `items` set — `referenced` over-bind of the
         note-write owners resolvable via the reverse index first (so an owner keeps the more
         specific provenance), then a placeholder for every item the round has not produced a
@@ -443,7 +463,7 @@ session end
         (project-notes/specs/capture-detection-gaps.md §4.2). Only ambiguous damage — e.g.
         two `@log:begin` — is still unbindable, and it is now REPORTED once on stderr and in
         the block reason as `bind-skip(no-anchor)` rather than dropped silently (§4.3).
-     7. gate (INV-1, no-loop): return {"decision":"block", ...} ONLY to (b) report a code
+     8. gate (INV-1, no-loop): return {"decision":"block", ...} ONLY to (b) report a code
         auto-bind / applied capture entry, (c) report a NEW exec-bind skip — either
         `auto-skip(ambiguous)` (resolved, but no writable `@log` block) or
         `exec-skip(unresolved)` (no task md of that name in the primary project) — (d) spawn
