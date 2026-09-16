@@ -63,6 +63,21 @@ rather than from the comment that carried it.
   fails with WinError 2 and the binary has to be resolved through `shutil.which`. The shim
   also locates its project index from `PWD`, which `subprocess`'s `cwd=` does not set, so
   the child environment carries `PWD` explicitly. Observed 2026-07-03.
+- Running that shim through `subprocess`, a newline inside any argument truncates the
+  command line: everything after it is discarded silently, with exit 0. Measured
+  2026-09-16 by sending a two-line typed query document — only the first line reached
+  qmd and the trailing `--json` and `--no-rerank` were both lost, so the call reranked
+  for 29.5s and returned CLI-formatted output that then failed to parse as JSON. The
+  discarded text is dropped, not executed as a second command. The identical argv run as
+  `node <the JS entry named on the shim's own invocation line>` delivered both lines and
+  honored both flags. Attribution is the shim, not Python's quoting: the two arms differ
+  only in the launcher. Scope: one Windows machine, npm-installed qmd 2.5.3, node
+  v24.x — other shim generators are unmeasured.
+- `qmd update` does not embed. It re-indexes collections lexically and then prints
+  `Run 'qmd embed' to update embeddings (N unique hashes need vectors)`, leaving vectors
+  to a separate `embed`. A page added since the last embed is therefore reachable through
+  the FTS half of a query and not through the vector half. Read out of
+  `dist/cli/qmd.js` (`updateCollections`) on qmd 2.5.3, 2026-09-16.
 
 ## Harness — Claude Code
 

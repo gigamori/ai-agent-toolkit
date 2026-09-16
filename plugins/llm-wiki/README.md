@@ -198,6 +198,16 @@ top-k of the most relevant pages instead of the full enumeration.
   crash). If qmd is unavailable at query time, `search` loud-announces one line and
   degrades to the index path — the same one-line degrade also covers a qmd error
   mid-query or an empty result (e.g. an index that was never built).
+- **Query cost.** A query is sent as a typed document (a `vec:` line plus one
+  `lex:` line per term) with `--no-rerank`, which skips both of qmd's
+  model-backed stages (query expansion, reranking) and leaves only the embedding
+  model. The `lex:` half also keeps a newly indexed page findable before its
+  vectors exist, since `qmd update` indexes without embedding. Queries are
+  bounded at 30s and degrade to the index path past it. **Index construction is
+  not bounded**: skipping
+  `/wiki-reindex` pushes it onto the first query, which then blocks inline for as
+  long as embedding the wiki takes — minutes, with no ceiling. That is deliberate;
+  a ceiling would abort the build partway rather than make it faster.
 
 ### Lint — `/wiki-lint`
 

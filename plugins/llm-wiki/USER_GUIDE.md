@@ -379,6 +379,10 @@ inside your wiki (in a `.qmd/` folder); your `raw/` sources are never indexed. I
 isn't installed or hits a problem, queries automatically fall back to the normal scan and
 tell you they did — nothing breaks.
 
+**Build the index before you query.** If you skip `/wiki-reindex`, the first question you
+ask builds it instead — and that question then sits there, for minutes on a large wiki,
+with nothing to interrupt it. Once built, questions come back quickly.
+
 ---
 
 ## 7. When something goes wrong

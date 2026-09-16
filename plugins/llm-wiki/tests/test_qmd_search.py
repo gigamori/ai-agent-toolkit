@@ -159,3 +159,118 @@ def test_ensure_collection_raises_qmderror_when_binary_missing(tmp_path):
     _make_wiki(tmp_path)
     with pytest.raises(qs.QmdError):
         qs.ensure_collection(tmp_path, "llmwiki-no-such-qmd-binary-xyz")
+
+
+def test_query_doc_puts_vec_first_then_one_lex_per_term():
+    lines = qs._query_doc("how does the ingest journal roll back").splitlines()
+    assert lines[0] == "vec: how does the ingest journal roll back"
+    assert lines[1:] == ["lex: ingest", "lex: journal", "lex: roll", "lex: back"], (
+        "qmd ANDs terms inside one lex: line, so terms go on separate lines"
+    )
+
+
+def test_query_doc_strips_chars_qmd_rejects_in_vec():
+    assert '"' not in qs._query_doc('the "write allowlist" gate')
+    assert qs._query_doc("ingest -rollback").splitlines()[0] == "vec: ingest rollback", (
+        "a `-` after whitespace parses as an unsupported negation and exits 1"
+    )
+    assert qs._query_doc("-leading hyphen").splitlines()[0] == "vec: leading hyphen"
+
+
+def test_query_doc_splits_cjk_on_hiragana():
+    lines = qs._query_doc("書き込みゲートの設計").splitlines()
+    assert lines[0] == "vec: 書き込みゲートの設計"
+    assert lines[1:] == ["lex: ゲート", "lex: 設計"], (
+        "qmd matches CJK as an exact substring with no word segmentation, so "
+        "the runs between inflections are the units worth sending"
+    )
+
+
+def test_query_doc_caps_terms_and_drops_stopwords():
+    terms = qs._lex_terms("what are the " + " ".join(f"term{i}" for i in range(20)))
+    assert len(terms) == qs._LEX_TERMS_MAX
+    assert "what" not in terms and "are" not in terms and "the" not in terms
+
+
+def test_query_sends_typed_doc_and_skips_rerank(tmp_path, monkeypatch):
+    _make_wiki(tmp_path)
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+
+        class _R:
+            returncode = 0
+            stdout = "[]"
+            stderr = ""
+        return _R()
+
+    monkeypatch.setattr(qs.subprocess, "run", fake_run)
+    monkeypatch.setattr(qs.shutil, "which", lambda b: "/resolved/qmd")
+    qs.query(tmp_path, "qmd", "rollback journal", k=5)
+
+    assert captured["argv"][1] == "query"
+    assert captured["argv"][2] == "vec: rollback journal\nlex: rollback\nlex: journal", (
+        "a typed document routes through structuredSearch, which never invokes "
+        "query expansion; bare text invokes it whenever BM25 is unsure"
+    )
+    assert "--no-rerank" in captured["argv"], (
+        "the reranker is the second model-backed cost source on the read path"
+    )
+    assert captured["argv"][-2:] == ["-n", str(5 + qs._OVERFETCH_MARGIN)]
+
+
+def test_launcher_unwraps_windows_shim_to_node(tmp_path, monkeypatch):
+    entry = tmp_path / "node_modules" / "@tobilu" / "qmd" / "bin" / "qmd"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    shim = tmp_path / "qmd.CMD"
+    shim.write_text(
+        r'SET "_prog=%dp0%\node.exe"' "\r\n"
+        r'"%_prog%"  "%dp0%\node_modules\@tobilu\qmd\bin\qmd" %*' "\r\n",
+        encoding="utf-8")
+
+    monkeypatch.setattr(qs.shutil, "which",
+                        lambda b: str(shim) if b == "qmd" else "/usr/bin/node")
+
+    assert qs._launcher("qmd") == ["/usr/bin/node", str(entry)], (
+        "cmd.exe truncates a command line at a newline, so the multi-line typed "
+        "query document must not be passed through the shim"
+    )
+
+
+def test_launcher_passes_through_a_real_binary(monkeypatch):
+    monkeypatch.setattr(qs.shutil, "which", lambda b: "/usr/local/bin/qmd")
+    assert qs._launcher("qmd") == ["/usr/local/bin/qmd"]
+
+
+def test_launcher_falls_back_when_shim_target_missing(tmp_path, monkeypatch):
+    shim = tmp_path / "qmd.CMD"
+    shim.write_text(r'"%_prog%"  "%dp0%\node_modules\gone\bin\qmd" %*' "\r\n",
+                    encoding="utf-8")
+    monkeypatch.setattr(qs.shutil, "which", lambda b: str(shim))
+    assert qs._launcher("qmd") == [str(shim)]
+
+
+def test_ensure_collection_passes_no_timeout(tmp_path, monkeypatch):
+    _make_wiki(tmp_path)
+    timeouts = []
+
+    def fake_run(argv, **kw):
+        timeouts.append(kw["timeout"])
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return _R()
+
+    monkeypatch.setattr(qs.subprocess, "run", fake_run)
+    monkeypatch.setattr(qs.shutil, "which", lambda b: "/resolved/qmd")
+    qs.ensure_collection(tmp_path, "qmd")
+
+    assert timeouts == [None, None, None], (
+        "qmd embed is one-time index construction; a ceiling would abort the "
+        "build partway rather than make it faster, so _QUERY_TIMEOUT bounds "
+        "the query only"
+    )

@@ -72,8 +72,14 @@ verb regardless of config:
   most relevant pages (external qmd full-text backend; optional-search-qmd.md).
   A one-line `[search] …` notice on stderr means qmd was unavailable/degraded and
   the verb fell back to the index enumeration — treat the output as the index
-  case. The FIRST qmd-backed query builds the index + embeddings inline (one-time,
-  ~GB models); run `/wiki-reindex` beforehand to front-load that cost.
+  case. A steady-state qmd query is bounded (30s, after which it degrades): the
+  query skips both of qmd's model-backed stages, so only the embedding model is
+  loaded, not the query-expansion or reranker ones.
+  **The FIRST qmd-backed query is not bounded.** If `/wiki-reindex` was never
+  run, that query builds the index and embeddings inline, which scales with the
+  wiki and can block for many minutes with no ceiling — a deliberate choice, since
+  cutting it off would abort the build rather than speed it up. Run
+  `/wiki-reindex` beforehand to pay that cost out of band.
 
 Either way the output shape and the read-only invariant are the same. Read
 `index.md` and the returned pages under both directories with the Read tool (for

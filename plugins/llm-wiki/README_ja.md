@@ -194,6 +194,14 @@ dispatch し、全列挙の代わりに関連度上位 k の ranked なページ
   （告知して exit、crash しない）。query 時に qmd が使えない場合、`search` は一行 loud-announce
   して index 経路へ degrade する — 同じ一行 degrade は query 途中の qmd エラーや
   空の結果（例：index が未構築）もカバーする。
+- **query のコスト。** query は型付き document（`vec:` 1 行 ＋ term ごとの `lex:` 行）を
+  `--no-rerank` で送るため、qmd の model を使う 2 段階（query expansion・reranking）を
+  どちらも通らず、embedding model の load だけが残る。`lex:` 側は、`qmd update` が
+  embedding 無しで index する以上、vector がまだ無い新規ページを見つけられる状態に保つ
+  役割も持つ。query は 30 秒で頭打ちにし、超えたら index 経路へ degrade する。
+  **index の構築は頭打ちにしない**：`/wiki-reindex` を省くとその構築が最初の query に載り、
+  wiki の embedding が終わるまで inline で block する — 分単位で、上限なし。これは意図的で、
+  ceiling を付けても速くはならず build を途中で中断するだけ。
 
 ### Lint — `/wiki-lint`
 
