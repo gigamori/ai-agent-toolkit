@@ -45,7 +45,10 @@ embed (unparseable, oversized, model mismatch) leaves `pending` true forever,
 and without it every later Stop would spawn the same failing run. Its CPU arm
 covers the other way a run achieves nothing — a machine whose GPU backend
 aborts the embed outright — without making CPU a standing preference: the
-lock records what one run USED, never what the machine CAN do. A pending count
+lock records which device ONE run was ASKED for, never what the machine CAN
+do, and not necessarily what qmd then ran on (an inherited `QMD_FORCE_CPU` or
+`QMD_LLAMA_GPU=false` overrides the flag; the escalation still terminates,
+one run later). A pending count
 that FELL is progress and retries; one that ROSE is new work and retries; both
 retry on GPU whatever mode they inherit, because nothing signals a GPU coming
 back and a sticky CPU would hold a repaired machine at ~4-5 chunks/min forever.
@@ -315,9 +318,9 @@ def next_embed_mode(info: dict | None, pending: int | None) -> str | None:
 
     Everything else starts on the GPU — progress, new work, no lock, an
     unknown count, and a lock written before the mode key existed. CPU is
-    never a preference this module carries forward: the lock says what one
-    run USED, and a machine whose GPU starts working raises no signal of its
-    own, so a sticky CPU would never be left.
+    never a preference this module carries forward: the lock says which
+    device one run was ASKED for, and a machine whose GPU starts working
+    raises no signal of its own, so a sticky CPU would never be left.
     """
     if not retry_is_futile(info, pending):
         return EMBED_GPU

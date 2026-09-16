@@ -374,6 +374,12 @@ session end
         and `no-budget` can only ever be REPORTED for a project this round wrote no notes into;
         a second corollary is that a machine whose probe fails on EVERY Stop keeps the GPU→CPU
         escalation below from ever firing, since both read the same nothing-achieved signal.
+        A third follows from the same signal without needing a broken probe: the escalation
+        wants a Stop on which the count did NOT move, so on a machine whose GPU backend aborts
+        the embed (`GGML_VK_DISABLE_COOPMAT=1` is the known fix — see the setup step, which is
+        load-bearing for THIS path now that the spawn is GPU-first, not only for the manual
+        first build) a project being actively written to pays one aborted GPU spawn per
+        note-writing Stop until a quieter one lets the CPU run start.
         Every failure arm is a skip: the Stop path never fails on index maintenance.
         Two caps: ONE embed per STOP — the loop breaks on `HALT_STATUSES` (`not-auto`,
         `no-bin`, `locked`, `embedding`, `embedding-cpu`, `embed-failed`); `futile-retry` is
@@ -384,10 +390,13 @@ session end
         pid is dead AND the recorded `pending` equals the count read now (`retry_is_futile`):
         that run achieved nothing, so ONE escalation follows — `mode: gpu` retries on the CPU
         (`embedding-cpu`, `NO_GPU_FLAG`), `mode: cpu` is withheld (`futile-retry`), and a lock
-        with no `mode` key retries on the GPU. A pending count that fell, rose, or is unreadable
-        (`None`) retries on the GPU whatever mode the lock names — `mode` records what one run
-        USED, never what the machine CAN do, and nothing signals a repaired GPU, so a sticky CPU
-        would hold such a machine at the fallback rate forever. The lock is never deleted
+        with no `mode` key, or an unrecognised one, retries on the GPU. A pending count that
+        fell, rose, or is unreadable (`None`) retries on the GPU whatever mode the lock names —
+        `mode` records which device ONE run was ASKED for, never what the machine CAN do (nor
+        necessarily what qmd ran on: an inherited `QMD_FORCE_CPU` / `QMD_LLAMA_GPU=false`
+        overrides the flag, costing one extra run before the escalation settles), and nothing
+        signals a repaired GPU, so a sticky CPU would hold such a machine at the fallback rate
+        forever. The lock is never deleted
         (liveness is decided from the pid, so a leftover file is self-clearing and no cleanup
         path can race the spawn). `update` runs even when the lock blocks: the cap is on the
         embed half, and holding the cheap lexical refresh behind an embed that is minutes long
