@@ -47,6 +47,11 @@ TOTAL_DOCS = 9
 PENDING_DOCS = 3
 CAUGHT_UP = 0
 STATUS_OK = "ok"
+GPU_MODE = qmd_index.EMBED_GPU
+CPU_MODE = qmd_index.EMBED_CPU
+EMBED_ARGV_GPU = list(qmd_index.EMBED_ARGS)
+EMBED_ARGV_CPU = EMBED_ARGV_GPU + [qmd_index.NO_GPU_FLAG]
+NO_GPU_FLAG = qmd_index.NO_GPU_FLAG
 STATUS_RC1 = "rc1"
 STATUS_GARBAGE = "garbage"
 
@@ -260,7 +265,7 @@ def bind_exists(ws: Path) -> bool:
 
 
 def follow_line(r: dict, status: str) -> str:
-    return f"qmd-follow({PROJECT}): {status}"
+    return f"qmd-follow({PROJECT}): {status} [s:"
 
 
 def stderr_of(r: dict) -> str:
@@ -375,8 +380,13 @@ def arm_note_round(root: Path, fake: Path) -> None:
           f"(tags={tags(read_log(r['log']))!r})")
     if emb:
         argv = emb[0]["argv"]
-        check(argv == ["embed", "--no-gpu"],
-              f"embed argv is exactly ['embed', '--no-gpu'] ({argv!r})")
+        check(argv == EMBED_ARGV_GPU,
+              f"the ordinary spawn is exactly {EMBED_ARGV_GPU!r}: no "
+              f"{NO_GPU_FLAG}, so the embed takes the GPU when the machine "
+              f"has a working one ({argv!r})")
+        check(NO_GPU_FLAG not in argv,
+              f"CPU is reached only by escalation, never as the first "
+              f"choice ({argv!r})")
         check("-f" not in argv and "--force" not in argv,
               f"embed argv carries no full-regeneration flag ({argv!r})")
         check(Path(emb[0]["cwd"]).resolve() == (ws / NOTES_DIR_REL).resolve(),
@@ -396,6 +406,10 @@ def arm_note_round(root: Path, fake: Path) -> None:
           f"the lock records the pending count this embed was started against, "
           f"which is what lets a later Stop tell a retry that achieved nothing "
           f"from one that made progress ({info!r})")
+    check(info.get("mode") == GPU_MODE,
+          f"the lock records the mode this run used, which is what a later "
+          f"Stop reads to decide whether a run that achieved nothing has a "
+          f"cheaper mode left to try ({info!r})")
     check(follow_line(r, qmd_index.EMBEDDING) in stderr_of(r),
           f"the Stop reported the spawn on stderr "
           f"({stderr_of(r).strip()!r})")
@@ -640,10 +654,10 @@ def arm_lock_same_round(root: Path, fake: Path) -> None:
 
 def arm_futile_retry(root: Path, fake: Path) -> None:
     print()
-    print("--- dead pid whose embed cleared NOTHING: the retry is withheld ---")
+    print("--- a dead CPU embed that cleared NOTHING: retry withheld ---")
     pid = dead_pid()
     planted = {"pid": pid, "sid": SID_TAG, "round": 1,
-               "pending": PENDING_DOCS}
+               "pending": PENDING_DOCS, "mode": CPU_MODE}
     check(not qmd_index._pid_alive(pid),
           f"non-vacuity: the planted pid {pid} really is dead")
     r = arm(root, fake, "a17_futile_retry", with_qmd=True, ledger=[TASK_REL],
@@ -653,9 +667,10 @@ def arm_futile_retry(root: Path, fake: Path) -> None:
           "the .bind")
     final = settled(r["log"])
     check("embed" not in tags(final),
-          f"the previous embed exited leaving the same {PENDING_DOCS} docs "
-          f"pending, so an identical run would re-fail on the same doc every "
-          f"Stop from here on; {latency_note()} (tags={tags(final)!r})")
+          f"the previous embed already ran on the CPU and still left the same "
+          f"{PENDING_DOCS} docs pending, so there is no cheaper mode left and "
+          f"an identical run would re-fail on the same doc every Stop from "
+          f"here on; {latency_note()} (tags={tags(final)!r})")
     check(follow_line(r, qmd_index.FUTILE) in stderr_of(r),
           f"the withheld retry is reported, so a level trigger that has gone "
           f"quiet is visible instead of silent ({stderr_of(r).strip()!r})")
@@ -665,10 +680,10 @@ def arm_futile_retry(root: Path, fake: Path) -> None:
 
 def arm_pending_fell(root: Path, fake: Path) -> None:
     print()
-    print("--- dead pid whose embed made PROGRESS: the retry is allowed ---")
+    print("--- dead CPU embed that made PROGRESS: retried, on GPU ---")
     pid = dead_pid()
     planted = {"pid": pid, "sid": SID_TAG, "round": 1,
-               "pending": PENDING_DOCS + 2}
+               "pending": PENDING_DOCS + 2, "mode": CPU_MODE}
     check(not qmd_index._pid_alive(pid),
           f"non-vacuity: the planted pid {pid} really is dead")
     r = arm(root, fake, "a18_pending_fell", with_qmd=True, ledger=[TASK_REL],
@@ -682,10 +697,20 @@ def arm_pending_fell(root: Path, fake: Path) -> None:
           f"the count fell from {PENDING_DOCS + 2} to {PENDING_DOCS}, which is "
           f"progress, so the remaining docs get their next run "
           f"(tags={tags(final)!r})")
+    emb = [e for e in final if e["tag"] == "embed"]
+    if emb:
+        check(emb[0]["argv"] == EMBED_ARGV_GPU,
+              f"a run that made progress goes back to the GPU even though the "
+              f"lock it read says {CPU_MODE}: the lock records what one run "
+              f"USED, not what the machine can do, and nothing else takes "
+              f"a repaired machine off the CPU ({emb[0]['argv']!r})")
     info = read_lock(r["ws"])
     check(info.get("pending") == PENDING_DOCS,
           f"the new lock carries the count THIS run was started against, not "
           f"the one it inherited ({info!r})")
+    check(info.get("mode") == GPU_MODE,
+          f"the new lock records the mode THIS run used, so the escalation "
+          f"starts over from the top if this one achieves nothing ({info!r})")
 
 
 def arm_lock_without_pending(root: Path, fake: Path) -> None:
@@ -710,6 +735,77 @@ def arm_lock_without_pending(root: Path, fake: Path) -> None:
     check(isinstance(info.get("pending"), int),
           f"the rewritten lock carries the count, so the very next Stop can "
           f"make the judgement this one could not ({info!r})")
+    check(info.get("mode") == GPU_MODE,
+          f"the rewritten lock carries the mode too ({info!r})")
+
+
+def arm_futile_gpu_escalates(root: Path, fake: Path) -> None:
+    print()
+    print("--- dead GPU embed that cleared NOTHING: retried on the CPU ---")
+    pid = dead_pid()
+    planted = {"pid": pid, "sid": SID_TAG, "round": 1,
+               "pending": PENDING_DOCS, "mode": GPU_MODE}
+    check(not qmd_index._pid_alive(pid),
+          f"non-vacuity: the planted pid {pid} really is dead")
+    r = arm(root, fake, "a20_futile_gpu", with_qmd=True, ledger=[TASK_REL],
+            lock=planted)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    wait_for(r["log"], "embed", SPAWN_POLL_S)
+    final = read_log(r["log"])
+    emb = [e for e in final if e["tag"] == "embed"]
+    check(len(emb) == 1,
+          f"a GPU run that achieved nothing is not withheld: it is retried "
+          f"once in the mode that has a different failure mode "
+          f"(tags={tags(final)!r})")
+    if emb:
+        check(emb[0]["argv"] == EMBED_ARGV_CPU,
+              f"the retry carries {NO_GPU_FLAG}, so a machine whose GPU "
+              f"backend aborts the embed still gets its vectors "
+              f"({emb[0]['argv']!r})")
+    check(follow_line(r, qmd_index.EMBEDDING_CPU) in stderr_of(r),
+          f"the fallback is reported: a mode that changed silently is a mode "
+          f"nobody notices ({stderr_of(r).strip()!r})")
+    check(follow_line(r, qmd_index.EMBEDDING) not in stderr_of(r),
+          f"and it is reported AS the fallback, not as an ordinary spawn "
+          f"({stderr_of(r).strip()!r})")
+    info = read_lock(r["ws"])
+    check(info.get("mode") == CPU_MODE and info.get("pending") == PENDING_DOCS,
+          f"the lock now names the CPU run and the count it was started "
+          f"against, which is what withholds the next retry ({info!r})")
+
+
+def arm_futile_lock_without_mode(root: Path, fake: Path) -> None:
+    print()
+    print("--- a futile-looking lock written before the mode key existed ---")
+    pid = dead_pid()
+    planted = {"pid": pid, "sid": SID_TAG, "round": 1,
+               "pending": PENDING_DOCS}
+    check(not qmd_index._pid_alive(pid),
+          f"non-vacuity: the planted pid {pid} really is dead")
+    check("mode" not in planted,
+          f"non-vacuity: the planted lock carries no mode ({planted!r})")
+    r = arm(root, fake, "a21_futile_no_mode", with_qmd=True,
+            ledger=[TASK_REL], lock=planted)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    wait_for(r["log"], "embed", SPAWN_POLL_S)
+    final = read_log(r["log"])
+    emb = [e for e in final if e["tag"] == "embed"]
+    check(len(emb) == 1,
+          f"an unknown mode is not evidence that the cheaper mode was already "
+          f"tried, and an unknown answer runs rather than withholds "
+          f"(tags={tags(final)!r})")
+    if emb:
+        check(emb[0]["argv"] == EMBED_ARGV_GPU,
+              f"and it runs on the GPU, the top of the escalation "
+              f"({emb[0]['argv']!r})")
+    info = read_lock(r["ws"])
+    check(info.get("mode") == GPU_MODE,
+          f"the rewritten lock names that mode, so the very next Stop can "
+          f"escalate where this one could not ({info!r})")
 
 
 def arm_update_timeout(root: Path, fake: Path) -> None:
@@ -802,6 +898,8 @@ def main() -> int:
         arm_lock_stale(tmp_root, fake)
         arm_lock_same_round(tmp_root, fake)
         arm_futile_retry(tmp_root, fake)
+        arm_futile_gpu_escalates(tmp_root, fake)
+        arm_futile_lock_without_mode(tmp_root, fake)
         arm_pending_fell(tmp_root, fake)
         arm_lock_without_pending(tmp_root, fake)
         arm_status_unusable(tmp_root, fake, "a11_status_rc1",

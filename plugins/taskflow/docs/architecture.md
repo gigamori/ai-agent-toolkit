@@ -351,7 +351,8 @@ session end
         only for a project this ROUND's ledger slice wrote a `project-notes/` deliverable into
         (`NOTES_WRITTEN`) — round-scoped on purpose, since the whole-session `touched` scan
         would re-run `update` on every later Stop for notes indexed rounds ago.
-        VECTOR: `node <bin/qmd> embed --no-gpu` DETACHED (`EMBED_ARGS`; `-f` is absent and must
+        VECTOR: `node <bin/qmd> embed` DETACHED (`EMBED_ARGS`, qmd's own GPU default;
+        `NO_GPU_FLAG` is appended only by the CPU escalation below, and `-f` is absent and must
         stay absent — it rebuilds every embedding in the collection), fired on the STATE the
         index is in rather than on this round's writes. `node <bin/qmd> status` is probed
         (`STATUS_ARGS`) and its `Pending:` count — documents whose vectors are missing or
@@ -370,23 +371,30 @@ session end
         `follow_index` returns that status ONLY when `notes != NOTES_WRITTEN`, so a
         `NOTES_WRITTEN` round reaches the spawn with `pending = None` (hence
         `retry_is_futile` False and `pending: None` in the lock). Corollary: `status-failed`
-        and `no-budget` can only ever be REPORTED for a project this round wrote no notes into.
+        and `no-budget` can only ever be REPORTED for a project this round wrote no notes into;
+        a second corollary is that a machine whose probe fails on EVERY Stop keeps the GPU→CPU
+        escalation below from ever firing, since both read the same nothing-achieved signal.
         Every failure arm is a skip: the Stop path never fails on index maintenance.
         Two caps: ONE embed per STOP — the loop breaks on `HALT_STATUSES` (`not-auto`,
-        `no-bin`, `locked`, `embedding`, `embed-failed`); `futile-retry` is deliberately NOT
-        among them, since nothing is running and the Stop's spawn is unspent — and ONE embed at
-        a time per project, on `project-notes/.qmd/embed.lock` — JSON
-        `{pid, sid, round, pending}`, read by two gates: `lock_blocks` on PID LIVENESS ALONE
-        (`sid` / `round` are diagnostics and gate nothing), and `retry_is_futile` when the pid
-        is dead AND the recorded `pending` equals the count read now (an identical run already
-        cleared nothing → `futile-retry`). A pending count that fell, rose, or is unreadable
-        (`None`) retries, so the guard withholds only on evidence. The lock is never deleted
+        `no-bin`, `locked`, `embedding`, `embedding-cpu`, `embed-failed`); `futile-retry` is
+        deliberately NOT among them, since nothing is running and the Stop's spawn is unspent —
+        and ONE embed at a time per project, on `project-notes/.qmd/embed.lock` — JSON
+        `{pid, sid, round, pending, mode}`, read by two gates: `lock_blocks` on PID LIVENESS
+        ALONE (`sid` / `round` are diagnostics and gate nothing), and `next_embed_mode` when the
+        pid is dead AND the recorded `pending` equals the count read now (`retry_is_futile`):
+        that run achieved nothing, so ONE escalation follows — `mode: gpu` retries on the CPU
+        (`embedding-cpu`, `NO_GPU_FLAG`), `mode: cpu` is withheld (`futile-retry`), and a lock
+        with no `mode` key retries on the GPU. A pending count that fell, rose, or is unreadable
+        (`None`) retries on the GPU whatever mode the lock names — `mode` records what one run
+        USED, never what the machine CAN do, and nothing signals a repaired GPU, so a sticky CPU
+        would hold such a machine at the fallback rate forever. The lock is never deleted
         (liveness is decided from the pid, so a leftover file is self-clearing and no cleanup
         path can race the spawn). `update` runs even when the lock blocks: the cap is on the
-        CPU-bound half, and holding the cheap lexical refresh behind a minutes-long embed would
-        leave the freshest notes out of the `lex:` layer for that whole window.
+        embed half, and holding the cheap lexical refresh behind an embed that is minutes long
+        on the CPU fallback (789 chunks / 82 docs measured: 93.9 s on GPU, ~155 min on CPU)
+        would leave the freshest notes out of the `lex:` layer for that whole window.
         Reporting: `LOUD_STATUSES` (`no-bin`, `status-failed`, `no-budget`, `locked`,
-        `futile-retry`, `embedding`, `embed-failed`) print
+        `futile-retry`, `embedding`, `embedding-cpu`, `embed-failed`) print
         `[progress capture] qmd-follow(<project>): <status> [s:<sid>]` on stderr; `not-auto`,
         `no-qmd`, `no-local-index` and `current` are silent.
      6. round-active set → request capture: A_r = task md written in this round's ledger slice

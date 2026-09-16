@@ -5,8 +5,12 @@ project-notes/. This module is the driver that closes that gap, in the two
 halves the index has:
 
     lexical   `qmd update`          cheap (0.23 s measured), run SYNCHRONOUSLY
-    vector    `qmd embed --no-gpu`  expensive (~1.9 min per changed note,
-                                    extrapolated), spawned DETACHED
+    vector    `qmd embed`           expensive, spawned DETACHED. GPU by
+                                    default (789 chunks / 82 docs in
+                                    93.9 s measured); `--no-gpu` is the
+                                    fallback a GPU run that achieved
+                                    nothing escalates into (~4-5
+                                    chunks/min measured).
 
 Design: `project-notes/specs/notes-retrieval-rollout-plan.md` §4 「増分」.
 
@@ -24,21 +28,31 @@ config means no probe, and the follow-up falls back to the edge it had before.
 
 Blast cap, and the retry the level trigger needs bounding. Concurrency is
 capped at ONE embed per index by `<project-notes>/.qmd/embed.lock`, a JSON file
-holding the spawned pid, the pending count that spawn was meant to clear, and
-the session tag and round that spawned it. Two gates read it:
+holding the spawned pid, the pending count that spawn was meant to clear, the
+mode that spawn ran in (`gpu` / `cpu`), and the session tag and round that
+spawned it. Two gates read it:
 
     pid ALIVE                     an embed is running, possibly from another
                                   session — LOCKED
-    pid dead, pending UNCHANGED    the last embed cleared nothing, so a fresh
-                                  one would re-fail on the same doc every Stop
-                                  from here on — FUTILE
+    pid dead, pending UNCHANGED   the last embed cleared nothing. ONE
+                                  escalation follows: a `gpu` run that
+                                  achieved nothing is retried on CPU, and a
+                                  `cpu` run that achieved nothing is
+                                  withheld — FUTILE
 
 The second gate exists only because the trigger is a level: a doc qmd cannot
 embed (unparseable, oversized, model mismatch) leaves `pending` true forever,
-and without it every later Stop would spawn the same failing run. A pending
-count that FELL is progress and retries; one that ROSE is new work and retries;
-an unknown count (an older lock with no `pending` key, or a Stop that could not
-read one) retries, so the guard can only ever withhold a run it has evidence is
+and without it every later Stop would spawn the same failing run. Its CPU arm
+covers the other way a run achieves nothing — a machine whose GPU backend
+aborts the embed outright — without making CPU a standing preference: the
+lock records what one run USED, never what the machine CAN do. A pending count
+that FELL is progress and retries; one that ROSE is new work and retries; both
+retry on GPU whatever mode they inherit, because nothing signals a GPU coming
+back and a sticky CPU would hold a repaired machine at ~4-5 chunks/min forever.
+The price is one aborted GPU spawn per CPU batch, paid back by the next Stop.
+An unknown count (an older lock with no `pending` key, or a Stop that could not
+read one) retries, and an unknown mode (a lock written before that key existed)
+retries on GPU, so the guard can only ever withhold a run it has evidence is
 futile. The sid/round pair is recorded for diagnostics and gates nothing — a
 per-round gate would re-open the very hole the edge trigger left. The lock is
 never deleted: liveness is decided from the pid, so a leftover file is
@@ -91,10 +105,17 @@ FOLLOW_BUDGET_S = 4.0
 
 UPDATE_ARGS = ('update',)
 STATUS_ARGS = ('status',)
-# `--no-gpu` is part of the contract, not a preference: the Stop path must not
-# contend for the GPU a foreground session may be using. `-f` is absent and must
-# stay absent — it rebuilds every embedding in the collection.
-EMBED_ARGS = ('embed', '--no-gpu')
+# `EMBED_ARGS` is the GPU form — qmd's own default, and what every embed
+# runs in until one proves futile. `NO_GPU_FLAG` is appended only on the
+# escalation, so a machine whose GPU backend cannot embed still gets vectors
+# instead of silently getting none. `-f` is absent and must stay absent — it
+# rebuilds every embedding in the collection.
+EMBED_ARGS = ('embed',)
+NO_GPU_FLAG = '--no-gpu'
+
+# Which device one embed run used, recorded in the lock under `mode`.
+EMBED_GPU = 'gpu'
+EMBED_CPU = 'cpu'
 
 # Windows process-creation flags (winbase.h). DETACHED_PROCESS drops the
 # console, CREATE_NEW_PROCESS_GROUP keeps a Ctrl-C in the parent's console off
@@ -133,6 +154,7 @@ CURRENT = 'current'
 LOCKED = 'locked'
 FUTILE = 'futile-retry'
 EMBEDDING = 'embedding'
+EMBEDDING_CPU = 'embedding-cpu'
 EMBED_FAILED = 'embed-failed'
 
 # What the Stop hook prints. Started, blocked and failed earn a line; the
@@ -141,15 +163,17 @@ EMBED_FAILED = 'embed-failed'
 # on an index already caught up, so printing either would put a line on every
 # Stop of every session.
 LOUD_STATUSES = (NO_BIN, STATUS_FAILED, NO_BUDGET, LOCKED, FUTILE, EMBEDDING,
-                 EMBED_FAILED)
+                 EMBEDDING_CPU, EMBED_FAILED)
 
 # Statuses that end the caller's loop over projects. NOT_AUTO and NO_BIN are
 # env-wide answers the next project would only repeat; LOCKED preserves the
-# one-embed-at-a-time cap; EMBEDDING / EMBED_FAILED are this Stop's one spawn.
+# one-embed-at-a-time cap; EMBEDDING / EMBEDDING_CPU / EMBED_FAILED are this
+# Stop's one spawn.
 # Everything else is a per-project answer and the loop moves on — FUTILE
 # included: nothing is running and this Stop's one spawn is still unspent, so
 # another project may still use it.
-HALT_STATUSES = (NOT_AUTO, NO_BIN, LOCKED, EMBEDDING, EMBED_FAILED)
+HALT_STATUSES = (NOT_AUTO, NO_BIN, LOCKED, EMBEDDING, EMBEDDING_CPU,
+                 EMBED_FAILED)
 
 
 def resolve_mode(env: dict | None = None) -> str:
@@ -281,12 +305,35 @@ def retry_is_futile(info: dict | None, pending: int | None) -> bool:
     return isinstance(was, int) and was == pending
 
 
+def next_embed_mode(info: dict | None, pending: int | None) -> str | None:
+    """Which mode the next embed runs in, or None to withhold it.
+
+    ONE step of escalation, driven by the same nothing-achieved signal
+    `retry_is_futile` reads: a run that achieved nothing on the GPU is
+    retried on the CPU, and a run that achieved nothing on the CPU is the
+    futile retry the level trigger needs withheld.
+
+    Everything else starts on the GPU — progress, new work, no lock, an
+    unknown count, and a lock written before the mode key existed. CPU is
+    never a preference this module carries forward: the lock says what one
+    run USED, and a machine whose GPU starts working raises no signal of its
+    own, so a sticky CPU would never be left.
+    """
+    if not retry_is_futile(info, pending):
+        return EMBED_GPU
+
+    was = (info or {}).get('mode')
+    if was == EMBED_CPU:
+        return None
+    return EMBED_CPU if was == EMBED_GPU else EMBED_GPU
+
+
 def write_lock(path: str, pid: int, sid_tag: str, round_n: int,
-               pending: int | None) -> None:
+               pending: int | None, mode: str) -> None:
     try:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump({'pid': pid, 'sid': sid_tag, 'round': round_n,
-                       'pending': pending}, f)
+                       'pending': pending, 'mode': mode}, f)
     except OSError:
         pass  # the follow-up is best-effort; an unwritable lock only costs a cap
 
@@ -368,8 +415,11 @@ def pending_docs(project_root: str, bin_path: str, notes_dir: str,
     return total - covered, None
 
 
-def spawn_embed(bin_path: str, notes_dir: str, popen=subprocess.Popen) -> int:
-    """Start `node <bin/qmd> embed --no-gpu` detached and return its pid.
+def spawn_embed(bin_path: str, notes_dir: str, mode: str,
+                popen=subprocess.Popen) -> int:
+    """Start `node <bin/qmd> embed` detached and return its pid. `mode`
+    picks the device: EMBED_GPU leaves qmd on its own default, EMBED_CPU
+    appends `--no-gpu`.
 
     Detached means: no inherited stdio, its own session/process group, and — on
     Windows — a breakaway attempt from the parent's job object, since a hook
@@ -378,7 +428,8 @@ def spawn_embed(bin_path: str, notes_dir: str, popen=subprocess.Popen) -> int:
     ERROR_ACCESS_DENIED, so the flag is dropped and retried rather than turning
     the whole follow-up off on machines where breakaway is not permitted.
     """
-    cmd = ['node', bin_path, *EMBED_ARGS]
+    args = EMBED_ARGS + ((NO_GPU_FLAG,) if mode == EMBED_CPU else ())
+    cmd = ['node', bin_path, *args]
     kwargs = dict(cwd=notes_dir, stdin=subprocess.DEVNULL,
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                   close_fds=True)
@@ -412,8 +463,10 @@ def follow_index(project_root: str, sid_tag: str, round_n: int,
 
     Returns a status (NOT_AUTO / NO_QMD / NO_LOCAL_INDEX / NO_BIN /
     STATUS_FAILED / NO_BUDGET / CURRENT / LOCKED / FUTILE / EMBEDDING /
-    EMBED_FAILED). Raises nothing: the Stop path is not allowed to fail on index
-    maintenance.
+    EMBEDDING_CPU / EMBED_FAILED). EMBEDDING_CPU is the escalated spawn, and
+    it is loud for the same reason the others are: a mode that changes
+    silently is a mode nobody notices. Raises nothing: the Stop path is
+    not allowed to fail on index maintenance.
 
     `update` runs even when the embed lock blocks. The lock caps CPU-bound
     embedding, and holding the cheap lexical refresh behind a possibly
@@ -450,13 +503,14 @@ def follow_index(project_root: str, sid_tag: str, round_n: int,
     if lock_blocks(info):
         return LOCKED
 
-    if retry_is_futile(info, pending):
+    mode = next_embed_mode(info, pending)
+    if mode is None:
         return FUTILE
 
     try:
-        pid = spawn_embed(bin_path, notes_dir, popen=popen)
+        pid = spawn_embed(bin_path, notes_dir, mode, popen=popen)
     except (OSError, ValueError):
         return EMBED_FAILED
 
-    write_lock(lock, pid, sid_tag, round_n, pending)
-    return EMBEDDING
+    write_lock(lock, pid, sid_tag, round_n, pending, mode)
+    return EMBEDDING_CPU if mode == EMBED_CPU else EMBEDDING
