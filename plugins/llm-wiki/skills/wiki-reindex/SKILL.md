@@ -61,10 +61,14 @@ The `reindex` verb is **no-op-safe** and never crashes:
   `[reindex] … not on PATH; skipped` and exits 0 (install qmd first).
 - `search_backend=qmd` and qmd present → it runs `qmd init` (project-local
   `.qmd/`), `qmd collection add <root>/wiki` (the `wiki/` subtree only; `raw/` is
-  never indexed), `qmd embed` (vectors for the hybrid query engine), then
-  `qmd update`. The FIRST run downloads qmd's on-device models (~GB) — this is the
-  one-time cost that makes later `search` queries fast. Idempotent: re-running
-  only refreshes changed pages.
+  never indexed), `qmd embed` (vectors for the query engine), then
+  `qmd update`. The FIRST run also downloads the embedding model. **This is why
+  running the verb is worth the trouble: index construction is not bounded.**
+  Nothing caps `qmd embed` — its cost scales with the wiki and it can run for
+  many minutes — and skipping this verb does not avoid that cost, it only moves
+  it onto whichever `search` first crosses the page threshold, where it blocks
+  inline with no ceiling and nothing to interrupt it. Idempotent: re-running only
+  refreshes changed pages.
 
 Relay the verb's output line to the user. Note that qmd artifacts live entirely
 under `<wiki-root>/.qmd/` — the shipped `.gitignore` excludes `.qmd/` (it can be
