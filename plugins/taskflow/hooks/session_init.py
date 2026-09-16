@@ -517,7 +517,8 @@ if current_project:
 # Build project-notes push block (notes_push.py): verbatim index.md rows picked
 # by location (anchors: vs the paths this turn names / read / wrote) and topic
 # (qmd structured query when project-notes/.qmd/ exists, plus the in-process
-# lexical rank), with a `project-notes matched: M of N rows (K shown)` footer.
+# lexical rank), with a `project-notes matched: M of N rows (K shown, S strong)`
+# footer.
 # A qmd failure degrades to the lexical rank and is announced on EVERY turn it
 # persists. It used to be announced once per session; that was measured to hide a
 # four-day outage across several sessions, because the cause (a process whose
@@ -555,12 +556,12 @@ if heavy_turn:
   bootstrap_content = '\n\n' + BOOTSTRAP_BLOCK
 
 # Build progress digest block (progress_digest.py): capped `## In Progress`
-# rows from progress.md, subject to the §3.4-style budget guard applied below
+# rows from progress.md, subject to the §4.3 設計-style budget guard applied below
 # at final assembly. Never built on a heavy turn — on that branch
 # project_routing.md or the full guidelines already exceed the inline budget
 # alone, so only a 2,000-unit preview is delivered and a digest would deliver
 # a partial table with its footer cut off, worse than absence (design
-# router-role-division.md §3.5, "never both"). Absent on discovery turns too:
+# router-role-division.md §4.3 設計, "never both"). Absent on discovery turns too:
 # a discovery turn is not asking about this project's progress.
 progress_content = ''
 if current_project and not pj_discovery and not heavy_turn:
@@ -650,7 +651,7 @@ else:
       f'{index_content}{routing_content}{guidelines_content}{rules_content}{notes_content}{notes_notice}'
     )
 
-  # §3.4 budget guard: assemble once WITH the digest; only if that assembly
+  # §4.3 設計 budget guard: assemble once WITH the digest; only if that assembly
   # would exceed INLINE_BUDGET_U16 does the digest get replaced by the
   # one-line omission notice and the assembly redone. The guard's contract is
   # "the digest never causes the crossing" — nothing more: a turn that

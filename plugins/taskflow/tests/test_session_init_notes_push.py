@@ -126,7 +126,7 @@ def test_push_block(root: Path) -> None:
     check(HEADER in ctx, "the push block header is injected")
     block = ctx[ctx.index(HEADER):]
     check(block.splitlines()[1] == ROW_N1, f"the note anchored on the read file is the first verbatim row (got {block.splitlines()[1]!r})")
-    check("project-notes matched: 1 of 6 rows (1 shown)" in block, f"footer counts M of N and K shown (got {block.splitlines()[-1]!r})")
+    check("project-notes matched: 1 of 6 rows (1 shown, 1 strong)" in block, f"footer counts M of N, K shown and S strong (got {block.splitlines()[-1]!r})")
     check(NOTICE not in ctx, "no degrade notice when project-notes/.qmd/ does not exist")
 
     ctx2 = run_hook(ws, "kanban の続き")

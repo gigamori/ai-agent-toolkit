@@ -16,8 +16,11 @@ build. When neither route yields what you need, say so and answer without it.
 
 The block carries verbatim `index.md` rows chosen deterministically — by location (a note anchored
 on a file you named, read or wrote) and by topic — and ends in
-`project-notes matched: M of N rows (K shown)`. `_archive/` is excluded. `M` above `K` means rows
-were cut, so the symbol route is worth taking when you are on a symbol.
+`project-notes matched: M of N rows (K shown, S strong)`. `_archive/` is excluded. `M` counts every
+candidate; `S` counts the strong ones — the location matches plus `qmd`'s own hits, and the location
+matches alone when `qmd` is absent or degraded. `S` above `K` means strong rows were cut, so the
+symbol route is worth taking when you are on a symbol. `M` above `K` holds on nearly every turn and
+tells you nothing.
 
 Read a candidate's frontmatter `summary:` before opening its body.
 

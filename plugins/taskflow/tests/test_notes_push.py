@@ -227,13 +227,26 @@ def test_union_and_compose(root: Path) -> None:
           "union_interleave passes the other single list through")
     l1 = [rows[0]]
     l2 = [rows[1], rows[2], rows[3], rows[4], rows[0]]
-    shown, matched = np.compose(rows, l1, l2, ["specs/n5.md"], {"specs/n5.md"}, k=4)
+    shown, matched, strong = np.compose(rows, l1, l2, ["specs/n5.md"], {"specs/n5.md"}, set(), k=4)
     check([r["file"] for r in shown] == ["specs/n1.md", "specs/n2.md", "specs/n3.md", "specs/n4.md"],
           f"L1 first, L2 capped at ceil(K/2)... within K, no duplicates (got {[r['file'] for r in shown]})")
-    check(matched == 5, f"M is L1 ∪ L2 ∪ BM25 hit ∪ vector ≥ VECTOR_TAU, uncapped (got {matched})")
-    text = np.render(shown, matched, len(rows))
+    check(matched == 5, f"M is L1 ∪ L2 ∪ every row either topic layer returned, uncapped (got {matched})")
+    check(strong == 5, f"S is L1 ∪ L2 ∪ the qmd rows above the score floor (got {strong})")
+    text = np.render(shown, matched, strong, len(rows))
     check(text.startswith(np.HEADER + "\n| specs/n1.md |"), "block starts with the header and verbatim rows")
-    check(text.endswith("project-notes matched: 5 of 5 rows (4 shown)"), f"footer carries M, N and K shown (got {text.splitlines()[-1]!r})")
+    check(text.endswith("project-notes matched: 5 of 5 rows (4 shown, 5 strong)"), f"footer carries M, N, K shown and S strong (got {text.splitlines()[-1]!r})")
+
+    weak = ["specs/n2.md", "specs/n3.md", "specs/n4.md"]
+    shown_w, matched_w, strong_w = np.compose(rows, [rows[0]], [], weak, set(), set(weak), k=2)
+    check(matched_w > len(shown_w) and strong_w <= len(shown_w),
+          f"the lexical tail alone overflows M but never S (got M={matched_w} S={strong_w} K={len(shown_w)})")
+    check(np.symbol_route_due(["src/a.py"], strong_w, len(shown_w)) is False,
+          "a block overflowing only by lexical-tail candidates is not a symbol-route turn")
+    shown_s, matched_s, strong_s = np.compose(rows, [rows[0]], [], weak, set(weak), set(), k=2)
+    check(matched_s == strong_s and strong_s > len(shown_s),
+          f"the same rows as qmd hits raise S with M (got M={matched_s} S={strong_s} K={len(shown_s)})")
+    check(np.symbol_route_due(["src/a.py"], strong_s, len(shown_s)) is True,
+          "the same overflow made of strong candidates is a symbol-route turn")
 
 
 def test_contract_literals() -> None:
@@ -244,8 +257,8 @@ def test_contract_literals() -> None:
           f"L2 cap is 4 in the notes data contract; changing it is a consumer-propagating change (got {np.L2_CAP})")
     check(np.HEADER == "project-notes (index rows):",
           f"consumers transcribe this header literal; changing it is a consumer-propagating change (got {np.HEADER!r})")
-    footer = np.render([], 0, 0).splitlines()[-1]
-    check(footer == "project-notes matched: 0 of 0 rows (0 shown)",
+    footer = np.render([], 0, 0, 0).splitlines()[-1]
+    check(footer == "project-notes matched: 0 of 0 rows (0 shown, 0 strong)",
           f"consumers transcribe this footer literal; changing it is a consumer-propagating change (got {footer!r})")
 
 
@@ -271,7 +284,8 @@ def test_build_end_to_end(root: Path) -> None:
           f"L1 row from the .reads ledger, then its L2 sibling, come first (got {lines[:3]})")
     check(lines[3].startswith("| specs/n5.md |") and lines[4].startswith("| specs/n3.md |"),
           f"qmd (n5) and lexical (n3) results merge by taking the two lists alternately (got {lines[3:5]})")
-    check(lines[-1] == "project-notes matched: 4 of 5 rows (4 shown)", f"footer (got {lines[-1]!r})")
+    check(lines[-1] == "project-notes matched: 4 of 5 rows (4 shown, 3 strong)",
+          f"M counts the lexical row n3, S does not (got {lines[-1]!r})")
 
     (notes / ".qmd").rmdir()
     block2, reason2, _ = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state), env_auto, runner)
@@ -310,15 +324,15 @@ def test_symbol_route_due() -> None:
     code = ["src/a.py"]
     prose = ["docs/a.md"]
 
-    check(np.symbol_route_due(code, matched=9, shown=8) is True,
-          "a code turn whose block overflowed is the turn the symbol route is written for")
-    check(np.symbol_route_due(code, matched=8, shown=8) is False,
-          "a block that fit needs no symbol route; M == K is not overflow")
-    check(np.symbol_route_due(prose, matched=9, shown=8) is False,
+    check(np.symbol_route_due(code, strong=9, shown=8) is True,
+          "a code turn whose strong candidates overflowed is the turn the symbol route is written for")
+    check(np.symbol_route_due(code, strong=8, shown=8) is False,
+          "a block that fit needs no symbol route; S == K is not overflow")
+    check(np.symbol_route_due(prose, strong=9, shown=8) is False,
           "overflow on a turn touching no code is not a symbol-route turn")
-    check(np.symbol_route_due([], matched=9, shown=8) is False,
+    check(np.symbol_route_due([], strong=9, shown=8) is False,
           "overflow with no location signal at all is not a symbol-route turn")
-    check(np.symbol_route_due(["src/a.TS"], matched=9, shown=8) is True,
+    check(np.symbol_route_due(["src/a.TS"], strong=9, shown=8) is True,
           "the suffix test ignores case so a shouted extension still counts")
 
 
@@ -330,12 +344,12 @@ def test_probe_shape(root: Path) -> None:
     env_off = {"TASKFLOW_NOTES_PUSH": "off"}
 
     _, _, probe = np.build_notes_push(str(project), str(ws), "kanban", SID, str(state), env_off)
-    check(sorted(probe) == ["code", "due", "k", "m"],
-          f"the probe carries the verdict and the three numbers that decided it (got {sorted(probe)})")
+    check(sorted(probe) == ["code", "due", "k", "m", "s"],
+          f"the probe carries the verdict and the numbers that decided it (got {sorted(probe)})")
     check(probe["code"] == 1, f"one code path came from the .reads ledger (got {probe['code']})")
-    check(probe["due"] is (probe["m"] > probe["k"]),
-          "due agrees with the overflow it is derived from")
-    check(np.symbol_route_due(["src/a.py"], probe["m"], probe["k"]) == probe["due"],
+    check(probe["due"] is (probe["s"] > probe["k"]),
+          "due agrees with the STRONG overflow it is derived from, not with M")
+    check(np.symbol_route_due(["src/a.py"], probe["s"], probe["k"]) == probe["due"],
           "the probe's verdict is the predicate's, not a second implementation")
 
 

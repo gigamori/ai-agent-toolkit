@@ -194,8 +194,8 @@ gate. Scope calls, and what each cannot see:
   true; a fresh-session discovery fixture would need the same care the `discovery=1`
   checks already take. The assertion discriminates even on a fixture whose single
   project-notes row matches nothing: `notes_push.py::render` (:545-548) emits the
-  `HEADER` and the `M of N (K shown)` footer unconditionally whenever
-  `project-notes/index.md` exists, `M`/`K` simply reading `0` when nothing matched.
+  `HEADER` and the `M of N (K shown, S strong)` footer unconditionally whenever
+  `project-notes/index.md` exists, `M`/`K`/`S` simply reading `0` when nothing matched.
   Not covered: whether the model actually invokes the router on a discovery turn
   (prompt-level, unmeasured here).
 - **`test_carry_only_backstop.sh`** gained four arms over the exec-bind carry's

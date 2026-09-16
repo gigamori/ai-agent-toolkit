@@ -4,7 +4,14 @@ Builds the block session_init.py injects each turn:
 
     project-notes (index rows):
     <verbatim project-notes/index.md rows, K at most>
-    project-notes matched: M of N rows (K shown)
+    project-notes matched: M of N rows (K shown, S strong)
+
+M and S are two candidate counts over the same turn. M = |L1 ∪ L2 ∪ ((qmd hit ∪ the
+rows the lexical rank returned) ∩ index rows)| — every candidate any layer returned.
+S = |L1 ∪ L2 ∪ (qmd hit ∩ index rows)| — the same union without the lexical tail, so
+only a location match or a qmd row that cleared the score floor counts. M reached 60%
+of the corpus on a live turn (`matched 50/83`) and stopped signalling truncation; S is
+the number the truncation signal keys on.
 
 Three retrieval layers, composed in this order (design: notes-retrieval-locality-qmd.md §4):
 
@@ -469,8 +476,9 @@ def _result_is_hit(result: dict) -> bool:
 
 def qmd_rank(results: list[dict]) -> tuple[list[str], set[str]]:
     """(ordered distinct files, hit files) from qmd chunk results. Every returned
-    file keeps its rank; only M is thresholded, per the design's
-    `M = |L1 u L2 u BM25 hit u vector >= tau_vec|`."""
+    file keeps its rank; the threshold decides only which files join the STRONG
+    count `S = |L1 u L2 u BM25 hit u vector >= tau_vec|`. The wider count M takes
+    every file either layer returned, so it does not read this set alone."""
     order: list[str] = []
     hits: set[str] = set()
     for r in results:
@@ -505,10 +513,15 @@ def union_interleave(list_a: list[str], list_b: list[str]) -> list[str]:
 
 
 def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
-            hits: set[str], k: int = K_ROWS) -> tuple[list[dict], int]:
-    """(shown rows, M). Order L1 → L2 (≤ L2_CAP) → topic; a row appears once.
-    M is the design's |L1 u L2 u BM25 hit u vector >= tau_vec|, so a qmd row that
-    is weak-vector-only still ranks but does not count."""
+            strong_hits: set[str], weak_hits: set[str],
+            k: int = K_ROWS) -> tuple[list[dict], int, int]:
+    """(shown rows, M, S). Order L1 → L2 (≤ L2_CAP) → topic; a row appears once.
+
+    M = |L1 u L2 u ((strong_hits u weak_hits) & index rows)| — every candidate any
+    layer returned, nothing thresholded away.
+    S = |L1 u L2 u (strong_hits & index rows)| — the lexical tail excluded, so a row
+    enters only by a location match or a qmd score above the floor. With qmd off or
+    degraded, strong_hits is empty and S is the location union alone."""
     by_file = {r['file']: r for r in rows}
     shown: list[dict] = []
     seen: set[str] = set()
@@ -525,26 +538,31 @@ def compose(rows: list[dict], l1: list[dict], l2: list[dict], topic: list[str],
     for f in topic:
         if f in by_file:
             add(by_file[f])
-    matched = {r['file'] for r in l1} | {r['file'] for r in l2} | (hits & set(by_file))
-    return shown, len(matched)
+    location = {r['file'] for r in l1} | {r['file'] for r in l2}
+    indexed = set(by_file)
+    matched = location | ((strong_hits | weak_hits) & indexed)
+    strong = location | (strong_hits & indexed)
+    return shown, len(matched), len(strong)
 
 
-def symbol_route_due(paths: list[str], matched: int, shown: int) -> bool:
+def symbol_route_due(paths: list[str], strong: int, shown: int) -> bool:
     """Whether this is a turn the guideline's symbol route is written for: the
-    block overflowed AND the turn is on code.
+    STRONG candidates overflowed the block AND the turn is on code. M is not the
+    test — it counts the lexical tail too and is true on nearly every turn.
 
     Observation only. Nothing injected depends on this — a model shown the flag
     would stop being the thing the flag measures.
     """
-    if matched <= shown:
+    if strong <= shown:
         return False
 
     return any(p.lower().endswith(CODE_SUFFIXES) for p in paths)
 
 
-def render(shown: list[dict], matched: int, total: int) -> str:
+def render(shown: list[dict], matched: int, strong: int, total: int) -> str:
     lines = [HEADER] + [r['raw'] for r in shown]
-    lines.append(f'project-notes matched: {matched} of {total} rows ({len(shown)} shown)')
+    lines.append(f'project-notes matched: {matched} of {total} rows '
+                 f'({len(shown)} shown, {strong} strong)')
     return '\n'.join(lines)
 
 
@@ -597,9 +615,9 @@ def build_notes_push(project_dir: str, repo_root: str, prompt: str, session_id: 
                 reason = str(e) or e.__class__.__name__
 
     topic = union_interleave(qmd_files, lexical_files)
-    shown, matched = compose(rows, l1, l2, topic, qmd_hits | set(lexical_files))
+    shown, matched, strong = compose(rows, l1, l2, topic, qmd_hits, set(lexical_files))
 
-    probe = {'due': symbol_route_due(paths, matched, len(shown)),
+    probe = {'due': symbol_route_due(paths, strong, len(shown)),
              'code': sum(1 for p in paths if p.lower().endswith(CODE_SUFFIXES)),
-             'm': matched, 'k': len(shown)}
-    return render(shown, matched, len(rows)), reason, probe
+             'm': matched, 's': strong, 'k': len(shown)}
+    return render(shown, matched, strong, len(rows)), reason, probe

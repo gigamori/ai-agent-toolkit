@@ -165,7 +165,8 @@ user prompt
   │                      INLINE_BUDGET_U16 (10,000 UTF-16 code units) — the guard's only
   │                      contract is that the digest never causes the crossing.
   │     + project_notes push (hooks/notes_push.py): `project-notes (index rows):` + up to K=8
-  │                      verbatim index.md rows + `project-notes matched: M of N rows (K shown)`.
+  │                      verbatim index.md rows +
+  │                      `project-notes matched: M of N rows (K shown, S strong)`.
   │                      Order: L1 (a note whose anchors: path == a path this turn named /
   │                      read (`.reads` tail) / wrote (`.touched` tail)) → L2 (same leaf
   │                      directory, ≤ ⌈K/2⌉) → topic = the union of the qmd structured query
@@ -536,7 +537,7 @@ The hook (`session_init.py`) writes the full schema below. The project-router su
 }
 ```
 
-`rules_loaded` / `guidelines_loaded` / `indexed_project` / `project_rules_indexed` gate the once-per-session (or per-switch) injections and are reset by `session_compact_reset.py` after auto-compaction. `project_rules_indexed` tracks the last project whose `rules.md` full body was injected; resetting it on compaction re-injects the primer (compaction summarizes the primer body away). `origin` identifies the generator (`cc` = Claude Code). `parent_session_id` / `inherited_tasks` appear only on forked sessions. `symbol_route_probe` is an observation ledger, not a gate: one entry per turn the push ran, capped at the last `SYMBOL_ROUTE_MAX` (100). `due` is `notes_push.symbol_route_due(paths, m, k)` — the block overflowed (`m > k`) and the turn touched a code file — which is the denominator for asking whether the model took the symbol route on the turns that route is written for. `code` / `m` / `k` are kept so the question can be re-asked under a different predicate without re-running anything. Nothing injected reads it; a model shown the flag would stop being what the flag measures.
+`rules_loaded` / `guidelines_loaded` / `indexed_project` / `project_rules_indexed` gate the once-per-session (or per-switch) injections and are reset by `session_compact_reset.py` after auto-compaction. `project_rules_indexed` tracks the last project whose `rules.md` full body was injected; resetting it on compaction re-injects the primer (compaction summarizes the primer body away). `origin` identifies the generator (`cc` = Claude Code). `parent_session_id` / `inherited_tasks` appear only on forked sessions. `symbol_route_probe` is an observation ledger, not a gate: one entry per turn the push ran, capped at the last `SYMBOL_ROUTE_MAX` (100). `due` is `notes_push.symbol_route_due(paths, s, k)` — the STRONG candidates overflowed (`s > k`) and the turn touched a code file — which is the denominator for asking whether the model took the symbol route on the turns that route is written for. `code` / `m` / `s` / `k` are kept so the question can be re-asked under a different predicate without re-running anything; `m` alone cannot reproduce `due`, which is why `s` is stored beside it. Nothing injected reads it; a model shown the flag would stop being what the flag measures.
 
 ### Writers
 

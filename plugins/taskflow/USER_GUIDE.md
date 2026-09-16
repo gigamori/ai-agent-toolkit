@@ -241,7 +241,7 @@ Each line is actionable on its own, the intent is carried by the verb, the conte
 
 Tasks are temporary; some findings should outlive them. `project-notes/` is where durable knowledge lives, filed by category.
 
-Saved notes come back on their own: every turn, Claude is handed up to 8 index rows for the notes anchored on the files you are working in or matching what you asked about (`project-notes matched: M of N rows`), so it can open the right note before answering instead of scanning the whole index.
+Saved notes come back on their own: every turn, Claude is handed up to 8 index rows for the notes anchored on the files you are working in or matching what you asked about (`project-notes matched: M of N rows (K shown, S strong)` — `M` candidates in all, `S` of them the more confident ones), so it can open the right note before answering instead of scanning the whole index.
 
 ```mermaid
 flowchart TD
