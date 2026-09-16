@@ -120,7 +120,7 @@ qmd の `bin/qmd` スクリプトのパス。未設定（既定）なら `PATH` 
 - Stop hook の qmd index 追随（[hook](#hook) 参照）。gate は同じ directory の有無。
 - `/progress check` の `vector coverage:` footer。gate はこれだけ `project-notes/.qmd/index.yaml` または `index.yml` という **file** の有無 — directory だけでは qmd が上位へ walk して、祖先または global の index をこの project の数値として報告してしまう。binary を解決できないときは footer 行を出さないだけで、他には何も起きない。
 
-後者 2 つは `TASKFLOW_QMD_TIMEOUT` を読まない。追随の `qmd update` は 5 秒、footer の `qmd status` は 10 秒で固定であり、上書きできない。
+後者 2 つは `TASKFLOW_QMD_TIMEOUT` を読まず、いずれの上限も上書きできない。追随の `qmd update` は 5 秒、その `qmd status` probe は 3 秒（加えて 1 回の Stop 内の全 probe が 4 秒の wall-clock 予算を共有）、footer の `qmd status` は 10 秒で固定である。
 
 ```json
 {
@@ -328,7 +328,7 @@ project-router は project-notes を **一切返さない**。note の選別は�
 
 さらに `session_init.py` が毎ターン `project-notes (index rows):` block を注入する — `index.md` の行を逐語で最大 8 行、**場所**（そのターンが名指し・Read・書込した file を `anchors:` に持つ note が先頭、同じ directory に anchor する note がその次で最大 4 行）と **topic**（`project-notes/.qmd/` があるときの note 本文への qmd 構造化 query と、Description ＋ Tags のプロセス内 lexical rank を交互に取った和集合で合成）で選び、末尾に `project-notes matched: M of N rows (K shown, S strong)` を付ける。`_archive/` 行は除外し、note 本文は注入しない。`M` は候補数 — 場所一致の両層と、topic 層が返した行（qmd 行も lexical 行も）の和集合 — なので、実際に載る `K` 行を上回りうるが、それは良い候補が切られたことを意味しない。`S` はより狭い数で、file 粒度の場所一致（第 1 層のみ。同じ directory に anchor する行は数えない）と、BM25 または vector score の下限を越えた qmd 行だけの和集合（lexical の裾は数えない）。qmd index が無いとき、および vector 層が degrade しているときは file 粒度の場所一致だけになる。directory 一致の行は `K` 行の 1 つを占めることがあり、`M` には必ず数えるが、strong には決してならない。`S` が `K` を上回るときに、確度の高い候補が block から溢れたと読む。場所信号の出所は hooks の節にある `.reads` / `.touched` ledger、調整軸は `TASKFLOW_NOTES_PUSH` と `TASKFLOW_QMD_BIN`。note に到達する経路は 2 つだけで、他は無い: この block と、名指しした symbol を編集・調査する間の経路（`query-lsp` skill の `incoming-calls` / `outgoing-calls` で depth-1 の callers / callees を列挙し、path が repo 相対の peer だけを残して `::<name>` で `project-notes/` を Grep）。この経路は `query-lsp` が使えないとき block だけに degrade するので、query-lsp を持たない project では recall が落ちるだけで他に影響しない。後者があるのは、block が `anchors:` を file / directory 粒度でしか照合せず、触っていない file の symbol に anchor された note は block に現れえないため。
 
-topic 層を project で有効にするには、npm package `@tobilu/qmd`（Node ≥ 22）を入れ、`_projects/<project>/project-notes/` で `qmd init`、`qmd collection add .` を実行し、`.qmd/index.yml` の collection に `ignore: ["index.md", "_archive/**"]` を足してから `qmd embed` を走らせる（GPU 推奨。Vulkan GPU で embed 中に abort する場合は環境変数 `GGML_VK_DISABLE_COOPMAT=1` が既知の対処）。`_projects/` を版管理するなら `project-notes/.qmd/` は ignore する。以降は、note を書いた round の Stop hook が index を tree に追随させる（[hook](#hook) 参照）。全再生成（`qmd embed -f`）は自動では走らず、手動 command のままである。push は常にその時点で index 済みの範囲で動く。
+topic 層を project で有効にするには、npm package `@tobilu/qmd`（Node ≥ 22）を入れ、`_projects/<project>/project-notes/` で `qmd init`、`qmd collection add .` を実行し、`.qmd/index.yml` の collection に `ignore: ["index.md", "_archive/**"]` を足してから `qmd embed` を走らせる（GPU 推奨。Vulkan GPU で embed 中に abort する場合は環境変数 `GGML_VK_DISABLE_COOPMAT=1` が既知の対処）。`_projects/` を版管理するなら `project-notes/.qmd/` は ignore する。以降は Stop hook が index を tree に追随させ、`qmd status` が pending の document を報告する限り embed する（[hook](#hook) 参照）。全再生成（`qmd embed -f`）は自動では走らず、手動 command のままである。push は常にその時点で index 済みの範囲で動く。
 
 #### 再利用可能な知識の同ターン保存
 
@@ -419,7 +419,7 @@ hook の書込と競合した場合は依然として無防備である。
 
 ### hook
 
-9 つの hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse` / `PostToolUse`（3 つ）/ `Stop`（2 つ）/ `SessionStart:compact` / `PreCompact` に wire されている。`notes_push.py`（毎ターンの project-notes push）は `session_init.py` が import する共有モジュールで、wire された hook ではない。加えて `note_links.py`（note↔task link のデータ層）、`qmd_index.py`（qmd index 追随の driver）、`log_lock.py`（bounded advisory write lock、protocol v2）の 3 ファイルは共有モジュールであり、単体で wire された hook ではない：`note_links.py` と `qmd_index.py` は Stop hook が import し、`log_lock.py` は Stop hook に加えて `scripts/rebuild_progress.py` も import する（後者は `progress.md` の read→write 区間を同じロックで保護する）。
+10 の hook スクリプトがプラグイン有効時に自動で動作する。`hooks/hooks.json` で `UserPromptSubmit` / `PreToolUse`（2 つ）/ `PostToolUse`（3 つ）/ `Stop`（2 つ）/ `SessionStart:compact` / `PreCompact` に wire されている。`notes_push.py`（毎ターンの project-notes push）は `session_init.py` が import する共有モジュールで、wire された hook ではない。加えて `note_links.py`（note↔task link のデータ層）、`qmd_index.py`（qmd index 追随の driver）、`log_lock.py`（bounded advisory write lock、protocol v2）の 3 ファイルは共有モジュールであり、単体で wire された hook ではない：`note_links.py` と `qmd_index.py` は Stop hook が import し、`log_lock.py` は Stop hook に加えて `scripts/rebuild_progress.py` も import する（後者は `progress.md` の read→write 区間を同じロックで保護する）。
 
 **`_projects/` の解決先。** state ツリーを必要とする hook はいずれも、セッションの起動ディレクトリから祖先方向へ辿り、`_projects/_state` を持つ最も近いディレクトリを root とする（起動ディレクトリ自身も候補に含む）。該当する祖先が無ければ起動ディレクトリにフォールバックする。hook プロセスはセッションが**起動された**ディレクトリをセッションの生涯にわたって保持する（Bash ツール呼び出し中の `cd` では動かない）ため、ワークスペースのサブディレクトリで Claude Code を起動すると、従来はそのセッション全体でプラグインが no-op になっていた。現在はワークスペース既存のツリーに合流する。意図的な例外は Stop hook の 7 日 stale-marker クリーンアップだけで、その対象は起動ディレクトリに固定されたままである — サブディレクトリで起動したセッションはこの掃除を単にスキップし、次にワークスペース root で起動したセッションが実行する。
 
@@ -511,9 +511,17 @@ owner 判定 — active task ごとの 1 行 summary と、新規書込された
 
 ##### qmd index 追随（`qmd_index.py`）
 
-`project-notes/` 成果物を書いた round は、その project の qmd index を tree より古いまま残す。同じ Stop が `hooks/qmd_index.py` 経由でこれを追いつかせる。gate は 2 つで、両方が必要: `TASKFLOW_NOTES_PUSH` が `auto`（既定）であること、および project に `project-notes/.qmd/` directory があること。両方を満たすと、hook は `node <bin/qmd> update` を 5 秒固定の上限つきで同期実行し（超過したら捨てて Stop は続行）、続けて `node <bin/qmd> embed --no-gpu` を detach 起動する（embed は hook より長生きし、session 終了を待たせない）。`--no-gpu` は好みではなく契約である — Stop 経路が、前面の session が使っているかもしれない GPU を奪ってはならない。`qmd embed -f` はここから到達しない。collection 全体の再生成は手動 command のままである。
+Stop hook は `hooks/qmd_index.py` 経由で、各 project の qmd index をその `project-notes/` tree に追随させる。経路を開く gate は 2 つで、両方が必要: `TASKFLOW_NOTES_PUSH` が `auto`（既定）であること、および project に `project-notes/.qmd/` directory があること。
 
-blast radius を抑える cap が 2 つある。**1 round につき 1 project**: その round が note を書いた project を、session 自身の project を先頭、残りを名前順に並べ、`.qmd/` directory を持つ最初の 1 つで止める（持たない project は飛ばすだけで、決して処理しない）。**1 project につき同時 1 embed**: `project-notes/.qmd/embed.lock` で担保する。これは起動した pid と、起動した session tag / round 番号を持つ JSON file である。lock は、その pid が生存している間（別 session のものを含め embed が走っている）、またはこの session のこの round を指している間、起動を止める。それ以外は stale とみなして lock を取り直す。file は決して削除しない — 生存判定は pid から行うので、残った `embed.lock` は自然に解消し、cleanup 経路を必要としない。lock が止めている場合でも `update` は走る。安価であり、分単位になりうる embed の後ろに lexical 側を待たせると、その間ずっと最新の note がその層から漏れるためである。
+index の 2 つの半分は、別々の条件で駆動する。lexical 側の `node <bin/qmd> update` は、`UPDATE_TIMEOUT_S` = 5 秒固定の上限つきで同期実行し（超過したら捨てて Stop は続行）、その round の ledger slice が `project-notes/` 成果物を書いた project でのみ走る。vector 側の `node <bin/qmd> embed --no-gpu` は、その round の書込ではなく index が tree からどれだけ遅れているかで決まる: まず `node <bin/qmd> status` を probe し、その `Pending:` が vector の欠落・不完全な document 数であり、pending が 0 なら embed は起動しない（`current`）。note を何も書かなかった round でも、pending がある限り embed は起動する。embed は detach 起動するので hook より長生きし、session 終了を待たせない。`--no-gpu` は好みではなく契約である — Stop 経路が、前面の session が使っているかもしれない GPU を奪ってはならない。`qmd embed -f` はここから到達しない。collection 全体の再生成は手動 command のままである。
+
+probe には qmd 自身の local config — `project-notes/.qmd/index.yaml` または `index.yml` — が要る。これが無いと qmd の設定探索が上位へ walk し、祖先または global の index をこの project の数値として答えてしまうためである。`.qmd/` はあるが該当 file が無い project は probe しない（`no-local-index`）。probe 1 回の上限は `STATUS_TIMEOUT_S` = 3 秒。加えて 1 回の Stop 内の全 probe が `FOLLOW_BUDGET_S` = 4 秒の wall-clock 予算を 1 つ共有するので、project 数が Stop の latency を掛け算することはない。予算を使い切った後に到達した project は probe しない（`no-budget`）。起動できない・非 0 で終了した・timeout した・parser が解さない出力だった probe も数値を得られない（`status-failed`）。probe の実測は 80 document / 8.4 MB の index に対し 0.26 秒。
+
+遅れ具合が不明のまま終わった枝では — `no-local-index` / `no-budget` / `status-failed` のいずれでも — 起動条件はその round の note 書込へ fallback する: その round が当該 project の `project-notes/` に何も書いていなければ見送り、書いていれば起動まで進む。したがって `status-failed` と `no-budget` が stderr に出るのは、その round に note を書いていない project に限られる。失敗は全ての枝で skip であり、Stop を失敗させることはない。
+
+blast radius を抑える cap が 2 つある。**1 Stop につき 1 embed**: その session が触れた全 project を、session 自身の project を先頭、残りを名前順に並べて提示し、Stop 全体を決着させる最初の status で loop を終える — `not-auto` と `no-bin`（次の project でも同じ答えになる env 全体の判定）、`locked`（既に embed が走っている）、`embedding` と `embed-failed`（この Stop の 1 回の起動）。`futile-retry` は意図的に loop を終えない: 何も走っておらず、この Stop の起動枠も未使用なので、後続の project がまだ使いうる。**1 project につき同時 1 embed**: `project-notes/.qmd/embed.lock` で担保する。これは起動した pid、その起動が解消するはずだった pending 数、および起動した session tag / round を持つ JSON file である。lock が止めるのは **pid の生存だけ** — 別 session のものを含め embed が走っている場合である。記録された session tag / round は診断用であり、何も gate しない。同じ file をもう 1 つの gate が読む: 記録された pid が既に消えており、かつ pending 数がその起動時の値とちょうど同じなら、新たな起動は何も解消しなかった run を繰り返すだけなので見送る（`futile-retry`）。pending が減った・増えた・この Stop が読めなかった場合は起動する。つまり、同一の run が既に何も達成しなかったという証拠があるときにだけ見送る。file は決して削除しない — 生存判定は pid から行うので、残った `embed.lock` は自然に解消し、cleanup 経路を必要としない。lock が止めている場合でも `update` は走る。安価であり、分単位になりうる embed の後ろに lexical 側を待たせると、その間ずっと最新の note がその層から漏れるためである。
+
+追随は stderr に `[progress capture] qmd-follow(<project>): <status> [s:<sid>]` の形で報告する。起動・阻止・失敗は 1 行を出す: `embedding`、`locked`、`futile-retry`、`no-bin`、`status-failed`、`no-budget`、`embed-failed`。残りは黙る — `not-auto` / `no-qmd` / `no-local-index` はその tree がこの module の対象外であることを意味し、`current` は既に追いついている index に対する通常の答えなので、どちらも出せば全 session の全 Stop に 1 行付くことになる。
 
 ## 既知の問題
 

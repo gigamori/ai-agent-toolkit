@@ -339,26 +339,56 @@ session end
         are replaced only when the next round is requested), so a subagent slower than the
         expiry keeps its summary and its note links instead of having every entry
         membership-skipped (§1.9, W5).
-     5. qmd index follow-up (`hooks/qmd_index.py`): for each project this round's ledger
-        slice wrote a `project-notes/` deliverable into — round-scoped on purpose, since the
-        whole-session `touched` scan would re-fire the follow-up on every later Stop for notes
-        indexed rounds ago. Two gates, both required: `TASKFLOW_NOTES_PUSH` == `auto` (the
-        retrieval layer's own axis, normalized the same way `notes_push.build_notes_push`
-        normalizes it — transcribed from that call site, not shared, since the rule is not a
-        function there; no axis of its own is added) and a `project-notes/.qmd/` DIRECTORY.
-        Then `node <bin/qmd> update` SYNCHRONOUSLY, ceiling `UPDATE_TIMEOUT_S` = 5 s (NOT
-        `TASKFLOW_QMD_TIMEOUT`, which is the query path's Pi-shared contract constant), and
-        `node <bin/qmd> embed --no-gpu` DETACHED (`EMBED_ARGS`; `-f` is absent and must stay
-        absent — it rebuilds every embedding in the collection). Every failure arm is a silent
-        skip: the Stop path never fails on index maintenance. Two caps: ONE project per round
-        (candidates ordered primary-project-first then by name, the loop stopping at the first
-        that is not declined for want of `.qmd/`) and ONE embed at a time per project, on
-        `project-notes/.qmd/embed.lock` — JSON `{pid, sid, round}`, blocking while that pid is
-        alive or while it names THIS session's THIS round, retaken otherwise, and never deleted
+     5. qmd index follow-up (`hooks/qmd_index.py`): every project in `project_roots` is
+        offered — the session's own first, then the rest by name. Two gates, both required:
+        `TASKFLOW_NOTES_PUSH` == `auto` (the retrieval layer's own axis, normalized the same
+        way `notes_push.build_notes_push` normalizes it — transcribed from that call site, not
+        shared, since the rule is not a function there; no axis of its own is added) and a
+        `project-notes/.qmd/` DIRECTORY.
+        The two halves are driven separately.
+        LEXICAL: `node <bin/qmd> update` SYNCHRONOUSLY, ceiling `UPDATE_TIMEOUT_S` = 5 s (NOT
+        `TASKFLOW_QMD_TIMEOUT`, which is the query path's Pi-shared contract constant), run
+        only for a project this ROUND's ledger slice wrote a `project-notes/` deliverable into
+        (`NOTES_WRITTEN`) — round-scoped on purpose, since the whole-session `touched` scan
+        would re-run `update` on every later Stop for notes indexed rounds ago.
+        VECTOR: `node <bin/qmd> embed --no-gpu` DETACHED (`EMBED_ARGS`; `-f` is absent and must
+        stay absent — it rebuilds every embedding in the collection), fired on the STATE the
+        index is in rather than on this round's writes. `node <bin/qmd> status` is probed
+        (`STATUS_ARGS`) and its `Pending:` count — documents whose vectors are missing or
+        incomplete; `Vectors:` counts chunks and is deliberately unused — decides: `pending
+        <= 0` → `current`, no spawn. The probe is gated on a `project-notes/.qmd/index.yaml`
+        or `index.yml` FILE (`QMD_LOCAL_CONFIGS`), since a bare directory lets qmd walk up and
+        answer for an ancestor's or the global index; without one the project is not probed
+        (`no-local-index`). Per-probe ceiling `STATUS_TIMEOUT_S` = 3 s, clamped further by ONE
+        `FOLLOW_BUDGET_S` = 4 s wall-clock deadline (`new_budget()`) shared by every probe in
+        the Stop, so the project count cannot multiply the Stop's latency (`no-budget` past
+        it); a probe that fails to spawn, exits non-zero, times out, or prints unrecognised
+        output yields no number either (`status-failed`). Measured 0.26 s against an
+        80-doc / 8.4 MB index.
+        EVERY arm leaving the lag unknown — `no-local-index`, `no-budget`, `status-failed` —
+        falls back to the round's note write: `pending_docs` returns `(None, status)` and
+        `follow_index` returns that status ONLY when `notes != NOTES_WRITTEN`, so a
+        `NOTES_WRITTEN` round reaches the spawn with `pending = None` (hence
+        `retry_is_futile` False and `pending: None` in the lock). Corollary: `status-failed`
+        and `no-budget` can only ever be REPORTED for a project this round wrote no notes into.
+        Every failure arm is a skip: the Stop path never fails on index maintenance.
+        Two caps: ONE embed per STOP — the loop breaks on `HALT_STATUSES` (`not-auto`,
+        `no-bin`, `locked`, `embedding`, `embed-failed`); `futile-retry` is deliberately NOT
+        among them, since nothing is running and the Stop's spawn is unspent — and ONE embed at
+        a time per project, on `project-notes/.qmd/embed.lock` — JSON
+        `{pid, sid, round, pending}`, read by two gates: `lock_blocks` on PID LIVENESS ALONE
+        (`sid` / `round` are diagnostics and gate nothing), and `retry_is_futile` when the pid
+        is dead AND the recorded `pending` equals the count read now (an identical run already
+        cleared nothing → `futile-retry`). A pending count that fell, rose, or is unreadable
+        (`None`) retries, so the guard withholds only on evidence. The lock is never deleted
         (liveness is decided from the pid, so a leftover file is self-clearing and no cleanup
         path can race the spawn). `update` runs even when the lock blocks: the cap is on the
         CPU-bound half, and holding the cheap lexical refresh behind a minutes-long embed would
         leave the freshest notes out of the `lex:` layer for that whole window.
+        Reporting: `LOUD_STATUSES` (`no-bin`, `status-failed`, `no-budget`, `locked`,
+        `futile-retry`, `embedding`, `embed-failed`) print
+        `[progress capture] qmd-follow(<project>): <status> [s:<sid>]` on stderr; `not-auto`,
+        `no-qmd`, `no-local-index` and `current` are silent.
      6. round-active set → request capture: A_r = task md written in this round's ledger slice
         ∪ owners of the notes written in it (resolved through the reverse index — work that
         reaches a task only via a project-note) ∪ this Stop's `[tasks:]` exec carry, MINUS tasks

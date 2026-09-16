@@ -33,12 +33,22 @@ NOTE_REL = f"_projects/{PROJECT}/project-notes/specs/retrieval.md"
 NOTE_BODY = "---\nsummary: demo\n---\n\n# retrieval\n"
 
 NOTES_DIR_REL = f"_projects/{PROJECT}/project-notes"
+INDEX_CFG_REL = f"{NOTES_DIR_REL}/.qmd/index.yml"
+INDEX_CFG_BODY = 'collections:\n  project-notes:\n    pattern: "**/*.md"\n'
 EMBED_DELAY_MS = 4000
 UPDATE_BLOCK_MS = 400
 LATE_POLL_S = 30.0
 SPAWN_POLL_S = 20.0
 SETTLE_S = 5.0
 UPDATE_TIMEOUT_S = qmd_index.UPDATE_TIMEOUT_S
+STATUS_TIMEOUT_S = qmd_index.STATUS_TIMEOUT_S
+FOLLOW_BUDGET_S = qmd_index.FOLLOW_BUDGET_S
+TOTAL_DOCS = 9
+PENDING_DOCS = 3
+CAUGHT_UP = 0
+STATUS_OK = "ok"
+STATUS_RC1 = "rc1"
+STATUS_GARBAGE = "garbage"
 
 SPAWN_LATENCY: list[float] = []
 
@@ -57,6 +67,23 @@ function block(ms) {
 if (argv[0] === 'update') {
   block(Number(process.env.TF_FAKE_QMD_UPDATE_BLOCK_MS || 0));
   rec('update');
+} else if (argv[0] === 'status') {
+  rec('status');
+  block(Number(process.env.TF_FAKE_QMD_STATUS_BLOCK_MS || 0));
+  const mode = process.env.TF_FAKE_QMD_STATUS_MODE || 'ok';
+  if (mode === 'garbage') {
+    process.stdout.write("qmd: unknown command\n");
+    process.exit(0);
+  }
+  const total = Number(process.env.TF_FAKE_QMD_TOTAL || 0);
+  const pending = Number(process.env.TF_FAKE_QMD_PENDING || 0);
+  let out = "QMD Status\n\nDocuments\n  Total:    " + total +
+            " files indexed\n  Vectors:  " + (total * 12) + " embedded\n";
+  if (pending > 0) {
+    out += "  Pending:  " + pending + " need embedding (run 'qmd embed')\n";
+  }
+  process.stdout.write(out);
+  process.exit(mode === 'rc1' ? 1 : 0);
 } else {
   rec('embed');
   const late = Number(process.env.TF_FAKE_QMD_EMBED_DELAY_MS || 0);
@@ -133,7 +160,8 @@ def write(path: Path, text: str) -> None:
     io.open(path, "w", encoding="utf-8", newline="").write(text)
 
 
-def build_ws(root: Path, name: str, with_qmd: bool) -> Path:
+def build_ws(root: Path, name: str, with_qmd: bool,
+             with_index_cfg: bool) -> Path:
     ws = root / name
     (ws / "_projects" / "_state").mkdir(parents=True, exist_ok=True)
     write(ws / TASK_REL, TASK_BODY)
@@ -142,17 +170,24 @@ def build_ws(root: Path, name: str, with_qmd: bool) -> Path:
           json.dumps({"session_id": SID, "project": PROJECT}))
     if with_qmd:
         (ws / NOTES_DIR_REL / ".qmd").mkdir(parents=True, exist_ok=True)
+    if with_qmd and with_index_cfg:
+        write(ws / INDEX_CFG_REL, INDEX_CFG_BODY)
     return ws
 
 
 def hook_env(log: Path, fake_bin: Path, embed_delay_ms: int,
-             update_block_ms: int, push_mode: str | None) -> dict:
+             update_block_ms: int, push_mode: str | None, pending: int,
+             status_mode: str, status_block_ms: int) -> dict:
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["TASKFLOW_QMD_BIN"] = str(fake_bin)
     env["TF_FAKE_QMD_LOG"] = str(log)
     env["TF_FAKE_QMD_UPDATE_BLOCK_MS"] = str(update_block_ms)
     env["TF_FAKE_QMD_EMBED_DELAY_MS"] = str(embed_delay_ms)
+    env["TF_FAKE_QMD_TOTAL"] = str(TOTAL_DOCS)
+    env["TF_FAKE_QMD_PENDING"] = str(pending)
+    env["TF_FAKE_QMD_STATUS_MODE"] = status_mode
+    env["TF_FAKE_QMD_STATUS_BLOCK_MS"] = str(status_block_ms)
     env.pop("TASKFLOW_SWEEP_MAX", None)
     env.pop(MODE_ENV, None)
     if push_mode is not None:
@@ -224,8 +259,28 @@ def bind_exists(ws: Path) -> bool:
     return (ws / "_projects" / "_state" / f"{SID}.bind").exists()
 
 
+def follow_line(r: dict, status: str) -> str:
+    return f"qmd-follow({PROJECT}): {status}"
+
+
+def stderr_of(r: dict) -> str:
+    return r["cp"].stderr or ""
+
+
 def lock_file(ws: Path) -> Path:
     return ws / NOTES_DIR_REL / ".qmd" / "embed.lock"
+
+
+def read_lock(ws: Path) -> dict:
+    return json.loads(io.open(lock_file(ws), encoding="utf-8").read())
+
+
+def bind_round(ws: Path) -> object:
+    path = ws / "_projects" / "_state" / f"{SID}.bind"
+    if not path.exists():
+        return None
+    data = json.loads(io.open(path, encoding="utf-8").read())
+    return (data.get("capture") or {}).get("round")
 
 
 def dead_pid() -> int:
@@ -245,13 +300,18 @@ def arm(root: Path, fake: Path, name: str, *, with_qmd: bool,
         ledger: list[str], lock: dict | None = None,
         embed_delay_ms: int = 0,
         update_block_ms: int = UPDATE_BLOCK_MS,
-        push_mode: str | None = None) -> dict:
-    ws = build_ws(root, name, with_qmd)
+        push_mode: str | None = None,
+        with_index_cfg: bool = True,
+        pending: int = PENDING_DOCS,
+        status_mode: str = STATUS_OK,
+        status_block_ms: int = 0) -> dict:
+    ws = build_ws(root, name, with_qmd, with_index_cfg)
     log = root / f"{name}.log"
     if lock is not None:
         write(lock_file(ws), json.dumps(lock))
     touch_ledger(ws, ledger)
-    env = hook_env(log, fake, embed_delay_ms, update_block_ms, push_mode)
+    env = hook_env(log, fake, embed_delay_ms, update_block_ms, push_mode,
+                   pending, status_mode, status_block_ms)
     t_start = time.time()
     cp, t_return = run_stop(ws, env)
     return {"ws": ws, "log": log, "cp": cp, "t_return": t_return, "env": env,
@@ -282,6 +342,20 @@ def arm_note_round(root: Path, fake: Path) -> None:
         check(Path(upd[0]["cwd"]).resolve() == (ws / NOTES_DIR_REL).resolve(),
               f"update ran in the project's project-notes/ dir "
               f"({upd[0]['cwd']!r})")
+
+    order = [e["tag"] for e in entries if e["tag"] in ("update", "status")]
+    check(order == ["update", "status"],
+          f"the lexical update ran BEFORE the status probe, so the pending "
+          f"count the spawn decision reads already carries this round's own "
+          f"note write (order={order!r})")
+
+    st = [e for e in entries if e["tag"] == "status"]
+    if st:
+        check(st[0]["argv"] == ["status"],
+              f"status argv is exactly ['status'] ({st[0]['argv']!r})")
+        check(Path(st[0]["cwd"]).resolve() == (ws / NOTES_DIR_REL).resolve(),
+              f"status ran in the project's project-notes/ dir "
+              f"({st[0]['cwd']!r})")
 
     check("embed-late" not in tags(entries),
           "the embed was NOT waited on: its delayed marker is still absent "
@@ -315,29 +389,160 @@ def arm_note_round(root: Path, fake: Path) -> None:
           f"appeared {EMBED_DELAY_MS} ms after spawn, with the hook already "
           f"exited")
 
-    info = json.loads(io.open(lock_file(ws), encoding="utf-8").read())
-    check(info.get("sid") == SID_TAG and info.get("round") == 0
-          and isinstance(info.get("pid"), int),
+    info = read_lock(ws)
+    check(info.get("sid") == SID_TAG and isinstance(info.get("pid"), int),
           f"the lock records pid/sid/round ({info!r})")
+    check(info.get("pending") == PENDING_DOCS,
+          f"the lock records the pending count this embed was started against, "
+          f"which is what lets a later Stop tell a retry that achieved nothing "
+          f"from one that made progress ({info!r})")
+    check(follow_line(r, qmd_index.EMBEDDING) in stderr_of(r),
+          f"the Stop reported the spawn on stderr "
+          f"({stderr_of(r).strip()!r})")
+    check(info.get("round") == bind_round(ws),
+          f"the lock's round is the round this Stop left in the session state, "
+          f"not the one it had already closed "
+          f"(lock={info.get('round')!r} state={bind_round(ws)!r})")
     if emb:
         check(info.get("pid") == emb[0]["pid"],
               f"the lock's pid is the embed that was actually spawned "
               f"({info.get('pid')} vs {emb[0]['pid']})")
 
 
-def arm_no_note(root: Path, fake: Path) -> None:
+def arm_no_note_current(root: Path, fake: Path) -> None:
     print()
-    print("--- a round with NO note write: qmd is never started ---")
-    r = arm(root, fake, "a2_no_note", with_qmd=True, ledger=[TASK_REL])
+    print("--- NO note write and the index is caught up: only the probe runs ---")
+    r = arm(root, fake, "a2_no_note_current", with_qmd=True, ledger=[TASK_REL],
+            pending=CAUGHT_UP)
     check(bind_exists(r["ws"]),
           "positive execution marker: the Stop ran to completion and wrote "
           "the .bind — the arm is not a skipped hook")
     final = settled(r["log"])
-    check(final == [],
-          f"neither update nor embed was started; {latency_note()} "
-          f"(entries={final!r})")
+    check(tags(final) == ["status"],
+          f"the index was probed and nothing else was started: no embed, and "
+          f"no update either, because this round wrote no note; "
+          f"{latency_note()} (tags={tags(final)!r})")
     check(not lock_file(r["ws"]).exists(),
           "no embed lock was created")
+    check("qmd-follow" not in stderr_of(r),
+          f"an index already caught up says nothing: the steady state would "
+          f"otherwise print on every Stop of every session "
+          f"({stderr_of(r).strip()!r})")
+
+
+def arm_no_note_pending(root: Path, fake: Path) -> None:
+    print()
+    print("--- NO note write but the index is BEHIND: the embed still starts ---")
+    r = arm(root, fake, "a9_no_note_pending", with_qmd=True, ledger=[TASK_REL])
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    wait_for(r["log"], "embed", SPAWN_POLL_S)
+    final = read_log(r["log"])
+    check("embed" in tags(final),
+          f"a round that wrote no note started an embed anyway, because "
+          f"{PENDING_DOCS} docs were still pending — an embed declined by an "
+          f"earlier round's lock is retried instead of waiting for the next "
+          f"note write (tags={tags(final)!r})")
+    check("update" not in tags(final),
+          f"the lexical update did NOT run: nothing in the tree changed this "
+          f"round, so there is nothing for it to pick up (tags={tags(final)!r})")
+    check("status" in tags(final),
+          f"the decision came from the status probe (tags={tags(final)!r})")
+    info = read_lock(r["ws"])
+    check(info.get("sid") == SID_TAG and info.get("round") == bind_round(r["ws"]),
+          f"the lock records this session and the round the state carries "
+          f"({info!r})")
+
+
+def arm_note_write_current(root: Path, fake: Path) -> None:
+    print()
+    print("--- a note write with the index already caught up: no embed ---")
+    r = arm(root, fake, "a10_note_current", with_qmd=True,
+            ledger=[TASK_REL, NOTE_REL], pending=CAUGHT_UP)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    final = settled(r["log"])
+    check(tags(final) == ["update", "status"],
+          f"the note write drove the lexical update, the probe then reported "
+          f"nothing pending, and no embed was started (tags={tags(final)!r})")
+    check(not lock_file(r["ws"]).exists(),
+          "no embed lock was created for a spawn that never happened")
+
+
+def arm_status_unusable(root: Path, fake: Path, name: str, *, mode: str,
+                        block_ms: int, label: str) -> None:
+    print()
+    print(f"--- {label}, with no note write: no embed, and the Stop finishes ---")
+    hang_s = block_ms / 1000.0
+    r = arm(root, fake, name, with_qmd=True, ledger=[TASK_REL],
+            status_mode=mode, status_block_ms=block_ms)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    final = settled(r["log"])
+    check("status" in tags(final),
+          f"non-vacuity: the probe really was attempted (tags={tags(final)!r})")
+    check(follow_line(r, qmd_index.STATUS_FAILED) in stderr_of(r),
+          f"the Stop reported the unusable probe ({stderr_of(r).strip()!r})")
+    check("embed" not in tags(final),
+          f"an unusable probe answer starts no embed: the follow-up keeps the "
+          f"note-write trigger it had, and this round wrote none; "
+          f"{latency_note()} (tags={tags(final)!r})")
+    check(not lock_file(r["ws"]).exists(),
+          "no embed lock was created")
+    if block_ms <= 0:
+        return
+    check(r["elapsed"] < hang_s,
+          f"the Stop did not wait out the hung probe "
+          f"({r['elapsed']:.2f}s against a {hang_s:.1f}s hang)")
+    check(r["elapsed"] >= STATUS_TIMEOUT_S,
+          f"the {STATUS_TIMEOUT_S:.0f}s probe ceiling is what cut it "
+          f"({r['elapsed']:.2f}s)")
+
+
+def arm_status_failed_with_note(root: Path, fake: Path) -> None:
+    print()
+    print("--- probe fails on a round that DID write a note: edge fallback ---")
+    r = arm(root, fake, "a14_status_failed_note", with_qmd=True,
+            ledger=[TASK_REL, NOTE_REL], status_mode=STATUS_RC1)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    wait_for(r["log"], "embed", SPAWN_POLL_S)
+    final = read_log(r["log"])
+    check("embed" in tags(final),
+          f"with no usable pending count the note write itself decides, so "
+          f"this arm behaves exactly as the follow-up did before the probe "
+          f"existed (tags={tags(final)!r})")
+
+
+def arm_no_local_index(root: Path, fake: Path, *, wrote_note: bool) -> None:
+    print()
+    wrote = "a note write" if wrote_note else "no note write"
+    print(f"--- a bare .qmd/ with no local index config, {wrote} ---")
+    ledger = [TASK_REL, NOTE_REL] if wrote_note else [TASK_REL]
+    name = "a15_no_cfg_note" if wrote_note else "a16_no_cfg_quiet"
+    r = arm(root, fake, name, with_qmd=True, ledger=ledger,
+            with_index_cfg=False)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    check(not (r["ws"] / INDEX_CFG_REL).exists(),
+          "non-vacuity: the fixture really carries no local index config")
+    if wrote_note:
+        wait_for(r["log"], "embed", SPAWN_POLL_S)
+    final = settled(r["log"])
+    check("status" not in tags(final),
+          f"no probe was run: without a local index config qmd answers for "
+          f"whatever index it finds by walking up, and a pending count from "
+          f"another collection would read as behind forever "
+          f"(tags={tags(final)!r})")
+    expected = ["update", "embed"] if wrote_note else []
+    check(tags(final) == expected,
+          f"the follow-up fell back to the note-write trigger it had before "
+          f"(tags={tags(final)!r}, expected {expected!r})")
 
 
 def arm_no_qmd_dir(root: Path, fake: Path) -> None:
@@ -378,6 +583,9 @@ def arm_lock_alive(root: Path, fake: Path) -> None:
     info = json.loads(io.open(lock_file(r["ws"]), encoding="utf-8").read())
     check(info == planted,
           f"the live lock was left untouched ({info!r})")
+    check(follow_line(r, qmd_index.LOCKED) in stderr_of(r),
+          f"the Stop reported that it was blocked, instead of the silence the "
+          f"declined embed used to leave ({stderr_of(r).strip()!r})")
 
 
 def arm_lock_stale(root: Path, fake: Path) -> None:
@@ -405,9 +613,9 @@ def arm_lock_stale(root: Path, fake: Path) -> None:
 
 def arm_lock_same_round(root: Path, fake: Path) -> None:
     print()
-    print("--- lock whose pid is DEAD but names THIS round: still capped ---")
+    print("--- lock whose pid is DEAD and names THIS session's round: retaken ---")
     pid = dead_pid()
-    planted = {"pid": pid, "sid": SID_TAG, "round": 0}
+    planted = {"pid": pid, "sid": SID_TAG, "round": 1}
     check(not qmd_index._pid_alive(pid),
           f"non-vacuity: the planted pid {pid} really is dead")
     r = arm(root, fake, "a6_lock_same_round", with_qmd=True,
@@ -415,13 +623,93 @@ def arm_lock_same_round(root: Path, fake: Path) -> None:
     check(bind_exists(r["ws"]),
           "positive execution marker: the Stop ran to completion and wrote "
           "the .bind")
+    wait_for(r["log"], "embed", SPAWN_POLL_S)
+    final = read_log(r["log"])
+    check("embed" in tags(final),
+          f"a dead pid does not block, whatever session or round the lock "
+          f"names: the only cap is one embed running at a time per index, and "
+          f"docs are still pending (tags={tags(final)!r})")
+    info = read_lock(r["ws"])
+    check(info != planted and info.get("sid") == SID_TAG,
+          f"the lock was retaken by the spawn that just happened ({info!r})")
+    check(isinstance(info.get("round"), int)
+          and info.get("round") == bind_round(r["ws"]),
+          f"sid and round are still written for diagnostics even though "
+          f"neither gates anything ({info!r})")
+
+
+def arm_futile_retry(root: Path, fake: Path) -> None:
+    print()
+    print("--- dead pid whose embed cleared NOTHING: the retry is withheld ---")
+    pid = dead_pid()
+    planted = {"pid": pid, "sid": SID_TAG, "round": 1,
+               "pending": PENDING_DOCS}
+    check(not qmd_index._pid_alive(pid),
+          f"non-vacuity: the planted pid {pid} really is dead")
+    r = arm(root, fake, "a17_futile_retry", with_qmd=True, ledger=[TASK_REL],
+            lock=planted)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
     final = settled(r["log"])
     check("embed" not in tags(final),
-          f"the round's second embed was capped even though the first one had "
-          f"already exited; {latency_note()} (tags={tags(final)!r})")
-    info = json.loads(io.open(lock_file(r["ws"]), encoding="utf-8").read())
-    check(info == planted,
-          f"the round-pinned lock was left untouched ({info!r})")
+          f"the previous embed exited leaving the same {PENDING_DOCS} docs "
+          f"pending, so an identical run would re-fail on the same doc every "
+          f"Stop from here on; {latency_note()} (tags={tags(final)!r})")
+    check(follow_line(r, qmd_index.FUTILE) in stderr_of(r),
+          f"the withheld retry is reported, so a level trigger that has gone "
+          f"quiet is visible instead of silent ({stderr_of(r).strip()!r})")
+    check(read_lock(r["ws"]) == planted,
+          f"the lock was left exactly as it stood ({read_lock(r['ws'])!r})")
+
+
+def arm_pending_fell(root: Path, fake: Path) -> None:
+    print()
+    print("--- dead pid whose embed made PROGRESS: the retry is allowed ---")
+    pid = dead_pid()
+    planted = {"pid": pid, "sid": SID_TAG, "round": 1,
+               "pending": PENDING_DOCS + 2}
+    check(not qmd_index._pid_alive(pid),
+          f"non-vacuity: the planted pid {pid} really is dead")
+    r = arm(root, fake, "a18_pending_fell", with_qmd=True, ledger=[TASK_REL],
+            lock=planted)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    wait_for(r["log"], "embed", SPAWN_POLL_S)
+    final = read_log(r["log"])
+    check("embed" in tags(final),
+          f"the count fell from {PENDING_DOCS + 2} to {PENDING_DOCS}, which is "
+          f"progress, so the remaining docs get their next run "
+          f"(tags={tags(final)!r})")
+    info = read_lock(r["ws"])
+    check(info.get("pending") == PENDING_DOCS,
+          f"the new lock carries the count THIS run was started against, not "
+          f"the one it inherited ({info!r})")
+
+
+def arm_lock_without_pending(root: Path, fake: Path) -> None:
+    print()
+    print("--- a lock written before the pending count was recorded ---")
+    pid = dead_pid()
+    planted = {"pid": pid, "sid": SID_TAG, "round": 1}
+    check(not qmd_index._pid_alive(pid),
+          f"non-vacuity: the planted pid {pid} really is dead")
+    r = arm(root, fake, "a19_lock_no_pending", with_qmd=True,
+            ledger=[TASK_REL], lock=planted)
+    check(bind_exists(r["ws"]),
+          "positive execution marker: the Stop ran to completion and wrote "
+          "the .bind")
+    wait_for(r["log"], "embed", SPAWN_POLL_S)
+    final = read_log(r["log"])
+    check("embed" in tags(final),
+          f"a lock with no recorded count says nothing about whether the last "
+          f"run achieved anything, and an unknown answer runs rather than "
+          f"withholds (tags={tags(final)!r})")
+    info = read_lock(r["ws"])
+    check(isinstance(info.get("pending"), int),
+          f"the rewritten lock carries the count, so the very next Stop can "
+          f"make the judgement this one could not ({info!r})")
 
 
 def arm_update_timeout(root: Path, fake: Path) -> None:
@@ -439,8 +727,11 @@ def arm_update_timeout(root: Path, fake: Path) -> None:
           f"({r['elapsed']:.2f}s against a {hang_ms / 1000.0:.1f}s hang)")
     check(r["elapsed"] >= UPDATE_TIMEOUT_S,
           f"the {UPDATE_TIMEOUT_S:.0f}s update ceiling is the bound that cut "
-          f"it, and it is the worst case a Stop can pay here "
-          f"({r['elapsed']:.2f}s)")
+          f"it ({r['elapsed']:.2f}s)")
+    check(r["elapsed"] < UPDATE_TIMEOUT_S + FOLLOW_BUDGET_S + hang_ms / 1000.0,
+          f"the whole follow-up stayed inside its two ceilings added together "
+          f"({r['elapsed']:.2f}s against "
+          f"{UPDATE_TIMEOUT_S + FOLLOW_BUDGET_S:.0f}s plus process startup)")
     check("update" not in tags(read_log(r["log"])),
           f"the hung update was killed before it could finish "
           f"(tags={tags(read_log(r['log']))!r})")
@@ -448,6 +739,11 @@ def arm_update_timeout(root: Path, fake: Path) -> None:
     check(t_spawn is not None,
           f"a failed update does not suppress the embed "
           f"(tags={tags(read_log(r['log']))!r})")
+    check("status" not in tags(read_log(r["log"])),
+          f"the budget covers the WHOLE follow-up, not the probes alone, so an "
+          f"update that spends it leaves no room to probe and the Stop falls "
+          f"back to the note-write trigger rather than paying both ceilings "
+          f"end to end (tags={tags(read_log(r['log']))!r})")
 
 
 def arm_push_mode(root: Path, fake: Path, mode: str, runs: bool) -> None:
@@ -462,7 +758,7 @@ def arm_push_mode(root: Path, fake: Path, mode: str, runs: bool) -> None:
     if runs:
         wait_for(r["log"], "embed", SPAWN_POLL_S)
         final = read_log(r["log"])
-        check(tags(final) == ["update", "embed"],
+        check(tags(final) == ["update", "status", "embed"],
               f"{MODE_ENV}={mode} runs the follow-up exactly as an unset value "
               f"does (tags={tags(final)!r})")
         return
@@ -498,11 +794,29 @@ def main() -> int:
 
     try:
         arm_note_round(tmp_root, fake)
-        arm_no_note(tmp_root, fake)
+        arm_no_note_current(tmp_root, fake)
+        arm_no_note_pending(tmp_root, fake)
+        arm_note_write_current(tmp_root, fake)
         arm_no_qmd_dir(tmp_root, fake)
         arm_lock_alive(tmp_root, fake)
         arm_lock_stale(tmp_root, fake)
         arm_lock_same_round(tmp_root, fake)
+        arm_futile_retry(tmp_root, fake)
+        arm_pending_fell(tmp_root, fake)
+        arm_lock_without_pending(tmp_root, fake)
+        arm_status_unusable(tmp_root, fake, "a11_status_rc1",
+                            mode=STATUS_RC1, block_ms=0,
+                            label="a probe that exits non-zero")
+        arm_status_unusable(tmp_root, fake, "a12_status_garbage",
+                            mode=STATUS_GARBAGE, block_ms=0,
+                            label="a probe whose output does not parse")
+        arm_status_unusable(tmp_root, fake, "a13_status_hang",
+                            mode=STATUS_OK,
+                            block_ms=int(STATUS_TIMEOUT_S * 1000) + 5000,
+                            label="a probe that hangs past its ceiling")
+        arm_status_failed_with_note(tmp_root, fake)
+        arm_no_local_index(tmp_root, fake, wrote_note=True)
+        arm_no_local_index(tmp_root, fake, wrote_note=False)
         arm_update_timeout(tmp_root, fake)
         arm_push_mode(tmp_root, fake, "off", runs=False)
         arm_push_mode(tmp_root, fake, "lexical", runs=False)

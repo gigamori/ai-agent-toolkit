@@ -1,7 +1,8 @@
 """qmd_index.py — incremental qmd index follow-up (imported by session_progress_capture.py).
 
-A round that WROTE project-notes leaves the project's qmd index behind the tree.
-This module is the driver that closes that gap, in the two halves the index has:
+The project's qmd index falls behind the tree whenever a round writes into
+project-notes/. This module is the driver that closes that gap, in the two
+halves the index has:
 
     lexical   `qmd update`          cheap (0.23 s measured), run SYNCHRONOUSLY
     vector    `qmd embed --no-gpu`  expensive (~1.9 min per changed note,
@@ -9,14 +10,44 @@ This module is the driver that closes that gap, in the two halves the index has:
 
 Design: `project-notes/specs/notes-retrieval-rollout-plan.md` §4 「増分」.
 
-Blast cap. The detached half is capped at ONE embed per round by
-`<project-notes>/.qmd/embed.lock`, a JSON file holding the spawned pid plus the
-session tag and round number that spawned it. The lock blocks when the recorded
-pid is still alive (another embed is running, possibly from another session) or
-when it names THIS session's THIS round (the round already spawned its one
-embed). Anything else is stale and the lock is retaken. The lock is never
-deleted: liveness is decided from the pid, so a leftover file is self-clearing
-and no cleanup path can race the spawn.
+Level, not edge. The embed fires on the STATE "the index is behind the tree",
+read from `qmd status` (0.26 s measured), not on the EVENT "this round wrote a
+note". An edge trigger loses every embed the lock declines: nothing re-drives it
+until some later round happens to write another note, and an index can sit docs
+short for hours that way. The lexical `qmd update` keeps the edge, because the
+status number only means anything once the tree's own changes are in the index.
+
+`pending` read off an index this project does not own would make that state
+permanently true, so the probe is gated on a LOCAL `.qmd/index.y*ml`: without
+one, qmd walks UP and answers for an ancestor's or the global index. No local
+config means no probe, and the follow-up falls back to the edge it had before.
+
+Blast cap, and the retry the level trigger needs bounding. Concurrency is
+capped at ONE embed per index by `<project-notes>/.qmd/embed.lock`, a JSON file
+holding the spawned pid, the pending count that spawn was meant to clear, and
+the session tag and round that spawned it. Two gates read it:
+
+    pid ALIVE                     an embed is running, possibly from another
+                                  session — LOCKED
+    pid dead, pending UNCHANGED    the last embed cleared nothing, so a fresh
+                                  one would re-fail on the same doc every Stop
+                                  from here on — FUTILE
+
+The second gate exists only because the trigger is a level: a doc qmd cannot
+embed (unparseable, oversized, model mismatch) leaves `pending` true forever,
+and without it every later Stop would spawn the same failing run. A pending
+count that FELL is progress and retries; one that ROSE is new work and retries;
+an unknown count (an older lock with no `pending` key, or a Stop that could not
+read one) retries, so the guard can only ever withhold a run it has evidence is
+futile. The sid/round pair is recorded for diagnostics and gates nothing — a
+per-round gate would re-open the very hole the edge trigger left. The lock is
+never deleted: liveness is decided from the pid, so a leftover file is
+self-clearing and no cleanup path can race the spawn.
+
+Cost. A probed project pays one `qmd status` per Stop. Every probe in one Stop
+shares a single wall-clock budget (FOLLOW_BUDGET_S), so the project count cannot
+multiply the Stop's latency; a project reached after it is spent falls back to
+the edge.
 
 Config. The follow-up rides the retrieval layer's own axis: `TASKFLOW_NOTES_PUSH`
 must be `auto` (its default) for anything at all to start. `off` and `lexical`
@@ -34,8 +65,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from notes_push import MODE_ENV, MODES, QMD_DIR, resolve_qmd_bin  # noqa: E402
@@ -49,7 +82,15 @@ LOCK_NAME = 'embed.lock'
 # is the Stop hook's own ceiling and the spec fixes it at 5 s.
 UPDATE_TIMEOUT_S = 5.0
 
+# Seconds allowed for one `qmd status` probe, and the wall-clock budget every
+# probe in one Stop shares. The probe measured 0.26 s against an 80-doc /
+# 8.4 MB index, so the per-probe ceiling is ~11x the measured cost, and the
+# worst case this module can add to a Stop is UPDATE_TIMEOUT_S + FOLLOW_BUDGET_S.
+STATUS_TIMEOUT_S = 3.0
+FOLLOW_BUDGET_S = 4.0
+
 UPDATE_ARGS = ('update',)
+STATUS_ARGS = ('status',)
 # `--no-gpu` is part of the contract, not a preference: the Stop path must not
 # contend for the GPU a foreground session may be using. `-f` is absent and must
 # stay absent — it rebuilds every embedding in the collection.
@@ -65,13 +106,50 @@ CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 AUTO_MODE = 'auto'
 
+# `qmd status` parsing, TRANSCRIBED from `scripts/check_progress.py`
+# (QMD_LOCAL_CONFIGS / QMD_TOTAL_RE / QMD_PENDING_RE / parse_qmd_status) rather
+# than imported: `scripts/` and `hooks/` are standalone, and that file already
+# duplicates `resolve_qmd_bin` out of `notes_push.py` on the same rule. A hook
+# importing from scripts/ would invert the one dependency direction this plugin
+# keeps. The two copies are a propagation pair from here on.
+QMD_LOCAL_CONFIGS = ('index.yaml', 'index.yml')
+QMD_TOTAL_RE = re.compile(r'^\s*Total:\s+(\d+)\b', re.MULTILINE)
+QMD_PENDING_RE = re.compile(r'^\s*(?:\x1b\[[0-9;]*m)?Pending:\s+(\d+)\b',
+                            re.MULTILINE)
+
+# Whether THIS round wrote into the project's project-notes/. It decides one
+# thing only: whether the lexical `qmd update` runs before the status probe.
+NOTES_WRITTEN = 'notes-written'
+NOTES_UNCHANGED = 'notes-unchanged'
+
 # follow_index statuses.
 NOT_AUTO = 'not-auto'
 NO_QMD = 'no-qmd'
+NO_LOCAL_INDEX = 'no-local-index'
 NO_BIN = 'no-bin'
+STATUS_FAILED = 'status-failed'
+NO_BUDGET = 'no-budget'
+CURRENT = 'current'
 LOCKED = 'locked'
+FUTILE = 'futile-retry'
 EMBEDDING = 'embedding'
 EMBED_FAILED = 'embed-failed'
+
+# What the Stop hook prints. Started, blocked and failed earn a line; the
+# steady-state no-ops do not — `not-auto` / `no-qmd` / `no-local-index` say the
+# tree is none of this module's business, and `current` is the ordinary answer
+# on an index already caught up, so printing either would put a line on every
+# Stop of every session.
+LOUD_STATUSES = (NO_BIN, STATUS_FAILED, NO_BUDGET, LOCKED, FUTILE, EMBEDDING,
+                 EMBED_FAILED)
+
+# Statuses that end the caller's loop over projects. NOT_AUTO and NO_BIN are
+# env-wide answers the next project would only repeat; LOCKED preserves the
+# one-embed-at-a-time cap; EMBEDDING / EMBED_FAILED are this Stop's one spawn.
+# Everything else is a per-project answer and the loop moves on — FUTILE
+# included: nothing is running and this Stop's one spawn is still unspent, so
+# another project may still use it.
+HALT_STATUSES = (NOT_AUTO, NO_BIN, LOCKED, EMBEDDING, EMBED_FAILED)
 
 
 def resolve_mode(env: dict | None = None) -> str:
@@ -98,6 +176,16 @@ def notes_dir_of(project_root: str) -> str:
 
 def qmd_dir_of(project_root: str) -> str:
     return os.path.join(notes_dir_of(project_root), QMD_DIR)
+
+
+def has_local_index(project_root: str) -> bool:
+    """True when `.qmd/` carries qmd's own local config. Without one, qmd's
+    config lookup walks UP and `status` answers for an ancestor's or the global
+    `~/.cache` index — another collection's `pending` under this project's name,
+    which a level trigger would read as "behind" forever."""
+    qmd_dir = qmd_dir_of(project_root)
+    return any(os.path.isfile(os.path.join(qmd_dir, name))
+               for name in QMD_LOCAL_CONFIGS)
 
 
 def has_qmd(project_root: str) -> bool:
@@ -163,26 +251,42 @@ def read_lock(path: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def lock_blocks(info: dict | None, sid_tag: str, round_n: int) -> bool:
-    """Whether an existing lock forbids spawning an embed now.
+def lock_blocks(info: dict | None) -> bool:
+    """Whether an existing lock forbids spawning an embed now: the recorded pid
+    is ALIVE, i.e. an embed is already running for this index, possibly from
+    another session (多重起動).
 
-    Two independent reasons, both required by §4:
-      - the recorded pid is ALIVE: an embed is already running (多重起動).
-      - the lock names this session's current round: that round has already had
-        its one embed, alive or not (blast cap 1 round 1 本).
+    The recorded sid/round is deliberately NOT consulted. It was a second gate
+    while the trigger was an edge; with the level trigger the index's own
+    `pending` retires a finished embed's work, and a round-shaped gate would
+    only refuse the retry a declined embed needs. It stays in the file as
+    diagnostics.
     """
-    if not info:
+    return bool(info) and _pid_alive(info.get('pid'))
+
+
+def retry_is_futile(info: dict | None, pending: int | None) -> bool:
+    """Whether spawning now would only repeat a run that already achieved
+    nothing: the recorded embed is gone and it left EXACTLY the pending count it
+    was started against.
+
+    Every uncertain case retries. No lock, a lock written before this key
+    existed, a non-integer value, or a pending count this Stop could not read
+    (`None`) all fall through to False, so the guard withholds a run only on
+    evidence that the identical run has already failed once.
+    """
+    if not info or not isinstance(pending, int):
         return False
-    if _pid_alive(info.get('pid')):
-        return True
-    return (info.get('sid') == sid_tag
-            and info.get('round') == round_n)
+    was = info.get('pending')
+    return isinstance(was, int) and was == pending
 
 
-def write_lock(path: str, pid: int, sid_tag: str, round_n: int) -> None:
+def write_lock(path: str, pid: int, sid_tag: str, round_n: int,
+               pending: int | None) -> None:
     try:
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump({'pid': pid, 'sid': sid_tag, 'round': round_n}, f)
+            json.dump({'pid': pid, 'sid': sid_tag, 'round': round_n,
+                       'pending': pending}, f)
     except OSError:
         pass  # the follow-up is best-effort; an unwritable lock only costs a cap
 
@@ -198,6 +302,70 @@ def run_update(bin_path: str, notes_dir: str, runner=subprocess.run) -> bool:
     except (OSError, ValueError, subprocess.SubprocessError):
         return False
     return getattr(cp, 'returncode', 1) == 0
+
+
+def parse_qmd_status(stdout: str) -> tuple[int, int] | None:
+    """(docs with usable vectors, docs indexed) from `qmd status`, or None when
+    the output is not the shape this parser knows.
+
+    `Total:` is the active document count. `Pending:` counts those docs whose
+    vectors are missing or incomplete for the embed model in force, and the line
+    is omitted entirely at zero. `Vectors:` is deliberately NOT used - it counts
+    chunks (789 for 82 docs on the reference corpus), not documents."""
+    total_m = QMD_TOTAL_RE.search(stdout)
+    if not total_m:
+        return None
+    total = int(total_m.group(1))
+    pending_m = QMD_PENDING_RE.search(stdout)
+    pending = int(pending_m.group(1)) if pending_m else 0
+    if pending > total:
+        return None
+    return total - pending, total
+
+
+def run_status(bin_path: str, notes_dir: str, timeout_s: float,
+               runner=subprocess.run) -> tuple[int, int] | None:
+    """Synchronous `node <bin/qmd> status`, parsed. None on every arm in which
+    the number would be absent or wrong: spawn failure, non-zero exit, timeout,
+    and output the parser does not recognise. Never raises."""
+    cmd = ['node', bin_path, *STATUS_ARGS]
+    try:
+        cp = runner(cmd, cwd=notes_dir, capture_output=True, timeout=timeout_s,
+                    encoding='utf-8', errors='replace')
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if getattr(cp, 'returncode', 1) != 0:
+        return None
+    return parse_qmd_status(getattr(cp, 'stdout', '') or '')
+
+
+def new_budget() -> float:
+    """Deadline for ONE Stop's whole follow-up, shared by every project probed
+    in it. The caller hands it to `follow_index`, so N projects cost one budget
+    rather than N ceilings."""
+    return time.monotonic() + FOLLOW_BUDGET_S
+
+
+def pending_docs(project_root: str, bin_path: str, notes_dir: str,
+                 deadline: float | None, runner=subprocess.run
+                 ) -> tuple[int | None, str | None]:
+    """(pending docs, None) when the index's lag is known, else (None, status)
+    naming why it is not. Exactly one half is ever set."""
+    if not has_local_index(project_root):
+        return None, NO_LOCAL_INDEX
+
+    budget = STATUS_TIMEOUT_S
+    if deadline is not None:
+        budget = min(budget, deadline - time.monotonic())
+    if budget <= 0:
+        return None, NO_BUDGET
+
+    parsed = run_status(bin_path, notes_dir, budget, runner=runner)
+    if parsed is None:
+        return None, STATUS_FAILED
+
+    covered, total = parsed
+    return total - covered, None
 
 
 def spawn_embed(bin_path: str, notes_dir: str, popen=subprocess.Popen) -> int:
@@ -227,11 +395,23 @@ def spawn_embed(bin_path: str, notes_dir: str, popen=subprocess.Popen) -> int:
 
 
 def follow_index(project_root: str, sid_tag: str, round_n: int,
-                 env: dict | None = None, runner=subprocess.run,
-                 popen=subprocess.Popen) -> str:
-    """Bring one project's qmd index up to date after a note-writing round.
+                 notes: str = NOTES_UNCHANGED, env: dict | None = None,
+                 runner=subprocess.run, popen=subprocess.Popen,
+                 deadline: float | None = None) -> str:
+    """Bring one project's qmd index up to date.
 
-    Returns a status (NOT_AUTO / NO_QMD / NO_BIN / LOCKED / EMBEDDING /
+    `notes` (NOTES_WRITTEN / NOTES_UNCHANGED) says whether THIS round wrote into
+    that project's project-notes/, and decides the lexical half only. The embed
+    is decided by how far the index is behind, so a round that wrote nothing
+    still spawns one while docs are pending — that is what re-drives an embed a
+    previous round's lock declined.
+
+    `sid_tag` / `round_n` are recorded in the lock as diagnostics and gate
+    nothing; `round_n` is the round in force when the caller runs this, i.e. the
+    one the session state file goes on to carry.
+
+    Returns a status (NOT_AUTO / NO_QMD / NO_LOCAL_INDEX / NO_BIN /
+    STATUS_FAILED / NO_BUDGET / CURRENT / LOCKED / FUTILE / EMBEDDING /
     EMBED_FAILED). Raises nothing: the Stop path is not allowed to fail on index
     maintenance.
 
@@ -251,16 +431,32 @@ def follow_index(project_root: str, sid_tag: str, round_n: int,
         return NO_BIN
 
     notes_dir = notes_dir_of(project_root)
-    run_update(bin_path, notes_dir, runner=runner)
+    if notes == NOTES_WRITTEN:
+        run_update(bin_path, notes_dir, runner=runner)
+
+    # No usable number keeps the edge this module had before, so an unreadable
+    # status is never worse than the behaviour it replaced and never turns into
+    # an embed spawned on every Stop of its own accord.
+    pending, unknown = pending_docs(project_root, bin_path, notes_dir,
+                                    deadline, runner=runner)
+    if unknown is not None:
+        if notes != NOTES_WRITTEN:
+            return unknown
+    elif pending <= 0:
+        return CURRENT
 
     lock = lock_path_of(project_root)
-    if lock_blocks(read_lock(lock), sid_tag, round_n):
+    info = read_lock(lock)
+    if lock_blocks(info):
         return LOCKED
+
+    if retry_is_futile(info, pending):
+        return FUTILE
 
     try:
         pid = spawn_embed(bin_path, notes_dir, popen=popen)
     except (OSError, ValueError):
         return EMBED_FAILED
 
-    write_lock(lock, pid, sid_tag, round_n)
+    write_lock(lock, pid, sid_tag, round_n, pending)
     return EMBEDDING

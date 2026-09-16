@@ -114,7 +114,14 @@ from note_links import (  # noqa: E402
     normalize_note_rel,
     resolve_note_owner,
 )
-from qmd_index import NO_QMD, follow_index  # noqa: E402
+from qmd_index import (  # noqa: E402
+    HALT_STATUSES as QMD_HALT,
+    LOUD_STATUSES as QMD_LOUD,
+    NOTES_UNCHANGED,
+    NOTES_WRITTEN,
+    follow_index,
+    new_budget as qmd_budget,
+)
 from touched_capture import _find_state_root  # noqa: E402
 from tstamp import now_iso  # noqa: E402
 
@@ -1929,34 +1936,6 @@ def main() -> int:
                 unlinked.append(_p)
     novel_notes = [n for n in unlinked if n not in tried_notes]
 
-    # --- qmd index follow-up (notes-retrieval-rollout-plan.md §4 「増分」) ----
-    # A round that wrote notes leaves the project's qmd index behind the tree.
-    # `hooks/qmd_index.py` owns the mechanics; this block owns only the
-    # question "did THIS ROUND write a note, and for which project".
-    #
-    # Round-scoped on purpose: the scan above is whole-session (`touched`)
-    # because its two consumers need it that way, and reusing it here would
-    # re-run the follow-up on every later Stop of the session for notes indexed
-    # rounds ago. `new_slice` is this round's ledger slice — the same input
-    # `compute_round_active` scans for note owners.
-    #
-    # One project per round (blast cap): the ordering below is deterministic —
-    # the primary project first, then the rest by name — and the loop ends at
-    # the first project `follow_index` did not decline for want of a `.qmd/`
-    # dir. A project not onboarded to qmd is passed over, never serviced; a
-    # `TASKFLOW_NOTES_PUSH` that is not `auto` ends the loop on the first
-    # project, which is the whole point of that gate.
-    round_note_projects = [
-        name for name, root in project_roots.items()
-        if _scan_note_writes(new_slice, name, root, reverse_indexes[name])[0]
-    ]
-    if round_note_projects:
-        ordered = [n for n in (project,) if n in round_note_projects]
-        ordered += sorted(n for n in round_note_projects if n != project)
-        for _name in ordered:
-            if follow_index(project_roots[_name], sid_tag, round_n) != NO_QMD:
-                break
-
     # W5 (§1.9): the round baseline as it stood when this Stop STARTED, taken
     # before `compute_round_active` raises `log_seen` for anything it judges
     # self-logged. `_round_base` falls back to THIS instead of the live
@@ -2310,6 +2289,50 @@ def main() -> int:
             'ns_debt': ns_debt,
             'tried_ns': tried_ns,
         }
+
+    # --- qmd index follow-up (notes-retrieval-rollout-plan.md §4 「増分」) ----
+    # `hooks/qmd_index.py` owns the mechanics. This block owns two questions:
+    # which projects to offer it, and which of them this ROUND wrote a note
+    # into. The second answer decides only whether the cheap lexical `update`
+    # runs there, and it is taken from `new_slice` — this round's ledger slice,
+    # the same input `compute_round_active` scans for note owners — never from
+    # the whole-session `touched` scan above, which would re-run `update` for
+    # every later Stop of the session over notes indexed rounds ago.
+    #
+    # Whether an EMBED starts is not this block's question at all: the driver
+    # levels it off `qmd status`, so a project is offered even when this round
+    # wrote nothing into it. That is what re-drives an embed a previous round's
+    # lock declined — under the old edge trigger that embed was simply lost
+    # until some later round happened to write another note.
+    #
+    # Position matters twice. AFTER the round commit above, so `round_n` is the
+    # round the state file goes on to carry (the lock records it as diagnostics
+    # and the value must not name a round nothing else knows). BEFORE the
+    # no-block gate below, which returns early on exactly the quiet Stops the
+    # level trigger exists for.
+    #
+    # One spawn per Stop: the order is deterministic — the session's own
+    # project first, then the rest by name — and the loop ends at the first
+    # status that settles the whole Stop (an env-wide gate, a running embed, or
+    # this Stop's spawn). `qmd_budget()` is ONE wall-clock budget shared by
+    # every probe, so the number of projects cannot multiply the Stop's latency.
+    _qmd_deadline = qmd_budget()
+    _qmd_note_projects = {
+        name for name, root in project_roots.items()
+        if _scan_note_writes(new_slice, name, root, reverse_indexes[name])[0]
+    }
+    _qmd_order = [n for n in (project,) if n in project_roots]
+    _qmd_order += sorted(n for n in project_roots if n != project)
+    for _name in _qmd_order:
+        _qmd_status = follow_index(
+            project_roots[_name], sid_tag, round_n,
+            NOTES_WRITTEN if _name in _qmd_note_projects else NOTES_UNCHANGED,
+            deadline=_qmd_deadline)
+        if _qmd_status in QMD_LOUD:
+            print(f'[progress capture] qmd-follow({_name}): {_qmd_status} '
+                  f'[s:{sid_tag}]', file=sys.stderr)
+        if _qmd_status in QMD_HALT:
+            break
 
     # --- Gate (INV-1): block only to (b) report binds, (c) report exec-skip,
     # (d) spawn capture, or to surface proposals. `requested` is committed before
