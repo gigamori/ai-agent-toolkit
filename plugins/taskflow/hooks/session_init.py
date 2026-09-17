@@ -436,16 +436,23 @@ elif inject_guidelines_reminder:
     except Exception:
       continue
 
-# The guidelines are injected as hook stdout, where the harness does NOT expand
+# The prompts are injected as hook stdout, where the harness does NOT expand
 # ${CLAUDE_PLUGIN_ROOT} (it only does so in hooks.json commands and agent
 # definitions), and the main agent's shell has no such env var either. Expand it
-# here so injected commands (e.g. progress_guidelines.md's view_progress.py
-# invocation) are runnable as printed.
+# here so injected commands (progress_guidelines.md's view_progress.py
+# invocation, project_routing.md's rebuild_progress.py one) are runnable as
+# printed. Every prompt block carrying a command needs this pass: a file that
+# has one and is not listed here delivers a path the agent cannot resolve, and
+# then goes looking for the script.
+# Forward slashes: the expanded path lands inside a bash command line, where
+# Windows backslashes would be eaten as escapes.
+_plugin_root_fwd = PLUGIN_ROOT.replace('\\', '/')
 if guidelines_content:
-  # Forward slashes: the expanded path lands inside a bash command line, where
-  # Windows backslashes would be eaten as escapes.
   guidelines_content = guidelines_content.replace(
-    '${CLAUDE_PLUGIN_ROOT}', PLUGIN_ROOT.replace('\\', '/'))
+    '${CLAUDE_PLUGIN_ROOT}', _plugin_root_fwd)
+if routing_content:
+  routing_content = routing_content.replace(
+    '${CLAUDE_PLUGIN_ROOT}', _plugin_root_fwd)
 
 # Build project_index block.
 index_content = ''
@@ -604,24 +611,61 @@ os.makedirs(STATE_DIR, exist_ok=True)
 with open(state_path, 'w', encoding='utf-8') as f:
   json.dump(new_state, f, ensure_ascii=False)
 
-# ACTION_REQUIRED banner: every turn while the project is set but progress.md is missing.
-# Kept per-turn (not gated by state flags) so the user / LLM doesn't forget.
+# ACTION_REQUIRED banner: every turn while the project is set but progress.md is
+# missing. Two variants, selected by the SAME `heavy_turn` gate that decides the
+# full guidelines: the procedure (which opens with "ask the user") rides the turns
+# that establish this project's context -- new session, project re-entry, project
+# switch, and the turn after compaction. Every other turn carries the standing
+# notice instead. Restating "ask the user to approve" on a turn where the answer
+# is already in context is what made the LLM re-ask on every turn; measured at 7
+# re-asks across 6 consecutive turns. Design:
+# project-notes/specs/scaffold-banner-heavy-gate.md
+# The `!!ACTION_REQUIRED (preflight): ` prefix is byte-identical in both
+# variants -- anything matching on it (tests, log greps) sees no difference.
+# Only the standing notice carries the index.md skeleton, and that asymmetry is
+# load-bearing: this banner sits inside the preview an over-budget heavy turn
+# collapses to, the cut walks back to the preceding line break, and the banner is
+# one line -- so a heavy variant one unit over the cap loses the whole banner, not
+# just the addition. The canonical skeleton is project_routing.md "Project index
+# format"; the notice is the variant the approval-then-write turn receives.
+# Design: project-notes/specs/scaffold-index-literal.md
 action_required = ''
 if current_project:
   progress_path = os.path.join(PROGRESS_ROOT, current_project, 'progress.md')
   if not os.path.exists(progress_path):
-    action_required = (
-      f'\n\n!!ACTION_REQUIRED (preflight): '
-      f'`_projects/{current_project}/progress.md` does not exist. Before starting any user work, '
-      f'(1) ask the user to approve scaffold generation; (2) on approval, create '
-      f'`_projects/{current_project}/index.md`, `progress.md`, and `project-notes/index.md`; '
-      f'(3) add the matching row to `_projects/index.md`. '
-      f'If Plan mode blocks writes, ask the user to confirm before proceeding. '
-      f'Response leading lines (e.g. [pj:{current_project}]) still apply during this preflight.'
-    )
+    if heavy_turn:
+      action_required = (
+        f'\n\n!!ACTION_REQUIRED (preflight): '
+        f'`_projects/{current_project}/progress.md` does not exist. First, '
+        f'(1) ask the user to approve scaffold generation; (2) on approval, create '
+        f'`_projects/{current_project}/index.md` and `project-notes/index.md`, add the row '
+        f'to `_projects/index.md`, then generate `progress.md` with the rebuild command in '
+        f'the routing rules. If Plan mode blocks writes, confirm with the user first. '
+        f'Response leading lines still apply during this preflight.'
+      )
+    else:
+      action_required = (
+        f'\n\n!!ACTION_REQUIRED (preflight): '
+        f'`_projects/{current_project}/progress.md` is still missing. Once the user approves, create '
+        f'`_projects/{current_project}/index.md` (H1 `# {current_project}`, then `## Target` and '
+        f'`## Scope`; add `## Directory Semantics` only when this project\'s paths differ from '
+        f'the defaults) and `project-notes/index.md` (4 columns: File | Description | Tags | '
+        f'Updated), add the row to `_projects/index.md`, then run '
+        f'`uv run --script "{_plugin_root_fwd}/scripts/rebuild_progress.py" '
+        f'"_projects/{current_project}"` to generate `progress.md`; do not hand-write it. '
+        f'Never read another project\'s files for a format. '
+        f'Do not re-ask for approval on every turn. '
+        f'Response leading lines (e.g. [pj:{current_project}]) still apply during this preflight.'
+      )
 
 # Fork context: on the first turn of a forked session, tell the LLM which
 # tasks were inherited so it continues working on them.
+# Assembled AFTER action_required, not before: `inherited_tasks` is a
+# comma-joined filename list with no length bound, and anything ahead of the
+# banner pushes its line toward the preview cut that drops whole lines. Losing
+# an advisory "continue these tasks" block beats losing a blocking preflight
+# instruction, and it also makes the banner's measured fit independent of this
+# block. No consumer matches on the relative order of the two.
 fork_context = ''
 if is_new_session and loaded.get('inherited_tasks'):
   task_list = ', '.join(loaded['inherited_tasks'])
@@ -647,7 +691,7 @@ else:
     return (
       f'[Progress Session] session_id={session_id} sid={session_id.replace("-", "")[-12:]} '
       f'state_file={state_path} current_project={current_project}{discovery_field} '
-      f'iso_ts={iso_ts}{bootstrap_content}{fork_context}{action_required}{progress_block}'
+      f'iso_ts={iso_ts}{bootstrap_content}{action_required}{fork_context}{progress_block}'
       f'{index_content}{routing_content}{guidelines_content}{rules_content}{notes_content}{notes_notice}'
     )
 
