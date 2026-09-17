@@ -149,7 +149,9 @@ user prompt
   │     + project_index: index.md on project switch
   │     + project_rules: rules.md full body on switch / `##` heading manifest otherwise
   │                      (full every turn if frontmatter inject_every_turn: true; absent if no rules.md)
-  │     + ACTION_REQUIRED banner: every turn while progress.md is missing
+  │     + ACTION_REQUIRED banner: every turn while progress.md is missing — the full
+  │                      scaffold procedure on a heavy turn (same gate as the bootstrap
+  │                      branch), a one-line standing notice on every other turn
   │     + fork_context: first turn of a forked session
   │     + progress_digest (hooks/progress_digest.py): `[Project Progress: <project>]` +
   │                      the `## In Progress` header, separator and up to
@@ -671,7 +673,22 @@ When a session does task work whose result lands OUTSIDE the task's own `tasks/<
 
 ### ACTION_REQUIRED preflight banner
 
-While a project is active but its `progress.md` does not yet exist, `session_init.py` injects an `!!ACTION_REQUIRED (preflight)` banner every turn (not gated by session flags), instructing the LLM to ask for approval and then scaffold `index.md`, `progress.md`, and `project-notes/index.md` (and add the matching row to `_projects/index.md`) before starting user work. This scaffolding is permitted even inside Plan mode.
+While a project is active but its `progress.md` does not yet exist, `session_init.py` injects an `!!ACTION_REQUIRED (preflight)` banner every turn. The banner has two variants, selected by the same `heavy_turn` gate that decides the full guidelines:
+
+- **heavy turn** (new session, project re-entry, project switch, the turn after compaction): the full procedure — ask the user to approve, then scaffold `index.md` and `project-notes/index.md`, add the matching row to `_projects/index.md`, and run `scripts/rebuild_progress.py` for `progress.md`, before starting user work. This scaffolding is permitted even inside Plan mode.
+- **every other turn**: a standing notice naming the same writes, with no instruction to ask. The procedure is already in context on those turns, and restating "ask the user to approve" there made the LLM re-ask on every turn instead of proceeding (measured: 7 re-asks across 6 consecutive turns). The banner carries no record of whether the user already declined — the hook cannot observe that — so the notice is unconditional while `progress.md` is missing.
+
+`progress.md` is generated, never hand-written by the LLM: `rebuild_progress.py` creates it from its own skeleton with the `@table` markers a later rebuild needs. The PostToolUse auto-rebuild only fires on `tasks/` paths, so at scaffold time the script is run explicitly.
+
+The two variants carry different amounts of format, and the reason is delivery, not wording taste. The banner is assembled immediately after the bootstrap block, inside the preview a heavy turn's over-budget payload collapses to; that preview is cut back to the preceding line break and the banner is a single line, so one unit over drops the whole banner rather than truncating it. The heavy variant therefore carries the procedure only — and points at the rebuild command rather than inlining it, because an absolute plugin path would make the fit machine-dependent. `_projects/<project>/index.md`'s skeleton and the rebuild invocation live in `project_routing.md` "Project index format" (canonical), and the skeleton is repeated in the standing notice, which is the variant the approval-then-write turn receives and is not preview-bound (measured: notice line ends at u16 945, whole non-heavy payload 6,253 against the 10,000 inline cap).
+
+`fork_context` is assembled AFTER the banner for the same reason: its `inherited_tasks` list is a comma-joined filename list with no length bound, and anything ahead of the banner pushes the banner's line toward that cut. Losing an advisory "continue these tasks" block beats losing a blocking preflight instruction, and it also makes the banner's measured fit independent of whether the session was forked.
+
+`tests/test_session_init_bootstrap.py` pins the preview fit on both counting bases (u16 against 2,000 and UTF-8 bytes against 2,048 — the two primary figures disagree and a non-ASCII `state_file` path separates them), a long-project-name arm since the name is interpolated more than once, the banner-before-fork_context order, the agreement between the canonical skeleton and the notice (every column-0 element of the canonical fence quoted in the notice, not its section names alone — the purpose line went missing under the narrower gate), and that no injected block reaches the agent with an unexpanded `${CLAUDE_PLUGIN_ROOT}`.
+
+**Prompt blocks carrying a command must be in the expansion list.** The harness does not expand `${CLAUDE_PLUGIN_ROOT}` in hook stdout (only in `hooks.json` commands and agent definitions), and the agent's own shell has no such variable, so `session_init.py` substitutes it before assembly — for `guidelines_content` and `routing_content`. A prompt file that gains a command and is not in that list delivers a path the agent cannot resolve, and the agent then goes looking for the script. The commands themselves use `uv run --script`, which the `scripts/` entry points require because they declare inline dependencies.
+
+The `!!ACTION_REQUIRED (preflight): ` prefix is byte-identical in both variants. Design: `project-notes/specs/scaffold-banner-heavy-gate.md`.
 
 ## Path resolution
 

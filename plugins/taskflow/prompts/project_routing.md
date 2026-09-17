@@ -92,9 +92,31 @@ When the LLM spawns a new session via the Agent tool (subagent) or a CLI launch 
 - Changing the project overview (scope, target repo, etc.): update BOTH `_projects/<project>/index.md` and `_projects/index.md`.
 - Retiring a project: remove its row from `_projects/index.md`.
 
+## Project index format
+
+`_projects/<project>/index.md` is the project overview. Write it from this skeleton:
+
+```markdown
+# <project>
+
+<one line: what this project is for>
+
+## Target
+- <the repo, package or path the work lands in>
+
+## Scope
+- <what this project covers>
+```
+
+- Add `## Directory Semantics` only when the project's own management resources (`tasks/`, `progress.md`, `project-notes/`, `rules.md`) or its default working directory sit somewhere other than the defaults.
+- Nothing else is required. Leave out a section the project has no content for rather than filling it with a placeholder.
+- `progress.md` is NOT hand-written. Run
+  `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/rebuild_progress.py" "<project-root>"`: it creates the file from its own skeleton, with the `@table` markers the rebuild needs, and writes an empty table region when `tasks/` does not exist yet. The script declares its own dependencies inline, so `--script` is required; plain `python` fails on the import.
+
 ## Prohibitions
 
 - `_projects/<project>/plans/` and `_projects/<project>/memory/` are archive copies maintained by the Stop hook. Do NOT reference them as authoritative sources.
+- Do NOT read another project's files to work out a format. Every format this harness requires is written out here or in the guidelines; `_projects/<other>/` is never the source, and reading one imports that project's local choices as if they were the rule.
 
 ## Project rules (`rules.md`)
 

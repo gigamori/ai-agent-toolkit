@@ -84,7 +84,7 @@ flowchart TD
 
 ### 新規プロジェクトの作成
 
-こう頼むだけ: *「billing-revamp という新しいプロジェクトを作って」*。Claude が確認したうえで、そのプロジェクトの `index.md` / `progress.md` / `project-notes/index.md` を scaffold し、マスター index に追加する。作成前に必ずあなたの承認を取る。
+こう頼むだけ: *「billing-revamp という新しいプロジェクトを作って」*。Claude が確認したうえで、そのプロジェクトの `index.md` と `project-notes/index.md` を scaffold し、マスター index に追加し、`progress.md` を生成する。作成前に必ずあなたの承認を取る。
 
 ---
 

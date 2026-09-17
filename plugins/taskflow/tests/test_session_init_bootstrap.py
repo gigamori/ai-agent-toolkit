@@ -22,8 +22,23 @@ from progress_digest import u16len, INLINE_BUDGET_U16, IN_PROGRESS_ROWS_MAX  # n
 BOOTSTRAP_MARKER = "[taskflow bootstrap - read this block before anything else]"
 PROJECT_INDEX_MARKER = "[Project Index:"
 ACTION_REQUIRED_MARKER = "!!ACTION_REQUIRED"
+PREFLIGHT_FULL_MARKER = "(1) ask the user to approve scaffold generation"
+PREFLIGHT_PENDING_MARKER = "Do not re-ask for approval on every turn."
+PREFLIGHT_BOUNDARY_MARKER = "another project's files"
+PREFLIGHT_REBUILD_MARKER = "/scripts/rebuild_progress.py"
+PREFLIGHT_REBUILD_POINTER = "rebuild command in the routing rules"
+PEP723_RUNNER = "uv run --script"
+UNEXPANDED_PLUGIN_ROOT = "${CLAUDE_PLUGIN_ROOT}"
 GUIDELINES_REMINDER_MARKER = "[taskflow guidelines reminder]"
 PROGRESS_SESSION_MARKER = "[Progress Session]"
+
+PROJECT_INDEX_FORMAT_HEADING = "## Project index format"
+SKELETON_FENCE = "```markdown"
+CANONICAL_PROJECT_PLACEHOLDER = "<project>"
+BULLET_PREFIX = "- "
+CANONICAL_INDEX_ELEMENTS = 4
+PREVIEW_U16_CAP = 2000
+PREVIEW_BYTE_CAP = 2048
 
 SID_LARGE = "b1c2d3e4-f5a6-4789-9abc-def012345601"
 SID_SMALL = "c2d3e4f5-a6b7-4890-9abc-def012345602"
@@ -32,7 +47,10 @@ SID_DIGEST_A = "e4f5a6b7-c8d9-4012-9abc-def012345604"
 SID_DIGEST_B = "f5a6b7c8-d9e0-4123-9abc-def012345605"
 SID_DIGEST_C = "a6b7c8d9-e0f1-4234-9abc-def012345606"
 SID_DIGEST_D = "b7c8d9e0-f1a2-4345-9abc-def012345607"
+SID_PREFLIGHT_SEQ = "c8d9e0f1-a2b3-4456-9abc-def012345608"
+SID_PREFLIGHT_LONG = "d9e0f1a2-b3c4-4567-9abc-def012345609"
 PROJECT = "e2e-bootstrap-fixture"
+PROJECT_LONG_NAME = "e2e-bootstrap-fixture-longer-name"
 
 DIGEST_HEADER_LITERAL = f"[Project Progress: {PROJECT}]"
 OMISSION_NOTICE = "[Project Progress] In Progress digest omitted (context budget)"
@@ -113,6 +131,44 @@ def run_session_init(hooks: Path, cwd: Path, payload: dict,
         text=True, encoding="utf-8", errors="replace", env=env)
 
 
+def canonical_index_elements(prompts: Path, project: str) -> list[str]:
+    text = (prompts / "project_routing.md").read_text(encoding="utf-8")
+    start = text.find(PROJECT_INDEX_FORMAT_HEADING)
+    if start == -1:
+        return []
+    fence = text.find(SKELETON_FENCE, start)
+    if fence == -1:
+        return []
+    body_start = text.find("\n", fence) + 1
+    body_end = text.find("```", body_start)
+    if body_end == -1:
+        return []
+    return [ln.replace(CANONICAL_PROJECT_PLACEHOLDER, project)
+            for ln in text[body_start:body_end].splitlines()
+            if ln.strip() and ln == ln.lstrip() and not ln.startswith(BULLET_PREFIX)]
+
+
+def action_required_span(ctx: str) -> tuple[int, int]:
+    start = ctx.find(ACTION_REQUIRED_MARKER)
+    if start == -1:
+        return (-1, -1)
+    end = ctx.find("\n", start)
+    return (start, len(ctx) if end == -1 else end)
+
+
+def action_required_line(ctx: str) -> str:
+    start, end = action_required_span(ctx)
+    return "" if start == -1 else ctx[start:end]
+
+
+def preview_fit(ctx: str) -> tuple[int, int]:
+    _, end = action_required_span(ctx)
+    if end == -1:
+        return (-1, -1)
+    head = ctx[:end]
+    return (u16len(head), len(head.encode("utf-8")))
+
+
 def additional_context(stdout: str) -> str:
     try:
         data = json.loads(stdout)
@@ -152,6 +208,14 @@ def turn2_seeded_fixture(root: Path, session_id: str) -> None:
     }
     with open(state_dir / f"{session_id}.json", "w", encoding="utf-8") as f:
         json.dump(state, f)
+
+
+def small_index_no_progress_fixture(root: Path) -> None:
+    proj_dir = root / "_projects" / PROJECT
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    with open(proj_dir / "index.md", "w", encoding="utf-8", newline="\n") as f:
+        f.write("| Project | Description | Target |\n|---------|-------------|--------|\n"
+                 "| x | small | none |\n")
 
 
 def every_turn_rules_fixture(root: Path, session_id: str) -> None:
@@ -299,6 +363,16 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         hooks = mirror_hooks_and_prompts(Path(d))
         block, max_chars = extract_bootstrap_block(hooks)
+        source = (hooks / "session_init.py").read_text(encoding="utf-8")
+        i_action = source.find("{action_required}")
+        i_fork = source.find("{fork_context}")
+        check(i_action != -1 and i_fork != -1 and i_action < i_fork,
+              f"the assembled payload places action_required ahead of fork_context "
+              f"(offsets {i_action} / {i_fork}); fork_context's inherited-task list has "
+              f"no length bound, and anything ahead of the banner pushes its line toward "
+              f"a cut that drops whole lines, so the preview fit measured below would not "
+              f"hold on a forked session's first turn")
+
         check(block is not None, "BOOTSTRAP_BLOCK symbol found in source")
         check(max_chars is not None, "BOOTSTRAP_MAX_CHARS symbol found in source")
         if block is not None:
@@ -334,6 +408,35 @@ def main() -> int:
               f"bootstrap offset {idx} precedes project index offset {idx_project}")
         check(idx != -1 and idx_action != -1 and idx < idx_action,
               f"bootstrap offset {idx} precedes ACTION_REQUIRED offset {idx_action}")
+        check(PREFLIGHT_FULL_MARKER in ctx,
+              "a heavy turn carries the full scaffold procedure, which is the only "
+              "variant that tells the LLM to ask for approval")
+        check(PREFLIGHT_PENDING_MARKER not in ctx,
+              "a heavy turn does not also carry the standing notice variant")
+
+        fit_u16, fit_bytes = preview_fit(ctx)
+        check(0 < fit_u16 <= PREVIEW_U16_CAP and 0 < fit_bytes <= PREVIEW_BYTE_CAP,
+              f"the ACTION_REQUIRED line ends at u16 offset {fit_u16} of "
+              f"{PREVIEW_U16_CAP} and byte offset {fit_bytes} of {PREVIEW_BYTE_CAP}, "
+              f"inside the preview a heavy turn collapses to on either counting basis; "
+              f"the cut walks back to the preceding line break, so one unit over drops "
+              f"the whole banner rather than truncating it, and a non-ASCII state_file "
+              f"path separates the two counts (both cap figures and their provenance: "
+              f"plugins/taskflow/docs/test-constraints.md)")
+        check(PREFLIGHT_REBUILD_POINTER in ctx,
+              "a heavy turn sends the LLM to the rebuild command instead of ordering a "
+              "hand-written progress.md; the command itself is not inlined here because "
+              "an absolute plugin path would make the preview fit machine-dependent")
+        check(f"`_projects/{PROJECT}/index.md`" in ctx,
+              "a heavy turn names the project index by its full path, so it cannot be "
+              "read as the master _projects/index.md named later in the same sentence")
+        check(UNEXPANDED_PLUGIN_ROOT not in ctx,
+              "no injected block reaches the agent with an unexpanded "
+              "${CLAUDE_PLUGIN_ROOT}; the agent's shell has no such variable, so a "
+              "command printed with one is unrunnable")
+        check(PREFLIGHT_REBUILD_MARKER in ctx and PEP723_RUNNER in ctx,
+              "the routing rules deliver the rebuild invocation with a resolved path and "
+              "the --script runner the script's inline dependencies require")
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -352,6 +455,14 @@ def main() -> int:
               "bootstrap marker absent on an unchanged turn 2")
         check(GUIDELINES_REMINDER_MARKER in ctx,
               "guidelines reminder (carrying its own ROUTER line) is present")
+        check(ACTION_REQUIRED_MARKER in ctx,
+              "the preflight banner still fires on a non-heavy turn while "
+              "progress.md is missing")
+        check(PREFLIGHT_PENDING_MARKER in ctx,
+              "a non-heavy turn carries the standing notice variant")
+        check(PREFLIGHT_FULL_MARKER not in ctx,
+              "a non-heavy turn does not repeat the ask-for-approval procedure; "
+              "repeating it is what makes the LLM re-ask every turn")
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -502,6 +613,82 @@ def main() -> int:
         check(DIGEST_HEADER_LITERAL not in ctx,
               "arm D: digest ABSENT on the same turn as BOOTSTRAP_BLOCK (never both)")
 
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        assert_isolated(root)
+        hooks = mirror_hooks_and_prompts(root)
+        small_index_no_progress_fixture(root)
+
+        r1 = run_session_init(hooks, root, {
+            "session_id": SID_PREFLIGHT_SEQ,
+            "prompt": f"pj:{PROJECT} start here",
+            "transcript_path": "",
+        })
+        ctx1 = additional_context(r1.stdout)
+        state_json = root / "_projects" / "_state" / f"{SID_PREFLIGHT_SEQ}.json"
+        check(bool(ctx1), f"live turn 1 additionalContext is non-empty (rc={r1.returncode})")
+        check(state_json.is_file(),
+              "live turn 1 wrote the state json the next turn reads its gate flags from")
+        check(PREFLIGHT_FULL_MARKER in ctx1,
+              "live turn 1 carries the full scaffold procedure")
+
+        r2 = run_session_init(hooks, root, {
+            "session_id": SID_PREFLIGHT_SEQ,
+            "prompt": "continue please, no project token here",
+            "transcript_path": "",
+        })
+        ctx2 = additional_context(r2.stdout)
+        check(bool(ctx2), f"live turn 2 additionalContext is non-empty (rc={r2.returncode})")
+        check(PREFLIGHT_PENDING_MARKER in ctx2,
+              "live turn 2 degrades to the standing notice from the state turn 1 wrote, "
+              "not from a pre-seeded fixture")
+        check(PREFLIGHT_FULL_MARKER not in ctx2,
+              "live turn 2 does not repeat the ask-for-approval procedure")
+
+        elements = canonical_index_elements(root / "prompts", PROJECT)
+        check(len(elements) == CANONICAL_INDEX_ELEMENTS,
+              f"project_routing.md's first {SKELETON_FENCE} block after "
+              f"{PROJECT_INDEX_FORMAT_HEADING} carries exactly "
+              f"{CANONICAL_INDEX_ELEMENTS} column-0 skeleton elements (H1, purpose line, "
+              f"and the required headings; a bullet holds section content, not skeleton), "
+              f"got {elements!r}")
+        notice = action_required_line(ctx2)
+        missing = [s for s in elements if f"`{s}`" not in notice]
+        check(elements and not missing,
+              f"every element of the canonical skeleton reaches the standing notice, "
+              f"which is the variant the approval-then-write turn gets; a gate over "
+              f"section names alone let the purpose line go missing from the notice "
+              f"while staying green; missing {missing!r}")
+        check(PREFLIGHT_REBUILD_MARKER in notice and PEP723_RUNNER in notice,
+              "the standing notice carries the rebuild invocation itself, resolved path "
+              "and --script runner included; this is the variant the write turn gets, and "
+              "it is not preview-bound")
+        check(UNEXPANDED_PLUGIN_ROOT not in ctx2,
+              "the standing notice's command reaches the agent with the path resolved")
+        check(PREFLIGHT_BOUNDARY_MARKER in ctx2,
+              "live turn 2 forbids reading another project's files")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        assert_isolated(root)
+        hooks = mirror_hooks_and_prompts(root)
+
+        r = run_session_init(hooks, root, {
+            "session_id": SID_PREFLIGHT_LONG,
+            "prompt": f"pj:{PROJECT_LONG_NAME} begin",
+            "transcript_path": "",
+        })
+        ctx = additional_context(r.stdout)
+        check(bool(ctx), f"long-name additionalContext is non-empty (rc={r.returncode})")
+        check(PREFLIGHT_FULL_MARKER in ctx,
+              "long-name turn 1 is a heavy turn carrying the full scaffold procedure")
+        long_u16, long_bytes = preview_fit(ctx)
+        check(0 < long_u16 <= PREVIEW_U16_CAP and 0 < long_bytes <= PREVIEW_BYTE_CAP,
+              f"a {len(PROJECT_LONG_NAME)}-character project name still leaves the "
+              f"ACTION_REQUIRED line inside the preview (u16 {long_u16} of "
+              f"{PREVIEW_U16_CAP}, bytes {long_bytes} of {PREVIEW_BYTE_CAP}); the name is "
+              f"interpolated more than once, so the line grows with it")
+
     after = real_state_snapshot()
     check(after == before,
           f"real _projects/_state/ is unchanged (before={before!r}, after={after!r})")
@@ -519,6 +706,10 @@ def main() -> int:
           "synthetic digest arm C session id absent from real _projects/_state/")
     check(not (REAL_STATE / f"{SID_DIGEST_D}.json").exists(),
           "synthetic digest arm D session id absent from real _projects/_state/")
+    check(not (REAL_STATE / f"{SID_PREFLIGHT_SEQ}.json").exists(),
+          "synthetic preflight-sequence session id absent from real _projects/_state/")
+    check(not (REAL_STATE / f"{SID_PREFLIGHT_LONG}.json").exists(),
+          "synthetic long-project-name session id absent from real _projects/_state/")
 
     print()
     if FAIL == 0:

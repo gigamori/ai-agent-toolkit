@@ -84,7 +84,7 @@ Key rule: **taskflow never guesses your project.** If you don't name one and hav
 
 ### Creating a new project
 
-Just ask: *"create a new project called billing-revamp"*. Claude will confirm, then scaffold the project's `index.md`, `progress.md`, and `project-notes/index.md` and add it to the master index. You approve before anything is created.
+Just ask: *"create a new project called billing-revamp"*. Claude will confirm, then scaffold the project's `index.md` and `project-notes/index.md`, add it to the master index, and generate `progress.md`. You approve before anything is created.
 
 ---
 
