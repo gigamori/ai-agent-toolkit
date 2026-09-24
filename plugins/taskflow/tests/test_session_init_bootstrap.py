@@ -34,6 +34,9 @@ PROGRESS_SESSION_MARKER = "[Progress Session]"
 
 PROJECT_INDEX_FORMAT_HEADING = "## Project index format"
 SKELETON_FENCE = "```markdown"
+CANONICAL_PROJECT_PLACEHOLDER = "<project>"
+BULLET_PREFIX = "- "
+CANONICAL_INDEX_ELEMENTS = 4
 PREVIEW_U16_CAP = 2000
 PREVIEW_BYTE_CAP = 2048
 
@@ -128,7 +131,7 @@ def run_session_init(hooks: Path, cwd: Path, payload: dict,
         text=True, encoding="utf-8", errors="replace", env=env)
 
 
-def canonical_index_sections(prompts: Path) -> list[str]:
+def canonical_index_elements(prompts: Path, project: str) -> list[str]:
     text = (prompts / "project_routing.md").read_text(encoding="utf-8")
     start = text.find(PROJECT_INDEX_FORMAT_HEADING)
     if start == -1:
@@ -140,8 +143,9 @@ def canonical_index_sections(prompts: Path) -> list[str]:
     body_end = text.find("```", body_start)
     if body_end == -1:
         return []
-    return [ln.strip() for ln in text[body_start:body_end].splitlines()
-            if ln.startswith("## ")]
+    return [ln.replace(CANONICAL_PROJECT_PLACEHOLDER, project)
+            for ln in text[body_start:body_end].splitlines()
+            if ln.strip() and ln == ln.lstrip() and not ln.startswith(BULLET_PREFIX)]
 
 
 def action_required_span(ctx: str) -> tuple[int, int]:
@@ -641,17 +645,20 @@ def main() -> int:
         check(PREFLIGHT_FULL_MARKER not in ctx2,
               "live turn 2 does not repeat the ask-for-approval procedure")
 
-        sections = canonical_index_sections(root / "prompts")
-        check(len(sections) == 2,
+        elements = canonical_index_elements(root / "prompts", PROJECT)
+        check(len(elements) == CANONICAL_INDEX_ELEMENTS,
               f"project_routing.md's first {SKELETON_FENCE} block after "
-              f"\"{PROJECT_INDEX_FORMAT_HEADING}\" carries exactly the 2 required "
-              f"sections, got {sections!r}")
+              f"{PROJECT_INDEX_FORMAT_HEADING} carries exactly "
+              f"{CANONICAL_INDEX_ELEMENTS} column-0 skeleton elements (H1, purpose line, "
+              f"and the required headings; a bullet holds section content, not skeleton), "
+              f"got {elements!r}")
         notice = action_required_line(ctx2)
-        missing = [s for s in sections if f"`{s}`" not in notice]
-        check(sections and not missing,
-              f"every section of the canonical skeleton reaches the standing notice, "
-              f"which is the variant the approval-then-write turn gets; missing "
-              f"{missing!r}")
+        missing = [s for s in elements if f"`{s}`" not in notice]
+        check(elements and not missing,
+              f"every element of the canonical skeleton reaches the standing notice, "
+              f"which is the variant the approval-then-write turn gets; a gate over "
+              f"section names alone let the purpose line go missing from the notice "
+              f"while staying green; missing {missing!r}")
         check(PREFLIGHT_REBUILD_MARKER in notice and PEP723_RUNNER in notice,
               "the standing notice carries the rebuild invocation itself, resolved path "
               "and --script runner included; this is the variant the write turn gets, and "

@@ -628,6 +628,11 @@ with open(state_path, 'w', encoding='utf-8') as f:
 # one line -- so a heavy variant one unit over the cap loses the whole banner, not
 # just the addition. The canonical skeleton is project_routing.md "Project index
 # format"; the notice is the variant the approval-then-write turn receives.
+# The notice quotes the canonical's own column-0 lines verbatim -- H1, the
+# purpose line and both headings -- so the agreement gate is a substring check
+# over every skeleton element rather than over section names alone. Quoting
+# fewer of them is how the purpose line went missing from the notice while the
+# section-only gate stayed green.
 # Design: project-notes/specs/scaffold-index-literal.md
 action_required = ''
 if current_project:
@@ -647,7 +652,8 @@ if current_project:
       action_required = (
         f'\n\n!!ACTION_REQUIRED (preflight): '
         f'`_projects/{current_project}/progress.md` is still missing. Once the user approves, create '
-        f'`_projects/{current_project}/index.md` (H1 `# {current_project}`, then `## Target` and '
+        f'`_projects/{current_project}/index.md` (H1 `# {current_project}`, then '
+        f'`<one line: what this project is for>`, then `## Target` and '
         f'`## Scope`; add `## Directory Semantics` only when this project\'s paths differ from '
         f'the defaults) and `project-notes/index.md` (4 columns: File | Description | Tags | '
         f'Updated), add the row to `_projects/index.md`, then run '
