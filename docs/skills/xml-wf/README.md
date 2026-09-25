@@ -250,7 +250,7 @@ unique to the attempt. On Claude Code, pass it verbatim as the Agent call's
 description:
 - `record` uses it to find that subagent's transcript, together with every agent the subagent started, and to check them for refused tool calls.
 - If it finds a refusal, the step is `error: denied` whatever its result file says.
-- If it cannot find the transcript, it still prints its verdict, marked `deny-check: NO-TRANSCRIPT`, and never records the step as clean.
+- If it cannot find the transcript, it still prints its verdict, followed by a second line `deny-check: NO-TRANSCRIPT: <reason>`, and never records the step as clean.
 - `steps.log` records the check's result as `deny_check`.
 
 The layer decides **who executes the steps**: layer A runs them through the

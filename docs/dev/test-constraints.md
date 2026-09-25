@@ -76,6 +76,12 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
 - The `permission_denials` key was on every result: 35 of 35 `json` results and every
   result event of 16 streams, `is_error` results included. Observed 2026-09-26 on
   2.1.270.
+- Under `stream-json`, an API error still ends with a `type:"result"` event. That event
+  carries `is_error: true`, `terminal_reason: "api_error"`, `api_error_status` and
+  `permission_denials: []`, next to `subtype: "success"`. It is preceded by an
+  `assistant` line whose top-level `error` names the cause. With an unknown `--model`
+  the status was 404 and the exit code 1, and the run still reported a small haiku
+  usage. Observed 2026-09-26 on 2.1.270, with one run.
 - On the last result event `total_cost_usd` is the session total; `num_turns` and
   `usage` count the one turn. Observed 2026-09-26 on 2.1.270.
 - A settings `deny` rule naming a whole tool (`"deny": ["Bash"]`) removes the tool. The

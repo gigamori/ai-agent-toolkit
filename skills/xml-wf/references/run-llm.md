@@ -169,7 +169,7 @@ $WFRUN record <xml> <id> --result steps/<id>_result.md --vars vars.json \
 #                        -> a tool call of the step, or of an agent it
 #                           started, was refused. Whatever the result file
 #                           says, this is never retried -- see "On error"
-#   "... (deny-check: NO-TRANSCRIPT: <reason>)" appended to any verdict
+#   a second line "deny-check: NO-TRANSCRIPT: <reason>" after any verdict
 #                        -> the refusal check could not run. The verdict
 #                           stands but is unverified; say so in your report
 

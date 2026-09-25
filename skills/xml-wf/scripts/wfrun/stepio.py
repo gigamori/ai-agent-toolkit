@@ -982,7 +982,9 @@ def record_result(step: model.Step, result_path: str | Path,
     status, message = _record_file(step, result_path, vars_path, log_path,
                                    reply, handle, deny_check)
     if check.verdict == ccdeny.NO_TRANSCRIPT:
-        message = f"{message} (deny-check: {check.label}: {check.reason})"
+        # Its own line: a decision verdict ends in the answer path the
+        # orchestrator copies into its next command.
+        message = f"{message}\ndeny-check: {check.label}: {check.reason}"
     return status, message
 
 

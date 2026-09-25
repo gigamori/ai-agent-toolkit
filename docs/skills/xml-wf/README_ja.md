@@ -237,7 +237,7 @@ wfrun poll   <handle.json>              # B層: done(0) / running(10) / deadline
 呼び出しの description にそのまま渡すこと。
 - `record` はそれを手掛かりに、その subagent の transcript と、その subagent が起動したすべての agent の transcript を見つけ、拒否されたツール呼び出しを調べる。
 - 拒否が見つかれば、結果ファイルの内容にかかわらずステップは `error: denied` になる。
-- transcript が見つからなければ、判定は `deny-check: NO-TRANSCRIPT` を付けて表示され、そのステップが clean として記録されることはない。
+- transcript が見つからなければ、判定の次の行に `deny-check: NO-TRANSCRIPT: <理由>` が表示され、そのステップが clean として記録されることはない。
 - 調べた結果は `steps.log` に `deny_check` として残る。
 
 レイヤが決めるのは**誰がステップを実行するか**である。A層は claude CLI、B層は

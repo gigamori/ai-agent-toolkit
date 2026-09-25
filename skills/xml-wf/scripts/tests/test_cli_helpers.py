@@ -572,6 +572,21 @@ class TestRecordDenyCheck(unittest.TestCase):
         self.assertIn("deny-check: NO-TRANSCRIPT", out)
         self.assertEqual(self.log_entry()["deny_check"], "NO-TRANSCRIPT")
 
+    def test_unresolved_check_leaves_the_verdict_line_intact(self):
+        self.dispatch()
+        self.result.write_text(
+            "DECISION: which join\nfork: two readings of merge\noptions:\n"
+            "  1. A -- loses rows\n  2. B -- loses columns\n"
+            "recommendation: 1\nwork-state: stopped\n[[WFRUN-END step=s1]]\n",
+            encoding="utf-8")
+        code, out = self.record()
+        self.assertEqual(code, 4, out)
+        verdict, note = out.splitlines()
+        self.assertNotIn("deny-check", verdict,
+                         "the decision verdict ends in the answer path the "
+                         "orchestrator copies; nothing may follow it")
+        self.assertTrue(note.startswith("deny-check: NO-TRANSCRIPT"), note)
+
     def test_without_a_session_the_check_is_skipped(self):
         delegation, _ = self.dispatch()
         self.subagent(delegation, [_DENIAL_LINE])
