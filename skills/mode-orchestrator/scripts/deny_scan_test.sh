@@ -52,6 +52,10 @@ TOOL_ERROR='{"type":"user","message":{"content":[{"type":"tool_result","is_error
 OK_RESULT='{"type":"user","message":{"content":[{"type":"tool_result","is_error":false,"content":"file written"}]}}'
 ASSISTANT='{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
 QUOTED_ONLY='{"type":"user","message":{"content":[{"type":"tool_result","is_error":false,"content":"the doc says: Permission for this action was denied means a policy block"}]}}'
+DENIAL_HOOK='{"type":"user","message":{"content":[{"type":"tool_result","content":"Blocked by a project hook: take the sanctioned route.","is_error":true,"tool_use_id":"toolu_h"}]},"toolUseResult":"Error: Blocked by a project hook: take the sanctioned route.","toolDenialKind":"permission-rule"}'
+DENIAL_CANCELLED="{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed.\",\"is_error\":true,\"tool_use_id\":\"toolu_c\"}]},\"toolDenialKind\":\"cancelled\"}"
+DENIAL_UNAVAILABLE='{"type":"user","message":{"content":[{"type":"tool_result","content":"example-model is temporarily unavailable, so auto mode cannot determine the safety of Bash right now.","is_error":true,"tool_use_id":"toolu_u"}]},"toolDenialKind":"automode-unavailable"}'
+DENIAL_TWO_PHRASES='{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"Permission for this action was denied by the Claude Code auto mode classifier. Permission to use Bash has been denied."}]}}'
 
 R="$WORK/t1"
 T="$(mk_agent "$R" sess1 aaa 'turn one desc')"
@@ -126,6 +130,63 @@ T_NEW="$(mk_agent "$R" sessNew iii 'turn nine desc')"
 printf '%s\n' "$OK_RESULT" > "$T_NEW"
 run_ds --desc 'turn nine desc' --project-root "$R"
 expect "newest meta wins on duplicate desc" "CLEAN" 0
+
+R="$WORK/t10"
+T="$(mk_agent "$R" sess1 jjj 'turn ten desc')"
+printf '%s\n%s\n' "$ASSISTANT" "$DENIAL_HOOK" > "$T"
+run_ds --desc 'turn ten desc' --project-root "$R"
+expect "hook-worded denial detected by its toolDenialKind" "DENIED 1" 1
+
+R="$WORK/t11"
+T="$(mk_agent "$R" sess1 kkk 'turn eleven desc')"
+printf '%s\n%s\n' "$DENIAL_CANCELLED" "$DENIAL_UNAVAILABLE" > "$T"
+run_ds --desc 'turn eleven desc' --project-root "$R"
+expect "cancelled and classifier-unavailable calls count as denials" "DENIED 2" 1
+
+R="$WORK/t12"
+T="$(mk_agent "$R" sess1 lll 'turn twelve desc')"
+printf '%s\n' "$DENIAL_TWO_PHRASES" > "$T"
+run_ds --desc 'turn twelve desc' --project-root "$R"
+expect "one record matching two phrases counts once" "DENIED 1" 1
+
+R="$WORK/t13"
+T="$(mk_agent "$R" sess1 mmm 'turn thirteen desc')"
+: > "$T"
+run_ds --desc 'turn thirteen desc' --project-root "$R"
+expect "empty transcript fails visible" "NO-TRANSCRIPT" 2
+
+R="$WORK/t14"
+T="$(mk_agent "$R" sess1 nnn 'turn fourteen desc')"
+printf '%s\n' "$DENIAL_CLASSIFIER" > "$T"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"a\0b"}]}}\n' >> "$T"
+run_ds --desc 'turn fourteen desc' --project-root "$R"
+expect "NUL byte in transcript does not hide a denial" "DENIED 1" 1
+
+R="$WORK/t15"
+T="$(mk_agent "$R" sess1 ooo 'turn fifteen desc')"
+printf '%s\n' "$OK_RESULT" > "$T"
+run_ds --desc 'turn fifteen desc' --project-root "$R" --out "$R/15-deny.txt"
+DS_OUT="$(head -n 1 "$R/15-deny.txt" 2>/dev/null)"
+expect "--out file starts with the verdict" "CLEAN" 0
+
+R="$WORK/t16"
+T="$(mk_agent "$R" sess1 ppp 'turn sixteen desc')"
+printf '%s\n' "$DENIAL_HOOK" > "$T"
+run_ds --desc 'turn sixteen desc' --project-root "$R" --out "$R/16-deny.txt"
+DS_OUT="$(sed -n 's/^transcript: //p' "$R/16-deny.txt" 2>/dev/null)"
+expect "--out file names the transcript it scanned" "$T" 1
+
+R="$WORK/t17"
+mkdir -p "$R/proj"
+run_ds --desc 'no such turn' --project-root "$R" --out "$R/17-deny.txt"
+DS_OUT="$(head -n 1 "$R/17-deny.txt" 2>/dev/null)"
+expect "--out file records NO-TRANSCRIPT" "NO-TRANSCRIPT" 2
+
+R="$WORK/t18"
+T="$(mk_agent "$R" sess1 qqq 'turn eighteen desc')"
+printf '%s\n' "$DENIAL_HOOK" > "$T"
+run_ds --desc 'turn eighteen desc' --project-root "$R" --out "$R/no-such-dir/18-deny.txt"
+expect "unwritable --out keeps the verdict and exit code" "DENIED 1" 1
 
 echo
 echo "passed $PASS / $N"

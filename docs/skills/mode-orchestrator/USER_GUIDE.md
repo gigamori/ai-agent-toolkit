@@ -138,7 +138,11 @@ is worth diagnosing. Four other outcomes deliberately bypass the loop:
   around and still finished the task — must end as `blocked`, never `ok`.
   On Claude Code this is also machine-checked: after each turn's status line
   the orchestrator runs `scripts/deny_scan.sh` against the turn's transcript,
-  and a detected denial overrides a self-reported `ok`.
+  and a detected denial overrides a self-reported `ok`. The check counts every
+  refused call — a permission rule, a plugin's hook, the auto-mode classifier
+  or its being unreachable, a permission prompt that was not approved, or an
+  interrupted call — and keeps its verdict in the run directory as
+  `NN-deny.txt`.
 - **`needs-human`** — the turn needs a decision only you can make.
 - **`needs-decision`** — the turn hit a fork, not a failure. It goes to the
   decision loop below instead.

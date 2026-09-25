@@ -93,6 +93,29 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   use.` Observed 2026-08-12.
 - An ordinary tool failure uses the same `is_error: true` line shape, so a detector keyed
   on `is_error` alone reports every failed command as a denial. Observed 2026-08-12.
+- Current transcripts put a top-level `toolDenialKind` field on the denied call's own line,
+  next to `is_error: true`. Five values were observed: `permission-rule` (Claude Code's own
+  denial templates, its don't-ask mode included, and PreToolUse hooks; no settings file on
+  that machine had a `deny` rule), `user-rejected`, `automode-blocked`,
+  `automode-unavailable` and `cancelled`. All 967 lines carrying it also carried
+  `is_error: true`. The earliest version seen carrying it was 2.1.201; every phrase-matched
+  line without it, bar the one false positive below, came from 2.1.195 or older. Measured
+  2026-09-23 over one machine's `~/.claude/projects` (8123 transcripts).
+- A PreToolUse hook's deny reason is written verbatim as the tool_result content, under
+  `toolDenialKind: "permission-rule"`, so its wording is the hook author's and no fixed
+  phrase covers it. Observed 2026-09-23 on three real denials from 2026-09-22.
+- `cancelled` reads `The user doesn't want to take this action right now. STOP what you are
+  doing …` and `automode-unavailable` reads `<model> is temporarily unavailable, so auto
+  mode cannot determine the safety of <Tool> right now. …`; neither contains an older
+  phrase. Observed 2026-09-23.
+- A failing Bash command's stdout lands in an `is_error: true` line of the same shape, so a
+  phrase detector trips on program output that quotes a denial phrase: one such line, on
+  2.1.226, was a `diff` of a file containing the phrases. The field cannot match that way,
+  because inside tool output it is JSON-escaped. Observed 2026-09-23.
+- GNU grep 3.0 (Git for Windows) answers a file containing a NUL byte with the single line
+  `Binary file <path> matches` instead of the matching lines, unless given `-a`. One session
+  transcript on this machine held 11679 NUL bytes; no subagent transcript held any.
+  Observed 2026-09-23.
 
 ## Measured model behaviour — prompt protocols
 
