@@ -22,6 +22,14 @@ run_ds() {
   DS_RC=$?
 }
 
+bounded() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 10 "$@"
+  else
+    "$@"
+  fi
+}
+
 expect() {
   local name="$1" ew="$2" erc="$3"
   N=$((N + 1))
@@ -187,6 +195,16 @@ T="$(mk_agent "$R" sess1 qqq 'turn eighteen desc')"
 printf '%s\n' "$DENIAL_HOOK" > "$T"
 run_ds --desc 'turn eighteen desc' --project-root "$R" --out "$R/no-such-dir/18-deny.txt"
 expect "unwritable --out keeps the verdict and exit code" "DENIED 1" 1
+
+DS_OUT="$(bounded bash "$SCAN" --desc 2>/dev/null)"
+DS_RC=$?
+expect "a bare --desc is a usage error, not a hang" "" 64
+
+R="$WORK/t20"
+mkdir -p "$R/proj"
+DS_OUT="$(bounded bash "$SCAN" --desc x --project-root "$R" --out 2>/dev/null)"
+DS_RC=$?
+expect "a bare --out is a usage error, not a hang" "" 64
 
 echo
 echo "passed $PASS / $N"
