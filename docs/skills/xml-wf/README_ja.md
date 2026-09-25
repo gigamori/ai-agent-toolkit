@@ -232,6 +232,14 @@ wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE]
 wfrun poll   <handle.json>              # B層: done(0) / running(10) / deadline-exceeded(11)
 ```
 
+`--result` を付けると、`prompt` はその試行に固有の
+`description=wfrun <id> a<N> <token>` も表示する。Claude Code では、これを Agent
+呼び出しの description にそのまま渡すこと。
+- `record` はそれを手掛かりに、その subagent の transcript と、その subagent が起動したすべての agent の transcript を見つけ、拒否されたツール呼び出しを調べる。
+- 拒否が見つかれば、結果ファイルの内容にかかわらずステップは `error: denied` になる。
+- transcript が見つからなければ、判定は `deny-check: NO-TRANSCRIPT` を付けて表示され、そのステップが clean として記録されることはない。
+- 調べた結果は `steps.log` に `deny_check` として残る。
+
 レイヤが決めるのは**誰がステップを実行するか**である。A層は claude CLI、B層は
 オーケストレータ自身の subagent 機能で実行する。判定は claude CLI の有無しか見ないため、
 Claude Code 以外の harness でも claude が入っていれば A層 が選ばれる。その harness 上で
@@ -246,6 +254,10 @@ wfrun dispatch <wf.xml> <id> --vars V --run-dir D [--permission-mode M] [--fix T
 wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
                # ok(0) / error: <class>(1) / running(10) / aborted(3)
 ```
+
+ツール呼び出しが拒否された場合、`wait` は `error: denied (details: <file>)` を
+表示し、`dispatch` はそのサイクルの再実行を拒否する。`--new-cycle` は新しい
+`<while>`/`<each>` 反復のときだけ渡すこと。
 
 ```
 wfrun interp <text> --vars V            # {var} 参照を補間
@@ -281,7 +293,7 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 ├── events.jsonl     # 追記専用の実行ログ
 ├── outputs/<id>.md  # output-type=file の応答本文
 ├── replans/<id>_<nn>.xml
-└── steps/<id>_<attempt n>/{system.md, prompt.md, result.json, stderr.log}
+└── steps/<id>_<attempt n>/{system.md, prompt.md, result.json, stream.jsonl, stderr.log}
 ```
 
 `wfrun resume runs/<dir>` は記録済みの成功を再生し（ステップ結果と `ask=` 判定を
@@ -293,10 +305,20 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 
 ## エラーハンドリング
 
-検出優先度: 非ゼロ終了 / `is_error` → タイムアウト → 応答本文が `ERROR:` で始まる
-→ 先頭行が `[BLOCKED:` で始まる（mode/rules 拒否）→ 本文が `DECISION:` 要求を
-運んでいる（エラーではない — 後述）→ `schema` を与えたのに構造化出力が返らない
-→ `expect-file` のパスが存在しない。
+検出優先度:
+1. 拒否されたツール呼び出し（`denied`）: いずれかの result イベントの `permission_denials` に載っている。ステップが起動した agent 内の拒否も含む。
+2. 非ゼロ終了 / `is_error`。
+3. タイムアウト。
+4. 応答本文が `ERROR:` で始まる。
+5. 先頭行が `[BLOCKED:` で始まる（mode/rules 拒否）。
+6. 本文が `DECISION:` 要求を運んでいる。これはエラーではない（後述）。
+7. `schema` を与えたのに構造化出力が返らない。
+8. 成功するはずの result に `permission_denials` フィールドがない（`unchecked`: 拒否の検査ができなかった）。
+9. `expect-file` のパスが存在しない。
+
+`result.json` には最後の result イベントだけが入り、`stream.jsonl` には stream 全体が
+入る。`denied` の原因となった拒否は、それより前のイベントに載っていることがある。
+`denied` と `unchecked` は retry されず、debug にも回らない。
 
 処理: 決定論的 **`retry`**（同一プロンプトで再実行）→ その後 `on-error`:
 `fail`（停止。回復経路は resume）、`ignore`（記録して継続）、`debug`（debug ロール

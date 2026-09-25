@@ -19,6 +19,18 @@ def _fake_completed(returncode=0, stdout="", stderr=""):
     return proc
 
 
+def _result_event(index=0, **fields):
+    event = {"type": "result", "subtype": "success", "is_error": False,
+             "result": "", "result_index": index, "permission_denials": []}
+    event.update(fields)
+    return event
+
+
+def _stream(*events):
+    lines = [{"type": "system", "subtype": "init"}, *events]
+    return "".join(json.dumps(line) + "\n" for line in lines)
+
+
 class ResolutionChainTests(unittest.TestCase):
     def setUp(self):
         claude_cli._resolution_cache.clear()
@@ -114,15 +126,34 @@ class RunClaudeLaunchTests(unittest.TestCase):
         self.assertEqual(res.error_class, "env")
 
     def test_success_path_still_works(self):
-        stdout = json.dumps({"result": "4", "is_error": False, "num_turns": 1})
+        stdout = json.dumps({"result": "4", "is_error": False, "num_turns": 1,
+                             "permission_denials": []})
         with mock.patch.object(claude_cli.subprocess, "run",
                                return_value=_fake_completed(0, stdout)):
             res = claude_cli.run_claude("2+2?")
         self.assertTrue(res.ok)
         self.assertEqual(res.text, "4")
 
+    def test_launch_reads_a_stream_without_persisting_the_session(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _fake_completed(0, _stream(_result_event(0, result="4")))
+
+        with mock.patch.object(claude_cli.subprocess, "run", side_effect=fake_run):
+            res = claude_cli.run_claude("2+2?")
+        self.assertTrue(res.ok, res.error)
+        cmd = captured["cmd"]
+        self.assertEqual(cmd[cmd.index("--output-format") + 1], "stream-json",
+                         "only a stream carries the result of every turn, "
+                         "and a background agent's refusal sits on an earlier one")
+        self.assertIn("--verbose", cmd)
+        self.assertIn("--no-session-persistence", cmd)
+
     def test_system_prompt_uses_file_flag_and_cleans_up(self):
-        stdout = json.dumps({"result": "ok", "is_error": False})
+        stdout = json.dumps({"result": "ok", "is_error": False,
+                             "permission_denials": []})
         captured_cmd = {}
         written_content = {}
 
@@ -163,7 +194,8 @@ class RunClaudeLaunchTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_shim_with_benign_system_prompt_and_no_file_support_launches_inline(self):
-        stdout = json.dumps({"result": "ok", "is_error": False})
+        stdout = json.dumps({"result": "ok", "is_error": False,
+                             "permission_denials": []})
         with tempfile.TemporaryDirectory() as d:
             shim = Path(d) / "claude.cmd"
             shim.write_text("@echo off")
@@ -231,7 +263,8 @@ class RunClaudeLaunchTests(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             idx = cmd.index("--append-system-prompt-file")
             captured["bytes"] = Path(cmd[idx + 1]).read_bytes()
-            return _fake_completed(0, json.dumps({"result": "ok", "is_error": False}))
+            return _fake_completed(0, json.dumps({"result": "ok", "is_error": False,
+                                                  "permission_denials": []}))
 
         with mock.patch.object(claude_cli, "_supports_system_prompt_file",
                                return_value=True), \
@@ -344,7 +377,8 @@ class ClassifyResultTests(unittest.TestCase):
 
     def test_empty_body_with_structured_output_is_not_an_error(self):
         stdout = json.dumps({"result": "", "is_error": False,
-                             "structured_output": {"count": 1}})
+                             "structured_output": {"count": 1},
+                             "permission_denials": []})
         res = claude_cli.classify_result(0, stdout, "", schema="{}")
         self.assertTrue(res.ok)
 
@@ -449,10 +483,89 @@ class ClassifyResultTests(unittest.TestCase):
         self.assertIn("Write", res.error)
 
     def test_success_path(self):
-        stdout = json.dumps({"result": "4", "is_error": False})
+        stdout = json.dumps({"result": "4", "is_error": False,
+                             "permission_denials": []})
         res = claude_cli.classify_result(0, stdout, "")
         self.assertTrue(res.ok)
         self.assertIsNone(res.error_class)
+
+
+class StreamOutputTests(unittest.TestCase):
+    def test_denial_on_an_earlier_result_event_is_denied(self):
+        stdout = _stream(
+            _result_event(0, result="Agent launched."),
+            _result_event(1, result="The agent was refused.", permission_denials=[{
+                "tool_name": "Bash", "tool_use_id": "toolu_1",
+                "tool_input": {"command": "node -e 1"}}]),
+            _result_event(2, result="All done."))
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertFalse(res.ok)
+        self.assertEqual(res.error_class, "denied",
+                         "a background agent's refusal is listed on the result of "
+                         "the turn that started it, not on the last result")
+        self.assertIn("node -e 1", res.error)
+
+    def test_fields_come_from_the_last_result_event(self):
+        stdout = _stream(
+            _result_event(0, result="first", total_cost_usd=0.01,
+                          structured_output={"answer": "early"}),
+            _result_event(1, result="final", total_cost_usd=0.05, num_turns=1))
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(res.text, "final")
+        self.assertEqual(res.cost_usd, 0.05)
+        self.assertIsNone(res.structured)
+        self.assertEqual(res.raw["result_index"], 1)
+
+    def test_the_stream_is_kept_for_the_run_dir(self):
+        stdout = _stream(_result_event(0, result="ok"))
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertEqual(res.stream, stdout)
+
+    def test_a_single_object_keeps_no_stream(self):
+        stdout = json.dumps({"result": "4", "is_error": False,
+                             "permission_denials": []})
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(res.stream, "")
+
+    def test_ok_result_without_the_denials_key_is_unchecked(self):
+        event = _result_event(0, result="done")
+        del event["permission_denials"]
+        res = claude_cli.classify_result(0, _stream(event), "")
+        self.assertFalse(res.ok)
+        self.assertEqual(res.error_class, "unchecked")
+
+    def test_one_result_event_without_the_key_is_enough(self):
+        last = _result_event(1, result="done")
+        del last["permission_denials"]
+        res = claude_cli.classify_result(
+            0, _stream(_result_event(0, result="x"), last), "")
+        self.assertEqual(res.error_class, "unchecked")
+
+    def test_a_single_object_without_the_key_is_unchecked(self):
+        stdout = json.dumps({"result": "4", "is_error": False})
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertEqual(res.error_class, "unchecked")
+
+    def test_missing_key_keeps_a_failed_result_class(self):
+        event = _result_event(0, is_error=True, terminal_reason="api_error",
+                              api_error_status=529)
+        del event["permission_denials"]
+        res = claude_cli.classify_result(1, _stream(event), "")
+        self.assertEqual(res.error_class, "transient",
+                         "the key check only withholds a success; a result "
+                         "that already failed keeps its own class")
+
+    def test_stream_without_a_result_event_is_env(self):
+        res = claude_cli.classify_result(1, _stream(), "boom")
+        self.assertFalse(res.ok)
+        self.assertEqual(res.error_class, "env")
+
+    def test_unparseable_stream_line_is_env(self):
+        stdout = _stream(_result_event(0, result="ok")) + "{not json\n"
+        res = claude_cli.classify_result(0, stdout, "")
+        self.assertEqual(res.error_class, "env")
 
 
 class RetryableDebuggablePredicateTests(unittest.TestCase):
@@ -461,7 +574,7 @@ class RetryableDebuggablePredicateTests(unittest.TestCase):
             self.assertTrue(claude_cli.is_retryable(cls), cls)
 
     def test_non_retryable_classes(self):
-        for cls in ("env", "guardrail", "refusal", "denied"):
+        for cls in ("env", "guardrail", "refusal", "denied", "unchecked"):
             self.assertFalse(claude_cli.is_retryable(cls), cls)
 
     def test_debuggable_classes(self):
@@ -469,7 +582,7 @@ class RetryableDebuggablePredicateTests(unittest.TestCase):
             self.assertTrue(claude_cli.is_debuggable(cls), cls)
 
     def test_non_debuggable_classes(self):
-        for cls in ("refusal", "denied", "transient"):
+        for cls in ("refusal", "denied", "transient", "unchecked"):
             self.assertFalse(claude_cli.is_debuggable(cls), cls)
 
 

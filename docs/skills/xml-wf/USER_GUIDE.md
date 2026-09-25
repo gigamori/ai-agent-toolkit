@@ -148,6 +148,14 @@ because everything is recorded on disk. When a step fails, the agent will:
 
 The agent will not repeatedly re-run the same failure without your say-so.
 
+**A refused tool call is not a glitch.** Sometimes one of the step's tool calls is
+refused: by a permission rule, by a hook, or because it needed an approval nobody
+could give. That can happen in the step itself or in any agent the step started.
+Either way the step fails as `denied`, even if it then finished its work some other
+way, and it is never retried automatically, because the same call would be refused
+again. Before resuming, widen the step's `tools=` or `--permission-mode`, or change
+the task.
+
 ---
 
 ## 8. When a step asks for a decision

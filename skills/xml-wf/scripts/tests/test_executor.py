@@ -556,6 +556,21 @@ class TestErrorsAndResume(ExecutorTestCase):
                          "a denial is a permission fact of the environment, "
                          "not something a diagnosis can fix")
 
+    def test_the_raw_stream_is_kept_beside_the_result(self):
+        stream = '{"type":"result","permission_denials":[{"tool_name":"Bash"}]}\n'
+        self.fake.handlers.append(
+            (lambda p: "guarded" in p,
+             CliResult(ok=False, error="claude reported permission_denials for: Bash",
+                      error_class="denied", stream=stream)))
+        ex = self.execute(self.wrap(
+            '<step id="s1" role="w"><task>guarded</task></step>'))
+        with self.assertRaises(WorkflowFailure):
+            ex.run()
+        kept = self.run_dir / "steps" / "s1_01" / "stream.jsonl"
+        self.assertEqual(kept.read_text(encoding="utf-8"), stream,
+                         "result.json holds the last result only; the stream "
+                         "shows which earlier result listed the refusal")
+
     def test_transient_retries_but_skips_debug(self):
         self.fake.handlers.append(
             (lambda p: "flaky" in p,

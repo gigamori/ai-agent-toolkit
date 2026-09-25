@@ -16,6 +16,33 @@ Because Pi loads this skill via a symlink into `~/.pi/agent/skills/` (not a copy
 - After editing `scripts/wfrun/modes/*.md` or the prompt assembly, sample the prompt layer (`uv run python evals/prompt_smoke.py`, also from `scripts/`) and compare compliance rates before/after — that layer is probabilistic and outside the unit tests.
 - Injected guardrail text lives in `scripts/wfrun/guardrails.py` and nowhere else, including the conditionally injected `VALUE_LINE_RULE` and the `VALUE_LINE_PREFIX` / `VALUE_LINE_PLACEHOLDER` tokens its extractor compares against: `stepio` holds the *condition* and the parsing, never a string literal of the prompt. This is what keeps the A/B control cheap — a **wording** change is measured by restoring `guardrails.py` alone in a worktree, and only a change to the injection **condition** needs `stepio.py` in the before-condition too. Wording that migrates into `stepio.py` silently escapes that control.
 
+## Refused-call detection
+
+A step that had a tool call refused never counts as a success. That holds whatever refused the call: a permission rule, a PreToolUse hook, an approval that print mode cannot give, or the auto-mode classifier. It also holds wherever the call happened: in the step itself or in any agent it started. Each facet learns of it differently, and an editor must keep all of them true:
+
+- **Run (batch) on cc and run-llm layer A**
+  - `claude_cli.classify_result` reads `permission_denials` from every `type:"result"` event of the child's `--output-format stream-json` output, and takes their union.
+  - The union is load-bearing. A refusal inside a background agent is listed only on the result of the turn that started it, never on the last one, and `--output-format json` printed only the last.
+  - A result that would pass while an event lacks the field is `unchecked`, never retried or debugged. The field was on every result measured, so its absence means the CLI changed.
+  - Layer A's `dispatch` refuses to re-dispatch a cycle whose last attempt was `denied`.
+- **run-llm layer B on Claude Code**
+  - There is no result JSON. `record` reads the step subagent's own transcript through `wfrun/ccdeny.py`.
+  - It finds the subagent by the per-attempt Agent description `wfrun prompt` issues, looking only among the calling session's agents.
+  - It adds every agent that subagent started, at any depth, and counts lines carrying a top-level `toolDenialKind`.
+  - A transcript that cannot be resolved is reported as NO-TRANSCRIPT, and the step keeps its status. It is never read as clean.
+  - Here the no-retry rule for a denied step lives at the prompt level only (`run-llm.md`).
+- **Pi (run-pi, layer B on Pi):** there is no check. pi has no permission layer. An extension could block a tool call, but the block surfaces as an ordinary tool error with no marker to key on, and none is installed by default (`run-pi.md`).
+
+**Every refusal kind counts the same.** `denied` is one class, and this skill does not split "refused" from "did not run". That agrees with mode-orchestrator's ruling of 2026-09-25, so there is no divergence to record.
+
+**Two signals, on purpose:**
+- The batch facets key on `permission_denials`. It is the only refusal signal `claude -p` output carries: `toolDenialKind` exists only in transcripts, and `--no-session-persistence` writes none.
+- Layer B keys on `toolDenialKind`.
+
+Both go inert silently if Claude Code changes its output, and the unit tests cannot notice, because their fixtures are fixed. **After every Claude Code upgrade**, run `uv run python evals/deny_canary.py` from `scripts/`. It calls the real CLI and costs money. It reproduces a direct refusal, a hook refusal, a refusal inside an agent, the transcript field layer B reads, and a clean control, and it fails if any of them no longer classifies as measured. The measured facts behind these rules live in [`docs/dev/test-constraints.md`](../../dev/test-constraints.md).
+
+**Relationship to mode-orchestrator:** the idea came from its `deny_scan.sh` (sibling handoff of 2026-09-25). The implementations are independent, and no propagation obligation follows in either direction.
+
 ## Test knowledge gate
 
 The test files under `scripts/tests/` carry no comments and no docstrings — they are read by

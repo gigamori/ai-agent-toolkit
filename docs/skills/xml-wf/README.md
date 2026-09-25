@@ -245,6 +245,14 @@ wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE]
 wfrun poll   <handle.json>              # layer B: done(0) / running(10) / deadline-exceeded(11)
 ```
 
+With `--result`, `prompt` also prints `description=wfrun <id> a<N> <token>`,
+unique to the attempt. On Claude Code, pass it verbatim as the Agent call's
+description:
+- `record` uses it to find that subagent's transcript, together with every agent the subagent started, and to check them for refused tool calls.
+- If it finds a refusal, the step is `error: denied` whatever its result file says.
+- If it cannot find the transcript, it still prints its verdict, marked `deny-check: NO-TRANSCRIPT`, and never records the step as clean.
+- `steps.log` records the check's result as `deny_check`.
+
 The layer decides **who executes the steps**: layer A runs them through the
 claude CLI, layer B through the orchestrating agent's own subagent facility.
 The probe only checks whether the claude CLI exists, so on a non-Claude-Code
@@ -262,6 +270,10 @@ wfrun dispatch <wf.xml> <id> --vars V --run-dir D [--permission-mode M] [--fix T
 wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
                # ok(0) / error: <class>(1) / running(10) / aborted(3)
 ```
+
+After a refused tool call, `wait` prints `error: denied (details: <file>)`, and
+`dispatch` refuses to run that cycle again. Pass `--new-cycle` only for a new
+`<while>`/`<each>` iteration.
 
 ```
 wfrun interp <text> --vars V            # interpolate {var} references
@@ -298,7 +310,7 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 ├── events.jsonl     # append-only execution log
 ├── outputs/<id>.md  # response bodies for output-type=file
 ├── replans/<id>_<nn>.xml
-└── steps/<id>_<attempt n>/{system.md, prompt.md, result.json, stderr.log}
+└── steps/<id>_<attempt n>/{system.md, prompt.md, result.json, stream.jsonl, stderr.log}
 ```
 
 `wfrun resume runs/<dir>` replays the recorded successes (reusing step results
@@ -310,10 +322,20 @@ inside the run dir before resuming — do not change already-succeeded definitio
 
 ## Error handling
 
-Detection priority: non-zero exit / `is_error` → timeout → response body starts
-with `ERROR:` → first line starts with `[BLOCKED:` (mode/rules refusal) → the
-body carries a `DECISION:` request (not an error — see below) → `schema` given
-but no structured output → an `expect-file` path is missing.
+Detection priority:
+1. A refused tool call (`denied`): listed in `permission_denials` on any result event, including a refusal inside an agent the step started.
+2. Non-zero exit or `is_error`.
+3. Timeout.
+4. The response body starts with `ERROR:`.
+5. The first line starts with `[BLOCKED:` (a mode/rules refusal).
+6. The body carries a `DECISION:` request, which is not an error (see below).
+7. `schema` was given but no structured output came back.
+8. A result that would pass carries no `permission_denials` field (`unchecked`: the refusal check could not run).
+9. An `expect-file` path is missing.
+
+`result.json` holds the last result event, and `stream.jsonl` holds the full
+stream: the refusal behind a `denied` step can sit on an earlier event.
+`denied` and `unchecked` are never retried and never sent to debug.
 
 Handling: deterministic **`retry`** (identical prompt) → then `on-error`:
 `fail` (stop; resume is the recovery path), `ignore` (record and continue), or

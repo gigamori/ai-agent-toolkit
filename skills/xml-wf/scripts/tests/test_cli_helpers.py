@@ -1,15 +1,32 @@
 import io
 import json
+import os
 import sys
 import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from wfrun.__main__ import main  # noqa: E402
+
+_NO_SESSION = mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""})
+
+_DENIAL_LINE = {"type": "user", "toolDenialKind": "permission-rule",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": "toolu_1",
+                    "is_error": True, "content": "refused"}]}}
+
+
+def setUpModule():
+    _NO_SESSION.start()
+
+
+def tearDownModule():
+    _NO_SESSION.stop()
 
 
 class TestCliHelpers(unittest.TestCase):
@@ -446,6 +463,124 @@ class TestRunLlmProtocol(unittest.TestCase):
         code, out = self.run_cli(["poll", str(self.handle)])
         self.assertEqual(code, 10)
         self.assertEqual(out, "running")
+
+
+class TestRecordDenyCheck(unittest.TestCase):
+    XML = """
+<workflow name="t" version="2" max="10">
+  <step id="s1" output="report_path"><role>W</role><task>write it</task></step>
+</workflow>
+"""
+    SESSION = "11111111-2222-3333-4444-555555555555"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.xml = str(self.dir / "wf.xml")
+        Path(self.xml).write_text(self.XML, encoding="utf-8")
+        self.vars_path = str(self.dir / "vars.json")
+        Path(self.vars_path).write_text("{}", encoding="utf-8")
+        self.result = self.dir / "s1_result.md"
+        self.log = self.dir / "steps.log"
+        config = self.dir / "config"
+        self.subagents = config / "projects" / "proj" / self.SESSION / "subagents"
+        env = mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": self.SESSION,
+                                           "CLAUDE_CONFIG_DIR": str(config)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def run_cli(self, argv):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = main(argv)
+        return code, out.getvalue().strip()
+
+    def dispatch(self):
+        code, out = self.run_cli(
+            ["prompt", self.xml, "s1", "--vars", self.vars_path,
+             "--out", str(self.dir / "s1_prompt.md"), "--result", str(self.result)])
+        self.assertEqual(code, 0)
+        handle = json.loads((self.dir / "s1_handle.json").read_text(encoding="utf-8"))
+        return handle["delegation"], out
+
+    def subagent(self, description, lines):
+        self.subagents.mkdir(parents=True, exist_ok=True)
+        (self.subagents / "agent-a1.meta.json").write_text(
+            json.dumps({"agentType": "general-purpose", "description": description}),
+            encoding="utf-8")
+        (self.subagents / "agent-a1.jsonl").write_text(
+            "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+
+    def finish(self):
+        self.result.write_text("wrote it\n[[WFRUN-END step=s1]]\n", encoding="utf-8")
+
+    def record(self, reply="OK s1"):
+        argv = ["record", self.xml, "s1", "--result", str(self.result),
+                "--vars", self.vars_path, "--log", str(self.log)]
+        if reply:
+            argv += ["--reply", reply]
+        return self.run_cli(argv)
+
+    def log_entry(self):
+        lines = [l for l in self.log.read_text(encoding="utf-8").splitlines() if l.strip()]
+        return json.loads(lines[-1])
+
+    def test_prompt_issues_a_delegation_description(self):
+        delegation, out = self.dispatch()
+        self.assertTrue(delegation.startswith("wfrun s1 a1 "), delegation)
+        self.assertIn(f"description={delegation}", out)
+
+    def test_each_dispatch_gets_its_own_description(self):
+        first, _ = self.dispatch()
+        second, _ = self.dispatch()
+        self.assertNotEqual(first, second)
+
+    def test_denial_in_the_subagent_overrides_an_ok_result(self):
+        delegation, _ = self.dispatch()
+        self.subagent(delegation, [_DENIAL_LINE])
+        self.finish()
+        code, out = self.record()
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("error: denied (details: "), out)
+        self.assertEqual(self.log_entry()["deny_check"], "DENIED 1")
+        attempts = json.loads((self.dir / "s1_attempts.json").read_text(encoding="utf-8"))
+        self.assertEqual(attempts[-1]["class"], "denied")
+
+    def test_denial_overrides_a_missing_result_file(self):
+        delegation, _ = self.dispatch()
+        self.subagent(delegation, [_DENIAL_LINE])
+        code, out = self.record(reply=None)
+        self.assertEqual(code, 1,
+                         "an aborted step is re-dispatched once; a refused one must not be")
+        self.assertTrue(out.startswith("error: denied"), out)
+
+    def test_clean_transcript_keeps_the_verdict(self):
+        delegation, _ = self.dispatch()
+        self.subagent(delegation, [{"type": "assistant", "message": {"content": []}}])
+        self.finish()
+        code, out = self.record()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("deny-check", out)
+        self.assertEqual(self.log_entry()["deny_check"], "CLEAN")
+
+    def test_unresolved_transcript_keeps_the_status_and_says_so(self):
+        self.dispatch()
+        self.finish()
+        code, out = self.record()
+        self.assertEqual(code, 0, out)
+        self.assertIn("deny-check: NO-TRANSCRIPT", out)
+        self.assertEqual(self.log_entry()["deny_check"], "NO-TRANSCRIPT")
+
+    def test_without_a_session_the_check_is_skipped(self):
+        delegation, _ = self.dispatch()
+        self.subagent(delegation, [_DENIAL_LINE])
+        self.finish()
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            code, out = self.record()
+        self.assertEqual(code, 0,
+                         "outside Claude Code no permission layer can have refused a call")
+        self.assertNotIn("deny_check", self.log_entry())
 
 
 class TestModeHelpers(unittest.TestCase):

@@ -83,6 +83,10 @@ against `budget-usd`.
 
 1. Present `error` from `state.json` and the failing step's
    `runs/<ts>/steps/<id>_<n>/prompt.md` and `result.json` (key points of the tail)
+   - For a `denied` step, the refused call may be listed only in that
+     directory's `stream.jsonl` (an earlier result event), not in `result.json`.
+   - A refusal is not transient. Resuming as-is hits the same refusal, so widen
+     the step's `tools=` / `--permission-mode` or change the task first.
 2. Analyze the cause and offer the user options:
    - **Resume as-is** (transient failure): `$WFRUN resume runs/<ts>/`
    - **Fix then resume**: edit the failing task text in the run dir's

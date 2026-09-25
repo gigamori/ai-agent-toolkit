@@ -48,7 +48,8 @@ class DecodeSideTests(unittest.TestCase):
 
     def test_classification_survives_a_replaced_byte(self):
         envelope = json.dumps({"result": "PLACEHOLDER", "is_error": False,
-                               "num_turns": 1}).encode("utf-8")
+                               "num_turns": 1,
+                               "permission_denials": []}).encode("utf-8")
         payload = envelope.replace(b"PLACEHOLDER", b"caf" + _BAD_BYTE)
 
         proc = claude_cli._run_with_tree_kill(
@@ -64,7 +65,8 @@ class DecodeSideTests(unittest.TestCase):
         self.assertEqual(res.num_turns, 1)
 
     def test_valid_utf8_is_untouched(self):
-        envelope = json.dumps({"result": "日本語 ok", "is_error": False},
+        envelope = json.dumps({"result": "日本語 ok", "is_error": False,
+                               "permission_denials": []},
                               ensure_ascii=False).encode("utf-8")
 
         proc = claude_cli._run_with_tree_kill(
