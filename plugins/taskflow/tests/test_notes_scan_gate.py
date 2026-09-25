@@ -74,6 +74,10 @@ def test_reason_carries_the_rule() -> None:
           "the reason states the rule, so a denied model knows what is allowed instead of retrying blind")
     check("query-lsp" in reason,
           "the reason names the route that produces a legitimate ::<name>")
+    check("your task" in reason,
+          "the reason names a file the task gives by path as a sanctioned read")
+    check("another way" in reason,
+          "the reason forbids running the refused search with another tool")
 
 
 def test_shapes_that_must_not_deny() -> None:

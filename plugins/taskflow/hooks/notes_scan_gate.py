@@ -61,11 +61,12 @@ SYMBOL_MARK = '::'
 MSYS_DRIVE = re.compile(r'^/([A-Za-z])/')
 
 REASON = (
-  'Grep over project-notes/ without `::` is the corpus scan the note rule forbids. '
-  'Reads of project-notes/ are exactly three: the injected block, a `::<name>` Grep '
-  'for a peer query-lsp returned, and opening a file one of those two named. '
-  'If query-lsp did not answer, say the route was unavailable and continue on the '
-  'block alone.'
+  'Grep over project-notes/ without `::`, across more than one file, is the corpus '
+  'scan the note rule forbids. Reads of project-notes/ are exactly three: the injected '
+  'block, a `::<name>` Grep for a peer query-lsp returned, and opening or searching one '
+  'file that one of those two, or your task, names by path. Do not run this search '
+  'another way (Bash grep, rg or cat; Glob then Read). If query-lsp did not answer, say '
+  'the route was unavailable and continue on the block alone.'
 )
 
 
