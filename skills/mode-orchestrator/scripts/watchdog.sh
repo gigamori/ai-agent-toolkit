@@ -115,16 +115,18 @@ MODE=""
 DEADLINE=""
 TRACE=""
 
+# A flag given last, with no value, is a usage error: `shift 2` would leave
+# the arguments unchanged and this loop would never end.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --deliv)        DELIV="${2-}"; shift 2 ;;
-    --desc)         DESC="${2-}"; shift 2 ;;
-    --mode)         MODE="${2-}"; shift 2 ;;
-    --deadline)     DEADLINE="${2-}"; shift 2 ;;
-    --stall)        STALL="${2-}"; shift 2 ;;
-    --poll)         POLL="${2-}"; shift 2 ;;
-    --project-root) PROJECT_ROOT="${2-}"; shift 2 ;;
-    --log)          TRACE="${2-}"; shift 2 ;;
+    --deliv)        [ $# -ge 2 ] || usage; DELIV="$2"; shift 2 ;;
+    --desc)         [ $# -ge 2 ] || usage; DESC="$2"; shift 2 ;;
+    --mode)         [ $# -ge 2 ] || usage; MODE="$2"; shift 2 ;;
+    --deadline)     [ $# -ge 2 ] || usage; DEADLINE="$2"; shift 2 ;;
+    --stall)        [ $# -ge 2 ] || usage; STALL="$2"; shift 2 ;;
+    --poll)         [ $# -ge 2 ] || usage; POLL="$2"; shift 2 ;;
+    --project-root) [ $# -ge 2 ] || usage; PROJECT_ROOT="$2"; shift 2 ;;
+    --log)          [ $# -ge 2 ] || usage; TRACE="$2"; shift 2 ;;
     -h|--help)      usage ;;
     *) echo "watchdog: unknown argument: $1" >&2; usage ;;
   esac

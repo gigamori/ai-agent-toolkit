@@ -28,6 +28,14 @@ run_wd() {
   WD_RC=$?
 }
 
+bounded() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 10 "$@"
+  else
+    "$@"
+  fi
+}
+
 start_wd() {
   WD_ERR="$CASE/wd.err"
   WD_STDOUT="$CASE/wd.out"
@@ -223,6 +231,11 @@ run_wd --deliv "$DELIV" --deadline 2
 expect "--desc is required" "" 64
 run_wd --deliv "$DELIV" --desc "d" --totally-bogus-flag
 expect "an unknown argument is rejected" "" 64
+for flag in --deliv --desc --mode --deadline --stall --poll --project-root --log; do
+  WD_OUT="$(bounded bash "$WATCHDOG" --deliv - --desc d "$flag" 2>/dev/null)"
+  WD_RC=$?
+  expect "a bare $flag is a usage error, not a hang" "" 64
+done
 
 newcase deadline-override
 run_wd --deliv - --desc "d" --mode plan --deadline 2 --poll 1 --project-root "$PROOT"
