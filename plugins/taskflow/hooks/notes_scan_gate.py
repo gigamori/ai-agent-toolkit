@@ -13,11 +13,12 @@ Fires on Grep only (hooks.json). Denies when ALL hold:
     pattern does not contain `::`
 
 A Grep inside one existing note searches no other note, so it passes, the
-same as a Read of that file; denying it only sent agents to Read the file
-whole or grep it through Bash (18 of the 20 real denials outside the
-deployment probes were single-file, measured 2026-09-24). A relative path is
-resolved against the payload cwd, and on Windows an MSYS `/c/...` path is
-read as `C:/...`.
+same as a Read of that file. 18 of the 20 real denials outside the
+deployment probes were single-file, and in 13 of those 18 the same
+transcript later read the file or grepped it through Bash (measured
+2026-09-24; matched by basename, so a co-occurrence count, not a cause).
+A relative path is resolved against the payload cwd, and on Windows an MSYS
+`/c/...` path is read as `C:/...`.
 
 Everything else passes. The deny payload is the shape rule-inject already
 uses (plugins/rule-inject/hooks/pre_tool_check_rules.py), so this is a new
