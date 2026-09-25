@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -u
+unset CLAUDE_CODE_SESSION_ID
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WATCHDOG="$HERE/watchdog.sh"
@@ -198,6 +199,22 @@ newcase resolve-absent
 run_wd --deliv "$DELIV" --desc "no such turn" --deadline 3 --stall 2 --poll 1 \
   --project-root "$PROOT"
 expect "an unresolvable transcript degrades to deadline only" TIMEOUT 1
+
+newcase resolve-other-session
+fake_agent "turn desc elsewhere" 5 120
+export CLAUDE_CODE_SESSION_ID=another-session
+run_wd --deliv "$DELIV" --desc "turn desc elsewhere" --deadline 3 --stall 2 --poll 1 \
+  --project-root "$PROOT"
+unset CLAUDE_CODE_SESSION_ID
+expect "an agent record in another session is not this turn's" TIMEOUT 1
+
+newcase resolve-own-session
+fake_agent "turn desc own" 5 120
+export CLAUDE_CODE_SESSION_ID=session-id
+run_wd --deliv "$DELIV" --desc "turn desc own" --deadline 30 --stall 3 --poll 1 \
+  --project-root "$PROOT"
+unset CLAUDE_CODE_SESSION_ID
+expect "an agent record in the calling session is resolved" STALL 2
 
 newcase args
 run_wd --desc "d" --deadline 2

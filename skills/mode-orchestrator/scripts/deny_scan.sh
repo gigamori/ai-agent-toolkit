@@ -33,10 +33,15 @@
 # reported on stderr and changes neither the verdict nor the exit code.
 #
 # Resolution reuses the watchdog's key: the delegation call's description,
-# matched verbatim against agent-*.meta.json. Descriptions are unique per
-# delegation by contract (SKILL.md), so at most one live match exists; if
-# several files match anyway (e.g. leftovers from an older run reusing the
-# string against contract), the most recently modified one is taken.
+# matched verbatim against agent-*.meta.json of the calling session only —
+# the one CLAUDE_CODE_SESSION_ID names, which Claude Code sets in its Bash
+# tool (the Step -1 probe in SKILL.md reads it). Descriptions repeat across
+# sessions (287 distinct values did on this machine, measured 2026-09-23),
+# so a machine-wide search can take another run's turn for this one. With
+# the variable empty or unset the search is machine-wide again, which is how
+# a transcript of another session is scanned on purpose (the canary). Within
+# one session descriptions are unique per delegation by contract (SKILL.md);
+# if several files match anyway, the most recently modified one is taken.
 
 set -u
 
@@ -101,6 +106,7 @@ PATTERNS=(
 DENIAL_FIELD='"toolDenialKind":"'
 
 PROJECT_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+SESSION="${CLAUDE_CODE_SESSION_ID:-}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -146,11 +152,23 @@ write_out() {
     echo "$1"
     echo "desc: $DESC"
     echo "transcript: ${transcript:--}"
+    echo "session: ${SESSION:-all}"
     [ -z "$kinds" ] || echo "kinds:$kinds"
     echo "scanned: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } 2>/dev/null > "$OUT"; then
     echo "deny_scan: could not write --out $OUT" >&2
   fi
+}
+
+# The meta.json files a description may resolve to: the calling session's
+# own agents, or every agent on the machine when no session is known.
+candidate_metas() {
+  if [ -n "$SESSION" ]; then
+    find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' \
+      -path "*/$SESSION/subagents/*" -print0 2>/dev/null
+    return
+  fi
+  find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -print0 2>/dev/null
 }
 
 # One grep over the whole candidate set, not one per file. The per-file loop
@@ -169,8 +187,7 @@ while IFS= read -r meta; do
     transcript="${meta%.meta.json}.jsonl"
   fi
 done <<EOF
-$(find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -print0 2>/dev/null \
-  | xargs -0 -r grep -lF -- "$needle" 2>/dev/null)
+$(candidate_metas | xargs -0 -r grep -lF -- "$needle" 2>/dev/null)
 EOF
 
 # -s as well as -f: a resolved 0-byte transcript would otherwise scan CLEAN,

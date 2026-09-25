@@ -38,7 +38,8 @@ exec bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable
   (`DEADLINE_REVIEW_DEV`), `--deliv` = its decision record. A
   `--decider=human` wait delegates nothing, so no watchdog.
 - Thresholds live at the top of `scripts/watchdog.sh`. Do not pass the agent
-  id; the script resolves the transcript from `--desc`.
+  id; the script resolves the transcript from `--desc`, within this session
+  (it reads `CLAUDE_CODE_SESSION_ID` from the Bash environment).
 
 Wakes:
 
@@ -126,7 +127,9 @@ transcripts older than that field, the measured denial phrases; a Claude Code
 update can make it inert silently (fail-open), and `deny_scan_test.sh` runs on
 fixed fakes, so it cannot notice. After any Claude Code upgrade — or whenever a
 turn is known to have been denied — scan a transcript containing a real denial
-and confirm `DENIED`. A `CLEAN` there means the field or the phrases at the top
+and confirm `DENIED` (for a transcript of another session, put
+`CLAUDE_CODE_SESSION_ID=` in front of the command: the scan otherwise searches
+only the calling session). A `CLEAN` there means the field or the phrases at the top
 of `deny_scan.sh` moved and need re-measuring. This has fired twice (the
 phrasing moved to `Permission to use <Tool> ... has been denied`; a PreToolUse
 hook refused with its own wording); treat it as an obligation.

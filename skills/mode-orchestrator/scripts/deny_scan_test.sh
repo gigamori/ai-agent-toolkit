@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -u
+unset CLAUDE_CODE_SESSION_ID
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCAN="$HERE/deny_scan.sh"
@@ -205,6 +206,31 @@ mkdir -p "$R/proj"
 DS_OUT="$(bounded bash "$SCAN" --desc x --project-root "$R" --out 2>/dev/null)"
 DS_RC=$?
 expect "a bare --out is a usage error, not a hang" "" 64
+
+R="$WORK/t21"
+T_A="$(mk_agent "$R" sessA aaa2 'shared desc')"
+printf '%s\n' "$DENIAL_CLASSIFIER" > "$T_A"
+touch -d '2001-01-01 00:00:00' "${T_A%.jsonl}.meta.json" 2>/dev/null \
+  || touch -t 200101010000 "${T_A%.jsonl}.meta.json"
+T_B="$(mk_agent "$R" sessB bbb2 'shared desc')"
+printf '%s\n' "$OK_RESULT" > "$T_B"
+export CLAUDE_CODE_SESSION_ID=sessA
+run_ds --desc 'shared desc' --project-root "$R"
+unset CLAUDE_CODE_SESSION_ID
+expect "the calling session's turn wins over a newer one elsewhere" "DENIED 1" 1
+
+R="$WORK/t22"
+T="$(mk_agent "$R" sessB ccc2 'other session only')"
+printf '%s\n' "$DENIAL_CLASSIFIER" > "$T"
+export CLAUDE_CODE_SESSION_ID=sessA
+run_ds --desc 'other session only' --project-root "$R"
+unset CLAUDE_CODE_SESSION_ID
+expect "a description found only in another session is not this turn" "NO-TRANSCRIPT" 2
+
+export CLAUDE_CODE_SESSION_ID=
+run_ds --desc 'other session only' --project-root "$R"
+unset CLAUDE_CODE_SESSION_ID
+expect "an empty session id searches every session, as the canary needs" "DENIED 1" 1
 
 echo
 echo "passed $PASS / $N"

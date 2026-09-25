@@ -112,6 +112,10 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   phrase detector trips on program output that quotes a denial phrase: one such line, on
   2.1.226, was a `diff` of a file containing the phrases. The field cannot match that way,
   because inside tool output it is JSON-escaped. Observed 2026-09-23.
+- Claude Code sets `CLAUDE_CODE_SESSION_ID` in its Bash tool, and it names the session whose
+  `<project>/<session>/subagents/` directory holds the `agent-*.meta.json` of the agents that
+  session starts. Observed 2026-09-25 in one session: the variable held that session's id,
+  and that directory held the metas of the agents started from it.
 - GNU grep 3.0 (Git for Windows) answers a file containing a NUL byte with the single line
   `Binary file <path> matches` instead of the matching lines, unless given `-a`. One session
   transcript on this machine held 11679 NUL bytes; no subagent transcript held any.

@@ -84,6 +84,7 @@ RESOLVE_BACKDATE=120
 
 # Where session logs live. Override with --project-root for a non-default setup.
 PROJECT_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+SESSION="${CLAUDE_CODE_SESSION_ID:-}"
 
 # ---------------------------------------------------------------------------
 
@@ -175,10 +176,22 @@ deliv_note() {
 }
 
 # Locate the transcript of the agent whose meta.json carries our description.
-# Searched across the whole session-log root so the caller never has to know the
-# session id, and matched on the exact JSON field so a description that is a
-# prefix of another turn's cannot collide. Only files touched at or after t0 are
-# eligible, which keeps an identical description from an earlier run out.
+# Searched within the calling session when CLAUDE_CODE_SESSION_ID is set (Claude
+# Code sets it in its Bash tool), because a concurrent run in another session
+# can carry the same description; across the whole session-log root otherwise,
+# so the caller never has to pass the session id. Matched on the exact JSON field
+# so a description that is a prefix of another turn's cannot collide. Only files
+# touched at or after t0 are eligible, which keeps an identical description from
+# an earlier run out.
+candidate_metas() {
+  if [ -n "$SESSION" ]; then
+    find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newer "$STAMP" \
+      -path "*/$SESSION/subagents/*" 2>/dev/null
+    return
+  fi
+  find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newer "$STAMP" 2>/dev/null
+}
+
 resolve_transcript() {
   local needle meta
   needle="\"description\":\"$DESC\""
@@ -189,7 +202,7 @@ resolve_transcript() {
       return 0
     fi
   done <<EOF
-$(find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newer "$STAMP" 2>/dev/null)
+$(candidate_metas)
 EOF
   return 1
 }
