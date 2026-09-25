@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -33,8 +34,10 @@ def check(cond: bool, msg: str) -> None:
     ok(msg) if cond else bad(msg)
 
 
-def run_hook(path: str, pattern: str) -> str:
+def run_hook(path: str, pattern: str, cwd: str | None = None) -> str:
     payload = {"tool_name": "Grep", "tool_input": {"path": path, "pattern": pattern}}
+    if cwd is not None:
+        payload["cwd"] = cwd
     cp = subprocess.run(
         ["uv", "run", "--no-project", "python", str(HOOK)],
         input=json.dumps(payload), capture_output=True,
@@ -83,6 +86,41 @@ def test_shapes_that_must_not_deny() -> None:
           "a Windows-separator path is the same tree and must not slip past on separator alone")
 
 
+def test_one_existing_file_passes() -> None:
+    print("--- a Grep confined to one existing note passes ---")
+    with tempfile.TemporaryDirectory() as tmp:
+        specs = Path(tmp) / "_projects" / "p" / "project-notes" / "specs"
+        specs.mkdir(parents=True)
+        note = specs / "x.md"
+        note.write_text("anchors: []\n", encoding="utf-8")
+        fwd = note.as_posix()
+        check(decision(run_hook(fwd, "^anchors:")) == "allow",
+              "a Grep inside one existing note file searches no other note, so it is no corpus scan")
+        check(decision(run_hook(fwd.replace("/", "\\"), "^anchors:")) == "allow",
+              "a backslash-separated path to one existing note file passes the same way")
+        check(decision(run_hook("_projects/p/project-notes/specs/x.md", "^anchors:", cwd=tmp)) == "allow",
+              "a relative path is resolved against the payload cwd before it is judged")
+        if os.name == "nt" and len(fwd) > 2 and fwd[1] == ":":
+            msys = "/" + fwd[0].lower() + fwd[2:]
+            check(decision(run_hook(msys, "^anchors:")) == "allow",
+                  "an MSYS /c/ path to one existing note file passes on Windows")
+        check(decision(run_hook(specs.as_posix(), "^anchors:")) == "deny",
+              "an existing notes directory is still the corpus scan")
+        check(decision(run_hook("_projects/p/project-notes/specs/x.md", "^anchors:")) == "deny",
+              "a relative path with no payload cwd cannot be shown to be one file, so it is denied")
+
+
+def test_no_path_judged_by_cwd() -> None:
+    print("--- a Grep with no path searches its cwd ---")
+    with tempfile.TemporaryDirectory() as tmp:
+        notes = Path(tmp) / "_projects" / "p" / "project-notes"
+        notes.mkdir(parents=True)
+        check(decision(run_hook("", "^anchors:", cwd=notes.as_posix())) == "deny",
+              "with no path the search root is the cwd, and a cwd inside project-notes is the corpus")
+        check(decision(run_hook("", "^anchors:", cwd=tmp)) == "allow",
+              "a root above project-notes is left alone: judging it would deny ordinary searches of the project")
+
+
 def test_registered_on_grep() -> None:
     print("--- registered where it fires ---")
     cfg = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
@@ -97,6 +135,8 @@ def main() -> int:
     test_four_arms()
     test_reason_carries_the_rule()
     test_shapes_that_must_not_deny()
+    test_one_existing_file_passes()
+    test_no_path_judged_by_cwd()
     test_registered_on_grep()
     print()
     if FAIL == 0:
