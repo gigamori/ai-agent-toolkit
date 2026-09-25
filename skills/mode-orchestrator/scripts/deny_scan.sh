@@ -153,6 +153,7 @@ write_out() {
     echo "desc: $DESC"
     echo "transcript: ${transcript:--}"
     echo "session: ${SESSION:-all}"
+    [ -z "$descendants" ] || printf '%s\n' "$descendants" | sed 's/^/descendant: /'
     [ -z "$kinds" ] || echo "kinds:$kinds"
     echo "scanned: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } 2>/dev/null > "$OUT"; then
@@ -178,6 +179,7 @@ candidate_metas() {
 needle="\"description\":\"$DESC\""
 transcript=""
 kinds=""
+descendants=""
 best_mtime=0
 while IFS= read -r meta; do
   [ -n "$meta" ] || continue
@@ -199,6 +201,46 @@ if [ -z "$transcript" ] || [ ! -f "$transcript" ] || [ ! -s "$transcript" ]; the
   exit 2
 fi
 
+# Every agent the turn started, at any depth, is scanned with it: a denial in
+# an agent the turn delegated to is still a refused call of the turn's work,
+# and the turn's own transcript shows only that agent's final reply (measured
+# 2026-09-25: one denial of 279 orchestrated turns sat in such an agent and
+# scanned CLEAN). A child names its parent in its meta.json one of two ways:
+# `toolUseId`, the id of the Agent call that started it, or `parentAgentId`,
+# the parent's agent id, which is all a child forked by a Skill carries.
+AGENT_DIR="$(dirname "$transcript")"
+children_of() {
+  local id pats
+  id="$(basename "$1" .jsonl)"
+  pats="\"parentAgentId\":\"${id#agent-}\""
+  while IFS= read -r tu; do
+    [ -n "$tu" ] || continue
+    pats="$pats
+\"toolUseId\":\"$tu\""
+  done <<EOF
+$(grep -ao '"id":"toolu_[A-Za-z0-9_]*"' "$1" 2>/dev/null | sed 's/.*:"//; s/"$//' | sort -u)
+EOF
+  find "$AGENT_DIR" -name 'agent-*.meta.json' -print0 2>/dev/null \
+    | xargs -0 -r grep -lF -- "$pats" 2>/dev/null \
+    | sed 's/\.meta\.json$/.jsonl/'
+}
+
+frontier="$transcript"
+while [ -n "$frontier" ]; do
+  found="$(printf '%s\n' "$frontier" | while IFS= read -r t; do children_of "$t"; done | sort -u)"
+  frontier=""
+  while IFS= read -r c; do
+    [ -n "$c" ] && [ -f "$c" ] && [ "$c" != "$transcript" ] || continue
+    printf '%s\n' "$descendants" | grep -qxF -- "$c" && continue
+    descendants="${descendants:+$descendants
+}$c"
+    frontier="${frontier:+$frontier
+}$c"
+  done <<EOF
+$found
+EOF
+done
+
 # One pass over the "is_error":true lines, matching the structural field or
 # any phrase, so a line that trips several needles counts once. -a on every
 # grep: without it a transcript holding a NUL byte is answered with the
@@ -209,15 +251,24 @@ for pat in "${PATTERNS[@]}"; do
   needles="$needles
 $pat"
 done
-count=$(grep -aF '"is_error":true' "$transcript" 2>/dev/null | grep -caF -- "$needles" || true)
+count=0
+while IFS= read -r t; do
+  [ -n "$t" ] || continue
+  n=$(grep -aF '"is_error":true' "$t" 2>/dev/null | grep -caF -- "$needles" || true)
+  count=$((count + n))
+done <<EOF
+$transcript
+$descendants
+EOF
 
 if [ "$count" -gt 0 ]; then
-  kinds=$(grep -aF '"is_error":true' "$transcript" 2>/dev/null \
+  kinds=$(printf '%s\n' "$transcript" "$descendants" | sed '/^$/d' \
+    | while IFS= read -r t; do grep -aF '"is_error":true' "$t" 2>/dev/null; done \
     | grep -ao '"toolDenialKind":"[^"]*"' | sed 's/.*:"//; s/"$//' \
     | sort | uniq -c | awk '{printf " %s=%s", $2, $1}')
   write_out "DENIED $count"
   echo "DENIED $count"
-  echo "deny_scan: $count denial tool_result(s) in $transcript${kinds:+ --${kinds}}" >&2
+  echo "deny_scan: $count denial tool_result(s) in $transcript${descendants:+ and the agents it started}${kinds:+ --${kinds}}" >&2
   exit 1
 fi
 write_out "CLEAN"

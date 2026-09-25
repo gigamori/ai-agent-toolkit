@@ -116,6 +116,12 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   `<project>/<session>/subagents/` directory holds the `agent-*.meta.json` of the agents that
   session starts. Observed 2026-09-25 in one session: the variable held that session's id,
   and that directory held the metas of the agents started from it.
+- A subagent's `agent-*.meta.json` names its parent in one or both of two fields:
+  `toolUseId`, the id of the Agent tool call in the parent's transcript that started it, and
+  `parentAgentId`, the parent's agent id. An agent the Agent tool started carries `toolUseId`,
+  some of them `parentAgentId` as well; an agent a Skill forks carries only `agentType`,
+  `parentAgentId` and `spawnDepth`. All sit in the calling session's `subagents/` directory.
+  Observed 2026-09-25 over one machine's `~/.claude/projects`.
 - GNU grep 3.0 (Git for Windows) answers a file containing a NUL byte with the single line
   `Binary file <path> matches` instead of the matching lines, unless given `-a`. One session
   transcript on this machine held 11679 NUL bytes; no subagent transcript held any.

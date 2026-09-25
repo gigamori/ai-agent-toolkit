@@ -232,6 +232,44 @@ run_ds --desc 'other session only' --project-root "$R"
 unset CLAUDE_CODE_SESSION_ID
 expect "an empty session id searches every session, as the canary needs" "DENIED 1" 1
 
+R="$WORK/t27"
+T="$(mk_agent "$R" sess1 ttt 'turn with a child')"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_child1","name":"Agent","input":{}}]}}' > "$T"
+D="$R/proj/sess1/subagents"
+printf '{"agentType":"general-purpose","description":"child","toolUseId":"toolu_child1","spawnDepth":2}' > "$D/agent-kid1.meta.json"
+printf '%s\n' "$DENIAL_HOOK" > "$D/agent-kid1.jsonl"
+run_ds --desc 'turn with a child' --project-root "$R"
+expect "a denial inside an agent the turn started counts" "DENIED 1" 1
+
+R="$WORK/t28"
+T="$(mk_agent "$R" sess1 uuu 'turn with a skill child')"
+printf '%s\n' "$ASSISTANT" > "$T"
+D="$R/proj/sess1/subagents"
+printf '{"agentType":"general-purpose","parentAgentId":"uuu","spawnDepth":2}' > "$D/agent-kid2.meta.json"
+printf '%s\n' "$DENIAL_HOOK" > "$D/agent-kid2.jsonl"
+run_ds --desc 'turn with a skill child' --project-root "$R"
+expect "a denial inside a child that names the turn as its parent agent counts" "DENIED 1" 1
+
+R="$WORK/t29"
+T="$(mk_agent "$R" sess1 vvv 'turn with a grandchild')"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_c3","name":"Agent","input":{}}]}}' > "$T"
+D="$R/proj/sess1/subagents"
+printf '{"agentType":"general-purpose","description":"c","toolUseId":"toolu_c3","spawnDepth":2}' > "$D/agent-kid3.meta.json"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_g3","name":"Agent","input":{}}]}}' > "$D/agent-kid3.jsonl"
+printf '{"agentType":"general-purpose","description":"g","toolUseId":"toolu_g3","spawnDepth":3}' > "$D/agent-grand3.meta.json"
+printf '%s\n' "$DENIAL_CLASSIFIER" > "$D/agent-grand3.jsonl"
+run_ds --desc 'turn with a grandchild' --project-root "$R"
+expect "a denial two levels below the turn counts" "DENIED 1" 1
+
+R="$WORK/t30"
+T="$(mk_agent "$R" sess1 www 'turn without children')"
+printf '%s\n' "$ASSISTANT" > "$T"
+D="$R/proj/sess1/subagents"
+printf '{"agentType":"general-purpose","description":"other","toolUseId":"toolu_other","spawnDepth":1}' > "$D/agent-other.meta.json"
+printf '%s\n' "$DENIAL_CLASSIFIER" > "$D/agent-other.jsonl"
+run_ds --desc 'turn without children' --project-root "$R"
+expect "an agent of the same session that the turn did not start is not scanned" "CLEAN" 0
+
 echo
 echo "passed $PASS / $N"
 [ "$FAIL" -eq 0 ]

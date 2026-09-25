@@ -100,7 +100,8 @@ bash <this skill's dir>/scripts/deny_scan.sh --desc "<the delegation description
 Every refusal counts, whatever issued it: a permission rule, a PreToolUse
 hook, the auto-mode classifier or its being unreachable, a permission prompt
 that was not approved, an interrupted call. The stderr line names the kinds
-found.
+found. The scan covers the turn's transcript and those of every agent the turn
+started, at any depth — through the Agent tool or a Skill that forks one.
 
 Sending and recording it:
 
@@ -115,6 +116,8 @@ Sending and recording it:
 - Record in the run index the verdict line and the file's path. A verdict in
   neither the command's output nor the file is not recordable: run the check
   again — it only reads the transcript and rewrites its file.
+- The command itself refused, or failing before it prints a verdict: record
+  the turn as `NO-TRANSCRIPT`. A check that could not run is never `CLEAN`.
 - `deny_scan: could not write --out …` on stderr: the verdict on stdout
   stands; record it with that line in place of a path.
 
