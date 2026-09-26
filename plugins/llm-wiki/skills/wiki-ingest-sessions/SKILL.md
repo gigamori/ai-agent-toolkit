@@ -158,19 +158,19 @@ that, under the first-ingested-owns ledger, the earliest session normally owns a
 prefix). This verb opens no transaction (no lock, no checkpoint, no sidecar) — it only
 reads.
 
-Pass exactly one selector, chosen from Step 0/Step 1's inputs, plus always `--sid "$SID"`
+Pass exactly one selector, chosen from Step 0/Step 1's inputs, plus always `--sid="$SID"`
 (from Step 1 — required for the no-args `pj`/`prompt`-scope active-project resolution, D2,
 and for the cwd-scope running-session ground truth, D4, unchanged):
 
 - Step 0's `--workspace` flag was given → pass `--workspace`.
-- else Step 0's `--pj <name>` was given → pass `--pj "$PJ"`.
-- else (both absent — the no-args case, D2) → pass `--scope "$WIKI_SCOPE"` (from Step 1)
+- else Step 0's `--pj <name>` was given → pass `--pj="$PJ"`.
+- else (both absent — the no-args case, D2) → pass `--scope="$WIKI_SCOPE"` (from Step 1)
   so the driver follows the resolved wiki scope.
 
 ```bash
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --workspace --sid "$SID"
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --pj "$PJ" --sid "$SID"
-uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --scope "$WIKI_SCOPE" --sid "$SID"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --workspace --sid="$SID"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --pj="$PJ" --sid="$SID"
+uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-ingest ingest session-plan "$WIKI_ROOT" --scope="$WIKI_SCOPE" --sid="$SID"
 ```
 
 Here `$PJ` is the `--pj <name>` value from Step 0. The driver prints JSON

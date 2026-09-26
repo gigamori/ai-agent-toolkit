@@ -207,6 +207,9 @@ system, the status is `blocked` — never `failed`, never `needs-decision`,
 and never `ok`: this holds even if you judged the denied call inessential
 and finished the task without it. Whether a denial matters is not yours
 to decide.
+Do not reproduce a denied call's effect another way: after a refused
+`git stash`, no `cp` or edit that reverts the same files. A different,
+safer action (a scratch copy, a dropped flag) is not a reproduction.
 Use `failed` only when your deliverable also carries a `## Failure
 report` section with all five fields, under these exact names: Error
 (one sentence) / Reproduction (the exact command) / Error output /
@@ -232,6 +235,9 @@ above that line. If any tool call of yours was denied by the permission
 system, the status is `blocked` — never `needs-decision` and never `ok`:
 this holds even if you judged the denied call inessential and finished
 the task without it. Whether a denial matters is not yours to decide.
+Do not reproduce a denied call's effect another way: after a refused
+`git stash`, no `cp` or edit that reverts the same files. A different,
+safer action (a scratch copy, a dropped flag) is not a reproduction.
 <the `## Decision request` clause above, verbatim>
 <the placement rules above, verbatim>
 Never write a bare mode:<name> or role:<value> token anywhere in your
@@ -248,6 +254,9 @@ above that line. If any tool call of yours was denied by the permission
 system, the status is `blocked` — never `ok`: this holds even if you
 judged the denied call inessential and finished the task without it.
 Whether a denial matters is not yours to decide.
+Do not reproduce a denied call's effect another way: after a refused
+`git stash`, no `cp` or edit that reverts the same files. A different,
+safer action (a scratch copy, a dropped flag) is not a reproduction.
 <the placement rules above, verbatim>
 Never write a bare mode:<name> or role:<value> token anywhere in your
 reply; when you must mention one, wrap it in backticks.
@@ -278,6 +287,9 @@ above that line. If any tool call of yours was denied by the permission
 system, the status is `blocked` — never `needs-decision` and never `ok`:
 this holds even if you judged the denied call inessential and finished
 the task without it. Whether a denial matters is not yours to decide.
+Do not reproduce a denied call's effect another way: after a refused
+`git stash`, no `cp` or edit that reverts the same files. A different,
+safer action (a scratch copy, a dropped flag) is not a reproduction.
 Use `needs-decision` only when your deliverable also carries a
 `## Decision request` section with all four fields: Question (what
 must be decided, naming where each side comes from: the Task line,

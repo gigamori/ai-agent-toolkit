@@ -12,6 +12,13 @@ isolated v2.1.214 install and v2.1.218; see reliability-spec.md §13):
   error ("success" is observed together with is_error=true) -- classify
   on `terminal_reason` / `api_error_status` instead (reliability-spec.md
   §13.9.1).
+- Calls run with `--output-format stream-json --verbose`, whose `type:"result"`
+  events have that same shape, one per turn. A refused call inside an agent
+  the child started in the background is listed on the result of the turn
+  that started it and never on the last one, which is all `json` prints
+  (measured on v2.1.270, docs/dev/test-constraints.md). So refusals are the
+  union over every result event; every other field is read from the last
+  one, exactly what `json` gave.
 - `--json-schema` puts the validated object in `structured_output` (the raw
   JSON string also appears in `result`).
 - Startup failures may exit non-zero with a fully-formed error JSON on
@@ -28,8 +35,11 @@ with a non-api_error terminal_reason, or a schema violation -- retried),
 but `on-error="debug"` may still fire), `refusal` (a `[BLOCKED:` mode/rules
 refusal -- neither retried nor debugged), `decision` (a `DECISION:` request
 for human/llm adjudication -- neither retried nor debugged; see
-xml-wf-decision-request.md §1/§3), `denied` (permission_denials in
-the result JSON -- neither retried nor debugged), `transient` (a retryable
+xml-wf-decision-request.md §1/§3), `denied` (a refused call listed in
+`permission_denials` of any result event -- neither retried nor debugged),
+`unchecked` (a result that would have passed carries no
+`permission_denials` field, so refused calls could not be checked --
+neither retried nor debugged), `transient` (a retryable
 upstream api_error by status code -- retried but never debugged, since
 treating it as a fixable failure is what caused the P3/C3 retry-storm
 incident this spec responds to). `classify_result()` is the single place
@@ -75,22 +85,26 @@ TRANSIENT_API_ERROR_STATUSES = {429, 500, 502, 503, 504, 529}
 # prompt answers nothing, and the step may have side effects that a second
 # execution would repeat; this holds for a MALFORMED payload too, which is
 # why the class is pinned on the prefix alone, xml-wf-decision-request.md §1),
-# `denied` (a permission problem retry can't fix). Everything else --
-# including error_class=None, which is what pre-Phase-2.1 CliResult
-# construction (and any caller that never classifies) produces -- stays
-# retryable, matching prior behavior (reliability-spec.md §3.2/§13.5).
-NON_RETRYABLE_CLASSES = {"env", "guardrail", "refusal", "decision", "denied"}
+# `denied` (a permission problem retry can't fix), `unchecked` (the CLI's
+# output lacks the field refusals are read from; a rerun lacks it too).
+# Everything else -- including error_class=None, which is what pre-Phase-2.1
+# CliResult construction (and any caller that never classifies) produces --
+# stays retryable, matching prior behavior (reliability-spec.md §3.2/§13.5).
+NON_RETRYABLE_CLASSES = {"env", "guardrail", "refusal", "decision", "denied",
+                         "unchecked"}
 
 # error_class values for which `on-error="debug"` must not fire: `refusal`/
 # `denied` are the step agent's or the permission system's final word on
 # THIS request, not a bug a debug re-diagnosis could fix; `decision` is a
 # request for a judgment, so handing it to debug would have the debug role
 # diagnose a failure that does not exist (xml-wf-decision-request.md §3);
-# and `transient` is an upstream API hiccup -- classifying it as a fixable
+# `transient` is an upstream API hiccup -- classifying it as a fixable
 # "failed" and handing it to the recovery loop is the exact
 # misclassification that drove the P3/C3 retry-storm incident this spec
-# responds to (reliability-spec.md §3.2, §13.5).
-NON_DEBUGGABLE_CLASSES = {"refusal", "decision", "denied", "transient"}
+# responds to (reliability-spec.md §3.2, §13.5); and `unchecked` is a CLI
+# format change no step-level fix can repair, so a paid diagnosis is waste.
+NON_DEBUGGABLE_CLASSES = {"refusal", "decision", "denied", "transient",
+                          "unchecked"}
 
 
 def is_retryable(error_class: str | None) -> bool:
@@ -99,6 +113,13 @@ def is_retryable(error_class: str | None) -> bool:
 
 def is_debuggable(error_class: str | None) -> bool:
     return error_class not in NON_DEBUGGABLE_CLASSES
+
+# The print-mode flags every call carries. Streaming is what makes the result
+# of every turn readable (classify_result); nothing is persisted, since the
+# verdict comes from this output alone. Shared with evals/deny_canary.py, so
+# the canary launches exactly what wfrun launches.
+PRINT_ARGS = ("-p", "--output-format", "stream-json", "--verbose",
+              "--no-session-persistence")
 
 # cmd.exe metacharacters (plus newlines) that a Windows npm .cmd/.bat shim's
 # argv parsing corrupts (measured in reliability-spec.md §13.2).
@@ -218,7 +239,8 @@ class CliResult:
     stderr: str = ""
     error: str | None = None  # human-readable classification when ok is False
     error_class: str | None = None  # machine classification (reliability-spec.md §13/§3.1); always set when ok is False for results produced by classify_result()
-    raw: dict | None = field(default=None, repr=False)
+    raw: dict | None = field(default=None, repr=False)  # the last result event
+    stream: str = field(default="", repr=False)  # the whole stream-json stdout; "" for a single JSON object
 
 
 _DENIED_COMMAND_LIMIT = 200
@@ -263,6 +285,43 @@ def _denied_command_fragment(denials: list) -> str:
     return ""
 
 
+def _parse_output(stdout: str) -> tuple[list[dict], bool]:
+    """(result events, whether stdout was a stream).
+
+    A single JSON object is the `--output-format json` shape and is the only
+    result event (an object with no `type` counts, as older callers write
+    them). In a stream, one unparseable line voids the whole parse: a result
+    event missed there could be the one that lists a refusal.
+    """
+    try:
+        single = json.loads(stdout)
+    except json.JSONDecodeError:
+        single = None
+    if isinstance(single, dict):
+        return ([single] if single.get("type", "result") == "result" else []), False
+    events = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return [], True
+        if isinstance(event, dict) and event.get("type") == "result":
+            events.append(event)
+    return events, True
+
+
+def _denial_union(events: list[dict]) -> list:
+    """Every refused call listed on any result event, in event order."""
+    union = []
+    for event in events:
+        denials = event.get("permission_denials")
+        if isinstance(denials, list):
+            union.extend(denials)
+    return union
+
+
 def classify_result(returncode: int, stdout: str, stderr: str, *,
                     schema: str | None = None) -> CliResult:
     """Turn a completed claude -p invocation's (returncode, stdout, stderr)
@@ -272,12 +331,14 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
     files rather than from a live subprocess.Popen result.
 
     Classification order (reliability-spec.md §3.1, §13.5, §13.9.1):
-    unparseable stdout -> env; permission_denials (independent of is_error,
-    since it has been observed with is_error=False) -> denied; is_error ->
-    transient/env (api_error, by api_error_status) or behavioral (any other
-    terminal_reason); otherwise inspect the response body -> guardrail
-    (ERROR:) / refusal ([BLOCKED:) / decision (DECISION:) / behavioral (empty
-    body, or schema given but no structured output). `subtype` is never
+    unparseable stdout or no result event -> env; permission_denials on any
+    result event (independent of is_error, since it has been observed with
+    is_error=False) -> denied; is_error -> transient/env (api_error, by
+    api_error_status) or behavioral (any other terminal_reason); otherwise
+    inspect the response body -> guardrail (ERROR:) / refusal ([BLOCKED:) /
+    decision (DECISION:) / behavioral (empty body, or schema given but no
+    structured output); last, a result that would pass while some result
+    event lacks the permission_denials field -> unchecked. `subtype` is never
     consulted -- it is not a reliable success/error signal (§13.9.1).
 
     The three body prefixes are peers and ALL precede the schema fallback
@@ -286,13 +347,13 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
     retry it -- re-running a step that may already have written its
     deliverable.
     """
-    try:
-        raw = json.loads(stdout)
-    except json.JSONDecodeError:
+    events, is_stream = _parse_output(stdout)
+    if not events:
         return CliResult(ok=False, exit_code=returncode, stderr=stderr,
                          error_class="env",
                          error=f"claude exited {returncode} with unparseable "
                                f"output: {stderr.strip()[:500] or stdout.strip()[:500]!r}")
+    raw = events[-1]
 
     result = CliResult(
         ok=True,
@@ -303,9 +364,10 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
         exit_code=returncode,
         stderr=stderr,
         raw=raw,
+        stream=stdout if is_stream else "",
     )
 
-    denials = raw.get("permission_denials")
+    denials = _denial_union(events)
     if denials:
         # Machine-readable and independent of is_error (observed with
         # is_error=False, returncode=0 -- reliability-spec.md Phase 0 O1).
@@ -393,6 +455,16 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
             result.ok = False
             result.error_class = "behavioral"
             result.error = "schema was specified but no structured output was returned"
+
+    if result.ok and any("permission_denials" not in event for event in events):
+        # Every result measured carries the field, error results included
+        # (docs/dev/test-constraints.md), so its absence is a format change and
+        # an empty union proves nothing. Only a would-be success is withheld:
+        # a result that already failed keeps its own class.
+        result.ok = False
+        result.error_class = "unchecked"
+        result.error = ("claude result carries no permission_denials field, "
+                        "so refused tool calls could not be checked")
     return result
 
 
@@ -503,7 +575,7 @@ def _launch(prompt: str, *, system_prompt: str | None = None,
                   "layer would silently corrupt. Put a non-shim claude "
                   "earlier on PATH.")
 
-    cmd = [claude_bin, "-p", "--output-format", "json", "--no-session-persistence"]
+    cmd = [claude_bin, *PRINT_ARGS]
     sys_prompt_file: str | None = None
 
     if system_prompt:

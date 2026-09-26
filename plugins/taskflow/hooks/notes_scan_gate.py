@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook: deny a Grep over project-notes/ that is not a `::<name>`
-symbol lookup — the corpus scan notes_guidelines.md forbids.
+PreToolUse hook: deny a Grep that searches more than one file of a
+project-notes/ tree and is not a `::<name>` symbol lookup — the corpus scan
+notes_guidelines.md forbids.
 
-Fires on Grep only (hooks.json). Denies when BOTH hold:
+Fires on Grep only (hooks.json). Denies when ALL hold:
 
-    path    is inside a project-notes/ tree (`_archive/` included)
+    root    the search root — the Grep's path, or its cwd when it has no
+            path — lies inside a project-notes/ tree (`_archive/` included)
+    scope   that root is not one existing file; a directory, or a root that
+            cannot be resolved on disk, counts as the tree (fail closed)
     pattern does not contain `::`
+
+A Grep inside one existing note searches no other note, so it passes, the
+same as a Read of that file. 18 of the 20 real denials outside the
+deployment probes were single-file, and in 13 of those 18 the same
+transcript later read the file or grepped it through Bash (measured
+2026-09-24; matched by basename, so a co-occurrence count, not a cause).
+A relative path is resolved against the payload cwd, and on Windows an MSYS
+`/c/...` path is read as `C:/...`.
 
 Everything else passes. The deny payload is the shape rule-inject already
 uses (plugins/rule-inject/hooks/pre_tool_check_rules.py), so this is a new
@@ -27,9 +39,11 @@ general-purpose subagent issued was denied by the parent's registration, the
 same way touched_capture already sees subagent writes under the parent's
 session_id.
 
-So the guarantee is "a Grep tool corpus scan is impossible", not "a corpus
-scan is impossible". The remaining routes stay a wording matter and are
-observed, not blocked.
+So the guarantee is "a Grep-tool search rooted inside project-notes/ and not
+confined to one file is impossible", not "a corpus scan is impossible". A
+Grep rooted above the tree (the project directory, the repo root) is not
+judged either: judging it would deny ordinary searches of the project. The
+remaining routes stay a wording matter and are observed, not blocked.
 
 One deployment fact: the matcher set is fixed when a session starts, so adding
 this hook does not take effect in a session already running. Measured the same
@@ -39,31 +53,62 @@ Write|Edit hook while a Grep on project-notes went through untouched.
 stdlib only: hooks run under `uv run --no-project`.
 """
 import json
+import os
+import re
 import sys
 
 NOTES_DIR = 'project-notes'
 SYMBOL_MARK = '::'
+MSYS_DRIVE = re.compile(r'^/([A-Za-z])/')
 
 REASON = (
-  'Grep over project-notes/ without `::` is the corpus scan the note rule forbids. '
-  'Reads of project-notes/ are exactly three: the injected block, a `::<name>` Grep '
-  'for a peer query-lsp returned, and opening a file one of those two named. '
-  'If query-lsp did not answer, say the route was unavailable and continue on the '
-  'block alone.'
+  'Grep over project-notes/ without `::`, across more than one file, is the corpus '
+  'scan the note rule forbids. Reads of project-notes/ are exactly three: the injected '
+  'block, a `::<name>` Grep for a peer query-lsp returned, and opening or searching one '
+  'file that one of those two, or your task, names by path. Do not run this search '
+  'another way (Bash grep, rg or cat; Glob then Read). If query-lsp did not answer, say '
+  'the route was unavailable and continue on the block alone.'
 )
 
 
-def is_corpus_scan(path: str, pattern: str) -> bool:
-    """The denied shape: a Grep aimed into project-notes/ that is not looking
-    for a `path::symbol` anchor. Both arguments are taken verbatim from
-    tool_input; a missing one arrives as ''."""
+def native(path: str) -> str:
+    """`\\` becomes `/`, and on Windows an MSYS `/c/...` becomes `C:/...`, so
+    the path can be checked on disk."""
+    p = path.replace('\\', '/')
+    if os.name != 'nt':
+        return p
+    m = MSYS_DRIVE.match(p)
+    if not m:
+        return p
+
+    return f'{m.group(1).upper()}:/{p[m.end():]}'
+
+
+def search_root(path: str, cwd: str) -> str:
+    """What the Grep searches: its path, resolved against cwd when relative,
+    or cwd itself when there is no path. '' when neither is known."""
     if not path:
+        return native(cwd)
+    p = native(path)
+    if os.path.isabs(p) or not cwd:
+        return p
+
+    return native(cwd).rstrip('/') + '/' + p
+
+
+def is_corpus_scan(path: str, pattern: str, cwd: str) -> bool:
+    """The denied shape: a Grep rooted inside project-notes/ that searches more
+    than one file and is not looking for a `path::symbol` anchor. Arguments are
+    taken verbatim from the payload; a missing one arrives as ''."""
+    root = search_root(path, cwd)
+    if not root:
         return False
-    parts = path.replace('\\', '/').split('/')
-    if NOTES_DIR not in parts:
+    if NOTES_DIR not in root.split('/'):
+        return False
+    if SYMBOL_MARK in pattern:
         return False
 
-    return SYMBOL_MARK not in pattern
+    return not os.path.isfile(root)
 
 
 def main() -> int:
@@ -73,7 +118,9 @@ def main() -> int:
         return 0
 
     tool_input = data.get('tool_input') or {}
-    if not is_corpus_scan(tool_input.get('path') or '', tool_input.get('pattern') or ''):
+    path = tool_input.get('path') or ''
+    pattern = tool_input.get('pattern') or ''
+    if not is_corpus_scan(path, pattern, data.get('cwd') or ''):
         return 0
 
     payload = {

@@ -404,9 +404,15 @@ Each check below assigns an `error_class` (`claude_cli.classify_result()`),
 which is what retry/debug policy (next section) actually keys on — not
 string-matching `error`.
 
-1. `permission_denials` present in the result JSON → `denied`. Checked
-   first and independent of `is_error` (observed with `is_error:false`,
-   exit 0)
+1. A refused tool call listed in `permission_denials` on any result event →
+   `denied`. Checked first and independent of `is_error` (observed with
+   `is_error:false`, exit 0). Every call streams (`--output-format
+   stream-json`), and the union over all result events is read: a refusal
+   inside an agent the step started in the background is listed only on the
+   result of the turn that started it, never on the last one. The other
+   fields below come from the last result event. run-llm layer B has no
+   result JSON; there, on Claude Code, `record` checks the step subagent's
+   transcript instead (see "Error handling")
 2. `claude` result JSON reports `is_error` — the exit code is not checked
    first: a non-zero exit can still carry a fully-formed error JSON on
    stdout (e.g. an unknown `--model` exits 1 with a JSON body), so JSON
@@ -432,26 +438,35 @@ string-matching `error`.
 7. Response body is empty (after stripping the `[Mode: x]` line) and no
    structured output came back → `behavioral`
 8. `schema` was given but no structured output came back → `behavioral`
-9. A path named in `expect-file` does not exist after the response
-   (checked by the executor, not `classify_result()`) → `behavioral`
+9. The result would pass, but some result event carries no
+   `permission_denials` field → `unchecked`: the refusal check could not
+   run. Every result measured carries the field, so its absence is a CLI
+   format change, and an empty union proves nothing
+10. A path named in `expect-file` does not exist after the response
+    (checked by the executor, not `classify_result()`) → `behavioral`
 
 Items 4–6 are token-prefix protocols and catch only *compliant* reports (an
 agent that narrates before the marker, or half-works then apologizes,
 classifies as success — with the one payload-parse exception item 6 states).
-They are likelihood levers, not gates — the deterministic layer is items 8–9
-plus downstream `test=` checks; give every file-producing step an
+They are likelihood levers, not gates — the deterministic layer is items 8
+and 10 plus downstream `test=` checks; give every file-producing step an
 `expect-file`. A *successful* response that carries a stray line-anchored
 `ERROR:`/`[BLOCKED:`/`DECISION:` token is reported as a run warning rather
 than silently passing.
 
 ### Error handling (modernized ADP)
 
-This table and the executor logic behind it (`claude_cli.is_retryable()` /
-`is_debuggable()`) are shared verbatim by run-llm's layer A (`wfrun
-dispatch`/`wait`): the wrapper process calls `classify_result()` directly,
-so an A-layer step is retried/debugged under exactly this policy, not a
-separate one. Layer B (`wfrun record`) has its own, text-based decision
-table instead (ok/error/aborted, no `error_class`) — see `run-llm.md`.
+run-llm's layer A (`wfrun dispatch`/`wait`) gets the same classes: the
+wrapper process calls `classify_result()` directly, and `wait` applies the
+debug column itself. The retry column there is carried out by the
+orchestrator, which re-dispatches any `error` up to `retry` times
+(`run-llm.md`). The one row enforced in code is `denied`: `dispatch` refuses
+to re-dispatch a cycle whose last attempt was denied. Layer B (`wfrun
+record`) has its own, text-based decision table instead (ok/error/aborted, no
+`error_class`) — see `run-llm.md`. On Claude Code, that table is preceded by
+a check of the step subagent's transcript, and of every agent the subagent
+started. A refused tool call there makes the step `error: denied`, and
+`run-llm.md` tells the orchestrator not to retry it.
 
 Retry and debug are gated on `error_class`, not on error text:
 
@@ -461,10 +476,12 @@ Retry and debug are gated on `error_class`, not on error text:
 | `transient` | consumed | **not eligible** |
 | `guardrail` | skipped (identical prompt hits the same guardrail) | eligible |
 | `env` | skipped | eligible |
-| `refusal`, `denied` | skipped | **not eligible** |
+| `refusal`, `denied`, `unchecked` | skipped | **not eligible** |
 
 `refusal`/`denied` are the step agent's or the permission system's final
 word on this exact request — not a bug a debug re-diagnosis could fix.
+`unchecked` is a change in the CLI's output that no rerun or diagnosis can
+repair.
 `transient` is retried (an upstream hiccup can clear on its own) but is
 *never* handed to debug even when retries are exhausted: classifying a
 transient API error as a fixable "failed" and routing it into the debug/
@@ -474,7 +491,7 @@ misclassified as fixable, spawned dozens of child sessions per minute).
 
 1. **Deterministic retry**: re-run `retry` times with the identical prompt
    (absorbs transient failures), skipped for `error_class` in
-   `{env, guardrail, refusal, denied}`
+   `{env, guardrail, refusal, denied, unchecked}`
 2. After retries are exhausted, `on-error="debug"` hands the failing step's
    definition, sent prompt, execution result, and stderr to the **debug role**
    (`.claude/agents/debug.md`, injected as a `<role>` block like any step

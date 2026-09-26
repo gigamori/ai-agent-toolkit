@@ -239,6 +239,21 @@ class DispatchTests(DispatchWaitTestCase):
         code, out, err, popen = self.dispatch(extra=["--permission-mode", "acceptEdits"])
         self.assertEqual(code, 0, err)
 
+    def test_dispatch_refuses_after_a_denied_attempt(self):
+        self.write_xml(retry="2")
+        self.seed_cycle([{"seq": 1, "class": "denied", "ended_at": 1}])
+        code, out, err, popen = self.dispatch()
+        self.assertEqual(code, 1,
+                         "a refused tool call is not retried, retry budget or not")
+        self.assertIn("denied", err)
+        popen.assert_not_called()
+
+    def test_new_cycle_dispatches_after_a_denied_attempt(self):
+        self.seed_cycle([{"seq": 1, "class": "denied", "ended_at": 1}])
+        code, out, err, popen = self.dispatch(extra=["--new-cycle"])
+        self.assertEqual(code, 0, err)
+        popen.assert_called_once()
+
 
 class WrapperTests(DispatchWaitTestCase):
     def setUp(self):
@@ -260,7 +275,8 @@ class WrapperTests(DispatchWaitTestCase):
         return self.run_cli(argv)
 
     def test_wrapper_writes_exit_result_attempts_on_success(self):
-        stdout_json = json.dumps({"result": "42", "is_error": False})
+        stdout_json = json.dumps({"result": "42", "is_error": False,
+                                  "permission_denials": []})
         with mock.patch.object(claude_cli, "_launch",
                                return_value=(0, stdout_json, "")):
             code, out, err = self.run_wrapper()
@@ -342,7 +358,8 @@ class WaitTests(DispatchWaitTestCase):
         self.write_handle()
         self.p["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
                                   encoding="utf-8")
-        self.p["result"].write_text(json.dumps({"result": "42", "is_error": False}),
+        self.p["result"].write_text(json.dumps({"result": "42", "is_error": False,
+                                                "permission_denials": []}),
                                     encoding="utf-8")
         code, out, err = self.wait()
         self.assertEqual(code, 0)
@@ -358,7 +375,8 @@ class WaitTests(DispatchWaitTestCase):
                                   encoding="utf-8")
         self.p["result"].write_text(
             json.dumps({"result": "Counted the rows.\nVALUE: 42",
-                        "is_error": False}), encoding="utf-8")
+                        "is_error": False, "permission_denials": []}),
+            encoding="utf-8")
         code, out, err = self.wait()
         self.assertEqual(code, 0)
         self.assertEqual(out, "ok (set answer)")
@@ -376,6 +394,19 @@ class WaitTests(DispatchWaitTestCase):
         self.assertEqual(code, 1)
         self.assertNotIn("secret task detail", out)
         self.assertIn(str(self.p["result"]), out)
+
+    def test_wait_denied_hides_the_refused_command(self):
+        self.write_handle()
+        self.p["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
+                                  encoding="utf-8")
+        self.p["result"].write_text(json.dumps({
+            "result": "done", "is_error": False,
+            "permission_denials": [{"tool_name": "Bash", "tool_use_id": "t1",
+                                    "tool_input": {"command": "secret-task-cmd"}}],
+        }), encoding="utf-8")
+        code, out, err = self.wait()
+        self.assertEqual(code, 1)
+        self.assertEqual(out, f"error: denied (details: {self.p['result']})")
 
     def test_wait_running_within_max(self):
         self.write_handle()
@@ -434,7 +465,8 @@ class WaitTests(DispatchWaitTestCase):
         self.write_handle()
         self.p["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
                                   encoding="utf-8")
-        self.p["result"].write_text(json.dumps({"result": "42", "is_error": False}),
+        self.p["result"].write_text(json.dumps({"result": "42", "is_error": False,
+                                                "permission_denials": []}),
                                     encoding="utf-8")
         code1, out1, _ = self.wait()
         code2, out2, _ = self.wait()
@@ -502,7 +534,8 @@ class WaitTests(DispatchWaitTestCase):
         p2["handle"].write_text(json.dumps(handle), encoding="utf-8")
         p2["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
                               encoding="utf-8")
-        p2["result"].write_text(json.dumps({"result": "wrote it", "is_error": False}),
+        p2["result"].write_text(json.dumps({"result": "wrote it", "is_error": False,
+                                            "permission_denials": []}),
                                 encoding="utf-8")
         code, out, err = self.run_cli(
             ["wait", str(p2["handle"]), "--max", "5", "--vars", self.vars_path])

@@ -76,7 +76,7 @@ def test_subject_text() -> None:
     print("--- derive_subject_text ---")
     check(np.derive_subject_text("pj:x /progress -y 続き norouter --deep") == "続き",
           "control slug, slash command, flags and norouter are dropped")
-    check(np.derive_subject_text("/c/home/x.py stays and -3 stays") == "/c/home/x.py stays and -3 stays",
+    check(np.derive_subject_text("/path/to/x.py stays and -3 stays") == "/path/to/x.py stays and -3 stays",
           "a multi-segment path and a numeric dash token stay")
     check(np.derive_subject_text("pj:x -y") == "", "an all-mechanism prompt yields an empty subject")
 

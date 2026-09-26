@@ -48,6 +48,56 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
 - `--append-system-prompt-file` is absent from older installs. The probe separates
   "unknown option" (unsupported) from "file not found" (supported); anything else is
   indeterminate. Observed 2026-07-28.
+- `--output-format stream-json --verbose` prints one `type:"result"` event per turn;
+  `--output-format json` prints only the last. A child that starts an agent in the
+  background gets a further turn for each task notification, and a refusal inside that
+  agent is listed in `permission_denials` on the result of the turn that started it, not
+  on the last result. `json` showed it in 1 of 7 agent-refusal runs, the only
+  foreground agent. The union over every stream result event showed it in 6 of 6
+  shapes:
+  - a background agent;
+  - a refusal 20 s into the agent;
+  - a foreground agent;
+  - an agent started in a later turn;
+  - a hook refusal;
+  - a refusal two agent levels down.
+
+  Result events need not sit at the end of the stream. Observed 2026-09-26 on 2.1.270
+  with haiku, one stream per shape, by running each shape through `claude -p`.
+- Within one turn, `permission_denials` listed every direct refusal that could be
+  produced:
+  - a tool not granted (Bash running `node -e`, and Write);
+  - a settings `deny` rule on a command prefix;
+  - a PreToolUse hook denying through JSON or through exit 2;
+  - a call needing an approval that print mode cannot give.
+
+  An entry carries only `tool_name`, `tool_use_id` and `tool_input`; there is no kind
+  and no reason. Observed 2026-09-26 on 2.1.270.
+- The `permission_denials` key was on every result: 35 of 35 `json` results and every
+  result event of 16 streams, `is_error` results included. Observed 2026-09-26 on
+  2.1.270.
+- Under `stream-json`, an API error still ends with a `type:"result"` event. That event
+  carries `is_error: true`, `terminal_reason: "api_error"`, `api_error_status` and
+  `permission_denials: []`, next to `subtype: "success"`. It is preceded by an
+  `assistant` line whose top-level `error` names the cause. With an unknown `--model`
+  the status was 404 and the exit code 1, and the run still reported a small haiku
+  usage. Observed 2026-09-26 on 2.1.270, with one run.
+- On the last result event `total_cost_usd` is the session total; `num_turns` and
+  `usage` count the one turn. Observed 2026-09-26 on 2.1.270.
+- A settings `deny` rule naming a whole tool (`"deny": ["Bash"]`) removes the tool. The
+  call fails with `No such tool available`, is not in `permission_denials`, and carries
+  no `toolDenialKind`. Observed 2026-09-26 on 2.1.270.
+- `--allowedTools Read` does not stop every Bash call. `echo` ran without approval,
+  while `node -e` under the same flags was refused. Observed 2026-09-26 on 2.1.270.
+- `--permission-mode auto` was accepted without a message, and the session ran as
+  `default` (haiku). Observed 2026-09-26 on 2.1.270.
+- `--no-session-persistence` writes no transcript, yet each agent the child starts
+  still leaves its `subagents/agent-*.meta.json` under the child's project directory.
+  Observed 2026-09-26 on 2.1.270.
+- `toolDenialKind` never appears in `-p` output, `json` or `stream-json`: 0 of 16
+  streams. A `system` event of subtype `permission_denied` appears for rule and approval
+  refusals (with an `agent_id` when inside an agent), but not for a PreToolUse hook's.
+  Observed 2026-09-26 on 2.1.270.
 
 ## The pi CLI (`pi -p`)
 
@@ -93,6 +143,46 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   use.` Observed 2026-08-12.
 - An ordinary tool failure uses the same `is_error: true` line shape, so a detector keyed
   on `is_error` alone reports every failed command as a denial. Observed 2026-08-12.
+- Current transcripts put a top-level `toolDenialKind` field on the denied call's own line,
+  next to `is_error: true`. Five values were observed: `permission-rule` (Claude Code's own
+  denial templates, its don't-ask mode included, and PreToolUse hooks; no settings file on
+  that machine had a `deny` rule), `user-rejected`, `automode-blocked`,
+  `automode-unavailable` and `cancelled`. All 967 lines carrying it also carried
+  `is_error: true`. The earliest version seen carrying it was 2.1.201; every phrase-matched
+  line without it, bar the one false positive below, came from 2.1.195 or older. Measured
+  2026-09-23 over one machine's `~/.claude/projects` (8123 transcripts).
+- A PreToolUse hook's deny reason is written verbatim as the tool_result content, under
+  `toolDenialKind: "permission-rule"`, so its wording is the hook author's and no fixed
+  phrase covers it. Observed 2026-09-23 on three real denials from 2026-09-22.
+- In a `claude -p` session, a refusal recorded because print mode cannot ask for an
+  approval carries `toolDenialKind: "user-rejected"`, not `permission-rule`. This held
+  for a tool not granted and for a Write needing permission. A settings `deny` rule
+  and both PreToolUse hook forms carry `permission-rule`, and so does the same refusal
+  inside an agent the session started. The refused call's line in an agent's own
+  transcript carries the field; the parent session's transcript has no line for it.
+  Observed 2026-09-26 on 2.1.270: 8 refusals across 8 persisted sessions.
+- `cancelled` reads `The user doesn't want to take this action right now. STOP what you are
+  doing …` and `automode-unavailable` reads `<model> is temporarily unavailable, so auto
+  mode cannot determine the safety of <Tool> right now. …`; neither contains an older
+  phrase. Observed 2026-09-23.
+- A failing Bash command's stdout lands in an `is_error: true` line of the same shape, so a
+  phrase detector trips on program output that quotes a denial phrase: one such line, on
+  2.1.226, was a `diff` of a file containing the phrases. The field cannot match that way,
+  because inside tool output it is JSON-escaped. Observed 2026-09-23.
+- Claude Code sets `CLAUDE_CODE_SESSION_ID` in its Bash tool, and it names the session whose
+  `<project>/<session>/subagents/` directory holds the `agent-*.meta.json` of the agents that
+  session starts. Observed 2026-09-25 in one session: the variable held that session's id,
+  and that directory held the metas of the agents started from it.
+- A subagent's `agent-*.meta.json` names its parent in one or both of two fields:
+  `toolUseId`, the id of the Agent tool call in the parent's transcript that started it, and
+  `parentAgentId`, the parent's agent id. An agent the Agent tool started carries `toolUseId`,
+  some of them `parentAgentId` as well; an agent a Skill forks carries only `agentType`,
+  `parentAgentId` and `spawnDepth`. All sit in the calling session's `subagents/` directory.
+  Observed 2026-09-25 over one machine's `~/.claude/projects`.
+- GNU grep 3.0 (Git for Windows) answers a file containing a NUL byte with the single line
+  `Binary file <path> matches` instead of the matching lines, unless given `-a`. One session
+  transcript on this machine held 11679 NUL bytes; no subagent transcript held any.
+  Observed 2026-09-23.
 
 ## Measured model behaviour — prompt protocols
 

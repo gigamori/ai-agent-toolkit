@@ -1,10 +1,27 @@
 import os
 import re
+import shlex
 
 import pytest
 
+from llmwiki.ingest import ingest_driver as drv
+
 _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SKILLS_DIR = os.path.join(_PKG_ROOT, "skills")
+
+_SP_VERB = "session-plan"
+_SP_ROOT = "/wiki-root"
+_SP_SID = "sid-0001"
+_SP_PJ = "pj-value"
+_SP_SCOPE = "scope-value"
+_SP_VALUES = {
+    "${CLAUDE_PLUGIN_ROOT}": "/plugin-root",
+    "$WIKI_ROOT": _SP_ROOT,
+    "$WIKI_SCOPE": _SP_SCOPE,
+    "$SID": _SP_SID,
+    "$PJ": _SP_PJ,
+}
+_SP_SELECTOR_LINES = 3
 
 
 def _load_skill_md(skill_dir):
@@ -136,3 +153,47 @@ def test_wiki_ingest_docs_prefixes_the_wiki_root_onto_enumerate_output():
     assert '"$WIKI_ROOT/$rel_path"' in body, (
         "the docs loop must pass the wiki-root-prefixed path to begin, not the "
         "bare enumerate rel_path")
+
+
+def _session_plan_lines():
+    _, body = _load_skill_md("wiki-ingest-sessions")
+    return [line.strip() for line in body.splitlines()
+            if line.strip().startswith("uv run")
+            and f"ingest {_SP_VERB}" in line]
+
+
+def _session_plan_parse(line):
+    for var in sorted(_SP_VALUES, key=len, reverse=True):
+        line = line.replace(var, _SP_VALUES[var])
+    tokens = shlex.split(line)
+    return drv._parse_opts(tokens[tokens.index(_SP_VERB) + 1:])
+
+
+def test_session_plan_line_count():
+    lines = _session_plan_lines()
+    assert len(lines) == _SP_SELECTOR_LINES, (
+        f"expected one session-plan line per selector (--workspace, --pj, "
+        f"--scope); found {lines!r}")
+
+
+@pytest.mark.parametrize("selector,expected", [
+    ("workspace", ""),
+    ("pj", _SP_PJ),
+    ("scope", _SP_SCOPE),
+])
+def test_session_plan_flag_values(selector, expected):
+    matches = [line for line in _session_plan_lines() if f"--{selector}" in line]
+    assert len(matches) == 1, (
+        f"expected exactly one session-plan line passing --{selector}; "
+        f"found {matches!r}")
+    pos, opts = _session_plan_parse(matches[0])
+    assert pos == [_SP_ROOT], (
+        f"the wiki root must be the only positional: the driver reads only "
+        f"--key=value, so a space-separated value lands here and its flag "
+        f"arrives empty; line: {matches[0]!r}")
+    assert opts.get(selector) == expected, (
+        f"--{selector} must reach the driver as {expected!r}; got "
+        f"{opts.get(selector)!r} from {matches[0]!r}")
+    assert opts.get("sid") == _SP_SID, (
+        f"--sid must reach the driver as {_SP_SID!r}; got {opts.get('sid')!r} "
+        f"from {matches[0]!r}")

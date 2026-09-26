@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 
-from . import model, modes
+from . import ccdeny, model, modes
 from . import decision as decision_mod
 from .agents import AgentDef, discover_agents
 from .guardrails import (GUARDRAILS, VALUE_LINE_PLACEHOLDER,
@@ -71,6 +72,21 @@ def sentinel_line(step_id: str) -> str:
     of a <replan> continuation's own XML already proves completeness, so
     replans are deliberately exempted (reliability-spec.md §0, §4.1)."""
     return f"[[WFRUN-END step={step_id}]]"
+
+
+# Random bytes in a delegation description. Retries reuse the step id and,
+# unless the orchestrator passes --attempt, the attempt number, so only the
+# token keeps one attempt's subagent apart from another's within a session.
+DELEGATION_TOKEN_BYTES = 4
+
+
+def delegation_description(step_id: str, attempt: int) -> str:
+    """The description a run-llm layer-B step attempt is delegated under.
+
+    On Claude Code the orchestrator passes it verbatim as the Agent call's
+    description, which is how `record` finds that subagent's transcript
+    (ccdeny). Elsewhere it is printed and ignored."""
+    return f"wfrun {step_id} a{attempt} {secrets.token_hex(DELEGATION_TOKEN_BYTES)}"
 
 
 def strip_sentinel_line(text: str, step_id: str) -> tuple[str, bool]:
@@ -600,12 +616,15 @@ def _with_stray_warning(message: str, text: str, result_path) -> str:
             "stopped")
 
 
-def _append_log(log_path, step: model.Step, status: str, result_path):
+def _append_log(log_path, step: model.Step, status: str, result_path,
+                deny_check: str | None = None):
     if not log_path:
         return
     entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "step": step.id,
              "status": _log_status(status),
              "output_var": step.output, "result_file": str(result_path)}
+    if deny_check is not None:
+        entry["deny_check"] = deny_check
     with Path(log_path).open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -716,15 +735,18 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
 
     if not ok and message == "ok":
         # Content-hiding parity with record_result: guardrail/refusal carry
-        # the step's own reported text in res.error/res.text, which must
-        # never reach the orchestrator's context (run-llm.md's no-task-
-        # content design); point at the result file instead. Other classes'
-        # messages (claude_cli.classify_result()'s own strings) are already
-        # generic/content-free.
+        # the step's own reported text in res.error/res.text, and denied the
+        # refused command, none of which may reach the orchestrator's context
+        # (run-llm.md's no-task-content design); point at the result file
+        # instead. `error: denied` is also the literal run-llm.md keys its
+        # no-retry rule on. Other classes' messages (classify_result()'s own
+        # strings) are already generic/content-free.
         if res.error_class == "guardrail":
             message = f"error: step reported ERROR (details: {result_path})"
         elif res.error_class == "refusal":
             message = f"error: step blocked by a mode/rules constraint (details: {result_path})"
+        elif res.error_class == "denied":
+            message = f"error: denied (details: {result_path})"
         elif res.error_class == "decision":
             # res.error holds the whole payload body here, so this branch is
             # not optional content-hiding -- without it the `else` below would
@@ -942,16 +964,41 @@ def record_result(step: model.Step, result_path: str | Path,
 
     expect-file paths are checked here too (relative paths resolve against the
     orchestrator's cwd — where the subagent also ran).
+
+    On Claude Code the step subagent's transcript is checked for refused tool
+    calls first (ccdeny): one found makes the step `error: denied` whatever
+    its result file says, and a transcript that cannot be resolved is
+    reported as NO-TRANSCRIPT, never read as clean. The verdict goes into the
+    steps.log entry as `deny_check`.
     """
     result_path = Path(result_path)
-    claim = _reply_claim(reply)
     handle = load_handle(step.id, result_path)
+    check = ccdeny.check_delegation(handle)
+    if check.verdict == ccdeny.DENIED:
+        _append_log(log_path, step, "error", result_path, deny_check=check.label)
+        _append_attempt(step.id, result_path, handle, "denied")
+        return "error", f"error: denied (details: {check.transcript})"
+    deny_check = None if check.verdict == ccdeny.NOT_APPLICABLE else check.label
+    status, message = _record_file(step, result_path, vars_path, log_path,
+                                   reply, handle, deny_check)
+    if check.verdict == ccdeny.NO_TRANSCRIPT:
+        # Its own line: a decision verdict ends in the answer path the
+        # orchestrator copies into its next command.
+        message = f"{message}\ndeny-check: {check.label}: {check.reason}"
+    return status, message
+
+
+def _record_file(step: model.Step, result_path: Path, vars_path: str | Path,
+                 log_path: str | Path | None, reply: str | None,
+                 handle: dict | None, deny_check: str | None) -> tuple[str, str]:
+    """`record_result`'s decision table over the result file and the reply."""
+    claim = _reply_claim(reply)
 
     if not result_path.is_file():
         status = "error" if claim == "ok" else "aborted"
         message = ("error: claimed-ok-but-no-result" if status == "error"
                    else "aborted: result file not found")
-        _append_log(log_path, step, status, result_path)
+        _append_log(log_path, step, status, result_path, deny_check=deny_check)
         if handle is not None:
             _append_attempt(step.id, result_path, handle, status)
         return status, message
@@ -965,12 +1012,12 @@ def record_result(step: model.Step, result_path: str | Path,
             status = "error" if claim == "ok" else "aborted"
             message = ("error: claimed-ok-but-no-result" if status == "error"
                        else "aborted: incomplete (no end marker)")
-            _append_log(log_path, step, status, result_path)
+            _append_log(log_path, step, status, result_path, deny_check=deny_check)
             _append_attempt(step.id, result_path, handle, status)
             return status, message
 
     if text.strip() == "":
-        _append_log(log_path, step, "error", result_path)
+        _append_log(log_path, step, "error", result_path, deny_check=deny_check)
         if handle is not None:
             _append_attempt(step.id, result_path, handle, "error")
         return "error", "error: empty result"
@@ -986,7 +1033,7 @@ def record_result(step: model.Step, result_path: str | Path,
             variables = json.loads(vars_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             status, message = "error", f"error: cannot load vars file {vars_path}: {e}"
-            _append_log(log_path, step, status, result_path)
+            _append_log(log_path, step, status, result_path, deny_check=deny_check)
             if handle is not None:
                 _append_attempt(step.id, result_path, handle, status)
             return status, message
@@ -1019,7 +1066,7 @@ def record_result(step: model.Step, result_path: str | Path,
                                             step.id, None)
             except InterpError as e:
                 status, message = "error", f"error: step '{step.id}' expect-file: {e}"
-                _append_log(log_path, step, status, result_path)
+                _append_log(log_path, step, status, result_path, deny_check=deny_check)
                 if handle is not None:
                     _append_attempt(step.id, result_path, handle, status)
                 return status, message
@@ -1059,7 +1106,7 @@ def record_result(step: model.Step, result_path: str | Path,
     if ok:
         message = _with_stray_warning(message, text, result_path)
     status = "decision" if is_decision else ("ok" if ok else "error")
-    _append_log(log_path, step, status, result_path)
+    _append_log(log_path, step, status, result_path, deny_check=deny_check)
     if handle is not None:
         _append_attempt(step.id, result_path, handle, status)
     return status, message

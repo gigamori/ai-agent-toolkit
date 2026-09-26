@@ -1145,7 +1145,9 @@ def _apply_capture(sidecar, current_index, project, project_roots, sid_tag, iso_
     `note` stays PROJECT-RELATIVE under `project-notes/` and the D-7 guard is
     unchanged — it is simply applied against the entry's OWN project root now,
     which is the explicit `project` when given and otherwise the project of the
-    resolved owning task.
+    resolved owning task. The note must also exist under that root: an owner in
+    another project cannot be expressed, so such an entry is rejected rather
+    than linked.
 
     `items['notes']` / `tried_notes` stay project-relative (unqualified): they
     are bounding sets only (INV-1 novelty), never a write target, so a
@@ -1264,6 +1266,17 @@ def _apply_capture(sidecar, current_index, project, project_roots, sid_tag, iso_
                 continue
             if note_set is not None and note_rel not in note_set:
                 membership_skipped.append(note_rel)
+                continue
+            # The note must exist under the entry's own project root. A `@notes`
+            # rel is only ever read against its task's project, so a note living
+            # in another project (or nowhere) would be burned in as a dead link.
+            # Checked after the membership gate so an out-of-round note keeps
+            # its `membership-skip` report.
+            entry_root = project_roots.get(entry_project)
+            if not entry_root or not os.path.isfile(os.path.join(entry_root, note_rel)):
+                print(f'[progress capture] note-path-reject: {note!r} '
+                      f'(not found under {entry_project}) [s:{sid_tag}]',
+                      file=sys.stderr)
                 continue
             if append_note_link(path, note_rel):
                 links.append((note_rel, key))

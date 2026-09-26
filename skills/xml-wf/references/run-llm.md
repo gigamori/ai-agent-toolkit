@@ -77,6 +77,8 @@ $WFRUN wait runs/.../steps/<id>_handle.json --max 500 \
     --vars vars.json --log steps.log
 #   ok            (0)  -> vars.json updated; move on
 #   error: <class> (1)  -> see "On error" below (same policy as layer B)
+#   error: denied (details: <file>) (1) -> a tool call was refused; never
+#                          retried -- see "On error"
 #   decision: ...  (4)  -> the step asked for a ruling; see "On decision"
 #   running        (10) -> not done yet; call wait again
 #   aborted: ...   (3)  -> the wrapper itself never finished (crashed/killed
@@ -93,7 +95,8 @@ $WFRUN wait runs/.../steps/<id>_handle.json --max 500 \
 
 On-error/on-abort follow the **same policy** as layer B ("On error" /
 "On abort" sections below): retry via `dispatch` again (no `--fix`) up to
-`retry` times; on exhaustion, `on-error="debug"` is handled *for you* by
+`retry` times — except after `error: denied`, which `dispatch` refuses to
+re-run; on exhaustion, `on-error="debug"` is handled *for you* by
 `wait` itself (it runs the debug diagnosis in-process and writes
 `steps/<id>_fix.md` on RETRY — you do not delegate a debug subagent in this
 layer) — then re-dispatch once with `--fix "$(cat steps/<id>_fix.md)"`.
@@ -130,7 +133,7 @@ move 1 before delegating any of them.
 ```bash
 # 1. Assemble (output = path + dispatch facts only; never look inside)
 #    The dispatch line shows resolved values: role=<name>|inline, mode=<name>,
-#    model=..., tools=... — model is already runner-resolved through
+#    model=..., tools=..., description=... — model is already runner-resolved through
 #    model_map.json ("model=X (mapped from Y)" when a mapping applied): pass
 #    the resolved name verbatim, never translate it yourself. A step still
 #    carrying a legacy name (haiku/sonnet/opus) is NOT rebound here -- it
@@ -149,6 +152,11 @@ $WFRUN prompt <xml> <id> --vars vars.json \
 "Read steps/<id>_prompt.md and execute its instructions. Use only these
  tools: <tools from the dispatch line>. The response protocol is inside the
  file. Reply to me with a single line starting with OK <id> or ERROR: <gist>."
+#    On Claude Code, give the Agent call the dispatch line's description=
+#    value verbatim as its description. It is unique to this attempt, and
+#    record uses it to find the subagent's transcript and check it for
+#    refused tool calls. Any other description leaves that check unable
+#    to run.
 
 # 3. Record (output = ok/error/aborted only; never look at the result body).
 #    Pass back exactly the one reply line the subagent gave you — it is a
@@ -157,6 +165,13 @@ $WFRUN record <xml> <id> --result steps/<id>_result.md --vars vars.json \
     --log steps.log --reply "<the subagent's one reply line, verbatim>"
 #   ok(0) / error(1) / aborted(3) as before, plus:
 #   decision(4)          -> the step asked for a ruling; see "On decision"
+#   error: denied (details: <transcript>) (1)
+#                        -> a tool call of the step, or of an agent it
+#                           started, was refused. Whatever the result file
+#                           says, this is never retried -- see "On error"
+#   a second line "deny-check: NO-TRANSCRIPT: <reason>" after any verdict
+#                        -> the refusal check could not run. The verdict
+#                           stands but is unverified; say so in your report
 
 # If the subagent never replies, or its reply doesn't look like "OK <id>" /
 # "ERROR:" (interrupted mid-turn, connection drop, garbled output): do NOT
@@ -266,6 +281,12 @@ the debug role defined in .claude/agents/debug.md — read that file and adopt
 it. Then read steps/<id>_prompt.md and steps/<id>_result.md, diagnose, answer
 RETRY or FAIL, and if RETRY write fix instructions to steps/<id>_fix.md". On
 RETRY, redo from move 1 with `--fix "$(cat steps/<id>_fix.md)"`, **exactly once**.
+**`error: denied` is the exception.** A tool call was refused, so do not
+retry the step and do not delegate a debug subagent. Follow `on-error` as if
+the retries were spent, with `debug` read as `fail`: the same call would be
+refused again, and a rerun could reach the refused effect another way. In
+layer A, `dispatch` refuses the re-run anyway; in layer B, only this rule
+stops it.
 **You have no authority to read result files, debug, devise workarounds, or
 fabricate substitute results.**
 Stopping is not failure in this mode — every trace is on disk and the user can
@@ -402,8 +423,8 @@ this layer); it only ever renders a verdict. And nothing here defends
 against you, the orchestrator, fabricating a `--reply` value that does not
 match what the subagent actually said — pass it verbatim or omit it.
 
-Two more of run-cc's structural guarantees degrade to prompt level in this
-mode; know them, do not paper over them:
+Three more of run-cc's structural guarantees degrade in this mode; know
+them, do not paper over them:
 
 - **`tools=` is advisory.** The Agent tool has no per-call tool restriction,
   so the dispatch line's tools cannot be enforced on the subagent — the
@@ -437,12 +458,26 @@ mode; know them, do not paper over them:
   subagent its result file) — a broader deny would break them. And any hook
   can be bypassed via Bash file reads, so this closes the *accidental* read
   path, not the deliberate one. The primary defense remains ⟦STEP-GATE⟧ below.
+  A step subagent that reads `vars.json` anyway is refused by this hook, so
+  `record` reports that step `error: denied`.
 
   The hook is a Claude Code mechanism, so this mechanical backstop only
   exists there. Outside Claude Code, `wfrun prompt --result` prints a note
   that the firewall is prompt-level only rather than searching for the
   marker (there is no `.claude/settings.json` hook system to check) —
   ⟦STEP-GATE⟧ is what carries the guarantee in that case.
+- **Refused tool calls are found only on Claude Code, and only through the
+  description.**
+  - `record` locates the step subagent's transcript by the `description=`
+    you gave the Agent call. It looks only among the agents of your own
+    session (`CLAUDE_CODE_SESSION_ID`), together with every agent that
+    subagent started.
+  - If you give it another description, `record` finds nothing and says
+    NO-TRANSCRIPT.
+  - A subagent that replies while agents it started are still running can
+    leave their transcripts incomplete when `record` reads them.
+  - Pi has no permission layer, so nothing is checked there.
+  - The no-retry rule for `error: denied` is prompt-level in this layer.
 
 ---
 

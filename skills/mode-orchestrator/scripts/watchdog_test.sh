@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -u
+unset CLAUDE_CODE_SESSION_ID
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WATCHDOG="$HERE/watchdog.sh"
@@ -25,6 +26,14 @@ run_wd() {
   WD_ERR="${CASE:-$WORK}/wd.err"
   WD_OUT="$(bash "$WATCHDOG" "$@" 2>"$WD_ERR")"
   WD_RC=$?
+}
+
+bounded() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 10 "$@"
+  else
+    "$@"
+  fi
 }
 
 start_wd() {
@@ -199,6 +208,22 @@ run_wd --deliv "$DELIV" --desc "no such turn" --deadline 3 --stall 2 --poll 1 \
   --project-root "$PROOT"
 expect "an unresolvable transcript degrades to deadline only" TIMEOUT 1
 
+newcase resolve-other-session
+fake_agent "turn desc elsewhere" 5 120
+export CLAUDE_CODE_SESSION_ID=another-session
+run_wd --deliv "$DELIV" --desc "turn desc elsewhere" --deadline 3 --stall 2 --poll 1 \
+  --project-root "$PROOT"
+unset CLAUDE_CODE_SESSION_ID
+expect "an agent record in another session is not this turn's" TIMEOUT 1
+
+newcase resolve-own-session
+fake_agent "turn desc own" 5 120
+export CLAUDE_CODE_SESSION_ID=session-id
+run_wd --deliv "$DELIV" --desc "turn desc own" --deadline 30 --stall 3 --poll 1 \
+  --project-root "$PROOT"
+unset CLAUDE_CODE_SESSION_ID
+expect "an agent record in the calling session is resolved" STALL 2
+
 newcase args
 run_wd --desc "d" --deadline 2
 expect "--deliv is required" "" 64
@@ -206,6 +231,11 @@ run_wd --deliv "$DELIV" --deadline 2
 expect "--desc is required" "" 64
 run_wd --deliv "$DELIV" --desc "d" --totally-bogus-flag
 expect "an unknown argument is rejected" "" 64
+for flag in --deliv --desc --mode --deadline --stall --poll --project-root --log; do
+  WD_OUT="$(bounded bash "$WATCHDOG" --deliv - --desc d "$flag" 2>/dev/null)"
+  WD_RC=$?
+  expect "a bare $flag is a usage error, not a hang" "" 64
+done
 
 newcase deadline-override
 run_wd --deliv - --desc "d" --mode plan --deadline 2 --poll 1 --project-root "$PROOT"

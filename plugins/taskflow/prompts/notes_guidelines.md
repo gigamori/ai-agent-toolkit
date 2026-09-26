@@ -8,9 +8,10 @@
 | symbol | while editing or investigating a named symbol | Resolve that symbol's depth-1 neighbours, then Grep `project-notes/` for `::<name>`. |
 
 ⟦NOTES-ROUTE⟧ Reads of `project-notes/` are exactly three: the injected block; a `::<name>` Grep
-for a peer `query-lsp` returned; and opening a file one of those two named. Anything else — running `qmd`
-yourself included — is going looking, whatever the tool. The router returns no note rows on this
-build. When neither route yields what you need, say so and answer without it.
+for a peer `query-lsp` returned; and opening, or searching inside, one file that one of those two or
+your task names by path. Anything else — running `qmd` yourself included — is going looking,
+whatever the tool. The router returns no note rows on this build. When neither route yields what
+you need, say so and answer without it.
 
 ### Route: block
 

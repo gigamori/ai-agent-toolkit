@@ -206,6 +206,16 @@ so know them before relying on them.
 - **`permission-mode` is ignored.** pi has no permission layer, so there is
   nothing to widen and nothing to deny. `--permission-mode` on the command
   line is accepted and has no effect.
+- **No refused-call check.** Without a permission layer there is nothing
+  like the claude backend's `denied`.
+  - A pi extension can still block a tool call: a `tool_call` handler returns
+    `block`. The model then sees an ordinary tool error carrying the
+    extension's reason, and nothing marks it as a refusal, so this backend
+    cannot tell a block from any other failed call.
+  - wfrun does not pass `--no-extensions`, because model names resolve through
+    one. Any extension the host loads therefore runs in every step.
+  - None that blocks is installed by default. With one installed, a blocked
+    call surfaces only through the step's own report.
 - **`tools=` is enforced, and its names are translated.** `Read`, `Write`,
   `Edit`, `Grep`, `Bash` map to their lowercase pi equivalents and `Glob` maps
   to `find`. A name with no mapping — `MultiEdit`, `NotebookEdit`, `Task`,

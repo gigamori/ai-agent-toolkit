@@ -134,11 +134,19 @@ is worth diagnosing. Four other outcomes deliberately bypass the loop:
 - **`blocked`** — including any turn whose tool call the **permission system
   denied**. A denial is not an in-repo bug: re-running the turn hits the same
   wall every cycle, so the run stops and asks you instead. The turn cannot
-  waive this itself: even a denial it judged inessential — one it worked
-  around and still finished the task — must end as `blocked`, never `ok`.
+  waive this itself: even a denial it judged inessential — one it finished
+  the task without — must end as `blocked`, never `ok`. Nor may it
+  reproduce the denied call's effect another way (after a refused
+  `git stash`, reverting the files with `cp` or an edit); a different,
+  safer action is not a reproduction.
   On Claude Code this is also machine-checked: after each turn's status line
-  the orchestrator runs `scripts/deny_scan.sh` against the turn's transcript,
-  and a detected denial overrides a self-reported `ok`.
+  the orchestrator runs `scripts/deny_scan.sh` against the turn's transcript
+  and those of any agents the turn started, and a detected denial overrides a
+  self-reported `ok`. The check counts every
+  refused call — a permission rule, a plugin's hook, the auto-mode classifier
+  or its being unreachable, a permission prompt that was not approved, or an
+  interrupted call — and keeps its verdict in the run directory as
+  `NN-deny.txt`.
 - **`needs-human`** — the turn needs a decision only you can make.
 - **`needs-decision`** — the turn hit a fork, not a failure. It goes to the
   decision loop below instead.

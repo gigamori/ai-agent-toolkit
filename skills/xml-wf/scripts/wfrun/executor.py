@@ -435,6 +435,10 @@ class Executor:
                 json.dumps(res.raw if res.raw is not None else
                            {"ok": res.ok, "error": res.error, "text": res.text},
                            ensure_ascii=False, indent=2), encoding="utf-8")
+            if res.stream:
+                # result.json holds the last result event only; a refusal that
+                # made this attempt `denied` may sit on an earlier one.
+                (attempt_dir / "stream.jsonl").write_text(res.stream, encoding="utf-8")
             if res.stderr:
                 (attempt_dir / "stderr.log").write_text(res.stderr, encoding="utf-8")
 
@@ -1056,6 +1060,8 @@ class Executor:
                 json.dumps(res.raw if res.raw is not None else
                            {"ok": res.ok, "error": res.error, "text": res.text},
                            ensure_ascii=False, indent=2), encoding="utf-8")
+            if res.stream:
+                (attempt_dir / "stream.jsonl").write_text(res.stream, encoding="utf-8")
 
             errors, child, xml_text = self._validate_continuation(node, res)
             if not errors:

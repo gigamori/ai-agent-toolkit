@@ -637,6 +637,7 @@ def cmd_prompt(args) -> int:
     except (stepio.StepIOError, decision_mod.DecisionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    delegation = None
     if args.result:
         result_file = Path(args.result)
         if result_file.is_file():
@@ -648,11 +649,13 @@ def cmd_prompt(args) -> int:
             # Sentinel/handle machinery is step-only: a <replan>'s own XML
             # well-formedness already proves completeness (§0, F1).
             (result_file.parent).mkdir(parents=True, exist_ok=True)
+            delegation = stepio.delegation_description(step.id, args.attempt)
             stepio.handle_path(step.id, args.result).write_text(json.dumps({
                 "step_id": step.id, "attempt": args.attempt,
                 "dispatched_at": time.time(), "timeout": step.timeout,
                 "result_path": str(args.result),
                 "sentinel": stepio.sentinel_line(step.id),
+                "delegation": delegation,
             }, ensure_ascii=False, indent=2), encoding="utf-8")
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -677,6 +680,8 @@ def cmd_prompt(args) -> int:
         facts.append(f"effort={step.effort}")
     if dispatch_tools and not isinstance(step, model.Replan):
         facts.append(f"tools={dispatch_tools}")
+    if delegation:
+        facts.append(f"description={delegation}")
     print(f"{out} ({', '.join(facts)})")
     return 0
 
@@ -929,6 +934,16 @@ def cmd_dispatch(args) -> int:
     (run_dir / "steps").mkdir(parents=True, exist_ok=True)
     cycle, attempts = _resolve_cycle(run_dir, args.step_id, args.new_cycle)
     paths = _a_layer_paths(run_dir, args.step_id, cycle)
+
+    # run-cc never retries a refused tool call (NON_RETRYABLE_CLASSES), and the
+    # orchestrator's generic on-error retry must not either: the rerun could
+    # reach the refused effect another way. Enforced here, not left to prompt.
+    if attempts and attempts[-1].get("class") == "denied":
+        print(f"error: step '{args.step_id}' cycle {cycle} ended denied (a "
+              f"refused tool call), which is never retried -- follow on-error. "
+              f"Pass --new-cycle only for a new <while>/<each> iteration",
+              file=sys.stderr)
+        return 1
 
     # The cap is per cycle (one step-node visit), matching run-cc's
     # per-visit retry budget; wf.max below is the run-wide backstop.

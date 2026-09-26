@@ -108,8 +108,12 @@ default for anything you leave unqualified.
   project it belongs to (`project_root` unless a `touched_tasks` entry makes it
   clear the note lives in another project — e.g.
   `<project_root>/project-notes/specs/foo.md`), never against your own cwd. For
-  each, judge which task owns it. If no task clearly owns it, set `task` to
-  `"none"` (do NOT guess — a wrong link is burned in permanently, §3.1).
+  each, judge which task owns it. The owner must be a task in the note's own
+  project: the link is read against the owner's project root, and the hook
+  rejects it unless the note exists there. A task in another project cannot own
+  the note, even when that task or the main agent's prose names it. If no task
+  clearly owns it, set `task` to `"none"` (do NOT guess — a wrong link is burned
+  in permanently, §3.1).
 - Use the prose the main agent added plus, if needed, `Read` on a task or note
   to ground your judgment. Never fabricate a summary or an owner.
 

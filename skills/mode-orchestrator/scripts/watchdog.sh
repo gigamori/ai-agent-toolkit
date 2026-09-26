@@ -84,6 +84,7 @@ RESOLVE_BACKDATE=120
 
 # Where session logs live. Override with --project-root for a non-default setup.
 PROJECT_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+SESSION="${CLAUDE_CODE_SESSION_ID:-}"
 
 # ---------------------------------------------------------------------------
 
@@ -114,16 +115,18 @@ MODE=""
 DEADLINE=""
 TRACE=""
 
+# A flag given last, with no value, is a usage error: `shift 2` would leave
+# the arguments unchanged and this loop would never end.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --deliv)        DELIV="${2-}"; shift 2 ;;
-    --desc)         DESC="${2-}"; shift 2 ;;
-    --mode)         MODE="${2-}"; shift 2 ;;
-    --deadline)     DEADLINE="${2-}"; shift 2 ;;
-    --stall)        STALL="${2-}"; shift 2 ;;
-    --poll)         POLL="${2-}"; shift 2 ;;
-    --project-root) PROJECT_ROOT="${2-}"; shift 2 ;;
-    --log)          TRACE="${2-}"; shift 2 ;;
+    --deliv)        [ $# -ge 2 ] || usage; DELIV="$2"; shift 2 ;;
+    --desc)         [ $# -ge 2 ] || usage; DESC="$2"; shift 2 ;;
+    --mode)         [ $# -ge 2 ] || usage; MODE="$2"; shift 2 ;;
+    --deadline)     [ $# -ge 2 ] || usage; DEADLINE="$2"; shift 2 ;;
+    --stall)        [ $# -ge 2 ] || usage; STALL="$2"; shift 2 ;;
+    --poll)         [ $# -ge 2 ] || usage; POLL="$2"; shift 2 ;;
+    --project-root) [ $# -ge 2 ] || usage; PROJECT_ROOT="$2"; shift 2 ;;
+    --log)          [ $# -ge 2 ] || usage; TRACE="$2"; shift 2 ;;
     -h|--help)      usage ;;
     *) echo "watchdog: unknown argument: $1" >&2; usage ;;
   esac
@@ -175,10 +178,22 @@ deliv_note() {
 }
 
 # Locate the transcript of the agent whose meta.json carries our description.
-# Searched across the whole session-log root so the caller never has to know the
-# session id, and matched on the exact JSON field so a description that is a
-# prefix of another turn's cannot collide. Only files touched at or after t0 are
-# eligible, which keeps an identical description from an earlier run out.
+# Searched within the calling session when CLAUDE_CODE_SESSION_ID is set (Claude
+# Code sets it in its Bash tool), because a concurrent run in another session
+# can carry the same description; across the whole session-log root otherwise,
+# so the caller never has to pass the session id. Matched on the exact JSON field
+# so a description that is a prefix of another turn's cannot collide. Only files
+# touched at or after t0 are eligible, which keeps an identical description from
+# an earlier run out.
+candidate_metas() {
+  if [ -n "$SESSION" ]; then
+    find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newer "$STAMP" \
+      -path "*/$SESSION/subagents/*" 2>/dev/null
+    return
+  fi
+  find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newer "$STAMP" 2>/dev/null
+}
+
 resolve_transcript() {
   local needle meta
   needle="\"description\":\"$DESC\""
@@ -189,7 +204,7 @@ resolve_transcript() {
       return 0
     fi
   done <<EOF
-$(find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newer "$STAMP" 2>/dev/null)
+$(candidate_metas)
 EOF
   return 1
 }

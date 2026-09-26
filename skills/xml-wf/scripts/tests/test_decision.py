@@ -1470,7 +1470,8 @@ class TestStrayProtocolLines(unittest.TestCase):
 
 class TestPreambleClassification(unittest.TestCase):
     def _stdout(self, text):
-        return json.dumps({"result": text, "total_cost_usd": 0.01})
+        return json.dumps({"result": text, "total_cost_usd": 0.01,
+                           "permission_denials": []})
 
     def test_cc_classifies_a_preambled_payload(self):
         res = classify_result(0, self._stdout(preambled(payload())), "")

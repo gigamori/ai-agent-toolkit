@@ -38,7 +38,8 @@ exec bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable
   (`DEADLINE_REVIEW_DEV`), `--deliv` = its decision record. A
   `--decider=human` wait delegates nothing, so no watchdog.
 - Thresholds live at the top of `scripts/watchdog.sh`. Do not pass the agent
-  id; the script resolves the transcript from `--desc`.
+  id; the script resolves the transcript from `--desc`, within this session
+  (it reads `CLAUDE_CODE_SESSION_ID` from the Bash environment).
 
 Wakes:
 
@@ -86,27 +87,55 @@ transcript, and pulling it into the orchestrator's context can end the run.
 ## Denial check (after each turn's status line)
 
 ```
-bash <this skill's dir>/scripts/deny_scan.sh --desc "<the delegation description, verbatim>"
+bash <this skill's dir>/scripts/deny_scan.sh --desc "<the delegation description, verbatim>" --out "<run dir>/<turn key>-deny.txt"
 ```
 
 - `CLEAN` (exit 0) — keep the self-reported status.
 - `DENIED <n>` (exit 1) — status is `blocked` regardless of the reply (`ok`,
   `failed`, `needs-decision` alike); record in the run index that the denial
   was machine-detected.
-- `NO-TRANSCRIPT` (exit 2) — the check could not run; say so in the run
-  index. Not `CLEAN`.
+- `NO-TRANSCRIPT` (exit 2) — the check could not run (no transcript resolved,
+  or an empty one); say so in the run index. Not `CLEAN`.
+
+Every refusal counts, whatever issued it: a permission rule, a PreToolUse
+hook, the auto-mode classifier or its being unreachable, a permission prompt
+that was not approved, an interrupted call. The stderr line names the kinds
+found. The scan covers the turn's transcript and those of every agent the turn
+started, at any depth — through the Agent tool or a Skill that forks one.
+
+Sending and recording it:
+
+- `<turn key>` is the prefix of the turn's deliverable (`05`, `05a`). The
+  file's first line is the verdict; the lines after it name the description
+  and the transcript scanned.
+- Send the command as the only tool call in its message — after the
+  watchdog's stop, never beside it. This is mitigation, not a guarantee: in
+  one session, all 13 checks whose result never reached the session log had
+  shared their message with another call (11 with the watchdog's stop), while
+  all 17 sent alone kept theirs.
+- Record in the run index the verdict line and the file's path. A verdict in
+  neither the command's output nor the file is not recordable: run the check
+  again — it only reads the transcript and rewrites its file.
+- The command itself refused, or failing before it prints a verdict: record
+  the turn as `NO-TRANSCRIPT`. A check that could not run is never `CLEAN`.
+- `deny_scan: could not write --out …` on stderr: the verdict on stdout
+  stands; record it with that line in place of a path.
 
 Synchronous, not a race: the transcript is complete once the status line has
 arrived.
 
 **Serialization drift and the canary.** The scan matches the literal
-`"is_error":true` and the measured denial phrases; a Claude Code update can make
-it inert silently (fail-open), and `deny_scan_test.sh` runs on fixed fakes, so
-it cannot notice. After any Claude Code upgrade — or whenever a turn is known
-to have been denied — scan a transcript containing a real denial and confirm
-`DENIED`. A `CLEAN` there means the patterns at the top of `deny_scan.sh` need
-re-measuring. This has fired once (the phrasing moved to
-`Permission to use <Tool> ... has been denied`); treat it as an obligation.
+`"is_error":true` together with the `"toolDenialKind"` field — and, for
+transcripts older than that field, the measured denial phrases; a Claude Code
+update can make it inert silently (fail-open), and `deny_scan_test.sh` runs on
+fixed fakes, so it cannot notice. After any Claude Code upgrade — or whenever a
+turn is known to have been denied — scan a transcript containing a real denial
+and confirm `DENIED` (for a transcript of another session, put
+`CLAUDE_CODE_SESSION_ID=` in front of the command: the scan otherwise searches
+only the calling session). A `CLEAN` there means the field or the phrases at the top
+of `deny_scan.sh` moved and need re-measuring. This has fired twice (the
+phrasing moved to `Permission to use <Tool> ... has been denied`; a PreToolUse
+hook refused with its own wording); treat it as an obligation.
 
 ### Running this skill itself under `claude -p`
 
