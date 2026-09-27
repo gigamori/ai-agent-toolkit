@@ -27,9 +27,11 @@ straight to Step 2.
 First read the context for two facts:
 
 - **taskflow active & a project is assigned?** A "wiki-active" / project context
-  may be injected, or the most recent `_projects/_state/*.json` carries a
-  `project` field (mtime-descending; same lookup as `/progress`). If that field
-  resolves to a project, taskflow is active with a pj assigned.
+  may be injected, or the most recent session state file carries a `project`
+  field (mtime-descending). A session state file is `_projects/_state/<session
+  id>.json` with a 36-character stem; ignore any other `*.json` there, such as
+  `kanban-port-*.json`. If that field resolves to a project, taskflow is active
+  with a pj assigned.
 - Resolve the **active pj wiki path** as `<proot>/<project>/wiki/`, where
   `<proot>` is the first existing root from `$TASKFLOW_PROJECT_ROOTS` (`;`-split;
   if unset, `_projects/` in the workspace). Resolve the **workspace wiki path**

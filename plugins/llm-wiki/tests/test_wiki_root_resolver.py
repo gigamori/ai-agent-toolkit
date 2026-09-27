@@ -9,7 +9,11 @@ def _make_wiki(path):
     return path
 
 
-def _write_state(cwd, project, name="0000.json"):
+def _sid(n):
+    return f"00000000-0000-4000-8000-{n:012d}"
+
+
+def _write_state(cwd, project, name=f"{_sid(0)}.json"):
     state_dir = cwd / "_projects" / "_state"
     state_dir.mkdir(parents=True, exist_ok=True)
     f = state_dir / name
@@ -80,8 +84,8 @@ def test_pj_uses_most_recent_state_file_by_mtime(tmp_path, monkeypatch):
     proot = tmp_path / "roots"
     new_wiki = _make_wiki(proot / "newproj" / "wiki")
     _make_wiki(proot / "oldproj" / "wiki")
-    old = _write_state(tmp_path, "oldproj", name="aaa.json")
-    new = _write_state(tmp_path, "newproj", name="bbb.json")
+    old = _write_state(tmp_path, "oldproj", name=f"{_sid(1)}.json")
+    new = _write_state(tmp_path, "newproj", name=f"{_sid(2)}.json")
     os.utime(old, (1000, 1000))
     os.utime(new, (2000, 2000))
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
@@ -90,13 +94,48 @@ def test_pj_uses_most_recent_state_file_by_mtime(tmp_path, monkeypatch):
     assert res.root == new_wiki
 
 
+def test_scan_skips_foreign_json(tmp_path, monkeypatch):
+    import os
+    proot = tmp_path / "roots"
+    session_wiki = _make_wiki(proot / "sessionproj" / "wiki")
+    _make_wiki(proot / "foreignproj" / "wiki")
+    session = _write_state(tmp_path, "sessionproj", name=f"{_sid(1)}.json")
+    foreign = _write_state(tmp_path, "foreignproj", name="routing_state.json")
+    os.utime(session, (1000, 1000))
+    os.utime(foreign, (2000, 2000))
+    monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
+    res = wrr.resolve(cwd=tmp_path)
+    assert res is not None and res.scope == "pj"
+    assert res.root == session_wiki, (
+        "only a session state file (36-character stem) is a session; a newer "
+        "non-session JSON must not choose the project"
+    )
+
+
+def test_scan_skips_newest_kanban(tmp_path, monkeypatch):
+    import os
+    proot = tmp_path / "roots"
+    session_wiki = _make_wiki(proot / "sessionproj" / "wiki")
+    session = _write_state(tmp_path, "sessionproj", name=f"{_sid(1)}.json")
+    kanban = session.parent / "kanban-port-1a2b3c4d.json"
+    kanban.write_text(json.dumps({"key": "k", "port": 17329, "pid": 1}), encoding="utf-8")
+    os.utime(session, (1000, 1000))
+    os.utime(kanban, (2000, 2000))
+    monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
+    res = wrr.resolve(cwd=tmp_path)
+    assert res is not None and res.root == session_wiki, (
+        "the /kanban port file is not a session; being the newest file must not "
+        "make the pj scope skip"
+    )
+
+
 def test_pj_prefers_session_state_over_mtime_latest(tmp_path, monkeypatch):
     import os
     proot = tmp_path / "roots"
     my_wiki = _make_wiki(proot / "myproj" / "wiki")
     _make_wiki(proot / "otherproj" / "wiki")
     mine = _write_state(tmp_path, "myproj", name="sid-1234.json")
-    other = _write_state(tmp_path, "otherproj", name="zzz-newer.json")
+    other = _write_state(tmp_path, "otherproj", name=f"{_sid(9)}.json")
     os.utime(mine, (1000, 1000))
     os.utime(other, (2000, 2000))
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
@@ -108,7 +147,7 @@ def test_pj_prefers_session_state_over_mtime_latest(tmp_path, monkeypatch):
 def test_pj_fails_closed_when_session_file_absent(tmp_path, monkeypatch):
     proot = tmp_path / "roots"
     _make_wiki(proot / "onlyproj" / "wiki")
-    _write_state(tmp_path, "onlyproj", name="bbb.json")
+    _write_state(tmp_path, "onlyproj", name=f"{_sid(2)}.json")
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
     assert wrr.resolve(cwd=tmp_path, session_id="no-such-sid") is None
 
@@ -119,7 +158,7 @@ def test_pj_fails_closed_when_session_file_has_no_project(tmp_path, monkeypatch)
     state_dir = tmp_path / "_projects" / "_state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "sid-x.json").write_text("{}", encoding="utf-8")
-    _write_state(tmp_path, "fallbackproj", name="other.json")
+    _write_state(tmp_path, "fallbackproj", name=f"{_sid(2)}.json")
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
     assert wrr.resolve(cwd=tmp_path, session_id="sid-x") is None
 
@@ -129,7 +168,7 @@ def test_pj_fails_closed_when_session_project_is_empty_string(tmp_path, monkeypa
     proot = tmp_path / "roots"
     _make_wiki(proot / "otherproj" / "wiki")
     mine = _write_state(tmp_path, "", name="sid-e.json")
-    other = _write_state(tmp_path, "otherproj", name="zzz-newer.json")
+    other = _write_state(tmp_path, "otherproj", name=f"{_sid(9)}.json")
     os.utime(mine, (1000, 1000))
     os.utime(other, (2000, 2000))
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
@@ -141,8 +180,8 @@ def test_pj_empty_session_id_still_uses_mtime_latest(tmp_path, monkeypatch):
     proot = tmp_path / "roots"
     new_wiki = _make_wiki(proot / "newproj" / "wiki")
     _make_wiki(proot / "oldproj" / "wiki")
-    old = _write_state(tmp_path, "oldproj", name="aaa.json")
-    new = _write_state(tmp_path, "newproj", name="bbb.json")
+    old = _write_state(tmp_path, "oldproj", name=f"{_sid(1)}.json")
+    new = _write_state(tmp_path, "newproj", name=f"{_sid(2)}.json")
     os.utime(old, (1000, 1000))
     os.utime(new, (2000, 2000))
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
@@ -157,7 +196,7 @@ def test_pj_skip_continues_to_workspace_not_abort(tmp_path, monkeypatch):
     proot.mkdir(parents=True, exist_ok=True)
     ws_wiki = _make_wiki(tmp_path / "_llm-wiki")
     _make_wiki(proot / "otherproj" / "wiki")
-    other = _write_state(tmp_path, "otherproj", name="zzz-newer.json")
+    other = _write_state(tmp_path, "otherproj", name=f"{_sid(9)}.json")
     os.utime(other, (2000, 2000))
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
     res = wrr.resolve(cwd=tmp_path, session_id="no-such-sid")
@@ -175,8 +214,8 @@ def test_pj_session_id_none_preserves_mtime_latest(tmp_path, monkeypatch):
     proot = tmp_path / "roots"
     new_wiki = _make_wiki(proot / "newproj" / "wiki")
     _make_wiki(proot / "oldproj" / "wiki")
-    old = _write_state(tmp_path, "oldproj", name="aaa.json")
-    new = _write_state(tmp_path, "newproj", name="bbb.json")
+    old = _write_state(tmp_path, "oldproj", name=f"{_sid(1)}.json")
+    new = _write_state(tmp_path, "newproj", name=f"{_sid(2)}.json")
     os.utime(old, (1000, 1000))
     os.utime(new, (2000, 2000))
     monkeypatch.setenv("TASKFLOW_PROJECT_ROOTS", str(proot))
@@ -201,7 +240,7 @@ def test_pj_skipped_when_project_root_has_no_wiki(tmp_path, monkeypatch):
 def test_pj_skipped_on_malformed_state_file(tmp_path, monkeypatch):
     state_dir = tmp_path / "_projects" / "_state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "broken.json").write_text("{not json", encoding="utf-8")
+    (state_dir / f"{_sid(0)}.json").write_text("{not json", encoding="utf-8")
     monkeypatch.delenv("TASKFLOW_PROJECT_ROOTS", raising=False)
     assert wrr.resolve(cwd=tmp_path) is None
 

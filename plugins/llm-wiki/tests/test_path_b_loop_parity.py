@@ -162,11 +162,15 @@ def test_project_batch_empty_sids_fails_closed(tmp_path):
         drv.project_batch(str(tmp_path), [])
 
 
+def _sid(n):
+    return f"00000000-0000-4000-8000-{n:012d}"
+
+
 def test_workspace_resolved_sids_run_the_same_per_sid_loop(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    for sid, project in (("sid-proj-a", "project-a"), ("sid-proj-b", "project-b")):
+    for sid, project in ((_sid(1), "project-a"), (_sid(2), "project-b")):
         (state_dir / f"{sid}.json").write_text(
             json.dumps({"project": project}), encoding="utf-8")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
@@ -174,7 +178,7 @@ def test_workspace_resolved_sids_run_the_same_per_sid_loop(tmp_path, monkeypatch
 
     plan = drv.session_plan(str(tmp_path), workspace=True)
     assert plan["scope"] == "workspace"
-    assert plan["sids"] == ["sid-proj-a", "sid-proj-b"]
+    assert plan["sids"] == [_sid(1), _sid(2)]
 
     def _extract(sid, *, ledger):
         return []
@@ -196,7 +200,7 @@ def test_workspace_resolved_sids_run_the_same_per_sid_loop(tmp_path, monkeypatch
         assert res == {"committed": True}
         succeeded.append(sid)
 
-    assert succeeded == ["sid-proj-a", "sid-proj-b"]
+    assert succeeded == [_sid(1), _sid(2)]
     assert not (tmp_path / drv.SIDECAR_NAME).exists()
     assert not (tmp_path / tx.LOCK_NAME).exists()
 

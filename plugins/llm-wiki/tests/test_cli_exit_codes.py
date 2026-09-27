@@ -119,6 +119,10 @@ def _make_pj_wiki(projects_root, project):
     return wiki
 
 
+def _sid(n):
+    return f"00000000-0000-4000-8000-{n:012d}"
+
+
 def test_resolve_root_sid_selects_per_session_state(tmp_path, monkeypatch):
     monkeypatch.delenv("TASKFLOW_PROJECT_ROOTS", raising=False)
     monkeypatch.chdir(tmp_path)
@@ -186,10 +190,11 @@ def test_resolve_root_without_sid_emits_no_explain_line(tmp_path, monkeypatch):
     state.mkdir(parents=True)
     _make_pj_wiki(projects, "projA")
     _make_pj_wiki(projects, "projB")
-    (state / "sidA.json").write_text(json.dumps({"project": "projA"}), encoding="utf-8")
-    fileB = state / "sidB.json"
+    fileA = state / f"{_sid(1)}.json"
+    fileA.write_text(json.dumps({"project": "projA"}), encoding="utf-8")
+    fileB = state / f"{_sid(2)}.json"
     fileB.write_text(json.dumps({"project": "projB"}), encoding="utf-8")
-    os.utime(state / "sidA.json", (1_000, 1_000))
+    os.utime(fileA, (1_000, 1_000))
     os.utime(fileB, (2_000, 2_000))
 
     rc, out, err = _run(["resolve-root"])
@@ -205,10 +210,11 @@ def test_resolve_root_without_sid_uses_mtime_latest(tmp_path, monkeypatch):
     state.mkdir(parents=True)
     _make_pj_wiki(projects, "projA")
     wiki_b = _make_pj_wiki(projects, "projB")
-    (state / "sidA.json").write_text(json.dumps({"project": "projA"}), encoding="utf-8")
-    fileB = state / "sidB.json"
+    fileA = state / f"{_sid(1)}.json"
+    fileA.write_text(json.dumps({"project": "projA"}), encoding="utf-8")
+    fileB = state / f"{_sid(2)}.json"
     fileB.write_text(json.dumps({"project": "projB"}), encoding="utf-8")
-    os.utime(state / "sidA.json", (1_000, 1_000))
+    os.utime(fileA, (1_000, 1_000))
     os.utime(fileB, (2_000, 2_000))
 
     rc, out, _ = _run(["resolve-root"])

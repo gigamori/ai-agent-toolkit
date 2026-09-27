@@ -22,8 +22,9 @@ Scopes (plan §2-A 1..5):
                  writes — so concurrent sessions on different pj resolve their
                  OWN wiki; absent / unreadable / no usable `project` -> skip pj
                  (fail-closed, 2026-08-19), NOT a fallback. The most recent
-                 `_projects/_state/*.json` (mtime desc, 1 file) is read ONLY
-                 when no `session_id` is given (legacy callers). Take its
+                 session state file in `_projects/_state/` (mtime desc, 1 file;
+                 `is_session_state_file`) is read ONLY when no `session_id` is
+                 given (legacy callers). Take its
                  `project` field (verified: the state file is
                  `{"project": "llm-wiki", ...}`, plan §1). Resolve project
                  roots via `$TASKFLOW_PROJECT_ROOTS` (`;`-separated; if unset,
@@ -79,6 +80,7 @@ PROJECTS_DIRNAME = "_projects"
 WORKSPACE_WIKI_DIRNAME = "_llm-wiki"
 PROJECT_WIKI_SUBDIR = "wiki"
 TASKFLOW_PROJECT_ROOTS = "TASKFLOW_PROJECT_ROOTS"
+SESSION_STATE_STEM_LEN = 36
 
 
 @dataclass
@@ -124,6 +126,20 @@ def _workspace_root(cwd: Path) -> Path:
     return roots[0].parent
 
 
+def is_session_state_file(path: Path) -> bool:
+    """True when a `_projects/_state/*.json` is a session's state file.
+
+    taskflow writes each session's state as `<session_id>.json` and, when it
+    scans the directory itself, counts only a 36-character stem as a session
+    (`scripts/generate_kanban.py::build_uuid_index`,
+    `hooks/session_progress_capture.py::_cleanup_stale_markers`). The same
+    directory also holds other JSON, e.g. `/kanban`'s `kanban-port-<8 hex>.json`
+    (`{"key", "port", "pid"}`). Every llm-wiki reader that SCANS the directory
+    applies this rule; a reader handed an exact `<sid>.json` does not need it.
+    """
+    return len(path.stem) == SESSION_STATE_STEM_LEN
+
+
 def _read_state_project(state_file: Path) -> "str | None":
     """Read a single state file's `project` field, or None on any failure.
 
@@ -155,10 +171,12 @@ def _latest_state_project(cwd: Path,
     whichever session wrote last, i.e. a DIFFERENT concurrent session's project.
     The legacy mtime-latest scan below runs ONLY when `session_id` is falsy.
 
-    Mirrors progress SKILL Step 2 for the legacy (no-`session_id`) path: list
-    `_projects/_state/*.json` by mtime descending and read the most recent. Any
-    failure (no dir, no file, unreadable, bad JSON, missing/empty `project`)
-    degrades to None so the pj scope is simply skipped — never an error (W-b).
+    The legacy (no-`session_id`) path lists the session state files in
+    `_projects/_state/` (`is_session_state_file`; any other `*.json` there, such
+    as `kanban-port-*.json`, is ignored) by mtime descending and reads the most
+    recent. Any failure (no dir, no file, unreadable, bad JSON, missing/empty
+    `project`) degrades to None so the pj scope is simply skipped — never an
+    error (W-b).
     """
     state_dir = cwd / PROJECTS_DIRNAME / "_state"
     # Session-aware fast path: the exact per-session state file taskflow writes.
@@ -185,7 +203,8 @@ def _latest_state_project(cwd: Path,
             )
         return None
     try:
-        candidates = [p for p in state_dir.glob("*.json") if p.is_file()]
+        candidates = [p for p in state_dir.glob("*.json")
+                      if p.is_file() and is_session_state_file(p)]
     except OSError:
         return None
     if not candidates:

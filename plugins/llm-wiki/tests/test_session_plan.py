@@ -19,20 +19,24 @@ def _write_state(state_dir, sid, project):
         json.dumps({"project": project, "origin": "cc"}), encoding="utf-8")
 
 
+def _sid(n):
+    return f"00000000-0000-4000-8000-{n:012d}"
+
+
 def test_pj_filter_selects_matching_project_stems(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
-    _write_state(state_dir, "sid-keep-1", "llm-wiki")
-    _write_state(state_dir, "sid-keep-2", "llm-wiki")
-    _write_state(state_dir, "sid-other", "some-other-project")
-    _write_state(state_dir, "sid-empty", "")
+    _write_state(state_dir, _sid(1), "llm-wiki")
+    _write_state(state_dir, _sid(2), "llm-wiki")
+    _write_state(state_dir, _sid(3), "some-other-project")
+    _write_state(state_dir, _sid(4), "")
 
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
     out = drv.session_plan(str(tmp_path), pj="llm-wiki")
     assert out["scope"] == "pj"
-    assert out["sids"] == ["sid-keep-1", "sid-keep-2"]
+    assert out["sids"] == [_sid(1), _sid(2)]
     assert out["pattern"].endswith("*.json")
 
 
@@ -51,14 +55,14 @@ def test_pj_skips_malformed_state_file(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    _write_state(state_dir, "sid-good", "p")
-    (state_dir / "broken.json").write_text("{ not valid json", encoding="utf-8")
+    _write_state(state_dir, _sid(1), "p")
+    (state_dir / f"{_sid(2)}.json").write_text("{ not valid json", encoding="utf-8")
 
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
     out = drv.session_plan(str(tmp_path), pj="p")
-    assert out["sids"] == ["sid-good"]
+    assert out["sids"] == [_sid(1)]
 
 
 def test_cwd_ground_truth_resolves_running_session_dir(tmp_path, monkeypatch):
@@ -256,19 +260,19 @@ def test_pi_cwd_zero_match_is_fail_closed_error(tmp_path, monkeypatch):
 def test_pi_pj_locality_filter_and_filtered_out(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
-    _write_state(state_dir, "sid-early", "p")
-    _write_state(state_dir, "sid-late", "p")
-    _write_state(state_dir, "sid-foreign", "p")
+    _write_state(state_dir, _sid(1), "p")
+    _write_state(state_dir, _sid(2), "p")
+    _write_state(state_dir, _sid(3), "p")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
 
     sessions_dir = _use_pi_agent_dir(tmp_path, monkeypatch)
     proj_dir = sessions_dir / "--proj--"
-    _write_pi_session(proj_dir, "sid-late", "2026-07-02T12-00-00-000Z")
-    _write_pi_session(proj_dir, "sid-early", "2026-07-02T09-00-00-000Z")
+    _write_pi_session(proj_dir, _sid(2), "2026-07-02T12-00-00-000Z")
+    _write_pi_session(proj_dir, _sid(1), "2026-07-02T09-00-00-000Z")
 
     out = drv.session_plan(str(tmp_path), pj="p", kind="fe_pi_log")
     assert out["scope"] == "pj"
-    assert out["sids"] == ["sid-early", "sid-late"], (
+    assert out["sids"] == [_sid(1), _sid(2)], (
         "a state file may name a sid belonging to another harness; it is excluded "
         "and counted in filtered_out, never silently dropped"
     )
@@ -338,16 +342,53 @@ def test_explicit_workspace_flag_unions_all_state_sids_no_project_filter(
         tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
-    _write_state(state_dir, "sid-proj-a", "project-a")
-    _write_state(state_dir, "sid-proj-b", "project-b")
-    _write_state(state_dir, "sid-proj-a-2", "project-a")
+    _write_state(state_dir, _sid(1), "project-a")
+    _write_state(state_dir, _sid(3), "project-b")
+    _write_state(state_dir, _sid(2), "project-a")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
     out = drv.session_plan(str(tmp_path), workspace=True)
     assert out["scope"] == "workspace"
-    assert out["sids"] == ["sid-proj-a", "sid-proj-a-2", "sid-proj-b"]
+    assert out["sids"] == [_sid(1), _sid(2), _sid(3)]
     assert out["pattern"].endswith("*.json")
+
+
+def _write_kanban_port(state_dir):
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "kanban-port-1a2b3c4d.json").write_text(
+        json.dumps({"key": "k", "port": 17329, "pid": 1}), encoding="utf-8")
+
+
+def test_workspace_skips_foreign_json(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, _sid(1), "proj-x")
+    _write_state(state_dir, _sid(2), "proj-y")
+    _write_kanban_port(state_dir)
+    _write_state(state_dir, "test-sid-0001", "proj-x")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), workspace=True)
+    assert out["sids"] == [_sid(1), _sid(2)], (
+        "only session state files (36-character stems) are sessions; other JSON "
+        "in the state dir must not become a sid"
+    )
+
+
+def test_pj_skips_foreign_json(tmp_path, monkeypatch):
+    _init_wiki(tmp_path)
+    state_dir = tmp_path / "_state"
+    _write_state(state_dir, _sid(1), "p")
+    _write_state(state_dir, "test-sid-0001", "p")
+    monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
+    monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+
+    out = drv.session_plan(str(tmp_path), pj="p")
+    assert out["sids"] == [_sid(1)], (
+        "a non-session JSON carrying the same project must not become a sid"
+    )
 
 
 def test_explicit_workspace_zero_state_files_is_error(tmp_path, monkeypatch):
@@ -363,14 +404,14 @@ def test_explicit_workspace_zero_state_files_is_error(tmp_path, monkeypatch):
 def test_no_args_scope_workspace_matches_explicit_workspace(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
-    _write_state(state_dir, "sid-x", "proj-x")
-    _write_state(state_dir, "sid-y", "proj-y")
+    _write_state(state_dir, _sid(1), "proj-x")
+    _write_state(state_dir, _sid(2), "proj-y")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
     out = drv.session_plan(str(tmp_path), scope="workspace")
     assert out["scope"] == "workspace"
-    assert out["sids"] == ["sid-x", "sid-y"]
+    assert out["sids"] == [_sid(1), _sid(2)]
 
 
 def test_no_args_scope_cwd_default_unchanged_when_scope_omitted(tmp_path, monkeypatch):
@@ -402,29 +443,29 @@ def test_no_args_scope_cwd_explicit_same_as_omitted(tmp_path, monkeypatch):
 def test_no_args_scope_pj_resolves_active_project_via_sid(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
-    _write_state(state_dir, "running-sid", "active-proj")
-    _write_state(state_dir, "sid-a1", "active-proj")
-    _write_state(state_dir, "sid-a2", "active-proj")
-    _write_state(state_dir, "sid-other", "other-proj")
+    _write_state(state_dir, _sid(1), "active-proj")
+    _write_state(state_dir, _sid(2), "active-proj")
+    _write_state(state_dir, _sid(3), "active-proj")
+    _write_state(state_dir, _sid(4), "other-proj")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
-    out = drv.session_plan(str(tmp_path), scope="pj", sid="running-sid")
+    out = drv.session_plan(str(tmp_path), scope="pj", sid=_sid(1))
     assert out["scope"] == "pj"
-    assert out["sids"] == ["running-sid", "sid-a1", "sid-a2"]
+    assert out["sids"] == [_sid(1), _sid(2), _sid(3)]
 
 
 def test_no_args_scope_prompt_same_resolution_as_pj_provisional(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
-    _write_state(state_dir, "running-sid", "active-proj")
-    _write_state(state_dir, "sid-a1", "active-proj")
+    _write_state(state_dir, _sid(1), "active-proj")
+    _write_state(state_dir, _sid(2), "active-proj")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
-    out = drv.session_plan(str(tmp_path), scope="prompt", sid="running-sid")
+    out = drv.session_plan(str(tmp_path), scope="prompt", sid=_sid(1))
     assert out["scope"] == "pj"
-    assert out["sids"] == ["running-sid", "sid-a1"]
+    assert out["sids"] == [_sid(1), _sid(2)]
 
 
 def test_no_args_scope_pj_fails_closed_without_active_project(tmp_path, monkeypatch):
@@ -479,26 +520,26 @@ def test_no_args_scope_pj_missing_project_key_fails_closed(tmp_path, monkeypatch
 def test_explicit_workspace_wins_over_scope_param(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
-    _write_state(state_dir, "sid-w", "any-proj")
+    _write_state(state_dir, _sid(1), "any-proj")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
     out = drv.session_plan(str(tmp_path), workspace=True, scope="cwd")
     assert out["scope"] == "workspace"
-    assert out["sids"] == ["sid-w"]
+    assert out["sids"] == [_sid(1)]
 
 
 def test_explicit_pj_wins_over_scope_param(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
-    _write_state(state_dir, "sid-p", "target-proj")
-    _write_state(state_dir, "sid-q", "other-proj")
+    _write_state(state_dir, _sid(1), "target-proj")
+    _write_state(state_dir, _sid(2), "other-proj")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
 
     out = drv.session_plan(str(tmp_path), pj="target-proj", scope="workspace")
     assert out["scope"] == "pj"
-    assert out["sids"] == ["sid-p"]
+    assert out["sids"] == [_sid(1)]
 
 
 def test_pi_ts_ascending_order_cwd_path(tmp_path, monkeypatch):

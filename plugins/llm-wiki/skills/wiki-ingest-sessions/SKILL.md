@@ -142,8 +142,8 @@ The `resolve-root` verb prints ONE VALUE PER LINE on stdout — `<root>` on line
 `<scope>` on line 2 — and the block above reads them in that order (`WIKI_ROOT`=root,
 `WIKI_SCOPE`=scope). The old tab-separated form was removed 2026-08-07; do NOT
 split on a tab, and do NOT let `$WIKI_SCOPE` come out empty: Step 2 passes it to
-the driver as `--scope`, and an empty value silently narrows a workspace/pj-scoped
-run to the cwd-slug session set. If it exits non-zero (`NO-WIKI`), no wiki resolved — report
+the driver as `--scope`, and the driver rejects an empty `--scope=` as a usage
+error (exit 64). If it exits non-zero (`NO-WIKI`), no wiki resolved — report
 that this skill requires an active wiki (pass `--root <path>` or run from a wiki root)
 and STOP. Before acting, show the user the resolved root and scope (e.g.
 `active wiki: <root> (scope: pj|workspace|cwd|child|prompt)`). The driver still enforces the

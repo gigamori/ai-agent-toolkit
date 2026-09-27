@@ -110,8 +110,8 @@ budget, opening no transaction):
     an explicit error. No lock / checkpoint / write — pure enumeration. Print
     {files: [rel_path,...], excluded: <count>, pattern: <effective glob>}.
 
-  session-plan <root> [--pj <name>] [--workspace] [--scope <scope>]
-        [--kind=auto|fe_b_prime|fe_pi_log] [--sid <sid>]
+  session-plan <root> [--pj=<name>] [--workspace] [--scope=<scope>]
+        [--kind=auto|fe_b_prime|fe_pi_log] [--sid=<sid>]
         (read-only Path B resolver, T6 / F1-b/F2-B, design C; D2/D3/D4/D5/D6
         workspace-session-ingest.md)
     Resolve the SET of session ids for a Path B project ingest and return them
@@ -129,8 +129,10 @@ budget, opening no transaction):
           --scope=workspace (no-args A-follow, D2): union EVERY sid in
           `_projects/_state/*.json`, NO `project` filter (`_sids_workspace`) —
           harness-neutral, sidesteps the lossy CC slug reverse-mapping
-          entirely; scope "workspace".
-        - --pj <name> given (explicit, unchanged): filter `_projects/_state/*.json`
+          entirely; scope "workspace". Only session state files count
+          (36-character stem, `wiki_root_resolver.is_session_state_file`), here
+          and in the `--pj` enumeration, so e.g. `kanban-port-*.json` is no sid.
+        - --pj=<name> given (explicit, unchanged): filter `_projects/_state/*.json`
           (the taskflow state dir under the process CWD, exactly as
           wiki_root_resolver locates it) by `project == <name>`; the matching
           state files' filename STEMS are the sids (state file is `<sid>.json`,
@@ -140,7 +142,7 @@ budget, opening no transaction):
           `_active_project_for_sid(--sid)` (`_projects/_state/<sid>.json`
           `project` field, NOT a name derived from the wiki path), then the
           same `--pj`-style enumeration; unresolvable -> DriverError guiding
-          the caller to `--pj <name>` (fail-closed, NOT a silent narrow-to-cwd
+          the caller to `--pj=<name>` (fail-closed, NOT a silent narrow-to-cwd
           fall-back — that silent narrowing was the diagnosed symptom).
         - --pj/--workspace both omitted, --scope in (None, cwd) — and, since
           the resolver's `child` scope was added 2026-08-08, any other scope
@@ -162,13 +164,13 @@ budget, opening no transaction):
         not file mtime (mtime drifts on copy/resume/fork/checkout).
       - `--kind=fe_pi_log` (UNCHANGED — D3's workspace path is cc-only for now,
         see the module's Follow-ups):
-        - --pj <name> given: same `_sids_for_pj` enumeration (harness-neutral),
+        - --pj=<name> given: same `_sids_for_pj` enumeration (harness-neutral),
           then F-2 locality filter — intersect with the sids that actually have a
           pi session file (from the same directory walk used for ordering below);
           filtered-out sids (present in taskflow state but with no pi session
           file, e.g. a foreign harness's sid) are counted and reported as
           `filtered_out: <n>` (never silently dropped).
-        - --pj omitted: primary `--sid <sid>` (F-13, pi has no env fallback,
+        - --pj omitted: primary `--sid=<sid>` (F-13, pi has no env fallback,
           arg-only) -> `pi_log_project.session_dir_for_sid(sid)`; if that is
           `None` (not found, F-6) or `--sid` was omitted, fallback to
           `pi_log_project.session_dir_for_cwd(cwd)`. If the fallback dir also
@@ -177,17 +179,21 @@ budget, opening no transaction):
         ts to sort by = the session filename's `<ts>_<sid>.jsonl` prefix
         ASCENDING (no DuckDB; design fact 11) — NOT `cc_session.started`
         (pi sids are not in the cc corpus).
-    `--sid <sid>` (F-13): an explicit override for the cwd-path's "current
+    `--sid=<sid>` (F-13): an explicit override for the cwd-path's "current
     session" resolution, taking priority over the env var; it ALSO feeds the
     no-args `--scope pj|prompt` active-project resolution (D2, cc kind only).
     Omitted, both kinds' cwd-path behavior is unchanged from before this flag
     existed (env-only for cc; `session_dir_for_cwd` fallback only for pi), and
     the no-args pj/prompt branch cannot resolve (fails closed).
     `--workspace` (D3, cc kind only, explicit; a `--pj`-independent boolean
-    flag) and `--scope <scope>` (D2, the caller's resolved WIKI_SCOPE — one of
+    flag) and `--scope=<scope>` (D2, the caller's resolved WIKI_SCOPE — one of
     `prompt|pj|workspace|cwd` — used ONLY in the no-args case, i.e. `--pj` and
     `--workspace` both absent) together implement the no-args scope tree; an
     explicit `--pj` or `--workspace` always overrides `--scope`.
+    Flags are parsed strictly, as for `begin`: a value flag needs `--key=value`,
+    `--workspace` is bare, and an unknown flag, an empty value or a positional
+    besides <root> is EX_USAGE (a space-separated value would otherwise reach
+    the verb empty and silently change the resolved set).
     Zero matches is an explicit error (fail-closed, like `enumerate`). Print
     {sids: [sid,...], scope: "pj"|"workspace"|"cwd", pattern: <state-glob or
     project-dir>, filtered_out: <n>} (`filtered_out` is present for the
@@ -258,6 +264,7 @@ from llmwiki.write import transaction
 from llmwiki.ingest import frontends
 from llmwiki.core import wiki_index
 from llmwiki.core import wiki_log
+from llmwiki.core import wiki_root_resolver
 from llmwiki.ingest import cc_log_project
 from llmwiki.ingest import cc_paths
 from llmwiki.ingest import pi_log_project
@@ -355,14 +362,25 @@ INGEST_VERBS = (
     "project-batch-cleanup",
 )
 
-# begin's accepted --flags (DEC-a: begin-only strict parse; the central
-# _parse_opts stays permissive for every other verb, e.g. session-plan's
-# space-form `--pj`). A --flag outside this set, or any of these supplied with
-# no value, is a usage error (EX_USAGE) rather than a silently-ignored token.
+# begin's accepted --flags (DEC-a: strict parse for begin and session-plan; the
+# central _parse_opts stays permissive for every other verb). A --flag outside
+# this set, or any of these supplied with no value, is a usage error (EX_USAGE)
+# rather than a silently-ignored token.
 _BEGIN_OPTS = frozenset({
     "kind", "write_mode", "apply_fanout_k", "doc_type",
     "external", "turns", "out_dir", "cutoff",
 })
+
+# session-plan's accepted --flags, same strict parse as begin. `_parse_opts`
+# reads a value only from `--key=value`: a space-separated value would reach the
+# verb as "" and land in the positionals, so a value flag with no value, a
+# valued `--workspace` (a bare boolean) and any positional besides <root> are
+# usage errors rather than a silently different session set.
+_SESSION_PLAN_VALUE_OPTS = frozenset({"pj", "scope", "sid", "kind"})
+_SESSION_PLAN_BARE_OPTS = frozenset({"workspace"})
+_SESSION_PLAN_USAGE = (
+    "usage: session-plan <root> [--pj=<name> | --workspace] [--scope=<scope>] "
+    "[--sid=<sid>] [--kind=auto|fe_b_prime|fe_pi_log]")
 
 # --cutoff selectors (D13). Opt-in and projection-origin only; the DEFAULT is
 # no cutoff, so `/wiki-ingest-docs` and `/wiki-ingest-sessions` — which project
@@ -1347,7 +1365,9 @@ def enumerate_files(wiki_root: str, glob: str) -> dict:
 # The taskflow state dir is a WORKSPACE concept (keyed off the process CWD),
 # NOT under the wiki `<root>`: it lives at `<cwd>/_projects/_state/*.json`, the
 # exact location wiki_root_resolver._latest_state_project reads (each file is
-# `<sid>.json` with a `{"project": ...}` body). We locate it the same way.
+# `<sid>.json` with a `{"project": ...}` body). We locate it the same way. The
+# directory also holds non-session JSON (e.g. `kanban-port-*.json`), so the
+# scans below keep to `wiki_root_resolver.is_session_state_file`.
 _STATE_SUBPATH = ("_projects", "_state")
 
 # The CC session-log roots (U3 ground truth) come from `cc_paths`, which owns the
@@ -1403,13 +1423,18 @@ def _sids_for_pj(project: str, cwd: "Path | None" = None) -> list[str]:
 
     Each `_projects/_state/<sid>.json` is `{"project": ..., ...}`; the filename
     STEM is the sid (verified: state file is written as `<session_id>.json` by
-    taskflow session_init.py). A malformed / unreadable state file is skipped
-    (never fatal — a foreign or half-written file must not sink the resolve).
+    taskflow session_init.py). Only session state files count
+    (`wiki_root_resolver.is_session_state_file`), so non-session JSON carrying
+    the same `project` never becomes a sid. A malformed / unreadable state file
+    is skipped (never fatal — a foreign or half-written file must not sink the
+    resolve).
     """
     state_dir = _state_dir(cwd)
     sids: list[str] = []
     try:
-        candidates = sorted(p for p in state_dir.glob("*.json") if p.is_file())
+        candidates = sorted(p for p in state_dir.glob("*.json")
+                            if p.is_file()
+                            and wiki_root_resolver.is_session_state_file(p))
     except OSError:
         candidates = []
     for path in candidates:
@@ -1426,7 +1451,8 @@ def _sids_workspace(cwd: "Path | None" = None) -> list[str]:
     """D3: the union of every sid under `_projects/_state/*.json`, NO project filter.
 
     A `project`-filter-free variant of `_sids_for_pj` (same state-dir glob, same
-    malformed-file skip) used for the `workspace` scope (D2/D3/--workspace): a
+    session-file rule, same malformed-file skip) used for the `workspace` scope
+    (D2/D3/--workspace): a
     workspace whose sub-projects were launched from different directories is
     still fully covered, because this enumerates taskflow's harness-neutral
     `_state` records rather than reconstructing a CC project-dir slug per
@@ -1435,7 +1461,9 @@ def _sids_workspace(cwd: "Path | None" = None) -> list[str]:
     state_dir = _state_dir(cwd)
     sids: list[str] = []
     try:
-        candidates = sorted(p for p in state_dir.glob("*.json") if p.is_file())
+        candidates = sorted(p for p in state_dir.glob("*.json")
+                            if p.is_file()
+                            and wiki_root_resolver.is_session_state_file(p))
     except OSError:
         candidates = []
     for path in candidates:
@@ -1674,7 +1702,9 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
       - `workspace=True` (explicit `--workspace`, D2/D3) OR
         (workspace omitted, pj omitted, `scope == "workspace"`, A-follow) ->
                      `_sids_workspace()`: every sid in `_projects/_state/*.json`,
-                     NO project filter (D3); scope "workspace".
+                     NO project filter (D3); scope "workspace". Here and in
+                     the `pj` enumeration only session state files count
+                     (`wiki_root_resolver.is_session_state_file`).
       - `pj` given (explicit, unchanged) -> `_projects/_state/*.json` filtered
                      by `project == pj`; scope "pj".
       - workspace/pj both omitted, `scope in (None, "cwd")` — and, since the
@@ -1692,7 +1722,7 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
                      derived from the wiki path), then `_sids_for_pj(project)`;
                      scope "pj". Unresolvable (`sid` missing, no state file, no
                      `project` field) -> DriverError guiding the caller to
-                     `--pj <name>` (fail-closed, NOT a silent fall-back to the
+                     `--pj=<name>` (fail-closed, NOT a silent fall-back to the
                      narrow cwd-slug set).
       - kind pi, pj given  -> the same `_sids_for_pj` enumeration (harness-
                      neutral) intersected with the sids that actually have a
@@ -1789,7 +1819,7 @@ def session_plan(wiki_root: str, *, pj: "str | None" = None,
             raise DriverError(
                 "session-plan could not resolve an active taskflow project "
                 f"for scope {scope!r} (no _projects/_state/<sid>.json "
-                "project for this session); specify --pj <name>")
+                "project for this session); specify --pj=<name>")
         sids = _sids_for_pj(project)
         scope_out = "pj"
         pattern = state_pattern
@@ -2010,6 +2040,38 @@ def _parse_opts(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     return positional, opts
 
 
+def _check_session_plan_argv(pos: list[str], opts: dict[str, str]) -> None:
+    """Reject session-plan argv that `_parse_opts` would silently misread."""
+    known = _SESSION_PLAN_VALUE_OPTS | _SESSION_PLAN_BARE_OPTS
+    unknown = sorted(k for k in opts if k not in known)
+    if unknown:
+        raise DriverUsageError(
+            "session-plan: unknown flag(s): "
+            + ", ".join("--" + k for k in unknown)
+            + ". " + _SESSION_PLAN_USAGE)
+
+    empty = sorted(k for k in opts
+                   if k in _SESSION_PLAN_VALUE_OPTS and opts[k] == "")
+    if empty:
+        raise DriverUsageError(
+            "session-plan: flag(s) need a value in --key=value form: "
+            + ", ".join("--" + k for k in empty)
+            + ". " + _SESSION_PLAN_USAGE)
+
+    valued = sorted(k for k in opts
+                    if k in _SESSION_PLAN_BARE_OPTS and opts[k] != "")
+    if valued:
+        raise DriverUsageError(
+            "session-plan: flag(s) take no value: "
+            + ", ".join("--" + k for k in valued)
+            + ". " + _SESSION_PLAN_USAGE)
+
+    if len(pos) != 1:
+        raise DriverUsageError(
+            f"session-plan requires exactly the positional arg <root> (1), "
+            f"got {len(pos)}. " + _SESSION_PLAN_USAGE)
+
+
 def main(argv: "list[str] | None" = None) -> int:
     # Fix stdio to UTF-8 regardless of the host locale (S1; same idiom as
     # cli.py:main). This subsumes the old stdout-only reconfigure that sat just
@@ -2045,9 +2107,9 @@ def main(argv: "list[str] | None" = None) -> int:
     pos, opts = _parse_opts(rest)
     try:
         if verb == "begin":
-            # DEC-a: begin-only strict parse (unknown-flag reject + empty-value
-            # detection + exact arity). Do NOT extend this to session-plan (its
-            # space-form `--pj` leaves an empty-value opt on purpose, L1666-1668).
+            # DEC-a: strict parse (unknown-flag reject + empty-value detection +
+            # exact arity); session-plan applies the same rules in
+            # `_check_session_plan_argv`.
             _begin_usage = (
                 "usage: begin <root> <source> "
                 "[--kind=auto|fe_b|fe_b_prime|fe_pi_log] [--write_mode=...] "
@@ -2102,19 +2164,10 @@ def main(argv: "list[str] | None" = None) -> int:
                 raise DriverUsageError("enumerate requires <root> <glob>")
             result = enumerate_files(pos[0], pos[1])
         elif verb == "session-plan":
-            if len(pos) < 1:
-                raise DriverUsageError(
-                    "session-plan requires <root> [--pj <name>] [--workspace] "
-                    "[--scope <scope>]")
-            # Accept both `--pj=name` and the spec's space form `--pj name`.
-            # In the space form the parser leaves `--pj` as an empty-value opt and
-            # the name lands as the next positional (pos[1]); use it as the pj name.
-            pj_val = opts.get("pj")
-            if "pj" in opts and not pj_val and len(pos) >= 2:
-                pj_val = pos[1]
+            _check_session_plan_argv(pos, opts)
             # `--workspace` (D3) is a bare boolean flag (no value); `_parse_opts`
-            # records it as opts["workspace"] = "" either way.
-            result = session_plan(pos[0], pj=pj_val or None,
+            # records it as opts["workspace"] = "".
+            result = session_plan(pos[0], pj=opts.get("pj"),
                                   kind=opts.get("kind", "auto"),
                                   sid=opts.get("sid"),
                                   workspace="workspace" in opts,

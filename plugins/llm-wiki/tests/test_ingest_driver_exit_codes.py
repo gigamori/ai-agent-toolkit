@@ -91,20 +91,54 @@ def test_begin_excess_positional_is_ex_usage(tmp_path):
     assert rc == drv.EX_USAGE
 
 
-def test_session_plan_space_form_pj_not_ex_usage(tmp_path, monkeypatch):
+def _sid(n):
+    return f"00000000-0000-4000-8000-{n:012d}"
+
+
+def _seed_session_plan(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "sid-a.json").write_text(
+    (state_dir / f"{_sid(1)}.json").write_text(
         json.dumps({"project": "my-project", "origin": "cc"}), encoding="utf-8")
     monkeypatch.setattr(drv, "_state_dir", lambda cwd=None: state_dir)
     monkeypatch.setattr(drv, "_order_sids_by_started_ts", lambda sids: sorted(sids))
+    monkeypatch.setattr(drv, "_cc_project_dir_from_running_session", lambda *a: None)
+    monkeypatch.setattr(drv, "_cc_project_dir_from_cwd", lambda *a: None)
 
-    out = drv.session_plan(str(tmp_path), pj="my-project", kind="auto")
-    assert out["sids"] == ["sid-a"]
-    rc = drv.main(["session-plan", str(tmp_path), "--pj", "my-project"])
-    assert rc != drv.EX_USAGE
+
+def test_session_plan_eq_form(tmp_path, monkeypatch):
+    _seed_session_plan(tmp_path, monkeypatch)
+    rc = drv.main(["session-plan", str(tmp_path), "--pj=my-project", f"--sid={_sid(1)}"])
     assert rc == 0
+
+
+@pytest.mark.parametrize("flags", [
+    ["--pj", "my-project"],
+    ["--sid", _sid(1), "--pj", "my-project"],
+    ["--pj=my-project", "--sid", _sid(1)],
+    ["--scope", "pj"],
+    ["--sid="],
+    ["--bogus=1"],
+    ["--workspace=yes"],
+    ["--pj=my-project", "extra"],
+], ids=lambda f: "_".join(f))
+def test_session_plan_bad_argv(tmp_path, monkeypatch, flags):
+    _seed_session_plan(tmp_path, monkeypatch)
+    rc = drv.main(["session-plan", str(tmp_path)] + flags)
+    assert rc == drv.EX_USAGE, (
+        "session-plan reads flags only as --key=value: a space-separated value, "
+        "an unknown flag, an empty value or a stray positional must stop the run "
+        "instead of resolving a different session set"
+    )
+
+
+def test_session_plan_usage_form(capsys):
+    assert drv.main(["session-plan"]) == drv.EX_USAGE
+    err = capsys.readouterr().err
+    assert "--scope=<scope>" in err and "--scope <" not in err, (
+        "the usage line must advertise only the --key=value form the parser accepts"
+    )
 
 
 def test_begin_no_marker_is_sentinel_rc2(tmp_path):
