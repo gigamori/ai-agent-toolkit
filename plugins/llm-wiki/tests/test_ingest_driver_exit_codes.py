@@ -1,4 +1,7 @@
 import json
+import os
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +30,23 @@ def _init_wiki(tmp_path):
     (tmp_path / "SCHEMA.md").write_text(_SCHEMA, encoding="utf-8")
     (tmp_path / "index.md").write_text("# Index\n", encoding="utf-8")
     (tmp_path / "log.md").write_text("# Log\n", encoding="utf-8")
+
+
+def test_tempdir_is_per_test(tmp_path, tmp_path_factory, monkeypatch):
+    monkeypatch.undo()
+    temp = Path(tempfile.gettempdir()).resolve()
+    assert temp.is_relative_to(tmp_path_factory.getbasetemp().resolve()), (
+        "each test gets its own temp dir under pytest's base temp, even after "
+        "the test's own monkeypatch.undo(), so the driver's temp dirs and its "
+        "24h prune never reach the real system temp"
+    )
+    assert not temp.is_relative_to(tmp_path.resolve()), (
+        "the temp dir sits outside tmp_path, which tests use as the wiki root "
+        "that driver temp output must stay out of"
+    )
+    assert os.environ.get("TMPDIR") == tempfile.gettempdir(), (
+        "child processes inherit the same per-test temp dir through TMPDIR"
+    )
 
 
 def test_missing_verb_is_ex_usage():
