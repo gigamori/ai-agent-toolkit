@@ -121,8 +121,8 @@ N+1 automatically (nobody retries a success). Pass **`--new-cycle`** only
 when the previous iteration ended in a *failure the workflow tolerated*
 (`on-error="ignore"`) and you are moving on to the next iteration anyway —
 there the ledger cannot tell "accepted and moved on" from "about to retry",
-so you must say so. `dispatch`'s cap message names the flag when this is
-the likely cause.
+so you must say so. `dispatch`'s refusal names the flag when this is the
+likely cause.
 
 ## Layer B: step execution protocol (`claude --version` unavailable, or user-selected; every step, these 4 moves in order)
 
