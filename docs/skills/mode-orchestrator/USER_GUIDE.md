@@ -61,7 +61,7 @@ ordinary interactive run.
 | `--auto` | Skip the approval gate; run all turns without per-plan confirmation. |
 | `--roles` / `--roles=always` | Infer and attach a fitting role to every turn. Default: no inferred roles, but a role explicitly stated in the todolist is honored. |
 | `--workflow=<name>` | Load a workflow spec (`workflows/<name>.md`) as task-type guidance. A spec name declared inside the todolist is honored the same way. Default: no spec — run exactly as the todolist dictates. |
-| `--decider=llm` | Delegate `needs-decision` forks to an inserted turn that decides. Default `human` — the run pauses at the step boundary and shows you the question. See the decision loop below. |
+| `--decider=llm` | Delegate `needs-decision` forks to an inserted turn that decides. Default `human` — the run pauses at the step boundary and shows you the question, except a fork between instructions a model wrote, which an inserted turn decides under either value. See the decision loop below. |
 
 Flags use the `--` form on purpose — never `mode:` / `role:` colon-prefixes,
 which the role-mode hook would capture.
@@ -183,7 +183,7 @@ deliverable, with four fields:
 
 | Field | Content |
 |---|---|
-| Question | What must be decided, in one sentence. |
+| Question | What must be decided, naming where each side of the fork comes from: the turn's `Task:` line (the step's own words), its `Part:` line (the orchestrator's note on which share of a split step the turn does), an input by path, or a standing rule. |
 | Options | Two or more, each with its trade-off. |
 | Impact on remaining steps | `none`, or the revised remaining sequence. |
 | Work state | `complete` — the deliverable stands and the turn is only flagging the fork — or `stopped` — it could not finish without the answer. |
@@ -202,18 +202,26 @@ What happens next depends on `--decider`:
   option the request did not list, saying so. It must *refuse* to decide
   anything irreversible or outward-facing, or anything that changes what the run
   is for — those come back to you as `needs-human`.
-- **`human` (default)** — no turn is inserted. The run stops at the step boundary and
-  shows you the question and the deliverable path; your answer is written into
-  the decision record and the run continues. In a non-interactive run
-  (`claude -p` and the like) nothing can answer, so the run simply ends, with
-  the request preserved on disk for you to restart from.
+- **`human` (default)** — the orchestrator first looks up, in the run index,
+  where each side named in the Question comes from. If every side is an
+  instruction a model wrote during this run — another turn's deliverable, or the
+  `Part:` line of a split step — you could not know that contradiction, so a
+  `review-dev` turn is inserted to decide it exactly as under `llm` (it also
+  counts against the decision cap below). Otherwise no turn is inserted: the run
+  stops at the step boundary and shows you the question and the deliverable
+  path; your answer is written into the decision record and the run continues.
+  If the inserted turn finds it may not decide — a side rests on something a
+  human wrote, or one of the grounds above applies — the fork comes to you the
+  same way. In a non-interactive run (`claude -p` and the like) nothing can
+  answer a fork shown to you, so the run simply ends, with the request preserved
+  on disk for you to restart from.
 
 Then the run continues one of two ways, read off the `Work state` field rather
 than guessed: **`complete`** with a listed option → the deliverable stands and
 the decision evidence is added to the following turns' inputs; **`stopped`**, or
-an unlisted option was adopted → the raising turn is re-run. Under `llm` its
-parent is the inserted decision turn; under `human` its parent is the human
-decision record. In both cases it retains the raising turn's model routing.
+an unlisted option was adopted → the raising turn is re-run. Its parent is the
+inserted decision turn where one decided, and the human decision record where
+you did. In both cases it retains the raising turn's model routing.
 
 If the decision carries an **amendment**, only the not-yet-run part of the turn
 plan is regenerated — finished turns are untouched — and the revised remainder
@@ -221,9 +229,9 @@ must still pass the Step 0 gate. The original plan stays in the run index, so
 the drift from what you approved stays visible.
 
 The per-turn **decision cap** is 2 insertions (a workflow spec can override it).
-It counts *inserted* turns, so it applies to `--decider=llm` only: when you are
-the decider nothing is inserted and nothing is capped, and the same turn may
-bring you a third and a fourth fork. The cap exists to stop an unattended run
+It counts *inserted* turns: every fork under `--decider=llm`, and under `human`
+every fork routed to an inserted turn. A fork you answer inserts nothing and is
+never capped, and the same turn may bring you a third and a fourth fork. The cap exists to stop an unattended run
 from adjudicating in circles, which a run that needs your answer every round
 cannot do — capping it would only mean your third legitimate fork comes back as
 "cap reached" instead of being asked.
@@ -241,7 +249,8 @@ several candidate fixes, say. When that happens and the continuation is form
 (b), what gets re-run is the turn that raised the fork (the debug turn), not
 the original one; and that re-run consumes no recovery cycle — the recovery cap
 counts failed cycles, and a fork is not a failure. What the round spent, if
-anything, is a decision insertion, and only under `--decider=llm`.
+anything, is a decision insertion — under `--decider=llm`, or under `human` when
+the fork was routed to an inserted turn.
 
 `--auto` does **not** override `--decider=human`: it skips only the initial
 turn-plan approval, so a human-decided run still waits at its forks.
