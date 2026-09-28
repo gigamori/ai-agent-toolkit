@@ -456,12 +456,16 @@ than silently passing.
 
 ### Error handling (modernized ADP)
 
-run-llm's layer A (`wfrun dispatch`/`wait`) gets the same classes: the
-wrapper process calls `classify_result()` directly, and `wait` applies the
-debug column itself. The retry column there is carried out by the
-orchestrator, which re-dispatches any `error` up to `retry` times
-(`run-llm.md`). The one row enforced in code is `denied`: `dispatch` refuses
-to re-dispatch a cycle whose last attempt was denied. Layer B (`wfrun
+run-llm's layer A (`wfrun dispatch`/`wait`) gets the same classes and the
+same retry/debug handling, enforced in code. The wrapper process calls
+`classify_result()` directly and records each attempt's class in the cycle's
+ledger. `wait` corrects that record when its own checks fail a step (an
+`expect-file` miss is `behavioral`, as here), runs the debug diagnosis only
+when the handling below reaches debug, and records the RETRY/FAIL. `dispatch`
+refuses any re-dispatch that handling would not make: a skipped class, a
+spent `retry`, `--fix` without the RETRY just recorded, a second fixed
+re-run, a re-run while a decision awaits its ruling. The orchestrator only
+re-dispatches and follows the refusal (`run-llm.md`). Layer B (`wfrun
 record`) has its own, text-based decision table instead (ok/error/aborted, no
 `error_class`) — see `run-llm.md`. On Claude Code, that table is preceded by
 a check of the step subagent's transcript, and of every agent the subagent

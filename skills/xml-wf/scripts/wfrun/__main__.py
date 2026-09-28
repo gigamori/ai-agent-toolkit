@@ -781,6 +781,13 @@ WAIT_POLL_INTERVAL = 1.0
 # liveness signal) this whole spec exists to close.
 WAIT_ABORT_MARGIN = 30
 
+# The debug verdict `wait` records on the attempt it diagnosed. `dispatch`
+# admits --fix only right after DEBUG_RETRY: run-cc grants one fixed re-run
+# per visit, and a fix file left from an earlier attempt or cycle must never
+# be applied.
+DEBUG_RETRY = "RETRY"
+DEBUG_FAIL = "FAIL"
+
 
 def _check_base_dir(base_dir: Path) -> str | None:
     """Same guard as Executor._check_base_dir (executor.py), for the A-layer
@@ -909,6 +916,108 @@ def _count_step_executions(log_path: Path) -> int:
     return count
 
 
+def _fix_path(run_dir: str | Path, step_id: str) -> Path:
+    """Where `wait` writes the fix instruction of a debug RETRY."""
+    return Path(run_dir) / "steps" / f"{step_id}_fix.md"
+
+
+def _retry_left(step: model.Step, error_class: str | None, failed: int,
+                earlier: list) -> bool:
+    """run-cc's retry test after the `failed`-th attempt of a cycle fails
+    (Executor._exec_step): a class an identical re-run can clear, and budget
+    left. Attempts re-run after a ruling do not spend the budget."""
+    reruns = sum(1 for a in earlier if a.get("class") == "decision")
+    return claude_cli.is_retryable(error_class) and failed - reruns <= step.retry
+
+
+def _debug_is_next(step: model.Step, error_class: str | None, seq: int,
+                   attempts: list) -> bool:
+    """Whether run-cc's ladder hands failed attempt `seq` to debug: no
+    identical retry left, `on-error="debug"`, a class debug takes, and no
+    fixed re-run granted earlier in the cycle."""
+    if step.on_error != "debug" or not claude_cli.is_debuggable(error_class):
+        return False
+    earlier = [a for a in attempts if a.get("seq", seq) < seq]
+    if any(a.get("debug") == DEBUG_RETRY for a in earlier):
+        return False
+    return not _retry_left(step, error_class, seq, earlier)
+
+
+def _on_error_action(step: model.Step, last: dict, earlier: list) -> str:
+    """What `on-error` leaves once run-cc's ladder has nothing more to run
+    after the cycle's last attempt."""
+    if step.on_error == "ignore":
+        return ('on-error="ignore": move on; dispatching this step again in a '
+                'later <while>/<each> iteration takes --new-cycle')
+    if step.on_error != "debug":
+        return 'on-error="fail": stop and report'
+    cls = last.get("class")
+    if last.get("debug") == DEBUG_FAIL:
+        why = "debug found no fix"
+    elif not claude_cli.is_debuggable(cls):
+        why = f"debug does not take {cls}"
+    elif any(a.get("debug") == DEBUG_RETRY for a in earlier):
+        why = "the one fixed re-run is spent"
+    else:
+        why = f"no debug verdict is recorded for attempt {last.get('seq')}"
+    return f'on-error="debug", but {why}: stop and report'
+
+
+def _plain_block(step: model.Step, run_dir: Path, cycle: int,
+                 attempts: list) -> tuple[str, str] | None:
+    """(why, what to do instead) when run-cc's ladder would not re-run the
+    cycle's last attempt with the step's own prompt; None when it would."""
+    if not attempts:
+        return None
+    last, earlier = attempts[-1], attempts[:-1]
+    cls = last.get("class")
+    if last.get("debug") == DEBUG_RETRY:
+        return ("debug granted a fixed re-run",
+                f'dispatch with --fix "$(cat {_fix_path(run_dir, step.id)})"')
+    if cls == "decision":
+        # Form (b) re-runs once the ruling is filed; before that, a re-run
+        # executes the step a second time while the fork is still open.
+        pending = decision_mod.pending_request_id(
+            decision_mod.decisions_dir(run_dir), f"{step.id}_c{cycle:02d}")
+        if pending is None:
+            return None
+        return (f"decision {pending} has no ruling yet",
+                "settle it with record --answer, which says whether to re-run")
+    if not claude_cli.is_retryable(cls):
+        note = " (a refused tool call)" if cls == "denied" else ""
+        return (f"its last attempt ended {cls}{note}, which is never re-run as-is",
+                _on_error_action(step, last, earlier))
+    if _retry_left(step, cls, len(attempts), earlier):
+        return None
+    return (f"its retries are spent (retry={step.retry})",
+            _on_error_action(step, last, earlier))
+
+
+def _dispatch_refusal(step: model.Step, run_dir: Path, cycle: int,
+                      attempts: list, fix: str | None) -> str | None:
+    """Why run-cc's ladder (Executor._exec_step) would not make this dispatch,
+    ending in the one thing to do instead; None when it would.
+
+    --fix is admitted only right after the debug RETRY `wait` recorded, so the
+    one fixed re-run cannot repeat and a stale fix file never applies. An
+    aborted attempt leaves no ledger entry, so re-dispatching it the same way
+    is judged exactly as the aborted dispatch was.
+    """
+    where = f"step '{step.id}' cycle {cycle}"
+    if fix:
+        if attempts and attempts[-1].get("debug") == DEBUG_RETRY:
+            return None
+        blocked = _plain_block(step, run_dir, cycle, attempts)
+        action = "dispatch without --fix" if blocked is None else blocked[1]
+        return (f"{where}: no debug RETRY is recorded for its last attempt, "
+                f"so --fix has nothing to apply -- {action}")
+    blocked = _plain_block(step, run_dir, cycle, attempts)
+    if blocked is None:
+        return None
+    why, action = blocked
+    return f"{where}: {why} -- {action}"
+
+
 def cmd_dispatch(args) -> int:
     from .agents import discover_agents
     wf = parser.parse_file(args.workflow)
@@ -935,16 +1044,6 @@ def cmd_dispatch(args) -> int:
     cycle, attempts = _resolve_cycle(run_dir, args.step_id, args.new_cycle)
     paths = _a_layer_paths(run_dir, args.step_id, cycle)
 
-    # run-cc never retries a refused tool call (NON_RETRYABLE_CLASSES), and the
-    # orchestrator's generic on-error retry must not either: the rerun could
-    # reach the refused effect another way. Enforced here, not left to prompt.
-    if attempts and attempts[-1].get("class") == "denied":
-        print(f"error: step '{args.step_id}' cycle {cycle} ended denied (a "
-              f"refused tool call), which is never retried -- follow on-error. "
-              f"Pass --new-cycle only for a new <while>/<each> iteration",
-              file=sys.stderr)
-        return 1
-
     # The cap is per cycle (one step-node visit), matching run-cc's
     # per-visit retry budget; wf.max below is the run-wide backstop.
     decision_attempts = sum(1 for a in attempts if a.get("class") == "decision")
@@ -960,6 +1059,16 @@ def cmd_dispatch(args) -> int:
                  if decision_attempts else "") + "). "
               f"If this is a new <while>/<each> iteration rather than a "
               f"retry, pass --new-cycle", file=sys.stderr)
+        return 1
+
+    # What may follow a failed attempt is run-cc's ladder, not the
+    # orchestrator's generic retry: a class never re-run as-is (a refused
+    # call's re-run could reach the refused effect another way), a spent
+    # budget, the one fixed re-run, a fork awaiting its ruling. Enforced here,
+    # not left to prompt.
+    refusal = _dispatch_refusal(step, run_dir, cycle, attempts, args.fix)
+    if refusal:
+        print(f"error: {refusal}", file=sys.stderr)
         return 1
 
     log_path = run_dir / "steps.log"
@@ -1185,24 +1294,38 @@ def _finish_wait(handle: dict, args, exit_data: dict) -> int:
         decisions_dir=decision_mod.decisions_dir(handle["run_dir"]),
         decision_prefix=f"{step.id}_c{handle.get('cycle', 1):02d}")
     print(message)
+    seq = handle.get("attempt", 1)
+    attempts_path = _a_layer_paths(Path(handle["run_dir"]), step.id,
+                                   handle.get("cycle", 1))["attempts"]
+    if status == "error" and res.ok:
+        # The wrapper recorded ok from the CLI's verdict alone, and this
+        # command's own checks (expect-file, the vars file) failed the step.
+        # Left ok, the next dispatch would read the cycle as finished and
+        # start a new one with a fresh retry budget.
+        stepio.update_attempt(attempts_path, seq, {
+            "class": res.error_class or "error", "reclassified_from": "ok"})
     stepio.write_text_atomic(wait_record, json.dumps(
         {"attempt": handle.get("attempt"), "status": status, "message": message},
         ensure_ascii=False, indent=2))
 
-    if status == "error" and step.on_error == "debug" and claude_cli.is_debuggable(res.error_class):
+    if status == "error" and _debug_is_next(step, res.error_class, seq,
+                                            stepio.load_attempts(attempts_path)):
         system = Path(handle.get("system_path", "")).read_text(encoding="utf-8") \
             if handle.get("system_path") else ""
         prompt_text = Path(handle.get("prompt_path", "")).read_text(encoding="utf-8") \
             if handle.get("prompt_path") else ""
         diagnosis = adp.diagnose(step, f"{system}\n\n{prompt_text}", res,
                                  cwd=str(Path(handle["xml"]).resolve().parent))
-        fix_path = Path(handle["run_dir"]) / "steps" / f"{step.id}_fix.md"
+        fix_path = _fix_path(handle["run_dir"], step.id)
         if diagnosis.action == "RETRY" and diagnosis.fix_instruction:
             fix_path.write_text(diagnosis.fix_instruction, encoding="utf-8")
+            verdict = DEBUG_RETRY
             print(f"debug: RETRY -- fix written to {fix_path}; "
                   f"re-dispatch with --fix \"$(cat {fix_path})\"", file=sys.stderr)
         else:
+            verdict = DEBUG_FAIL
             print(f"debug: FAIL -- {diagnosis.reason}", file=sys.stderr)
+        stepio.update_attempt(attempts_path, seq, {"debug": verdict})
 
     return RECORD_EXIT_CODES[status]
 

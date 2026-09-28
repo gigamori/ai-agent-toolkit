@@ -76,9 +76,9 @@ $WFRUN dispatch <xml> <id> --vars vars.json --run-dir runs/<name>_<ts>-llm \
 $WFRUN wait runs/.../steps/<id>_handle.json --max 500 \
     --vars vars.json --log steps.log
 #   ok            (0)  -> vars.json updated; move on
-#   error: <class> (1)  -> see "On error" below (same policy as layer B)
+#   error: <class> (1)  -> dispatch again; see the paragraph after this block
 #   error: denied (details: <file>) (1) -> a tool call was refused; never
-#                          retried -- see "On error"
+#                          retried -- dispatch refuses it
 #   decision: ...  (4)  -> the step asked for a ruling; see "On decision"
 #   running        (10) -> not done yet; call wait again
 #   aborted: ...   (3)  -> the wrapper itself never finished (crashed/killed
@@ -93,19 +93,23 @@ $WFRUN wait runs/.../steps/<id>_handle.json --max 500 \
 #    steps.log lines / max), move on
 ```
 
-On-error/on-abort follow the **same policy** as layer B ("On error" /
-"On abort" sections below): retry via `dispatch` again (no `--fix`) up to
-`retry` times — except after `error: denied`, which `dispatch` refuses to
-re-run; on exhaustion, `on-error="debug"` is handled *for you* by
-`wait` itself (it runs the debug diagnosis in-process and writes
-`steps/<id>_fix.md` on RETRY — you do not delegate a debug subagent in this
-layer) — then re-dispatch once with `--fix "$(cat steps/<id>_fix.md)"`.
-On `aborted`, re-`dispatch` the same step exactly once; a second `aborted`
-stops and reports. **The attempt cap is enforced by `dispatch` itself**
-(reliability-spec.md §5.1, F4/P5): a `retry`+1+debug(1)+aborted-redispatch(1)
-budget is read back from that cycle's `steps/<id>_cNN_attempts.json` before
-any dispatch is allowed to proceed, so you cannot accidentally loop past it
-even by mistake.
+**On error, `dispatch` decides — you do not count retries.** After `error`,
+dispatch the same step again: with `--fix "$(cat steps/<id>_fix.md)"` when
+`wait` printed `debug: RETRY`, without `--fix` otherwise. `dispatch` reads
+that cycle's `steps/<id>_cNN_attempts.json` and applies the retry/debug rules
+run-cc applies, refusing (exit 1) any re-run they would not make: a class
+never re-run as-is (`env`, `guardrail`, `refusal`, `denied`, `unchecked`), a
+spent `retry` budget, `--fix` without the RETRY `wait` just recorded, a
+second fixed re-run, a re-run while a decision awaits its ruling. The refusal
+ends in the one thing to do — stop and report, move on (`on-error="ignore"`),
+settle the decision, or dispatch with `--fix` — so do exactly that.
+`on-error="debug"` is handled *for you* by `wait`: it runs the diagnosis
+in-process when the rules reach debug, and writes `steps/<id>_fix.md` on
+RETRY — you do not delegate a debug subagent in this layer.
+On `aborted`, re-`dispatch` the same step exactly once, with the same
+arguments; a second `aborted` stops and reports. A flat attempt cap
+(`retry`+1+debug(1)+aborted-redispatch(1), reliability-spec.md §5.1, F4/P5)
+stays underneath as the runaway backstop.
 
 **Cycles (`<while>` / `<each>` re-visits).** That budget is per *cycle* —
 one visit to the step node — exactly like run-cc, where every visit gets a

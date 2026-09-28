@@ -655,6 +655,21 @@ def load_attempts(attempts_path: str | Path) -> list:
         return []
 
 
+def update_attempt(attempts_path: str | Path, seq, fields: dict) -> bool:
+    """Merge `fields` into the entry for attempt `seq`; False when the ledger
+    has none. The A layer's `wait` records here what it learns after the
+    wrapper wrote the entry -- a verdict its own checks changed, and the debug
+    diagnosis -- because the ledger is all `dispatch` reads."""
+    attempts = load_attempts(attempts_path)
+    for entry in reversed(attempts):
+        if isinstance(entry, dict) and entry.get("seq") == seq:
+            entry.update(fields)
+            write_text_atomic(attempts_path,
+                              json.dumps(attempts, ensure_ascii=False, indent=2))
+            return True
+    return False
+
+
 def apply_result(step: model.Step, res, vars_path: str | Path,
                  log_path: str | Path | None = None,
                  result_path: str | Path = "<result>",
@@ -712,6 +727,9 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
         else:
             if missing:
                 ok = False
+                # run-cc's class for the same miss (Executor._exec_step):
+                # retried, and still open to debug.
+                res.error_class = "behavioral"
                 message = "error: expect-file: not produced: " + ", ".join(missing)
 
     if ok and step.output:

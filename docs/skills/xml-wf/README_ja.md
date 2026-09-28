@@ -256,8 +256,11 @@ wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
 ```
 
 ツール呼び出しが拒否された場合、`wait` は `error: denied (details: <file>)` を
-表示し、`dispatch` はそのサイクルの再実行を拒否する。`--new-cycle` は新しい
-`<while>`/`<each>` 反復のときだけ渡すこと。
+表示する。試行が失敗したあとの `dispatch` は `run` と同じ retry/debug の扱いを
+適用し、その扱いでは行わない再実行（`denied` など retry しないクラス、使い切った
+`retry`、2 回目の fix 付き再実行）を拒否する。拒否メッセージは代わりにすべきことを
+示す。`--fix` は `wait` が `debug: RETRY` を表示した直後だけ受け付ける。
+`--new-cycle` は新しい `<while>`/`<each>` 反復のときだけ渡すこと。
 
 ```
 wfrun interp <text> --vars V            # {var} 参照を補間

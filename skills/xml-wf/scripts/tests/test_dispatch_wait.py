@@ -254,6 +254,118 @@ class DispatchTests(DispatchWaitTestCase):
         self.assertEqual(code, 0, err)
         popen.assert_called_once()
 
+    def file_decision(self, rid, answered=True):
+        dec = self.run_dir / "decisions"
+        dec.mkdir(parents=True, exist_ok=True)
+        (dec / f"{rid}_request.md").write_text("DECISION: which one?",
+                                               encoding="utf-8")
+        if answered:
+            answer = dec / f"{rid}_answer.md"
+            answer.write_text("option: 1\ngo", encoding="utf-8")
+            (dec / f"{rid}_verdict.json").write_text(json.dumps(
+                {"request_id": rid, "answer_path": str(answer)}), encoding="utf-8")
+
+    def test_dispatch_refuses_to_rerun_a_class_that_is_never_retried(self):
+        self.write_xml(retry="2")
+        for cls in ("env", "guardrail", "refusal", "unchecked"):
+            with self.subTest(cls=cls):
+                self.seed_cycle([{"seq": 1, "class": cls, "ended_at": 1}])
+                code, out, err, popen = self.dispatch()
+                self.assertEqual(code, 1, f"{cls} is never re-run, retry budget or not")
+                self.assertIn(cls, err)
+                popen.assert_not_called()
+
+    def test_dispatch_refuses_a_retry_once_retries_are_spent(self):
+        for retry, ledger in (("1", ["timeout", "timeout"]), ("0", ["timeout"])):
+            with self.subTest(retry=retry, ledger=ledger):
+                self.write_xml(retry=retry)
+                self.seed_cycle([{"seq": i + 1, "class": cls, "ended_at": i}
+                                 for i, cls in enumerate(ledger)])
+                code, out, err, popen = self.dispatch()
+                self.assertEqual(code, 1,
+                                 "a failed attempt is retried only while failures <= retry")
+                self.assertIn("retries", err)
+                popen.assert_not_called()
+
+    def test_decision_reruns_do_not_spend_the_retry_budget(self):
+        self.write_xml(retry="1")
+        self.seed_cycle([{"seq": 1, "class": "decision", "ended_at": 1},
+                         {"seq": 2, "class": "timeout", "ended_at": 2}])
+        self.file_decision("s1_c01_d01")
+        code, out, err, popen = self.dispatch()
+        self.assertEqual(code, 0, err)
+        popen.assert_called_once()
+
+    def test_dispatch_refuses_while_a_decision_awaits_its_ruling(self):
+        self.seed_cycle([{"seq": 1, "class": "decision", "ended_at": 1}])
+        self.file_decision("s1_c01_d01", answered=False)
+        code, out, err, popen = self.dispatch()
+        self.assertEqual(code, 1, "a re-run before the ruling executes the step twice")
+        self.assertIn("s1_c01_d01", err)
+        self.assertIn("record --answer", err)
+        popen.assert_not_called()
+
+    def test_dispatch_reruns_once_the_decision_is_settled(self):
+        self.seed_cycle([{"seq": 1, "class": "decision", "ended_at": 1}])
+        self.file_decision("s1_c01_d01")
+        code, out, err, popen = self.dispatch()
+        self.assertEqual(code, 0, err)
+        self.assertIn("cycle=1", out)
+
+    def test_fix_dispatch_follows_a_debug_retry(self):
+        self.write_xml(on_error="debug")
+        self.seed_cycle([{"seq": 1, "class": "guardrail", "ended_at": 1,
+                          "debug": "RETRY"}])
+        code, out, err, popen = self.dispatch(extra=["--fix", "do it differently"])
+        self.assertEqual(code, 0, err)
+        popen.assert_called_once()
+
+    def test_plain_dispatch_after_a_debug_retry_names_the_fix(self):
+        self.write_xml(on_error="debug")
+        self.seed_cycle([{"seq": 1, "class": "behavioral", "ended_at": 1,
+                          "debug": "RETRY"}])
+        code, out, err, popen = self.dispatch()
+        self.assertEqual(code, 1, "after a debug RETRY the next attempt carries the fix")
+        self.assertIn("--fix", err)
+        self.assertIn("s1_fix.md", err)
+        popen.assert_not_called()
+
+    def test_fix_dispatch_without_a_debug_retry_is_refused(self):
+        self.write_xml(retry="1", on_error="debug")
+        cases = (
+            ([], "without --fix"),
+            ([{"seq": 1, "class": "timeout", "ended_at": 1}], "without --fix"),
+            ([{"seq": 1, "class": "guardrail", "ended_at": 1, "debug": "FAIL"}],
+             "stop"),
+            ([{"seq": 1, "class": "guardrail", "ended_at": 1, "debug": "RETRY"},
+              {"seq": 2, "class": "guardrail", "ended_at": 2}], "stop"),
+        )
+        for ledger, action in cases:
+            with self.subTest(ledger=ledger):
+                self.seed_cycle(ledger)
+                code, out, err, popen = self.dispatch(extra=["--fix", "stale fix"])
+                self.assertEqual(code, 1, "--fix applies only the fix debug just granted")
+                self.assertIn(action, err)
+                popen.assert_not_called()
+
+    def test_ignored_failure_points_at_new_cycle(self):
+        self.write_xml(on_error="ignore")
+        self.seed_cycle([{"seq": 1, "class": "env", "ended_at": 1}])
+        code, out, err, popen = self.dispatch()
+        self.assertEqual(code, 1)
+        self.assertIn("--new-cycle", err)
+        popen.assert_not_called()
+
+    def test_redispatch_after_an_abort_is_judged_like_the_aborted_dispatch(self):
+        self.write_xml(on_error="debug")
+        self.seed_cycle([{"seq": 1, "class": "guardrail", "ended_at": 1,
+                          "debug": "RETRY"}])
+        first = self.dispatch(extra=["--fix", "f"])
+        second = self.dispatch(extra=["--fix", "f"])
+        self.assertEqual((first[0], second[0]), (0, 0),
+                         "an aborted attempt leaves no ledger entry to judge")
+        self.assertIn("seq=2", second[1])
+
 
 class WrapperTests(DispatchWaitTestCase):
     def setUp(self):
@@ -332,9 +444,9 @@ class WaitTests(DispatchWaitTestCase):
         self.p["system"].write_text("<role>w</role>", encoding="utf-8")
         self.p["prompt"].write_text("answer it", encoding="utf-8")
 
-    def write_handle(self, started_at=None, timeout=600):
+    def write_handle(self, started_at=None, timeout=600, attempt=1):
         handle = {
-            "wrapper_pid": 1, "attempt": 1, "cycle": 1,
+            "wrapper_pid": 1, "attempt": attempt, "cycle": 1,
             "started_at": started_at if started_at is not None else time.time(),
             "timeout": timeout, "xml": self.xml, "step_id": "s1",
             "run_dir": str(self.run_dir), "exit_path": str(self.p["exit"]),
@@ -554,6 +666,100 @@ class WaitTests(DispatchWaitTestCase):
             code, out, err = self.wait()
         self.assertEqual(code, 1)
         fake_diag.assert_not_called()
+
+    def write_behavioral_exit(self, ledger):
+        self.p["exit"].write_text(json.dumps({"returncode": 1, "stderr": ""}),
+                                  encoding="utf-8")
+        self.p["result"].write_text(json.dumps({
+            "result": "x", "is_error": True, "terminal_reason": "max_turns",
+            "permission_denials": [],
+        }), encoding="utf-8")
+        self.p["attempts"].write_text(json.dumps(ledger), encoding="utf-8")
+
+    def ledger(self):
+        return json.loads(self.p["attempts"].read_text(encoding="utf-8"))
+
+    def test_wait_leaves_a_failure_to_retry_while_retries_remain(self):
+        self.write_xml(retry="1", on_error="debug")
+        self.write_handle()
+        self.write_behavioral_exit([{"seq": 1, "class": "behavioral", "ended_at": 1}])
+        fake_diag = mock.Mock(return_value=Diagnosis("RETRY", "x", fix_instruction="f"))
+        with mock.patch("wfrun.__main__.adp.diagnose", fake_diag):
+            code, out, err = self.wait()
+        self.assertEqual(code, 1)
+        fake_diag.assert_not_called()
+
+    def test_wait_diagnoses_once_retries_are_spent_and_records_retry(self):
+        self.write_xml(retry="1", on_error="debug")
+        self.write_handle(attempt=2)
+        self.write_behavioral_exit([{"seq": 1, "class": "behavioral", "ended_at": 1},
+                                    {"seq": 2, "class": "behavioral", "ended_at": 2}])
+        fake_diag = mock.Mock(return_value=Diagnosis(
+            "RETRY", "x", fix_instruction="add --force"))
+        with mock.patch("wfrun.__main__.adp.diagnose", fake_diag):
+            code, out, err = self.wait()
+        self.assertEqual(code, 1)
+        fake_diag.assert_called_once()
+        self.assertEqual([entry.get("debug") for entry in self.ledger()],
+                         [None, "RETRY"])
+
+    def test_wait_records_a_debug_fail(self):
+        self.write_xml(on_error="debug")
+        self.write_handle()
+        self.write_behavioral_exit([{"seq": 1, "class": "behavioral", "ended_at": 1}])
+        fake_diag = mock.Mock(return_value=Diagnosis("FAIL", "no fix"))
+        with mock.patch("wfrun.__main__.adp.diagnose", fake_diag):
+            self.wait()
+        self.assertEqual(self.ledger()[0].get("debug"), "FAIL")
+
+    def test_wait_does_not_diagnose_after_the_fixed_rerun(self):
+        self.write_xml(on_error="debug")
+        self.write_handle(attempt=2)
+        self.write_behavioral_exit([
+            {"seq": 1, "class": "guardrail", "ended_at": 1, "debug": "RETRY"},
+            {"seq": 2, "class": "behavioral", "ended_at": 2}])
+        fake_diag = mock.Mock(return_value=Diagnosis("RETRY", "x", fix_instruction="f"))
+        with mock.patch("wfrun.__main__.adp.diagnose", fake_diag):
+            code, out, err = self.wait()
+        self.assertEqual(code, 1)
+        fake_diag.assert_not_called()
+
+    def test_wait_records_an_expect_file_miss_as_behavioral(self):
+        Path(self.xml).write_text(
+            self.XML.format(max="10", retry="0", on_error="fail").replace(
+                '<step id="s2" role="w"><task>write it</task></step>',
+                '<step id="s2" role="w" expect-file="made.txt">'
+                '<task>write it</task></step>'),
+            encoding="utf-8")
+        p2 = self.paths("s2")
+        p2["handle"].write_text(json.dumps({
+            "wrapper_pid": 1, "attempt": 1, "cycle": 1, "started_at": time.time(),
+            "timeout": 600, "xml": self.xml, "step_id": "s2",
+            "run_dir": str(self.run_dir), "exit_path": str(p2["exit"]),
+            "result_path": str(p2["result"]), "wait_path": str(p2["wait"]),
+        }), encoding="utf-8")
+        p2["exit"].write_text(json.dumps({"returncode": 0, "stderr": ""}),
+                              encoding="utf-8")
+        p2["result"].write_text(json.dumps({"result": "wrote it", "is_error": False,
+                                            "permission_denials": []}),
+                                encoding="utf-8")
+        p2["attempts"].write_text(json.dumps([{"seq": 1, "class": "ok", "ended_at": 1}]),
+                                  encoding="utf-8")
+        code, out, err = self.run_cli(
+            ["wait", str(p2["handle"]), "--max", "5", "--vars", self.vars_path])
+        self.assertEqual(code, 1, out)
+        ledger = json.loads(p2["attempts"].read_text(encoding="utf-8"))
+        self.assertEqual(ledger[0]["class"], "behavioral",
+                         "an ok left in the ledger would open a new cycle")
+        fake_proc = mock.Mock()
+        fake_proc.pid = 99
+        with mock.patch("wfrun.__main__.subprocess.Popen", return_value=fake_proc):
+            code, out, err = self.run_cli(
+                ["dispatch", self.xml, "s2", "--vars", self.vars_path,
+                 "--run-dir", str(self.run_dir)])
+        self.assertEqual(code, 1, "retry=0, judged inside cycle 1")
+        self.assertIn("cycle 1", err)
+        self.assertFalse(self.paths("s2", cycle=2)["handle"].exists())
 
 
 class KillTreePlumbingTests(unittest.TestCase):

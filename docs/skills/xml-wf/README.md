@@ -271,9 +271,12 @@ wfrun wait     <handle.json> --max SEC --vars V [--log LOG]
                # ok(0) / error: <class>(1) / running(10) / aborted(3)
 ```
 
-After a refused tool call, `wait` prints `error: denied (details: <file>)`, and
-`dispatch` refuses to run that cycle again. Pass `--new-cycle` only for a new
-`<while>`/`<each>` iteration.
+After a refused tool call, `wait` prints `error: denied (details: <file>)`.
+After any failed attempt, `dispatch` applies the same retry/debug handling as
+`run` and refuses a re-run that handling would not make (a class never
+retried such as `denied`, a spent `retry`, a second fixed re-run); the refusal
+says what to do instead. `--fix` is accepted only right after `wait` printed
+`debug: RETRY`. Pass `--new-cycle` only for a new `<while>`/`<each>` iteration.
 
 ```
 wfrun interp <text> --vars V            # interpolate {var} references
