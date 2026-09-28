@@ -360,7 +360,7 @@ def _write_kanban_port(state_dir):
         json.dumps({"key": "k", "port": 17329, "pid": 1}), encoding="utf-8")
 
 
-def test_workspace_skips_foreign_json(tmp_path, monkeypatch):
+def test_ws_skips_foreign_json(tmp_path, monkeypatch):
     _init_wiki(tmp_path)
     state_dir = tmp_path / "_state"
     _write_state(state_dir, _sid(1), "proj-x")
