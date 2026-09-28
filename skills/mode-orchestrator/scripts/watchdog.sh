@@ -41,8 +41,12 @@
 #     that call, so STALL must exceed the longest tool call a turn may make.
 #   - A deliverable path is REUSED across attempts: SKILL.md re-runs an aborted
 #     turn onto the same file. So "the file exists" cannot mean "this turn wrote
-#     it"; the freshness stamp below is what makes the observation answerable
+#     it"; the freshness bound below is what makes the observation answerable
 #     for this turn, and therefore what the verdict messages can rely on.
+#   - TaskStop ends this script without running its EXIT trap: the process
+#     dies as under SIGKILL or `taskkill /F`, not SIGTERM/SIGHUP (measured
+#     2026-09-29, claude v2.1.280, win32-x64). The normal path always ends in
+#     TaskStop, so this script creates no temp files — nothing could remove them.
 
 set -u
 
@@ -187,11 +191,11 @@ deliv_note() {
 # an earlier run out.
 candidate_metas() {
   if [ -n "$SESSION" ]; then
-    find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newer "$STAMP" \
+    find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newermt "@$META_SINCE" \
       -path "*/$SESSION/subagents/*" 2>/dev/null
     return
   fi
-  find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newer "$STAMP" 2>/dev/null
+  find "$PROJECT_ROOT" -maxdepth 4 -name 'agent-*.meta.json' -newermt "@$META_SINCE" 2>/dev/null
 }
 
 resolve_transcript() {
@@ -211,19 +215,17 @@ EOF
 
 t0=$(date +%s)
 
-STAMP="$(mktemp)"
-DELIV_STAMP="$(mktemp)"
-trap 'rm -f "$STAMP" "$DELIV_STAMP"' EXIT
-touch -d "@$((t0 - RESOLVE_BACKDATE))" "$STAMP" 2>/dev/null || true
+# Freshness bounds are epoch seconds for GNU `find -newermt`, not stamp files
+# (see the TaskStop note in the header).
+META_SINCE=$((t0 - RESOLVE_BACKDATE))
 
-# The deliverable stamp is t0 exactly, with NO backdating. `meta.json` gets a
+# The deliverable bound is t0 exactly, with NO backdating. `meta.json` gets a
 # grace window because the delegation call and this script start together and
 # their order is not guaranteed; a deliverable has no such race, since the turn
 # cannot have written its output before it started. Widening this window would
 # re-admit the previous attempt's leftover file — a re-run's deliverable path is
 # the SAME path — and the verdict message would then report someone else's file
 # as this turn's output.
-touch -d "@$t0" "$DELIV_STAMP" 2>/dev/null || true
 
 TRANS=""
 STALE_NOTED=""
@@ -237,7 +239,7 @@ while :; do
   elapsed=$((now - t0))
 
   if [ "$DELIV" != "-" ] && [ -z "$DELIV_AT" ] && [ -s "$DELIV" ]; then
-    if [ "$DELIV" -nt "$DELIV_STAMP" ]; then
+    if [ -n "$(find "$DELIV" -maxdepth 0 -newermt "@$t0" 2>/dev/null)" ]; then
       # Not an exit. The turn still has to compose its reply, and that tail is
       # exactly what stays unbounded if the watchdog leaves here.
       DELIV_AT=$elapsed

@@ -86,6 +86,19 @@ expect_grep() {
   fi
 }
 
+expect_empty_dir() {
+  local name="$1" dir="$2" left
+  N=$((N + 1))
+  left="$(ls -A "$dir" 2>/dev/null)"
+  if [ -z "$left" ]; then
+    PASS=$((PASS + 1))
+    printf 'ok   %2d  %s\n' "$N" "$name"
+  else
+    FAIL=$((FAIL + 1))
+    printf 'FAIL %2d  %s — left behind: %s\n' "$N" "$name" "$(echo $left)"
+  fi
+}
+
 now() { date +%s; }
 
 newcase() {
@@ -223,6 +236,20 @@ run_wd --deliv "$DELIV" --desc "turn desc own" --deadline 30 --stall 3 --poll 1 
   --project-root "$PROOT"
 unset CLAUDE_CODE_SESSION_ID
 expect "an agent record in the calling session is resolved" STALL 2
+
+newcase killed-leaves-nothing
+mkdir -p "$CASE/tmp"
+TMPDIR="$CASE/tmp" bash "$WATCHDOG" --deliv "$DELIV" --desc "d7" --deadline 30 --poll 1 \
+  --project-root "$PROOT" --log "$CASE/trace.log" >/dev/null 2>&1 &
+WD_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q '] start ' "$CASE/trace.log" 2>/dev/null && break
+  sleep 1
+done
+expect_grep "the watchdog to be killed had started" '\] start ' "$CASE/trace.log"
+kill -KILL "$WD_PID" 2>/dev/null
+wait "$WD_PID" 2>/dev/null
+expect_empty_dir "a SIGKILLed watchdog leaves no temp files (win32 TaskStop runs no trap)" "$CASE/tmp"
 
 newcase args
 run_wd --desc "d" --deadline 2
