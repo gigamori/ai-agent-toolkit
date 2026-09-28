@@ -165,6 +165,36 @@ def test_marker_absent_errors(tmp_path, monkeypatch):
     assert rc == 2
 
 
+def test_sid_selects_session_wiki(tmp_path, monkeypatch):
+    import json
+    import os
+    projects = tmp_path / "_projects"
+    state = projects / "_state"
+    state.mkdir(parents=True)
+    for project in ("projA", "projB"):
+        wiki = projects / project / "wiki"
+        wiki.mkdir(parents=True)
+        (wiki / ".llmwiki").write_text("version: 1\nschema: SCHEMA.md\n",
+                                       encoding="utf-8")
+    sid_a = "00000000-0000-4000-8000-00000000000a"
+    sid_b = "00000000-0000-4000-8000-00000000000b"
+    for sid, project, mtime in ((sid_a, "projA", 1000), (sid_b, "projB", 2000)):
+        f = state / f"{sid}.json"
+        f.write_text(json.dumps({"project": project}), encoding="utf-8")
+        os.utime(f, (mtime, mtime))
+    monkeypatch.delenv("TASKFLOW_PROJECT_ROOTS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    seen = []
+    monkeypatch.setattr(gwv.wiki_index, "scan_pages",
+                        lambda root: seen.append(root) or [])
+
+    gwv.main(["--sid", sid_a, "--no-open"])
+    assert [p.resolve() for p in seen] == [(projects / "projA" / "wiki").resolve()], (
+        "with --sid the viewer resolves this session's own pj wiki, not the "
+        "one the newest state file names"
+    )
+
+
 assert socket is not None
 
 

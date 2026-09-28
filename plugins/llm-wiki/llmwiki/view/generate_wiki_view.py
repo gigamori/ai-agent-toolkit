@@ -22,10 +22,12 @@ Wikilink parsing is REUSED from ``link_lint`` (no new parser is written here):
   - ``link_lint.page_name(rel_path)``  -> basename stem
 
 Usage:
-    uv run python generate_wiki_view.py --serve [--port 17330] [--root <path>]
+    uv run python generate_wiki_view.py --serve [--port 17330] [--root <path>] [--sid <sid>]
 
 The wiki root is resolved via wiki_root_resolver (prompt>pj>workspace>cwd>child);
-``--root <path>`` is the top override. If nothing resolves, exit 2.
+``--root <path>`` is the top override. ``--sid <sid>`` makes the pj scope read
+that session's own state file (fail-closed when it has no project) instead of
+the newest one. If nothing resolves, exit 2.
 
 Exit codes (theme1 i:39 contract, generalized 2026-07-16):
     0  = success (server ran)
@@ -462,6 +464,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Explicit wiki root (top override). If omitted, the wiki root is "
              "resolved by wiki_root_resolver (prompt>pj>workspace>cwd>child).",
     )
+    parser.add_argument(
+        "--sid", default=None,
+        help="The running session's id. The pj scope then reads this session's "
+             "own _projects/_state/<sid>.json instead of the newest state file.",
+    )
     # argparse raises SystemExit(2) on a bad argument, which collides with our
     # rc2 SENTINEL contract (:457's "no wiki resolved" is a genuine sentinel).
     # Remap the argparse usage exit to EX_USAGE so a real usage error is not
@@ -474,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
         code = e.code if isinstance(e.code, int) else (0 if e.code is None else EX_USAGE)
         return EX_USAGE if code == 2 else code
 
-    resolution = wiki_root_resolver.resolve(args.root)
+    resolution = wiki_root_resolver.resolve(args.root, session_id=args.sid)
     if resolution is None:
         print(
             "error: no wiki resolved (prompt>pj>workspace>cwd>child all empty). "

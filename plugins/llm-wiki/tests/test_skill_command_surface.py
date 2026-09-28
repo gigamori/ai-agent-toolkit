@@ -155,6 +155,17 @@ def test_wiki_ingest_docs_prefixes_the_wiki_root_onto_enumerate_output():
         "bare enumerate rel_path")
 
 
+def test_wiki_view_passes_sid():
+    _, body = _load_skill_md("wiki-view")
+    serve = [line for line in body.splitlines()
+             if "uv run" in line and "llmwiki-view view --serve" in line]
+    assert len(serve) == 1, f"expected one viewer start line; found {serve!r}"
+    assert '--sid "${CLAUDE_SESSION_ID}"' in serve[0], (
+        "/wiki-view must pass the running session's id so the pj scope reads "
+        "this session's own state file, not the newest one"
+    )
+
+
 def _session_plan_lines():
     _, body = _load_skill_md("wiki-ingest-sessions")
     return [line.strip() for line in body.splitlines()

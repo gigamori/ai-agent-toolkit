@@ -17,14 +17,14 @@ in the current directory), NOT `/tmp`: on Windows Git Bash `/tmp` resolves to
 whereas a relative path stays inside the (allowed) cwd.
 
 ```bash
-nohup uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve > .llm-wiki-view.log 2>&1 &
+nohup uv run --script ${CLAUDE_PLUGIN_ROOT}/bin/llmwiki-view view --serve --sid "${CLAUDE_SESSION_ID}" > .llm-wiki-view.log 2>&1 &
 sleep 2
 grep "serving" .llm-wiki-view.log | tail -1
 ```
 
 This starts an HTTP server on `http://127.0.0.1:17330/` in the background and returns the server summary line. Pass `--root <path>` after `--serve` to target a specific wiki root.
 
-The wiki root is resolved via `wiki_root_resolver` (prompt>pj>workspace>cwd>child). If nothing resolves, the script exits 2 with `error: no wiki resolved (prompt>pj>workspace>cwd>child all empty). Pass --root <path> or run from a wiki root.` — surface that error and stop.
+The wiki root is resolved via `wiki_root_resolver` (prompt>pj>workspace>cwd>child). `--sid` carries this session's id (the harness substitutes `${CLAUDE_SESSION_ID}` before you see this text), so the pj scope reads this session's own taskflow project, not whichever session wrote its state last; a session with no project assigned skips pj. If nothing resolves, the script exits 2 with `error: no wiki resolved (prompt>pj>workspace>cwd>child all empty). Pass --root <path> or run from a wiki root.` — surface that error and stop.
 
 ## Step 2 — Report
 

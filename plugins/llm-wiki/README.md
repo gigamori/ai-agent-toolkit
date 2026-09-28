@@ -221,7 +221,7 @@ Promotes a derived synthesis page to source tier (`wiki/derived/X.md → wiki/X.
 
 ### View — `/wiki-view`
 
-Starts a local HTML viewer for the active wiki — a `127.0.0.1`-bound HTTP server on port `17330` (`llmwiki-view view --serve`, wrapping `llmwiki/view/generate_wiki_view.py`, never externally reachable) that renders the wiki's Markdown pages to HTML on demand and turns `[[wikilinks]]` into navigable links between page views. Read-only — it does not write to the wiki. The wiki-root is resolved by the multi-scope resolver (`--root` > pj > workspace > CWD), so it no longer needs the CWD to be the wiki root; pass `--root <path>` to target one explicitly.
+Starts a local HTML viewer for the active wiki — a `127.0.0.1`-bound HTTP server on port `17330` (`llmwiki-view view --serve`, wrapping `llmwiki/view/generate_wiki_view.py`, never externally reachable) that renders the wiki's Markdown pages to HTML on demand and turns `[[wikilinks]]` into navigable links between page views. Read-only — it does not write to the wiki. The wiki-root is resolved by the multi-scope resolver (`--root` > pj > workspace > CWD), so it no longer needs the CWD to be the wiki root; pass `--root <path>` to target one explicitly. The skill passes the running session's id (`--sid`), so pj resolves this session's own taskflow project rather than whichever session wrote its state last; a session with no project assigned skips pj.
 
 - Serves `wiki/` + `wiki/derived/` only; `raw/` is **not** exposed.
 - Each page shows a tier badge (**source** / **derived**), and pages are **tier-distinct**: a same-name `wiki/X.md` and `wiki/derived/X.md` are separate pages. A `[[X]]` whose basename resolves to both renders **both** as tier-labelled links (`X (source)` / `X (derived)`).

@@ -215,7 +215,7 @@ derived な synthesis ページを source tier へ昇格する（`wiki/derived/X
 
 ### View — `/wiki-view`
 
-active な wiki のローカル HTML ビューアを起動する — `127.0.0.1` bind の HTTP サーバ（ポート `17330`、`llmwiki-view view --serve`、内部は `llmwiki/view/generate_wiki_view.py`、外部公開しない）が wiki の Markdown ページをオンデマンドで HTML にレンダリングし、`[[wikilinks]]` をページ間の navigable なリンクにする。read-only（wiki には書き込まない）。wiki-root は多スコープ resolver（`--root` > pj > workspace > CWD）で解決するため、CWD が wiki root である必要はなくなった。明示する場合は `--root <path>` を渡す。
+active な wiki のローカル HTML ビューアを起動する — `127.0.0.1` bind の HTTP サーバ（ポート `17330`、`llmwiki-view view --serve`、内部は `llmwiki/view/generate_wiki_view.py`、外部公開しない）が wiki の Markdown ページをオンデマンドで HTML にレンダリングし、`[[wikilinks]]` をページ間の navigable なリンクにする。read-only（wiki には書き込まない）。wiki-root は多スコープ resolver（`--root` > pj > workspace > CWD）で解決するため、CWD が wiki root である必要はなくなった。明示する場合は `--root <path>` を渡す。skill は実行中の session の id（`--sid`）を渡すので、pj は最後に state を書いた session ではなく、この session 自身の taskflow project で解決する。project が割り当てられていない session では pj を飛ばす。
 
 - 表示対象は `wiki/` + `wiki/derived/` のみ。`raw/` は**公開しない**。
 - 各ページに tier バッジ（**source** / **derived**）を表示し、ページは **tier-distinct**：同名の `wiki/X.md` と `wiki/derived/X.md` は別ページ。basename が両方に解決する `[[X]]` は**両方**を tier 明示のリンク（`X (source)` / `X (derived)`）として描画する。
