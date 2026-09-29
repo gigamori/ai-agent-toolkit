@@ -773,9 +773,9 @@ class KillTreePlumbingTests(unittest.TestCase):
         self.which_patch.stop()
         claude_cli._resolution_cache.clear()
 
-    def test_kill_tree_false_uses_plain_subprocess_run(self):
+    def test_kill_tree_false_uses_the_plain_bound_launch(self):
         stdout = json.dumps({"result": "x", "is_error": False})
-        with mock.patch.object(claude_cli.subprocess, "run") as run, \
+        with mock.patch.object(claude_cli, "_run_bound") as run, \
              mock.patch.object(claude_cli, "_run_with_tree_kill") as tree_kill:
             run.return_value = mock.Mock(returncode=0, stdout=stdout, stderr="")
             claude_cli.run_claude("hi")
@@ -784,7 +784,7 @@ class KillTreePlumbingTests(unittest.TestCase):
 
     def test_kill_tree_true_uses_tree_kill_path(self):
         stdout = json.dumps({"result": "x", "is_error": False})
-        with mock.patch.object(claude_cli.subprocess, "run") as run, \
+        with mock.patch.object(claude_cli, "_run_bound") as run, \
              mock.patch.object(claude_cli, "_run_with_tree_kill") as tree_kill:
             tree_kill.return_value = mock.Mock(returncode=0, stdout=stdout, stderr="")
             claude_cli.run_claude("hi", kill_tree=True)

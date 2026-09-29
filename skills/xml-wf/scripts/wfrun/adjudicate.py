@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import decision as decision_mod
 from . import modelmap, modes
@@ -71,7 +72,7 @@ def render_answer(option: int | None, text: str) -> str:
 
 
 def adjudicate(step_id: str, request_body: str, option_count: int, *,
-               model: str | None = None, cwd: str | None = None,
+               role_file: Path, model: str | None = None, cwd: str | None = None,
                timeout: int = 600, runner=run_claude) -> Adjudication:
     """Settle one decision request, or decline to (§15.2).
 
@@ -79,8 +80,9 @@ def adjudicate(step_id: str, request_body: str, option_count: int, *,
     option number outside it is rejected by parse_answer, exactly as it would
     be from a human.
     """
+    Path(role_file).write_text(f"<role>\n{DECIDE_ROLE}\n</role>", encoding="utf-8")
     res = runner(DECIDE_PROMPT.format(step_id=step_id, request=request_body),
-                 system_prompt=f"<role>\n{DECIDE_ROLE}\n</role>",
+                 system_prompt_file=role_file,
                  model=modelmap.resolve(model, "cc"),
                  tools=DECIDE_TOOLS, schema=DECIDE_SCHEMA,
                  timeout=timeout, cwd=cwd)
@@ -124,7 +126,8 @@ def adjudicate(step_id: str, request_body: str, option_count: int, *,
 
 
 def adjudicate_text(step_id: str, request_body: str, option_count: int, *,
-                    runner, model: str | None = None, runner_table: str = "llm",
+                    runner, role_file: Path, model: str | None = None,
+                    runner_table: str = "llm",
                     cwd: str | None = None, timeout: int = 600) -> Adjudication:
     """Settle one request through a facility with no forced structured output.
 
@@ -140,9 +143,10 @@ def adjudicate_text(step_id: str, request_body: str, option_count: int, *,
     with DECIDE_PROMPT_TEXT and to measure how often that fails, rather than to
     grow a rescue path per failure mode (§17.1, §17.4).
     """
+    Path(role_file).write_text(f"<role>\n{DECIDE_ROLE}\n</role>", encoding="utf-8")
     res = runner(DECIDE_PROMPT_TEXT.format(step_id=step_id,
                                            request=request_body),
-                 system_prompt=f"<role>\n{DECIDE_ROLE}\n</role>",
+                 system_prompt_file=role_file,
                  model=modelmap.resolve(model, runner_table),
                  tools=DECIDE_TOOLS, timeout=timeout, cwd=cwd)
     # `res.ok` is required, not inspected around: this runner has already
@@ -182,7 +186,7 @@ def adjudicate_text(step_id: str, request_body: str, option_count: int, *,
 
 
 def adjudicate_pi(step_id: str, request_body: str, option_count: int, *,
-                  model: str | None = None, cwd: str | None = None,
+                  role_file: Path, model: str | None = None, cwd: str | None = None,
                   timeout: int = 600) -> Adjudication:
     """`adjudicate`'s counterpart for `wfrun run --backend pi` (§17).
 
@@ -194,5 +198,5 @@ def adjudicate_pi(step_id: str, request_body: str, option_count: int, *,
     """
     from . import pi_cli  # deferred: cc-only runs never import the pi launcher
     return adjudicate_text(step_id, request_body, option_count,
-                           runner=pi_cli.run_pi, model=model,
+                           runner=pi_cli.run_pi, role_file=role_file, model=model,
                            runner_table="llm", cwd=cwd, timeout=timeout)

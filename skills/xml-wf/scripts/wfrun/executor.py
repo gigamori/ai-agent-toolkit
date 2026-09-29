@@ -393,8 +393,9 @@ class Executor:
             (attempt_dir / "prompt.md").write_text(prompt, encoding="utf-8")
 
             res = self._run_claude(
-                prompt, system_prompt=system, model=dispatch_model,
-                effort=step.effort,
+                prompt, system_prompt=system,
+                system_prompt_file=attempt_dir / "system.md",
+                model=dispatch_model, effort=step.effort,
                 tools=dispatch_tools, schema=step.schema, timeout=step.timeout,
                 cwd=str(self.base_dir), permission_mode=permission)
             self._add_cost(res.cost_usd)
@@ -492,6 +493,7 @@ class Executor:
             if (step.on_error == "debug" and not debug_used
                     and claude_cli.is_debuggable(res.error_class)):
                 diagnosis = self._diagnose(step, f"{system}\n\n{prompt}", res,
+                                           role_file=attempt_dir / "debug_system.md",
                                            cwd=str(self.base_dir))
                 self._add_cost(diagnosis.cost_usd)
                 self.state.event("debug", key=step.id, action=diagnosis.action,
@@ -761,8 +763,9 @@ class Executor:
         fields that explain the fallback in the decision event -- the person
         reading the report has to know why the fork reached them (§15.2).
         """
+        role_file = decision_mod.decisions_dir(self.run_dir) / f"{rid}_decide_system.md"
         ruling = self._adjudicate(
-            step.id, body, len(payload.options),
+            step.id, body, len(payload.options), role_file=role_file,
             model=decider_model, cwd=str(self.base_dir), timeout=step.timeout)
         self._add_cost(ruling.cost_usd)
         extras["adjudication_cost_usd"] = ruling.cost_usd
@@ -1050,8 +1053,9 @@ class Executor:
             (attempt_dir / "prompt.md").write_text(prompt, encoding="utf-8")
 
             res = self._run_claude(
-                prompt, system_prompt=system, model=dispatch_model,
-                effort=node.effort,
+                prompt, system_prompt=system,
+                system_prompt_file=attempt_dir / "system.md",
+                model=dispatch_model, effort=node.effort,
                 tools="Read,Glob,Grep", schema=None, timeout=node.timeout,
                 cwd=str(self.base_dir), permission_mode=None)  # read-only builder
             self._add_cost(res.cost_usd)

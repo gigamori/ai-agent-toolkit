@@ -611,22 +611,17 @@ class RunPiTests(unittest.TestCase):
         self.assertFalse(any("permission" in str(a).lower()
                             for a in captured["cmd"]))
 
-    def test_system_prompt_written_to_temp_file_and_cleaned_up(self):
-        written = {}
+    def test_system_prompt_text_is_passed_inline_with_no_file_created(self):
+        captured = {}
 
         def capture(cmd, prompt, timeout, cwd):
-            idx = cmd.index("--append-system-prompt")
-            path = cmd[idx + 1]
-            written["text"] = Path(path).read_text(encoding="utf-8")
-            written["existed_during_call"] = os.path.isfile(path)
-            written["path"] = path
+            captured["cmd"] = cmd
             return self._ok_completed()
 
         with self._patch_tree_kill(capture):
             pi_cli.run_pi("task", system_prompt="<role>x</role>")
-        self.assertEqual(written["text"], "<role>x</role>")
-        self.assertTrue(written["existed_during_call"])
-        self.assertFalse(os.path.isfile(written["path"]))
+        idx = captured["cmd"].index("--append-system-prompt")
+        self.assertEqual(captured["cmd"][idx + 1], "<role>x</role>")
 
     def test_stdin_never_left_open_even_with_kill_tree_defaulted_false(self):
         captured = {}

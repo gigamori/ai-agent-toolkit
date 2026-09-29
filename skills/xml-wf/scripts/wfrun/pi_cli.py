@@ -46,7 +46,7 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
+from pathlib import Path
 
 from . import claude_cli, model, stepio
 from . import decision as decision_mod
@@ -151,7 +151,7 @@ def ask_llm_pi(question: str, *, model: str = "haiku", cwd: str | None = None,
     reason = "no structured answer"
     for _ in range(2):
         try:
-            # encoding/errors: see the comment at _launch's subprocess.run in
+            # encoding/errors: see the comment at _launch's `_run_bound` call in
             # claude_cli.py. This carries an LLM answer, so it is one of the
             # sites where an undecodable byte was never hypothetical.
             proc = subprocess.run(
@@ -438,6 +438,7 @@ def classify_result_pi(returncode: int, stdout: str, stderr: str) -> claude_cli.
 
 
 def run_pi(prompt: str, *, system_prompt: str | None = None,
+          system_prompt_file: str | Path | None = None,
           model: str | None = None, effort: str | None = None,
           tools: str | None = None, schema: str | None = None,
           timeout: int = 600, cwd: str | None = None,
@@ -472,6 +473,12 @@ def run_pi(prompt: str, *, system_prompt: str | None = None,
     - the prompt travels as a positional argv argument, not stdin (as
       ask_llm_pi already does) -- pi's `@<file>` include syntax attaches a
       file as content to reason about, not as the turn's instruction.
+    - `system_prompt_file`, when given, is a run-dir file the CALLER already
+      wrote and owns (reliability-spec.md §13.3.2/I1); this function never
+      creates or deletes it. pi has only the one `--append-system-prompt`
+      flag (no `-file` variant), and `resolvePromptInput` reads a path if
+      it exists or else takes the value as a literal, so the resolved
+      absolute path is passed there directly.
 
     `kill_tree` is accepted for signature parity with run_claude but is not
     honored as an off switch here: tree-kill on timeout is unconditional.
@@ -517,51 +524,40 @@ def run_pi(prompt: str, *, system_prompt: str | None = None,
 
     cmd = [*launcher, "-p", "--mode", "json", "--no-session", "--no-skills"]
 
-    sys_prompt_file: str | None = None
-    try:
-        if system_prompt:
-            fd, sys_prompt_file = tempfile.mkstemp(
-                prefix="wfrun-pi-sysprompt-", suffix=".txt")
-            # UTF-8 explicitly: role/mode/rules bodies routinely contain
-            # non-ASCII text (claude_cli._launch does the same, for the
-            # same reason).
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(system_prompt)
-            cmd += ["--append-system-prompt", sys_prompt_file]
-        if model:
-            cmd += ["--model", model]
-        if effort:
-            cmd += ["--thinking", effort]
-        if mapped_tools:
-            cmd += ["--tools", mapped_tools]
-        cmd += [prompt]  # positional message argument -- never @<file>
+    resolved_file = Path(system_prompt_file).resolve() if system_prompt_file else None
+    has_content = bool(system_prompt) or (
+        resolved_file is not None and resolved_file.stat().st_size > 0)
+    if has_content:
+        cmd += ["--append-system-prompt",
+               str(resolved_file) if resolved_file is not None else system_prompt]
+    if model:
+        cmd += ["--model", model]
+    if effort:
+        cmd += ["--thinking", effort]
+    if mapped_tools:
+        cmd += ["--tools", mapped_tools]
+    cmd += [prompt]  # positional message argument -- never @<file>
 
-        try:
-            # Unconditional, regardless of kill_tree (see the docstring):
-            # pi's own children do not self-clean the way claude's do. The
-            # real prompt already rides on argv (above); pi does not read it
-            # from stdin the way claude does, so the "prompt" this shares
-            # with claude_cli's stdin-writing helper is "".
-            proc = claude_cli._run_with_tree_kill(cmd, "", timeout, cwd)
-        except subprocess.TimeoutExpired:
-            return claude_cli.CliResult(ok=False, exit_code=-1,
-                                        error_class="timeout",
-                                        error=f"timeout after {timeout}s")
-        except FileNotFoundError:
-            return claude_cli.CliResult(ok=False, exit_code=-1,
-                                        error_class="env",
-                                        error="pi CLI not found on PATH")
-    finally:
-        if sys_prompt_file:
-            try:
-                os.remove(sys_prompt_file)
-            except OSError:
-                pass
+    try:
+        # Unconditional, regardless of kill_tree (see the docstring):
+        # pi's own children do not self-clean the way claude's do. The
+        # real prompt already rides on argv (above); pi does not read it
+        # from stdin the way claude does, so the "prompt" this shares
+        # with claude_cli's stdin-writing helper is "".
+        proc = claude_cli._run_with_tree_kill(cmd, "", timeout, cwd)
+    except subprocess.TimeoutExpired:
+        return claude_cli.CliResult(ok=False, exit_code=-1,
+                                    error_class="timeout",
+                                    error=f"timeout after {timeout}s")
+    except FileNotFoundError:
+        return claude_cli.CliResult(ok=False, exit_code=-1,
+                                    error_class="env",
+                                    error="pi CLI not found on PATH")
 
     return classify_result_pi(proc.returncode, proc.stdout, proc.stderr)
 
 
-def diagnose_stub_pi(step, prompt, failure, *, cwd=None):
+def diagnose_stub_pi(step, prompt, failure, *, cwd=None, role_file=None):
     """Injected as Executor's diagnose= under the pi backend (design §1,
     §2.3) -- the second line of defense behind the startup fail-fast
     (pi_compat_errors below), which rejects any on-error="debug" workflow

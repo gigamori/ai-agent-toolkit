@@ -46,8 +46,10 @@ class DeciderModelDispatchTests(unittest.TestCase):
             captured["model"] = kwargs.get("model")
             return CliResult(ok=False, error="stub", cost_usd=0.0)
 
-        adjudicate_mod.adjudicate("s1", "body", 2, model=decider_model,
-                                  runner=fake_runner)
+        with tempfile.TemporaryDirectory() as d2:
+            adjudicate_mod.adjudicate(
+                "s1", "body", 2, model=decider_model, runner=fake_runner,
+                role_file=Path(d2) / "role.md")
         self.assertEqual(
             planned_model, captured["model"],
             "wfrun plan resolves decider-model via the 'llm' table while "

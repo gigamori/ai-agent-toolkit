@@ -576,10 +576,12 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 ├── outputs/<id>.md     # response bodies for output-type=file
 ├── replans/<id>_<nn>.xml  # validated replan continuations
 ├── decisions/          # DECISION: ledger: <id>_cNN_dNN_request.md + _answer.md
+│                       #   + _decide_system.md (adjudicator role text)
 └── steps/<id>_<attempt n>/
     ├── system.md       # system-channel part (role/mode/rules) actually sent
     ├── prompt.md       # user-channel part (task/protocol/guardrails)
     ├── result.json     # raw claude -p JSON output
+    ├── debug_system.md # on-error="debug" role text, written just before the diagnose call
     └── stderr.log
 ```
 

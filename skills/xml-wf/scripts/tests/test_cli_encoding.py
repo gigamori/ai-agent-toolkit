@@ -1,5 +1,4 @@
 import json
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -101,17 +100,15 @@ class EncodeSideTests(unittest.TestCase):
 class LaunchSubprocessRunTests(unittest.TestCase):
     def test_launch_branch_kwargs_round_trip(self):
         prompt = "日本語 🚀"
-        proc = subprocess.run(
+        proc = claude_cli._run_bound(
             [sys.executable, "-c", _ECHO_STDIN_HEX],
-            input=prompt, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30)
+            input=prompt, timeout=30, cwd=None)
         self.assertEqual(bytes.fromhex(proc.stdout.strip()),
                          prompt.encode("utf-8"))
 
     def test_launch_call_site_passes_utf8_kwargs(self):
         src = Path(claude_cli.__file__).read_text(encoding="utf-8")
-        marker = "proc = subprocess.run(cmd, input=prompt"
-        idx = src.index(marker)
+        idx = src.index("procbind.popen_bound(", src.index("def _run_bound("))
         call = src[idx:idx + 300]
         self.assertIn('encoding="utf-8"', call, _PINNED_KWARGS)
         self.assertIn('errors="replace"', call, _PINNED_KWARGS)

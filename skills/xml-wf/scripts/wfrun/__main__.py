@@ -829,6 +829,7 @@ def _a_layer_paths(run_dir: Path, step_id: str, cycle: int) -> dict:
         "result": steps_dir / f"{stem}_result.json",
         "attempts": steps_dir / f"{stem}_attempts.json",
         "wait": steps_dir / f"{stem}_wait.json",
+        "debug_system": steps_dir / f"{stem}_debug_system.md",
     }
 
 
@@ -1171,13 +1172,13 @@ def cmd_run_wrapper(args) -> int:
     `claude -p` call with kill_tree=True (reliability-spec.md §5.1) and
     persists exit.json / result.json / an attempts.json entry -- never
     touches vars.json or steps.log (that is `wait`'s job)."""
-    system = Path(args.system_file).read_text(encoding="utf-8")
     prompt = Path(args.prompt_file).read_text(encoding="utf-8")
 
     launched = claude_cli._launch(
-        prompt, system_prompt=system, model=args.model, effort=args.effort,
-        tools=args.tools, schema=args.schema, timeout=args.timeout,
-        cwd=args.cwd, permission_mode=args.permission_mode, kill_tree=True)
+        prompt, system_prompt_file=args.system_file, model=args.model,
+        effort=args.effort, tools=args.tools, schema=args.schema,
+        timeout=args.timeout, cwd=args.cwd,
+        permission_mode=args.permission_mode, kill_tree=True)
 
     exit_data = {"ended_at": time.time()}
     if isinstance(launched, claude_cli.CliResult):
@@ -1314,7 +1315,10 @@ def _finish_wait(handle: dict, args, exit_data: dict) -> int:
             if handle.get("system_path") else ""
         prompt_text = Path(handle.get("prompt_path", "")).read_text(encoding="utf-8") \
             if handle.get("prompt_path") else ""
+        debug_system_path = _a_layer_paths(
+            Path(handle["run_dir"]), step.id, handle.get("cycle", 1))["debug_system"]
         diagnosis = adp.diagnose(step, f"{system}\n\n{prompt_text}", res,
+                                 role_file=debug_system_path,
                                  cwd=str(Path(handle["xml"]).resolve().parent))
         fix_path = _fix_path(handle["run_dir"], step.id)
         if diagnosis.action == "RETRY" and diagnosis.fix_instruction:

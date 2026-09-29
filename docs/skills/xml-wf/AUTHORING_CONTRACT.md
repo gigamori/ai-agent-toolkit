@@ -43,6 +43,80 @@ Both go inert silently if Claude Code changes its output, and the unit tests can
 
 **Relationship to mode-orchestrator:** the idea came from its `deny_scan.sh` (sibling handoff of 2026-09-25). The implementations are independent, and no propagation obligation follows in either direction.
 
+## Run-dir file invariant
+
+**I1** (2026-09-29 user ruling, `xml-wf-kill-safe-cleanup.md` §1/§2): wfrun
+never creates a file outside the run dir to call a CLI. Every file a runner
+hands to `claude`/`pi` — a system prompt, a debug or adjudicator role — is a
+run artifact: written inside `runs/<name>_<ts>/` under a deterministic name
+(`steps/<id>_<attempt n>/`, `steps/<id>_cNN_*` — see `__main__._a_layer_paths`
+— or `decisions/`), never cleaned up, and therefore never leaked when the
+process is killed rather than allowed to run its `finally` block. Same
+principle as mode-orchestrator's `watchdog.sh` fix
+(`watchdog-taskstop-leak.md`).
+
+This replaced the original design (`system_prompt` text written to
+`tempfile.mkstemp()` in the OS temp dir, deleted in a `finally: os.remove()`):
+a hard kill — win32 TaskStop, `taskkill /F`, a crash — skips `finally`, so the
+temp file survived the process (`xml-wf-killable-tempfile-audit.md`, defects
+1–2).
+
+An editor adding a new CLI invocation (a new runner call site, or a new
+diagnose/adjudicate-style helper that assembles its own role/system text)
+must:
+
+- Never write the file the CLI reads to a system temp directory
+  (`tempfile.mkstemp`/`NamedTemporaryFile`, `%TEMP%`, `/tmp`) or delete it in
+  a `finally`/`atexit` block — that pattern is exactly what I1 forbids,
+  because a hard kill skips it.
+- Route the payload through `system_prompt_file=` (optional keyword on
+  `claude_cli.run_claude`/`pi_cli.run_pi`, falls back to inline when omitted)
+  or `role_file=` (keyword-only, **no default**, on `adp.diagnose` and
+  `adjudicate.adjudicate`/`adjudicate_text`/`adjudicate_pi` — the missing
+  default is deliberate: a call site that forgets to pass it fails with
+  `TypeError` instead of silently reverting to inline) to a deterministic path
+  inside the run dir. A caller that goes through `run_claude`/`run_pi` gets
+  absolute-path resolution and the shim-hostile-path check below for free —
+  they live inside `_launch`/`run_pi` themselves, not at the call site.
+- A new launcher written *alongside* `_launch`/`run_pi` (rather than calling
+  through them) has to reimplement both of the following itself: resolve the
+  file path to an absolute one (`Path(...).resolve()`) before handing it to
+  the CLI, since the child runs with `cwd=base_dir`, which a relative run-dir
+  path would not survive; and, when the call goes through `via_shim`, apply
+  `_has_hostile_metachars` to the resolved path string itself (not only the
+  file's content) — a run-dir path can contain shim-hostile characters (`%`,
+  `&`) that a `%TEMP%`-only path never could.
+
+## Parent-death binding
+
+**I2** (`xml-wf-kill-safe-cleanup.md` §1/§3.4): however the wfrun process that
+launched an LLM CLI ends — `taskkill /F` on its PID, a crash, any hard kill —
+that CLI must not keep working. An unbound child does keep working: measured
+2026-09-29 on win32 (claude v2.1.270), a `claude -p` whose parent was killed
+finished its in-flight tool call, then ran the next one, and a resumed or
+re-dispatched step would have run alongside it. The OS mechanics live in
+`scripts/wfrun/procbind.py`, whose only entry point is `popen_bound`:
+
+- Windows: a kill-on-close Job Object. The CLI and everything it starts end
+  with the parent. The binding is released once `wait()` has seen the CLI
+  exit, so a normal exit behaves as before.
+- Linux: `PR_SET_PDEATHSIG`. Binds the CLI itself, not its descendants. Not
+  yet run on a Linux host: its test is skipped everywhere else.
+- macOS and every other POSIX: unbound. Accepted residual (2026-09-29 user
+  ruling).
+
+Bound today: `claude_cli._run_bound` (every `run_claude` call without
+`kill_tree`: steps, replans, `ask_llm`, `adp.diagnose`, `adjudicate`) and
+`claude_cli._run_with_tree_kill` (the A-layer wrapper and every `run_pi`
+call).
+Still unbound, outside I2's scope when it was introduced:
+`pi_cli.ask_llm_pi`, `pi_cli.list_available_models`, the capability probe in
+`claude_cli._supports_system_prompt_file`, and `evals/deny_canary.py`.
+
+An editor adding an LLM CLI launch goes through `run_claude`/`run_pi`, or
+calls `procbind.popen_bound` directly. A plain `subprocess.run`/`Popen` there
+reopens I2.
+
 ## Test knowledge gate
 
 The test files under `scripts/tests/` carry no comments and no docstrings — they are read by
