@@ -183,6 +183,36 @@ def _backend_executor_kwargs(backend: str) -> dict:
                 backend="pi")
 
 
+# A run dir belongs to one live `run`/`resume` process at a time: the
+# process holds <run-dir>/run.lock from before its first write until after
+# its last, and the OS drops the lock if the process dies. A second process
+# is refused before it writes or launches anything, so it can never replay
+# up to a step the first one is still executing and run that step again.
+RUN_DIR_LOCK_NAME = "run.lock"
+EXIT_RUN_UNTOUCHED = 2  # rejected before anything ran; the run dir is as it was
+
+
+def _lock_run_dir(run_dir: Path):
+    """Take the run-dir lock without waiting. Returns the handle, or one of
+    the `_acquire_with_retry` outcomes; `_LOCK_CONTENDED` means the caller
+    must refuse. Where locking is unsupported or fails for another reason
+    the run proceeds unguarded, as layer A's dispatch does, but says so."""
+    lock_path = run_dir / RUN_DIR_LOCK_NAME
+    outcome = _acquire_with_retry(lock_path, 0)
+    if outcome is _LOCK_CONTENDED:
+        print(f"error: run dir {run_dir} is in use by another wfrun process "
+              f"(it holds {lock_path}) -- wait for that process to finish, or "
+              f"stop it, then retry", file=sys.stderr)
+    elif outcome is _LOCK_UNSUPPORTED:
+        print(f"note: {lock_path}: file locking is not supported here, so a "
+              f"concurrent run or resume of this run dir is not refused",
+              file=sys.stderr)
+    elif outcome is _LOCK_UNAVAILABLE:
+        print(f"warning: could not take {lock_path}, so a concurrent run or "
+              f"resume of this run dir is not refused", file=sys.stderr)
+    return outcome
+
+
 def cmd_run(args) -> int:
     # Backend first: validation's model-name checks are backend-specific, so a
     # pi run must be linted as pi (an unavailable model is an error there).
@@ -206,6 +236,16 @@ def cmd_run(args) -> int:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         run_dir = Path(args.runs_root) / f"{wf.name}_{stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    lock = _lock_run_dir(run_dir)
+    if lock is _LOCK_CONTENDED:
+        return EXIT_RUN_UNTOUCHED
+    try:
+        return _run_in_run_dir(args, wf, backend, params, base_dir, run_dir)
+    finally:
+        _release_lock(lock)
+
+
+def _run_in_run_dir(args, wf, backend, params, base_dir, run_dir) -> int:
     shutil.copy(args.workflow, run_dir / "workflow.xml")
     (run_dir / "params.json").write_text(
         json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -372,6 +412,16 @@ def cmd_resume(args) -> int:
     params_path = run_dir / "params.json"
     if not wf_path.is_file():
         sys.exit(f"error: {wf_path} not found (not a run directory?)")
+    lock = _lock_run_dir(run_dir)
+    if lock is _LOCK_CONTENDED:
+        return EXIT_RUN_UNTOUCHED
+    try:
+        return _resume_in_run_dir(args, run_dir, wf_path, params_path)
+    finally:
+        _release_lock(lock)
+
+
+def _resume_in_run_dir(args, run_dir, wf_path, params_path) -> int:
     wf = parser.parse_file(wf_path)
     params = json.loads(params_path.read_text(encoding="utf-8")) if params_path.is_file() else {}
     events = load_events(run_dir)
@@ -379,7 +429,7 @@ def cmd_resume(args) -> int:
         events = _ingest_answers(run_dir, args.answer, events)
     except AnswerError as e:
         print(f"error: {e}", file=sys.stderr)
-        return 2
+        return EXIT_RUN_UNTOUCHED
     base_dir = Path(args.base_dir).resolve() if args.base_dir else Path.cwd()
 
     # Backend is inherited from the original run, never re-detected: a

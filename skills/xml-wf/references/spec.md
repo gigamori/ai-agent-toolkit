@@ -595,6 +595,16 @@ execution starts at the first mismatch or unrecorded point. To fix a failing
 step, edit `workflow.xml` inside the run dir before resuming (do not change
 the definitions of already-succeeded parts).
 
+**One live process per run dir**: `run` and `resume` hold `<run_dir>/run.lock`
+from before their first write until after their last. While another process
+holds it, a second `run --run-dir` or `resume` of that run dir exits 2
+(`error: run dir … is in use by another wfrun process`) without writing or
+launching anything — otherwise it would replay up to the step the first
+process is still running and execute that step a second time. Exit 2 means
+"rejected before anything ran; the run dir is as it was" (an unusable
+`--answer` also exits 2). Where file locking is unsupported the run proceeds
+unguarded with a `note:`.
+
 ### Cost and limit management
 
 - `total_cost_usd` of every step, ask judgment, debug diagnosis, and replan
