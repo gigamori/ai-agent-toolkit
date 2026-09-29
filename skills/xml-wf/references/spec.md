@@ -535,6 +535,9 @@ or debug. What happens next is the `decider=` attribute's call:
   report prints the request path, its numbered options, and the exact
   `wfrun resume <dir> --answer <step>=<file>` command. The answer file's first
   line is `option: <N|none>`; the rest is free text (required with `none`).
+  Several `--answer` flags are checked together before any is recorded: one
+  unusable answer, or two for the same step, rejects them all (exit 2) and
+  leaves the run dir as it was.
 - **`llm`**: an adjudicator model (`decider-model`, resolved per backend) is
   called in-process and the run continues on its ruling — no stop. Bounds:
   at most **2 llm rulings per step visit** (the third stops for a human, and
@@ -591,6 +594,16 @@ judgments (without re-running) as long as they match the record. Actual
 execution starts at the first mismatch or unrecorded point. To fix a failing
 step, edit `workflow.xml` inside the run dir before resuming (do not change
 the definitions of already-succeeded parts).
+
+**One live process per run dir**: `run` and `resume` hold `<run_dir>/run.lock`
+from before their first write until after their last. While another process
+holds it, a second `run --run-dir` or `resume` of that run dir exits 2
+(`error: run dir … is in use by another wfrun process`) without writing or
+launching anything — otherwise it would replay up to the step the first
+process is still running and execute that step a second time. Exit 2 means
+"rejected before anything ran; the run dir is as it was" (an unusable
+`--answer` also exits 2). Where file locking is unsupported the run proceeds
+unguarded with a `note:`.
 
 ### Cost and limit management
 

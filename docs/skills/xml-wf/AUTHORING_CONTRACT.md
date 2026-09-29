@@ -125,7 +125,8 @@ reach the same verdict for the same attempt, which is why both go through
 `_attempt_state`. The machinery is `cmd_dispatch`, `cmd_wait`,
 `cmd_run_wrapper` and `_attempt_state` in `scripts/wfrun/__main__.py`, over the
 lock driver `scripts/wfrun/runlock.py`. It is layer A only: run-cc, run-pi and
-layer B (`prompt`/`record`/`poll`) neither share it nor change with it. An
+layer B (`prompt`/`record`/`poll`) neither share it nor change with it; run-cc
+and run-pi use the same lock driver, but only for run-dir exclusivity (I4). An
 editor of any of it keeps four things true:
 
 - **Admission before launch.** `cmd_run_wrapper` takes the step's run lock and
@@ -152,6 +153,45 @@ editor of any of it keeps four things true:
   retries for the run lock, within a bound, while holding the state lock, and
   nothing takes the state lock while holding the run lock. Observers only probe
   the run lock, without blocking.
+
+## Run-dir exclusivity (run-cc and run-pi)
+
+**I4** (2026-09-30): one live `wfrun run`/`resume` process per run dir.
+`cmd_run` and `cmd_resume` in `scripts/wfrun/__main__.py` take
+`<run-dir>/run.lock` through `_lock_run_dir` (the `runlock` driver of I3) and
+run their bodies inside a `finally` that releases it. Both facets share this
+code, so an editor keeps these true for cc and pi alike:
+
+- **Lock before the first write, release after the last.** `run` locks right
+  after creating the run dir and before copying `workflow.xml`; `resume` locks
+  before it reads the events or appends an `--answer`. The release sits in the
+  `finally`, after the report. A write moved outside that span reopens the
+  double execution: a second `resume` replays up to the step the first process
+  is still running and runs that step again.
+- **A contended lock refuses with exit 2 before anything is written or
+  launched.** Exit 2 means "rejected before anything ran; the run dir is as it
+  was", shared with an unusable `--answer`. It must never become 1, which
+  run-cc.md answers with `resume`.
+- **Unsupported locking falls open with a `note:`, any other lock error with a
+  `warning:`** — the same policy as layer A's `dispatch`.
+- **The lock only proves that the wfrun process is alive.** Known gaps,
+  accepted for now:
+  - When that process is killed, children I2 does not bind (macOS, a CLI's own
+    descendants on Linux, the unbound calls listed under I2) can keep running
+    while the lock reads FREE, and a new `resume` then runs beside them.
+  - `_run_with_tree_kill` (every `run_pi` call) does not kill its child on an
+    interrupt, so after a Ctrl+C on macOS the pi child outlives the released
+    lock. The fix belongs to I2.
+  - A second Ctrl+C during a `<parallel>` pool shutdown can reach the
+    `finally` while worker threads of the same process still write events
+    (inferred from source, not reproduced).
+  - Windows frees a dead holder's lock only after a few milliseconds
+    ([`docs/dev/test-constraints.md`](../../dev/test-constraints.md)), so a
+    `resume` started immediately after a kill can still be refused with exit
+    2; retrying is correct.
+  - Layer A's `dispatch`/`wait` and layer B's `prompt`/`record`/`poll` do not
+    take this lock, so a run-llm step and a batch run of the same run dir are
+    not kept apart.
 
 ## Test knowledge gate
 

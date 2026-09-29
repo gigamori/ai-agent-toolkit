@@ -122,7 +122,9 @@ When you run a workflow:
    total cost, and any notable events.
 
 For long runs, the agent can start execution in the background and report
-progress by watching the run's status file.
+progress by watching the run's status file. While a run is still going,
+starting or resuming that same run again is refused and nothing in it is
+touched — wait for the first one to finish, or stop it, before resuming.
 
 **A note on cost.** A workflow can set a budget ceiling (`budget-usd`). Execution
 stops before starting a new step if the budget would be exceeded. (Under a

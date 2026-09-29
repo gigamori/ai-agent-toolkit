@@ -40,6 +40,11 @@ $WFRUN run <xml> -p key=value ... --permission-mode acceptEdits --inherit-model 
   names which step(s) did
 - For long runs, start in the background and report progress by watching
   `status` / `step_count` / `cost_usd` in `runs/<name>_<ts>/state.json`
+  - While that process is alive it holds `runs/<name>_<ts>/run.lock`. A second
+    `run --run-dir` or `resume` of the same run dir exits 2 (`error: run dir …
+    is in use by another wfrun process`) before it writes or launches
+    anything. Do not resume a run that is still going: wait for it to finish,
+    or stop it first
 
 ### 4. Report results
 On success, report:
@@ -94,6 +99,10 @@ against `budget-usd`.
      definitions; succeeded steps — including replan generations — are not re-run)
    - **Fix the source XML** (design problem): revise via Build mode and start a new run
 3. Never re-run the same failure repeatedly without user instruction
+4. `resume` exiting 2 is not a step failure: nothing ran and the run dir is
+   unchanged. The `error:` line says why — another process still holds the
+   run dir (wait for it, or stop it), or an `--answer` was unusable (fix the
+   answer). Never loop `resume` on exit 2
 
 Resume may need `--base-dir` (the directory agents/rules resolve against —
 normally where the source XML lives). See `$WFRUN resume --help`.
