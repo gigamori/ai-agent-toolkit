@@ -879,7 +879,8 @@ class TestPiTextAdjudication(DecisionExecutorTestCase):
 
     def test_escalate_is_case_insensitive(self):
         ruling = adjudicate_mod.adjudicate_text(
-            "s1", "req", 2, runner=FakeTextRunner("ESCALATE: uncertain"))
+            "s1", "req", 2, runner=FakeTextRunner("ESCALATE: uncertain"),
+            role_file=Path(self.tmp.name) / "role.md")
         self.assertEqual(ruling.verdict, "escalate")
 
     def test_unusable_rulings_fall_back_to_a_human(self):
@@ -890,16 +891,18 @@ class TestPiTextAdjudication(DecisionExecutorTestCase):
             "not a ruling": "I think option 1 is best.",
             "empty": "   ",
         }
+        role_file = Path(self.tmp.name) / "role.md"
         for label, text in cases.items():
             with self.subTest(label):
                 ruling = adjudicate_mod.adjudicate_text(
-                    "s1", "req", 2, runner=FakeTextRunner(text))
+                    "s1", "req", 2, runner=FakeTextRunner(text),
+                    role_file=role_file)
                 self.assertEqual(ruling.verdict, "failed")
         classified = CliResult(ok=False, text="DECISION: quoted back",
                                cost_usd=0.01)
         classified.error_class = "decision"
         ruling = adjudicate_mod.adjudicate_text(
-            "s1", "req", 2, runner=FakeTextRunner(classified))
+            "s1", "req", 2, runner=FakeTextRunner(classified), role_file=role_file)
         self.assertEqual(ruling.verdict, "failed")
         self.assertIn("decision", ruling.reason)
 
@@ -918,6 +921,7 @@ class TestPiTextAdjudication(DecisionExecutorTestCase):
         adjudicate_mod.adjudicate_text(
             "s1", "THE-REQUEST-BODY", 2,
             runner=(runner := FakeTextRunner("option: 1\n\nfine")),
+            role_file=Path(self.tmp.name) / "role.md",
             model="google/gemini-3.1-flash-lite")
         call = runner.calls[0]
         self.assertIn("THE-REQUEST-BODY", call["prompt"])

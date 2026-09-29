@@ -150,10 +150,11 @@ def main(argv=None) -> int:
         resolved = 0
         tally: dict[str, int] = {}
         for i in range(args.n):
+            role_file = out / f"{arm['name']}_{i+1:02d}_role.md"
             ruling = adjudicate_mod.adjudicate_text(
                 "eval", arm["request"], arm["options"],
-                runner=runner, model=args.model, runner_table=table,
-                timeout=args.timeout)
+                runner=runner, role_file=role_file, model=args.model,
+                runner_table=table, timeout=args.timeout)
             shape = outcome(ruling)
             tally[shape] = tally.get(shape, 0) + 1
             resolved += ruling.verdict in ("settled", "escalate")

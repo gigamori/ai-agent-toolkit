@@ -55,9 +55,10 @@ shell=True never resolves it (PATHEXT is not consulted), so this module
 resolves an executable path once via `_resolve_claude_bin()` and launches
 that directly -- bypassing cmd.exe, which otherwise silently corrupts argv
 containing `& | % ^ < >` or newlines (measured in reliability-spec.md
-§13.2). The system prompt is passed via `--append-system-prompt-file` (a
-temp file) rather than inline, both to avoid argv length limits and to
-keep multi-line/metachar payloads out of argv entirely.
+§13.2). The system prompt is passed via `--append-system-prompt-file`, a
+run-dir file the caller already owns (`system_prompt_file=`), rather than
+inline, both to avoid argv length limits and to keep multi-line/metachar
+payloads out of argv entirely.
 """
 from __future__ import annotations
 
@@ -67,8 +68,10 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from . import decision as decision_mod
+from . import procbind
 from .guardrails import ASK_PROMPT, ASK_SCHEMA
 from .modes import blocked_line, strip_mode_line
 
@@ -496,16 +499,21 @@ def _run_with_tree_kill(cmd: list[str], prompt: str, timeout: int,
     POSIX: kill the process group via SIGKILL -- the analogous mechanism,
     NOT measured in this session (no POSIX host was available); a design
     default pending real verification, same as the Windows path above.
+
+    That tree-kill covers only this process's OWN timeout. A hard kill of
+    this process is covered by launching through `procbind.popen_bound`
+    (I2): the child cannot keep working after its parent is gone.
     """
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    # encoding/errors: see the comment at the sibling subprocess.run in _launch.
-    # Reached by `wfrun dispatch` (kill_tree=True) and by every pi step, which
-    # routes here unconditionally, so it carries the same UTF-8 contract.
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, cwd=cwd,
-                            encoding="utf-8", errors="replace",
-                            creationflags=creationflags,
-                            start_new_session=(os.name != "nt"))
+    # encoding/errors: see the comment at the sibling `_run_bound` call in
+    # _launch. Reached by `wfrun dispatch` (kill_tree=True) and by every pi
+    # step, which routes here unconditionally, so it carries the same UTF-8
+    # contract.
+    proc = procbind.popen_bound(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, cwd=cwd,
+                                encoding="utf-8", errors="replace",
+                                creationflags=creationflags,
+                                start_new_session=(os.name != "nt"))
     try:
         stdout, stderr = proc.communicate(input=prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -523,7 +531,40 @@ def _run_with_tree_kill(cmd: list[str], prompt: str, timeout: int,
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+def _run_bound(cmd: list[str], *, input: str, timeout: int,
+               cwd: str | None) -> subprocess.CompletedProcess:
+    """`subprocess.run(cmd, input=input, capture_output=True, text=True,
+    timeout=timeout, cwd=cwd)`, with the child launched through
+    `procbind.popen_bound` so a hard kill of this process ends it too (I2).
+
+    Everything else is `subprocess.run`'s own behaviour, kept on purpose: on
+    timeout only the child itself is killed (the tree-kill is
+    `kill_tree=True`'s job), and TimeoutExpired is re-raised carrying the
+    output collected so far.
+    """
+    # encoding/errors: see the comment at this helper's call in _launch.
+    with procbind.popen_bound(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, cwd=cwd,
+                              encoding="utf-8", errors="replace") as proc:
+        try:
+            stdout, stderr = proc.communicate(input=input, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            if os.name == "nt":
+                # Windows reads the pipes on helper threads; only a second
+                # communicate() collects what they read (as subprocess.run).
+                exc.stdout, exc.stderr = proc.communicate()
+            else:
+                proc.wait()
+            raise
+        except BaseException:
+            proc.kill()
+            raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def _launch(prompt: str, *, system_prompt: str | None = None,
+           system_prompt_file: str | Path | None = None,
            model: str | None = None, effort: str | None = None,
            tools: str | None = None, schema: str | None = None,
            timeout: int = 600, cwd: str | None = None,
@@ -532,6 +573,14 @@ def _launch(prompt: str, *, system_prompt: str | None = None,
     """Resolve the executable, build argv, and execute -- the "command
     construction" + "execution" thirds of reliability-spec.md §3.1's
     three-way split (classification is `classify_result()`).
+
+    `system_prompt_file`, when given, is a run-dir file the CALLER already
+    wrote and owns (reliability-spec.md §13.3.2/I1) -- this function never
+    creates or deletes a system-prompt file itself. It is resolved to an
+    absolute path (the child runs with `cwd=`, which may differ from this
+    process's cwd) and passed via `--append-system-prompt-file` when the
+    resolved claude binary supports that flag; otherwise this falls back to
+    inline, using `system_prompt` if given or else the file's own text.
 
     Returns either an early CliResult (the call was rejected before/without
     launching, or launching itself failed: env/timeout) or a
@@ -546,10 +595,14 @@ def _launch(prompt: str, *, system_prompt: str | None = None,
         return CliResult(ok=False, exit_code=-1, error_class="env",
                          error="claude CLI not found on PATH")
 
-    # Every check that can reject the call is done BEFORE the temp file is
-    # created, so no early return can leak it (the checks are pure; only
-    # the capability probe shells out, and it is cached).
-    use_prompt_file = bool(system_prompt) and _supports_system_prompt_file(claude_bin)
+    # Every check that can reject the call is done BEFORE cmd is built, so
+    # no early return can launch a half-built argv (the checks are pure;
+    # only the capability probe shells out, and it is cached).
+    resolved_file = Path(system_prompt_file).resolve() if system_prompt_file else None
+    has_content = bool(system_prompt) or (
+        resolved_file is not None and resolved_file.stat().st_size > 0)
+    use_prompt_file = (has_content and resolved_file is not None
+                      and _supports_system_prompt_file(claude_bin))
     if schema and via_shim and _has_hostile_metachars(schema):
         # --json-schema has no file-based form (reliability-spec.md
         # §13.3.3): refuse rather than launch a corrupted schema.
@@ -561,38 +614,44 @@ def _launch(prompt: str, *, system_prompt: str | None = None,
                   "newline) that the shim's cmd.exe layer would "
                   "silently corrupt. Put a non-shim claude earlier on "
                   "PATH.")
-    if (system_prompt and not use_prompt_file and via_shim
-            and _has_hostile_metachars(system_prompt)):
-        # File-based flag unsupported and the only resolvable claude is
-        # the argv-mangling shim: refuse rather than launch corrupted
+    if use_prompt_file and via_shim and _has_hostile_metachars(str(resolved_file)):
+        # The file itself is safe, but its PATH travels through the shim's
+        # cmd.exe layer on argv same as any other flag value, and a run-dir
+        # path (unlike the old %TEMP% mkstemp path) may contain & | % ^ < >
         # (reliability-spec.md §13.3.3 -- decided: loud failure).
         return CliResult(
             ok=False, exit_code=-1, error_class="env",
-            error="claude resolved via the Windows npm .cmd/.bat shim "
-                  "and --append-system-prompt-file is unsupported; the "
-                  "system prompt contains shell metacharacters "
-                  "(& | % ^ < > or a newline) that the shim's cmd.exe "
-                  "layer would silently corrupt. Put a non-shim claude "
-                  "earlier on PATH.")
+            error="claude resolved via the Windows npm .cmd/.bat shim; "
+                  "the system prompt file path contains shell "
+                  "metacharacters (& | % ^ < > or a newline) that the "
+                  "shim's cmd.exe layer would silently corrupt. Put a "
+                  "non-shim claude earlier on PATH.")
+    inline_text = None
+    if has_content and not use_prompt_file:
+        inline_text = system_prompt if system_prompt else resolved_file.read_text(
+            encoding="utf-8")
+        if via_shim and _has_hostile_metachars(inline_text):
+            # File-based flag unsupported and the only resolvable claude is
+            # the argv-mangling shim: refuse rather than launch corrupted
+            # (reliability-spec.md §13.3.3 -- decided: loud failure).
+            return CliResult(
+                ok=False, exit_code=-1, error_class="env",
+                error="claude resolved via the Windows npm .cmd/.bat shim "
+                      "and --append-system-prompt-file is unsupported; the "
+                      "system prompt contains shell metacharacters "
+                      "(& | % ^ < > or a newline) that the shim's cmd.exe "
+                      "layer would silently corrupt. Put a non-shim claude "
+                      "earlier on PATH.")
 
     cmd = [claude_bin, *PRINT_ARGS]
-    sys_prompt_file: str | None = None
 
-    if system_prompt:
+    if has_content:
         # Append (not replace): keeps the CLI's default tool-use scaffolding
         # while placing role/mode/rules in the high-authority channel.
         if use_prompt_file:
-            fd, sys_prompt_file = tempfile.mkstemp(
-                prefix="wfrun-sysprompt-", suffix=".txt")
-            # UTF-8 explicitly: role/mode/rules bodies routinely contain
-            # non-ASCII text, and the platform default (cp932 on JA Windows)
-            # would corrupt it -- the same silent-corruption class this
-            # whole fix exists to remove.
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(system_prompt)
-            cmd += ["--append-system-prompt-file", sys_prompt_file]
+            cmd += ["--append-system-prompt-file", str(resolved_file)]
         else:
-            cmd += ["--append-system-prompt", system_prompt]
+            cmd += ["--append-system-prompt", inline_text]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -605,65 +664,59 @@ def _launch(prompt: str, *, system_prompt: str | None = None,
         cmd += ["--permission-mode", permission_mode]
 
     try:
-        try:
-            if kill_tree:
-                proc = _run_with_tree_kill(cmd, prompt, timeout, cwd)
-            else:
-                # UTF-8 both ways, never strict. `encoding=` governs stdin as
-                # well as stdout/stderr, so this fixes two defects at once:
-                #
-                #  - decode: without it, text mode uses the platform default
-                #    (cp932 on JA Windows) and ONE undecodable reply byte kills
-                #    subprocess's reader thread. stdout comes back None and
-                #    classify_result dies on json.loads(None) -- the whole run
-                #    aborts unclassified, so no error_class and no retry/debug/
-                #    decision path. Took down two live measurement runs.
-                #  - encode: `input=prompt` was likewise cp932-encoded, which
-                #    both raises on any character cp932 lacks and mismatches
-                #    the child (node reads stdin as UTF-8).
-                #
-                # errors="replace" over strict: the payload is a JSON envelope
-                # whose structure is pure ASCII, so a replaced byte costs one
-                # U+FFFD in a message body while every field classification
-                # reads survives. Strict would cost the entire run. The
-                # substitution is not silent -- on the step and replan paths
-                # the executor warns on U+FFFD (ask_llm and the capability
-                # probe carry no such check, by design).
-                # Same treatment at every site in this file and in pi_cli.py.
-                proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                                      encoding="utf-8", errors="replace",
-                                      timeout=timeout, cwd=cwd)
-        except subprocess.TimeoutExpired as e:
-            stderr = getattr(e, "stderr", None)
-            # Same UTF-8-never-strict contract as the launch call above: a
-            # bare .decode() is strict, so an undecodable byte would raise
-            # from inside the timeout handler -- reinstating, on the error
-            # path, the unclassified crash this whole fix removes.
-            stderr = (stderr.decode("utf-8", "replace")
-                      if isinstance(stderr, bytes) else (stderr or ""))
-            return CliResult(ok=False, exit_code=-1, stderr=stderr,
-                             error_class="timeout", error=f"timeout after {timeout}s")
-        except FileNotFoundError:
-            return CliResult(ok=False, exit_code=-1, error_class="env",
-                             error="claude CLI not found on PATH")
-    finally:
-        if sys_prompt_file:
-            try:
-                os.remove(sys_prompt_file)
-            except OSError:
-                pass
+        if kill_tree:
+            proc = _run_with_tree_kill(cmd, prompt, timeout, cwd)
+        else:
+            # UTF-8 both ways, never strict. `encoding=` governs stdin as
+            # well as stdout/stderr, so this fixes two defects at once:
+            #
+            #  - decode: without it, text mode uses the platform default
+            #    (cp932 on JA Windows) and ONE undecodable reply byte kills
+            #    subprocess's reader thread. stdout comes back None and
+            #    classify_result dies on json.loads(None) -- the whole run
+            #    aborts unclassified, so no error_class and no retry/debug/
+            #    decision path. Took down two live measurement runs.
+            #  - encode: `input=prompt` was likewise cp932-encoded, which
+            #    both raises on any character cp932 lacks and mismatches
+            #    the child (node reads stdin as UTF-8).
+            #
+            # errors="replace" over strict: the payload is a JSON envelope
+            # whose structure is pure ASCII, so a replaced byte costs one
+            # U+FFFD in a message body while every field classification
+            # reads survives. Strict would cost the entire run. The
+            # substitution is not silent -- on the step and replan paths
+            # the executor warns on U+FFFD (ask_llm and the capability
+            # probe carry no such check, by design).
+            # Same treatment at every site in this file and in pi_cli.py;
+            # here it is pinned inside `_run_bound`.
+            proc = _run_bound(cmd, input=prompt, timeout=timeout, cwd=cwd)
+    except subprocess.TimeoutExpired as e:
+        stderr = getattr(e, "stderr", None)
+        # Same UTF-8-never-strict contract as the launch call above: a
+        # bare .decode() is strict, so an undecodable byte would raise
+        # from inside the timeout handler -- reinstating, on the error
+        # path, the unclassified crash this whole fix removes.
+        stderr = (stderr.decode("utf-8", "replace")
+                  if isinstance(stderr, bytes) else (stderr or ""))
+        return CliResult(ok=False, exit_code=-1, stderr=stderr,
+                         error_class="timeout", error=f"timeout after {timeout}s")
+    except FileNotFoundError:
+        return CliResult(ok=False, exit_code=-1, error_class="env",
+                         error="claude CLI not found on PATH")
 
     return proc.returncode, proc.stdout, proc.stderr
 
 
 def run_claude(prompt: str, *, system_prompt: str | None = None,
+               system_prompt_file: str | Path | None = None,
                model: str | None = None,
                effort: str | None = None, tools: str | None = None,
                schema: str | None = None, timeout: int = 600,
                cwd: str | None = None,
                permission_mode: str | None = None,
                kill_tree: bool = False) -> CliResult:
-    result = _launch(prompt, system_prompt=system_prompt, model=model,
+    result = _launch(prompt, system_prompt=system_prompt,
+                     system_prompt_file=system_prompt_file, model=model,
                      effort=effort, tools=tools, schema=schema, timeout=timeout,
                      cwd=cwd, permission_mode=permission_mode, kill_tree=kill_tree)
     if isinstance(result, CliResult):

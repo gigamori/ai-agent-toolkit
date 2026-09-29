@@ -1,5 +1,4 @@
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -128,7 +127,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
     def test_success_path_still_works(self):
         stdout = json.dumps({"result": "4", "is_error": False, "num_turns": 1,
                              "permission_denials": []})
-        with mock.patch.object(claude_cli.subprocess, "run",
+        with mock.patch.object(claude_cli, "_run_bound",
                                return_value=_fake_completed(0, stdout)):
             res = claude_cli.run_claude("2+2?")
         self.assertTrue(res.ok)
@@ -141,7 +140,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
             captured["cmd"] = cmd
             return _fake_completed(0, _stream(_result_event(0, result="4")))
 
-        with mock.patch.object(claude_cli.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(claude_cli, "_run_bound", side_effect=fake_run):
             res = claude_cli.run_claude("2+2?")
         self.assertTrue(res.ok, res.error)
         cmd = captured["cmd"]
@@ -151,32 +150,24 @@ class RunClaudeLaunchTests(unittest.TestCase):
         self.assertIn("--verbose", cmd)
         self.assertIn("--no-session-persistence", cmd)
 
-    def test_system_prompt_uses_file_flag_and_cleans_up(self):
+    def test_text_only_system_prompt_stays_inline_even_when_the_file_flag_is_supported(self):
         stdout = json.dumps({"result": "ok", "is_error": False,
                              "permission_denials": []})
         captured_cmd = {}
-        written_content = {}
 
         def fake_run(cmd, **kwargs):
             captured_cmd["cmd"] = cmd
-            idx = cmd.index("--append-system-prompt-file")
-            path = cmd[idx + 1]
-            written_content["text"] = Path(path).read_text(encoding="utf-8")
-            written_content["existed_during_call"] = os.path.isfile(path)
             return _fake_completed(0, stdout)
 
         with mock.patch.object(claude_cli, "_supports_system_prompt_file",
                                return_value=True), \
-             mock.patch.object(claude_cli.subprocess, "run", side_effect=fake_run):
+             mock.patch.object(claude_cli, "_run_bound", side_effect=fake_run):
             res = claude_cli.run_claude("task", system_prompt="<role>x</role>")
 
         self.assertTrue(res.ok)
-        self.assertNotIn("--append-system-prompt", captured_cmd["cmd"])
-        self.assertIn("--append-system-prompt-file", captured_cmd["cmd"])
-        self.assertEqual(written_content["text"], "<role>x</role>")
-        self.assertTrue(written_content["existed_during_call"])
-        idx = captured_cmd["cmd"].index("--append-system-prompt-file")
-        self.assertFalse(os.path.isfile(captured_cmd["cmd"][idx + 1]))
+        self.assertNotIn("--append-system-prompt-file", captured_cmd["cmd"])
+        idx = captured_cmd["cmd"].index("--append-system-prompt")
+        self.assertEqual(captured_cmd["cmd"][idx + 1], "<role>x</role>")
 
     def test_shim_with_hostile_system_prompt_and_no_file_support_refuses(self):
         with tempfile.TemporaryDirectory() as d:
@@ -186,7 +177,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
             with mock.patch.object(claude_cli.shutil, "which", return_value=str(shim)), \
                  mock.patch.object(claude_cli, "_supports_system_prompt_file",
                                    return_value=False), \
-                 mock.patch.object(claude_cli.subprocess, "run") as run:
+                 mock.patch.object(claude_cli, "_run_bound") as run:
                 res = claude_cli.run_claude(
                     "task", system_prompt="line1 & line2 | line3")
         self.assertFalse(res.ok)
@@ -209,7 +200,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
             with mock.patch.object(claude_cli.shutil, "which", return_value=str(shim)), \
                  mock.patch.object(claude_cli, "_supports_system_prompt_file",
                                    return_value=False), \
-                 mock.patch.object(claude_cli.subprocess, "run", side_effect=fake_run):
+                 mock.patch.object(claude_cli, "_run_bound", side_effect=fake_run):
                 res = claude_cli.run_claude(
                     "task", system_prompt="plain text, no metachars at all")
         self.assertTrue(res.ok)
@@ -221,61 +212,16 @@ class RunClaudeLaunchTests(unittest.TestCase):
             shim.write_text("@echo off")
             claude_cli._resolution_cache.clear()
             with mock.patch.object(claude_cli.shutil, "which", return_value=str(shim)), \
-                 mock.patch.object(claude_cli.subprocess, "run") as run:
+                 mock.patch.object(claude_cli, "_run_bound") as run:
                 res = claude_cli.run_claude(
                     "task", schema='{"pattern": "a|b"}')
         self.assertFalse(res.ok)
         self.assertEqual(res.error_class, "env")
         run.assert_not_called()
 
-    def test_hostile_schema_refusal_leaks_no_temp_file(self):
-        before = set(Path(tempfile.gettempdir()).glob("wfrun-sysprompt-*"))
-        with tempfile.TemporaryDirectory() as d:
-            shim = Path(d) / "claude.cmd"
-            shim.write_text("@echo off")
-            claude_cli._resolution_cache.clear()
-            with mock.patch.object(claude_cli.shutil, "which", return_value=str(shim)), \
-                 mock.patch.object(claude_cli, "_supports_system_prompt_file",
-                                   return_value=True), \
-                 mock.patch.object(claude_cli.subprocess, "run") as run:
-                res = claude_cli.run_claude(
-                    "task", system_prompt="<role>x</role>",
-                    schema='{"pattern": "a|b"}')
-        self.assertFalse(res.ok)
-        run.assert_not_called()
-        after = set(Path(tempfile.gettempdir()).glob("wfrun-sysprompt-*"))
-        self.assertEqual(before, after)
-
-    def test_temp_file_removed_when_subprocess_raises(self):
-        before = set(Path(tempfile.gettempdir()).glob("wfrun-sysprompt-*"))
-        with mock.patch.object(claude_cli, "_supports_system_prompt_file",
-                               return_value=True), \
-             mock.patch.object(claude_cli.subprocess, "run",
-                               side_effect=OSError("boom")):
-            with self.assertRaises(OSError):
-                claude_cli.run_claude("task", system_prompt="<role>x</role>")
-        after = set(Path(tempfile.gettempdir()).glob("wfrun-sysprompt-*"))
-        self.assertEqual(before, after)
-
-    def test_non_ascii_system_prompt_written_as_utf8(self):
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            idx = cmd.index("--append-system-prompt-file")
-            captured["bytes"] = Path(cmd[idx + 1]).read_bytes()
-            return _fake_completed(0, json.dumps({"result": "ok", "is_error": False,
-                                                  "permission_denials": []}))
-
-        with mock.patch.object(claude_cli, "_supports_system_prompt_file",
-                               return_value=True), \
-             mock.patch.object(claude_cli.subprocess, "run", side_effect=fake_run):
-            res = claude_cli.run_claude("task", system_prompt="日本語ルール")
-        self.assertTrue(res.ok)
-        self.assertEqual(captured["bytes"].decode("utf-8"), "日本語ルール")
-
     def test_timeout_is_classified(self):
         with mock.patch.object(
-                claude_cli.subprocess, "run",
+                claude_cli, "_run_bound",
                 side_effect=claude_cli.subprocess.TimeoutExpired(cmd="claude", timeout=5)):
             res = claude_cli.run_claude("hi", timeout=5)
         self.assertFalse(res.ok)
@@ -286,7 +232,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
             "is_error": True, "result": "There's an issue with the model",
             "terminal_reason": "api_error", "api_error_status": 404,
         })
-        with mock.patch.object(claude_cli.subprocess, "run",
+        with mock.patch.object(claude_cli, "_run_bound",
                                return_value=_fake_completed(1, stdout)):
             res = claude_cli.run_claude("hi", model="bogus")
         self.assertFalse(res.ok)
@@ -299,7 +245,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
             "is_error": True, "result": "overloaded",
             "terminal_reason": "api_error", "api_error_status": 529,
         })
-        with mock.patch.object(claude_cli.subprocess, "run",
+        with mock.patch.object(claude_cli, "_run_bound",
                                return_value=_fake_completed(1, stdout)):
             res = claude_cli.run_claude("hi")
         self.assertFalse(res.ok)
@@ -310,7 +256,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
             "is_error": True, "result": "??",
             "terminal_reason": "api_error",
         })
-        with mock.patch.object(claude_cli.subprocess, "run",
+        with mock.patch.object(claude_cli, "_run_bound",
                                return_value=_fake_completed(1, stdout)):
             res = claude_cli.run_claude("hi")
         self.assertFalse(res.ok)
@@ -319,7 +265,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
                          "rather than being retried as transient")
 
     def test_unparseable_stdout_is_env(self):
-        with mock.patch.object(claude_cli.subprocess, "run",
+        with mock.patch.object(claude_cli, "_run_bound",
                                return_value=_fake_completed(1, "not json", "boom")):
             res = claude_cli.run_claude("hi")
         self.assertFalse(res.ok)
@@ -329,7 +275,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
         stdout = json.dumps({
             "is_error": True, "result": "x", "terminal_reason": "budget_exhausted",
         })
-        with mock.patch.object(claude_cli.subprocess, "run",
+        with mock.patch.object(claude_cli, "_run_bound",
                                return_value=_fake_completed(0, stdout)):
             res = claude_cli.run_claude("hi")
         self.assertFalse(res.ok)
@@ -342,7 +288,7 @@ class RunClaudeLaunchTests(unittest.TestCase):
             "is_error": True, "subtype": "success", "result": "x",
             "terminal_reason": "api_error", "api_error_status": 404,
         })
-        with mock.patch.object(claude_cli.subprocess, "run",
+        with mock.patch.object(claude_cli, "_run_bound",
                                return_value=_fake_completed(1, stdout)):
             res = claude_cli.run_claude("hi")
         self.assertFalse(res.ok)

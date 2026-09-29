@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from . import model, modelmap
 from .agents import discover_agents
@@ -31,7 +32,8 @@ class Diagnosis:
 
 
 def diagnose(step: model.Step, prompt: str, failure: CliResult, *,
-             cwd: str | None = None, debug_role: str = model.DEBUG_ROLE,
+             role_file: Path, cwd: str | None = None,
+             debug_role: str = model.DEBUG_ROLE,
              timeout: int = 600) -> Diagnosis:
     debug_def = discover_agents(cwd or ".").get(debug_role)
     if debug_def is None:
@@ -46,8 +48,13 @@ def diagnose(step: model.Step, prompt: str, failure: CliResult, *,
         result=(failure.error or "") + "\n" + failure.text[:4000],
         stderr=failure.stderr[:2000],
     )
+    # I1 (spec.md "Run dir and resume"): the role text lands in a run-dir
+    # file the caller named, not a runner-owned temp file -- kill-safe by
+    # construction, since there is nothing left to clean up.
+    Path(role_file).write_text(f"<role>\n{debug_def.prompt}\n</role>",
+                               encoding="utf-8")
     res = run_claude(debug_prompt,
-                     system_prompt=f"<role>\n{debug_def.prompt}\n</role>",
+                     system_prompt_file=role_file,
                      model=modelmap.resolve(debug_def.model, "cc", allow_legacy=True),
                      tools=debug_def.tools,
                      schema=DEBUG_SCHEMA, timeout=timeout, cwd=cwd)

@@ -621,8 +621,14 @@ def main(argv=None) -> int:
                     system, prompt = stepio.build_step_prompt_parts(
                         wf, sc["step"], {}, base_dir=".", agents_cache={},
                         result_path=str(result_path))
+                # A route through system_prompt_file (not the text kwarg), on
+                # purpose: text alone would take the inline branch, measuring
+                # a path production never takes (the design's §2.2 caller
+                # table has every real caller pass a file).
+                system_path = Path(sandbox) / "system.md"
+                system_path.write_text(system, encoding="utf-8")
                 res = claude_cli.run_claude(
-                    prompt, system_prompt=system, model=args.model,
+                    prompt, system_prompt_file=system_path, model=args.model,
                     tools=sc.get("tools", "Read"), timeout=args.timeout,
                     cwd=sandbox)
                 # Inside the with-block: the sandbox is gone one line later,
