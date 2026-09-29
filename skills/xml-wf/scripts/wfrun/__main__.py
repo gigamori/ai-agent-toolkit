@@ -273,14 +273,19 @@ def _ingest_answers(run_dir: Path, specs: list[str],
     pending, _, _, _ = decision_tables(events)
     by_step = {step: event for (step, _cycle), event in pending.items()}
     answered_steps = {e["key"] for e in events if e.get("kind") == "answer"}
-    state = RunState(run_dir)
-    appended: list[dict] = []
+    rulings: list[tuple] = []
+    seen_steps: set[str] = set()
 
     for spec in specs:
         if "=" not in spec:
             raise AnswerError(f"--answer expects STEP_ID=PATH, got '{spec}'")
         step_id, _, raw_path = spec.partition("=")
         step_id = step_id.strip()
+        if step_id in seen_steps:
+            raise AnswerError(
+                f"--answer {step_id}=...: given more than once. A request takes "
+                "exactly one answer; pass a single --answer for this step.")
+        seen_steps.add(step_id)
         request = by_step.get(step_id)
         if request is None:
             if step_id in answered_steps:
@@ -328,7 +333,14 @@ def _ingest_answers(run_dir: Path, specs: list[str],
             if missing:
                 b_reason = decision_mod.B_REASON_MISSING_FILE_AT_RESUME
         verdict = "b" if b_reason else "a"
+        rulings.append((step_id, request, answer_file, answer, verdict,
+                        b_reason, missing))
 
+    # Nothing is recorded until every --answer has passed, so a rejected batch
+    # leaves the run dir exactly as it was.
+    state = RunState(run_dir)
+    appended: list[dict] = []
+    for step_id, request, answer_file, answer, verdict, b_reason, missing in rulings:
         appended.append(state.event(
             "answer", key=step_id, cycle=request["cycle"],
             request_id=request["request_id"], request=request["request"],

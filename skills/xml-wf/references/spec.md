@@ -535,6 +535,9 @@ or debug. What happens next is the `decider=` attribute's call:
   report prints the request path, its numbered options, and the exact
   `wfrun resume <dir> --answer <step>=<file>` command. The answer file's first
   line is `option: <N|none>`; the rest is free text (required with `none`).
+  Several `--answer` flags are checked together before any is recorded: one
+  unusable answer, or two for the same step, rejects them all (exit 2) and
+  leaves the run dir as it was.
 - **`llm`**: an adjudicator model (`decider-model`, resolved per backend) is
   called in-process and the run continues on its ruling — no stop. Bounds:
   at most **2 llm rulings per step visit** (the third stops for a human, and

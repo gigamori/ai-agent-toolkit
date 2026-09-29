@@ -540,6 +540,41 @@ class TestResumePaths(DecisionExecutorTestCase):
         with self.assertRaises(AnswerError):
             self.answer(self.run_dir, "nosuch", "option: 1\nx")
 
+    def stopped_at_a_fork(self):
+        self.respond_decision("DO-WORK", work_state="stopped", output=None)
+        ex = self.execute(self.wrap('<step id="s1" role="w"><task>DO-WORK</task></step>'))
+        with self.assertRaises(DecisionRequested):
+            ex.run()
+        events_path = self.run_dir / "events.jsonl"
+        return events_path, events_path.read_bytes()
+
+    def answer_file(self, name, body):
+        path = Path(self.tmp.name) / name
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_a_batch_with_one_bad_answer_records_none_of_them(self):
+        events_path, before = self.stopped_at_a_fork()
+        good = self.answer_file("good.md", "option: 1\nfine")
+        with self.assertRaises(AnswerError):
+            with contextlib.redirect_stdout(io.StringIO()):
+                _ingest_answers(self.run_dir, [f"s1={good}", "nosuch=x.md"],
+                                load_events(self.run_dir))
+        self.assertEqual(events_path.read_bytes(), before,
+                         "a rejected --answer batch must leave the run dir as it "
+                         "was, including the answers that were valid on their own")
+
+    def test_two_answers_for_one_step_are_rejected_before_either_is_recorded(self):
+        events_path, before = self.stopped_at_a_fork()
+        first = self.answer_file("first.md", "option: 1\none")
+        second = self.answer_file("second.md", "option: 2\ntwo")
+        with self.assertRaises(AnswerError) as ctx:
+            with contextlib.redirect_stdout(io.StringIO()):
+                _ingest_answers(self.run_dir, [f"s1={first}", f"s1={second}"],
+                                load_events(self.run_dir))
+        self.assertIn("more than once", str(ctx.exception))
+        self.assertEqual(events_path.read_bytes(), before)
+
 
 class TestParallel(DecisionExecutorTestCase):
     def _parallel_xml(self):
