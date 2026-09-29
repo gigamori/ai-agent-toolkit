@@ -34,6 +34,7 @@ def _fake_completed(returncode=0, stdout="", stderr=""):
 
 
 CHILD_SCRIPT = """
+import json
 import os
 import sys
 import time
@@ -105,12 +106,17 @@ elif target == "wrapper":
     system_file.write_text("<role>w</role>", encoding="utf-8")
     prompt_file = steps_dir / "s1_c01_prompt.md"
     prompt_file.write_text("do it", encoding="utf-8")
+    handle_file = steps_dir / "s1_c01_handle.json"
+    handle_file.write_text(json.dumps({
+        "token": "tok", "cycle": 1, "run_dir": base_dir, "step_id": "s1"}),
+        encoding="utf-8")
     argv = ["_wrapper", "--system-file", str(system_file),
            "--prompt-file", str(prompt_file),
            "--exit-file", str(steps_dir / "s1_c01_exit.json"),
            "--result-file", str(steps_dir / "s1_c01_result.json"),
            "--attempts-file", str(steps_dir / "s1_c01_attempts.json"),
-           "--seq", "1", "--cwd", base_dir, "--timeout", "600"]
+           "--seq", "1", "--cwd", base_dir, "--timeout", "600",
+           "--handle-file", str(handle_file), "--token", "tok"]
     wfrun_main.main(argv)
 """
 
@@ -268,6 +274,10 @@ class RunnerFileIdentityTests(unittest.TestCase):
             exit_file = Path(d) / "exit.json"
             result_file = Path(d) / "result.json"
             attempts_file = Path(d) / "attempts.json"
+            handle_file = Path(d) / "handle.json"
+            handle_file.write_text(json.dumps({
+                "token": "tok", "cycle": 1, "run_dir": d, "step_id": "s1"}),
+                encoding="utf-8")
             captured = {}
 
             def fake_launch(prompt, **kwargs):
@@ -281,7 +291,8 @@ class RunnerFileIdentityTests(unittest.TestCase):
                             "--exit-file", str(exit_file),
                             "--result-file", str(result_file),
                             "--attempts-file", str(attempts_file),
-                            "--seq", "1", "--cwd", d, "--timeout", "600"])
+                            "--seq", "1", "--cwd", d, "--timeout", "600",
+                            "--handle-file", str(handle_file), "--token", "tok"])
             self.assertEqual(code, 0)
             self.assertEqual(captured.get("system_prompt_file"), str(system_file))
             self.assertNotIn("system_prompt", captured)

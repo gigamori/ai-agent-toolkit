@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from . import adp, claude_cli
 from . import decision as decision_mod
 from . import interp as interp_mod
 from . import lint as lint_mod
-from . import model, modelmap, modes, parser, stepio, viz
+from . import model, modelmap, modes, parser, runlock, stepio, viz
 from .ccdirs import claude_config_dirs
 from .executor import DecisionRequested, Executor, WorkflowFailure, decision_tables
 from .state import RunState, load_events
@@ -781,6 +782,21 @@ WAIT_POLL_INTERVAL = 1.0
 # liveness signal) this whole spec exists to close.
 WAIT_ABORT_MARGIN = 30
 
+# Liveness machinery: how long dispatch waits to acquire a contended
+# per-step state lock before refusing (bounded, since dispatch is a
+# one-shot call with no external retry loop); how long a freshly launched
+# wrapper retries for the run lock during admission (absorbs the
+# probe-vs-admission race that state-lock serialization is meant to close,
+# plus any other transient holder); how long a wrapper still holding the
+# run lock past its own deadline is tolerated as merely late (margin=30s
+# alone is too tight for the per-wrapper capability probe plus process
+# startup) before `wait` gives up and calls it gone.
+STATE_LOCK_WAIT = 5.0
+WRAPPER_ADMIT_WAIT = 30.0
+RUN_LOCK_RETRY = 2.0
+OVERDUE_GRACE = 600
+_LOCK_POLL_INTERVAL = 0.1
+
 # The debug verdict `wait` records on the attempt it diagnosed. `dispatch`
 # admits --fix only right after DEBUG_RETRY: run-cc grants one fixed re-run
 # per visit, and a fix file left from an earlier attempt or cycle must never
@@ -830,6 +846,12 @@ def _a_layer_paths(run_dir: Path, step_id: str, cycle: int) -> dict:
         "attempts": steps_dir / f"{stem}_attempts.json",
         "wait": steps_dir / f"{stem}_wait.json",
         "debug_system": steps_dir / f"{stem}_debug_system.md",
+        # Step-level, not per-cycle: the liveness/admission machinery
+        # tracks whether ANY wrapper for this step id is alive, independent
+        # of which cycle it was dispatched for.
+        "run_lock": steps_dir / f"{step_id}_run.lock",
+        "marker": steps_dir / f"{step_id}_run.json",
+        "state_lock": steps_dir / f"{step_id}_state.lock",
     }
 
 
@@ -922,6 +944,16 @@ def _fix_path(run_dir: str | Path, step_id: str) -> Path:
     return Path(run_dir) / "steps" / f"{step_id}_fix.md"
 
 
+def _ladder_view(attempts: list) -> list:
+    """`attempts` with every aborted entry dropped: an aborted attempt is
+    not part of run-cc's ladder (it never finished, so there is nothing to
+    judge), so every ladder function below reads this instead of the raw
+    ledger -- otherwise an aborted-then-redispatched cycle would count a
+    vanished wrapper as a real failure against the retry budget, or as the
+    "last attempt" a debug fix or --fix applies to."""
+    return [a for a in attempts if isinstance(a, dict) and a.get("class") != "aborted"]
+
+
 def _retry_left(step: model.Step, error_class: str | None, failed: int,
                 earlier: list) -> bool:
     """run-cc's retry test after the `failed`-th attempt of a cycle fails
@@ -935,13 +967,22 @@ def _debug_is_next(step: model.Step, error_class: str | None, seq: int,
                    attempts: list) -> bool:
     """Whether run-cc's ladder hands failed attempt `seq` to debug: no
     identical retry left, `on-error="debug"`, a class debug takes, and no
-    fixed re-run granted earlier in the cycle."""
+    fixed re-run granted earlier in the cycle.
+
+    `attempts` is the raw ledger; the failure count and "earlier" list are
+    both taken from the ladder view so an aborted attempt elsewhere in the
+    cycle never inflates them -- unlike `_plain_block`
+    below, this function is handed `seq` (a raw ledger position) rather
+    than an already-filtered list, so the view-relative position has to be
+    recomputed here."""
     if step.on_error != "debug" or not claude_cli.is_debuggable(error_class):
         return False
-    earlier = [a for a in attempts if a.get("seq", seq) < seq]
+    view = _ladder_view(attempts)
+    position = sum(1 for a in view if a.get("seq", seq) <= seq)
+    earlier = [a for a in view if a.get("seq", seq) < seq]
     if any(a.get("debug") == DEBUG_RETRY for a in earlier):
         return False
-    return not _retry_left(step, error_class, seq, earlier)
+    return not _retry_left(step, error_class, position, earlier)
 
 
 def _on_error_action(step: model.Step, last: dict, earlier: list) -> str:
@@ -999,10 +1040,12 @@ def _dispatch_refusal(step: model.Step, run_dir: Path, cycle: int,
     """Why run-cc's ladder (Executor._exec_step) would not make this dispatch,
     ending in the one thing to do instead; None when it would.
 
-    --fix is admitted only right after the debug RETRY `wait` recorded, so the
-    one fixed re-run cannot repeat and a stale fix file never applies. An
-    aborted attempt leaves no ledger entry, so re-dispatching it the same way
-    is judged exactly as the aborted dispatch was.
+    --fix is admitted only right after the debug RETRY `wait` recorded, so
+    the one fixed re-run cannot repeat and a stale fix file never applies.
+    `attempts` here is always the ladder view (`_ladder_view`, called by
+    every caller before passing it in): an aborted attempt IS recorded to
+    the ledger, but it is not part of the ladder, so re-dispatching after
+    one is judged as if it had never happened.
     """
     where = f"step '{step.id}' cycle {cycle}"
     if fix:
@@ -1017,6 +1060,213 @@ def _dispatch_refusal(step: model.Step, run_dir: Path, cycle: int,
         return None
     why, action = blocked
     return f"{where}: {why} -- {action}"
+
+
+# ----- Liveness --------------------------------------------------------
+# Whether a step's most recently dispatched attempt is still running, is
+# overdue, or has vanished, decided from strongest evidence to weakest: the
+# run lock (a wrapper holds it only while it is actually admitted and
+# running, and only ever releases it after its own final write -- see
+# `cmd_run_wrapper`), then the ledger/exit.json it leaves behind, and only
+# as a last resort the wall-clock deadline. PID liveness is never checked
+# (a PID can be reused; the lock cannot lie about who holds it).
+
+_LOCK_CONTENDED = object()  # never acquired: another holder has it
+_LOCK_UNSUPPORTED = object()  # locking is not implemented for this path/FS
+_LOCK_UNAVAILABLE = object()  # the lock call raised for some other reason
+
+
+def _acquire_with_retry(path: Path, budget: float):
+    """`runlock.try_acquire` in a bounded poll loop. Returns a
+    `runlock.LockHandle` on success; otherwise one of three distinct
+    outcomes, because callers treat them differently:
+    - `_LOCK_CONTENDED`: `budget` seconds passed while another holder kept
+      it.
+    - `_LOCK_UNSUPPORTED`: the lock call itself raised an errno that means
+      locking is not implemented here at all (`runlock.is_unsupported`) --
+      every caller falls open on this.
+    - `_LOCK_UNAVAILABLE`: the lock call raised anything else (permission,
+      a transient filesystem error) -- callers decide per role whether that
+      means fail-open or fail-closed.
+    `budget<=0` tries exactly once, non-blocking."""
+    deadline = time.monotonic() + budget
+    while True:
+        try:
+            handle = runlock.try_acquire(str(path))
+        except OSError as e:
+            return _LOCK_UNSUPPORTED if runlock.is_unsupported(e) else _LOCK_UNAVAILABLE
+        if handle is not None:
+            return handle
+        if time.monotonic() >= deadline:
+            return _LOCK_CONTENDED
+        time.sleep(min(_LOCK_POLL_INTERVAL, max(0.0, deadline - time.monotonic())))
+
+
+_LOCK_OUTCOMES = (_LOCK_CONTENDED, _LOCK_UNSUPPORTED, _LOCK_UNAVAILABLE, None)
+
+
+def _release_lock(outcome) -> None:
+    if outcome not in _LOCK_OUTCOMES:
+        runlock.release(outcome)
+
+
+def _read_json_tolerant(path: str | Path) -> dict | None:
+    """Same tolerant-read policy as `_read_exit_json`: a run-lock marker or
+    wait record that does not exist yet, or is caught mid-write by another
+    process's atomic replace, reads as None rather than raising."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _read_json_retry(path: str | Path, budget: float) -> dict | None:
+    """`_read_json_tolerant` in a bounded poll loop: the first readable
+    result, or None once `budget` seconds pass without one."""
+    deadline = time.monotonic() + budget
+    while True:
+        data = _read_json_tolerant(path)
+        if data is not None or time.monotonic() >= deadline:
+            return data
+        time.sleep(min(_LOCK_POLL_INTERVAL, max(0.0, deadline - time.monotonic())))
+
+
+class _AttemptState:
+    __slots__ = ("kind", "evidence", "marker", "entry", "probed")
+
+    def __init__(self, kind: str, evidence: str | None = None,
+                marker: dict | None = None, entry: dict | None = None,
+                probed: bool = False):
+        self.kind = kind  # NONE / DONE / DONE_ABORTED / DONE_STUCK /
+                          # RUNNING / OVERDUE / GONE
+        self.evidence = evidence  # GONE only: "run-lock" | "deadline"
+        self.marker = marker  # only ever the CURRENT token's marker
+        self.entry = entry  # DONE/DONE_ABORTED/DONE_STUCK: the matched
+                            # ledger entry, when found via the ledger
+                            # rather than exit.json
+        self.probed = probed  # whether the run lock was actually probed
+                              # before this state was decided -- false only
+                              # for a DONE reached via exit.json alone,
+                              # before any probe happens at all
+
+
+def _attempt_state(handle: dict, attempts_path: Path, exit_path: Path,
+                   lock_paths: dict, now: float) -> _AttemptState:
+    """NONE / DONE / DONE_ABORTED / DONE_STUCK / RUNNING / OVERDUE / GONE
+    for `handle`'s most recent attempt -- shared by `cmd_dispatch` and
+    `cmd_wait` so the two commands can never disagree about the same
+    attempt. Caller holds the per-step state lock for the duration of this
+    call (or has decided to proceed fail-open without one) so the
+    marker-then-probe read below cannot interleave with a wrapper's own
+    admission.
+
+    Read order, and why it cannot be reordered:
+    1. exit.json alone decides DONE first: reading it is always safe (a
+       wrapper writes it at most once, atomically, and only ever as its
+       very last act before releasing the run lock).
+    2. The marker is read BEFORE the run lock is probed: a wrapper that
+       wins the lock during the probe call itself must still be seen as
+       this attempt's holder, or dispatch could launch a second one.
+    3. HELD is the strongest signal there is: while the run lock is held,
+       the ledger is never opened at all. A wrapper appends to it (via a
+       non-atomic-looking but still `os.replace`-based write) only while
+       holding the run lock, and admission (which would let a NEW wrapper
+       start doing the same) requires the same state lock this call's
+       caller already holds -- so once HELD is observed, no concurrent
+       writer to the ledger can possibly exist, but reading it any FURTHER
+       while genuinely still held risks catching that write mid-replace on
+       Windows and misreading a real attempt as absent.
+    4. Only once the probe is NOT held is the ledger consulted, together
+       with a fresh re-read of exit.json (a wrapper may have finished in
+       the gap between step 1 and the probe).
+
+    The one state that can be reached WITHOUT ever probing is `DONE` via
+    exit.json alone (step 1): `probed` on the returned state is False only
+    there, so `cmd_dispatch` can still probe before treating it as settled
+    -- a narrow window exists between a wrapper writing exit.json and
+    releasing the run lock, and a HELD lock there still means "do not
+    start a second one yet", not "already gone".
+    """
+    attempt = handle.get("attempt")
+    token = handle.get("token")
+
+    if _read_exit_json(exit_path) is not None:
+        return _AttemptState("DONE")
+
+    marker = _read_json_tolerant(lock_paths["marker"])
+    marker_matches = (token is not None and isinstance(marker, dict)
+                      and marker.get("token") == token)
+    matched_marker = marker if marker_matches else None
+    probe_result = runlock.probe(str(lock_paths["run_lock"]))
+
+    deadline = None
+    if handle.get("started_at") is not None and handle.get("timeout") is not None:
+        deadline = handle["started_at"] + handle["timeout"] + WAIT_ABORT_MARGIN
+    overdue = deadline is not None and now >= deadline
+
+    if probe_result == runlock.HELD:
+        return _AttemptState("OVERDUE" if overdue else "RUNNING",
+                             marker=matched_marker, probed=True)
+
+    # Not held: no wrapper can be actively writing to the ledger right now
+    # (see the docstring), so it is safe to open it.
+    if _read_exit_json(exit_path) is not None:
+        return _AttemptState("DONE", probed=True)
+    entry = None
+    if attempt is not None:
+        entry = next((a for a in stepio.load_attempts(attempts_path)
+                     if isinstance(a, dict) and a.get("seq") == attempt), None)
+    if entry is not None:
+        if entry.get("class") == "aborted":
+            return _AttemptState("DONE_ABORTED", entry=entry, probed=True)
+        if probe_result == runlock.FREE and marker_matches:
+            # The ledger already carries this attempt's final (non-aborted)
+            # class, but exit.json never appeared, and the wrapper that
+            # wrote the ledger entry has provably released the run lock:
+            # not merely slow, genuinely stuck.
+            return _AttemptState("DONE_STUCK", marker=matched_marker,
+                                 entry=entry, probed=True)
+        return _AttemptState("DONE", entry=entry, probed=True)
+
+    if attempt is None:
+        return _AttemptState("NONE", probed=True)
+
+    if probe_result == runlock.FREE and marker_matches:
+        return _AttemptState("GONE", evidence="run-lock",
+                             marker=matched_marker, probed=True)
+
+    if overdue:
+        return _AttemptState("GONE", evidence="deadline",
+                             marker=matched_marker, probed=True)
+
+    return _AttemptState("RUNNING", marker=matched_marker, probed=True)
+
+
+def _attempt_pid(state: _AttemptState, handle: dict):
+    """The most trustworthy pid to name in a message: the marker's (the
+    lock holder itself), when one matched this attempt's own token, else
+    the handle's own launch pid (which, behind a venv shim, can be a
+    different process than the wrapper)."""
+    if state.marker:
+        return state.marker.get("pid", handle.get("wrapper_pid"))
+    return handle.get("wrapper_pid")
+
+
+def _unrecorded_completion(handle: dict, exit_path: Path, wait_path: Path) -> bool:
+    """An attempt whose exit.json already exists but whose wait.json never
+    recorded it must block dispatch -- otherwise a finished-but-unrecorded
+    result gets silently discarded (a new cycle opens, or dispatch's own
+    stale-file cleanup deletes it) before its vars.json/log side effects
+    ever ran. Scoped to token-bearing handles only: a legacy handle (no
+    token) predates this guard and keeps the old behavior of trusting the
+    ledger alone."""
+    if not handle.get("token"):
+        return False
+    if _read_exit_json(exit_path) is None:
+        return False
+    wait_record = _read_json_tolerant(wait_path)
+    return not (isinstance(wait_record, dict)
+               and wait_record.get("attempt") == handle.get("attempt"))
 
 
 def cmd_dispatch(args) -> int:
@@ -1042,172 +1292,405 @@ def cmd_dispatch(args) -> int:
 
     run_dir = Path(args.run_dir)
     (run_dir / "steps").mkdir(parents=True, exist_ok=True)
-    cycle, attempts = _resolve_cycle(run_dir, args.step_id, args.new_cycle)
-    paths = _a_layer_paths(run_dir, args.step_id, cycle)
+    lock_paths = _a_layer_paths(run_dir, args.step_id, 1)
 
-    # The cap is per cycle (one step-node visit), matching run-cc's
-    # per-visit retry budget; wf.max below is the run-wide backstop.
-    decision_attempts = sum(1 for a in attempts if a.get("class") == "decision")
-    cap = (step.retry + 1 + DISPATCH_DEBUG_GRANTS + DISPATCH_ABORTED_REDISPATCH
-           + DISPATCH_DECISION_GRANTS * decision_attempts)
-    if len(attempts) >= cap:
-        print(f"error: dispatch cap exceeded for step '{args.step_id}' "
-              f"(cycle {cycle}): {len(attempts)} attempts already recorded, "
-              f"cap is {cap} (retry={step.retry} + 1 initial + "
-              f"{DISPATCH_DEBUG_GRANTS} debug + "
-              f"{DISPATCH_ABORTED_REDISPATCH} aborted-redispatch"
-              + (f" + {DISPATCH_DECISION_GRANTS}x{decision_attempts} decision"
-                 if decision_attempts else "") + "). "
-              f"If this is a new <while>/<each> iteration rather than a "
-              f"retry, pass --new-cycle", file=sys.stderr)
+    # Serializes this call against any other dispatch/wait/admission for the
+    # same step id: without it, two concurrent dispatches could both see the
+    # same vanished attempt as gone and each launch a replacement for it.
+    state_lock = _acquire_with_retry(lock_paths["state_lock"], STATE_LOCK_WAIT)
+    if state_lock is _LOCK_CONTENDED:
+        print(f"error: step '{args.step_id}': another dispatch or wait is "
+              "working on it -- run this again after that call returns",
+              file=sys.stderr)
         return 1
-
-    # What may follow a failed attempt is run-cc's ladder, not the
-    # orchestrator's generic retry: a class never re-run as-is (a refused
-    # call's re-run could reach the refused effect another way), a spent
-    # budget, the one fixed re-run, a fork awaiting its ruling. Enforced here,
-    # not left to prompt.
-    refusal = _dispatch_refusal(step, run_dir, cycle, attempts, args.fix)
-    if refusal:
-        print(f"error: {refusal}", file=sys.stderr)
-        return 1
-
-    log_path = run_dir / "steps.log"
-    executed = _count_step_executions(log_path)
-    if executed >= wf.max:
-        print(f"error: workflow max={wf.max} step executions reached "
-              f"({executed} recorded in {log_path})", file=sys.stderr)
-        return 1
-
+    if state_lock in (_LOCK_UNSUPPORTED, _LOCK_UNAVAILABLE):
+        print(f"warning: step '{args.step_id}': the per-step state lock is "
+              "unavailable on this filesystem; proceeding without it",
+              file=sys.stderr)
     try:
-        # Same auto-enumeration as the B layer, keyed per cycle since the A
-        # layer has one (§14.3).
-        settled = decision_mod.settled_pairs(
-            decision_mod.decisions_dir(run_dir), f"{args.step_id}_c{cycle:02d}")
-        system, prompt = stepio.build_step_prompt_parts(
-            wf, step, variables, base_dir, fix=args.fix,
-            agents_cache=agents_cache, decision=settled or None)
-    except (stepio.StepIOError, decision_mod.DecisionError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
+        # Whether the previous dispatch's wrapper is still running, overdue,
+        # or gone -- checked on the LATEST cycle regardless of --new-cycle:
+        # a live wrapper must block a new cycle exactly as it blocks a
+        # retry within the same one.
+        latest = _latest_cycle(run_dir / "steps", args.step_id)
+        if latest is not None:
+            latest_paths = _a_layer_paths(run_dir, args.step_id, latest)
+            handle = _read_json_tolerant(latest_paths["handle"])
+            if handle is not None:
+                now = time.time()
+                state = _attempt_state(handle, latest_paths["attempts"],
+                                       latest_paths["exit"], lock_paths, now)
+                pid = _attempt_pid(state, handle)
+                if state.kind == "RUNNING":
+                    print(f"error: step '{args.step_id}': attempt "
+                          f"{handle.get('attempt')} is still running "
+                          f"(wrapper pid {pid}) -- call wait on "
+                          f"{latest_paths['handle']} instead", file=sys.stderr)
+                    return 1
+                if state.kind == "OVERDUE":
+                    print(f"error: step '{args.step_id}': attempt "
+                          f"{handle.get('attempt')} still holds the step's "
+                          f"run lock past its deadline (pid {pid}) -- stop "
+                          "and report", file=sys.stderr)
+                    return 1
+                if state.kind == "GONE":
+                    stepio.record_aborted_attempt(
+                        step, latest_paths["attempts"], handle.get("attempt"),
+                        run_dir / "steps.log", latest_paths["result"],
+                        {"evidence": state.evidence, "detected_by": "dispatch"})
+                if state.kind == "DONE" and not state.probed:
+                    # exit.json alone decided DONE, before any probe (see
+                    # `_attempt_state`'s docstring): a narrow window exists
+                    # between a wrapper writing exit.json and releasing the
+                    # run lock, and HELD there still means "do not start a
+                    # second one yet".
+                    if runlock.probe(str(lock_paths["run_lock"])) == runlock.HELD:
+                        print(f"error: step '{args.step_id}': attempt "
+                              f"{handle.get('attempt')} is still running "
+                              f"(wrapper pid {handle.get('wrapper_pid')}) -- "
+                              f"call wait on {latest_paths['handle']} "
+                              "instead", file=sys.stderr)
+                        return 1
+                # A finished attempt `wait` never got to record must block
+                # dispatch too, whatever the ledger/lock state says --
+                # otherwise its result is silently discarded (a new cycle
+                # opens over it, or the stale-file cleanup below deletes
+                # it) before vars.json/the log ever saw it.
+                if _unrecorded_completion(handle, latest_paths["exit"],
+                                          latest_paths["wait"]):
+                    print(f"error: step '{args.step_id}': attempt "
+                          f"{handle.get('attempt')} finished but wait has "
+                          f"not recorded it -- run wait on "
+                          f"{latest_paths['handle']} first; if wait cannot "
+                          "record it, stop and report", file=sys.stderr)
+                    return 1
+                # Ledger says ok, exit.json never appeared, wrapper is gone:
+                # `wait` cannot apply the result, and a new cycle (or the
+                # stale-file cleanup) would discard it. Refused for ok only;
+                # a non-ok class is also what a failed launch leaves behind
+                # (cleanup removed exit.json, the handle was restored), and
+                # the ladder judges that one.
+                if (state.kind == "DONE_STUCK"
+                        and state.entry.get("class") == "ok"):
+                    print(f"error: step '{args.step_id}': attempt "
+                          f"{handle.get('attempt')} recorded ok but left no "
+                          "exit.json, so its result was never applied -- "
+                          "stop and report", file=sys.stderr)
+                    return 1
+            elif runlock.probe(str(lock_paths["run_lock"])) == runlock.HELD:
+                # An unreadable handle is not proof that no wrapper is
+                # alive: the run lock still says so.
+                print(f"error: step '{args.step_id}': its latest attempt is "
+                      f"still running (handle {latest_paths['handle']} is "
+                      "unreadable right now) -- call wait on "
+                      f"{latest_paths['handle']} instead", file=sys.stderr)
+                return 1
 
-    dispatch_model, dispatch_tools = stepio.dispatch_for(step, agents_cache)
-    try:  # a broken hand-edited model map is a startup error, not silently ignored
-        dispatch_model = modelmap.resolve(dispatch_model, "cc", allow_legacy=True)
-    except modelmap.ModelMapError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
-    # Least privilege, same rule as run-cc: --permission-mode reaches only
-    # steps whose resolved tools can write.
-    permission = (args.permission_mode
-                  if model.tools_can_write(dispatch_tools) else None)
+        cycle, attempts = _resolve_cycle(run_dir, args.step_id, args.new_cycle)
+        paths = _a_layer_paths(run_dir, args.step_id, cycle)
 
-    for p in (paths["exit"], paths["result"], paths["wait"]):
-        # Stale-read prevention (same principle as B-layer's `prompt
-        # --result`, reliability-spec.md §4.1 F6): a leftover exit/result
-        # from a prior attempt must never be mistaken for this one's, and a
-        # leftover wait record must not make this attempt look finished.
-        if p.is_file():
-            p.unlink()
-    paths["system"].write_text(system, encoding="utf-8")
-    paths["prompt"].write_text(prompt, encoding="utf-8")
+        # The one re-dispatch after an abort is a cycle-wide budget of its
+        # own, judged before the total-attempt cap so a run already spent
+        # on aborts is told to stop, not pointed at --new-cycle (a
+        # deviation from the total cap's own precedence, made for message
+        # accuracy only -- either order refuses the same calls). Counted by
+        # distinct seq, not raw entry count: the time-deadline fallback can
+        # in principle record the same seq twice (no lock evidence to key
+        # idempotency on), and that must not cost a second redispatch.
+        aborted_count = len({a.get("seq") for a in attempts
+                            if a.get("class") == "aborted"})
+        if aborted_count > DISPATCH_ABORTED_REDISPATCH:
+            print(f"error: step '{args.step_id}' cycle {cycle}: "
+                  f"{aborted_count} attempts aborted; the one re-dispatch "
+                  "after an abort is spent -- stop and report", file=sys.stderr)
+            return 1
 
-    seq = len(attempts) + 1
-    wrapper_cmd = [sys.executable, "-m", "wfrun", "_wrapper",
-                  "--system-file", str(paths["system"]),
-                  "--prompt-file", str(paths["prompt"]),
-                  "--exit-file", str(paths["exit"]),
-                  "--result-file", str(paths["result"]),
-                  "--attempts-file", str(paths["attempts"]),
-                  "--seq", str(seq), "--cwd", str(base_dir),
-                  "--timeout", str(step.timeout)]
-    if dispatch_model:
-        wrapper_cmd += ["--model", dispatch_model]
-    if step.effort:
-        wrapper_cmd += ["--effort", step.effort]
-    if dispatch_tools:
-        wrapper_cmd += ["--tools", dispatch_tools]
-    if step.schema:
-        wrapper_cmd += ["--schema", step.schema]
-    if permission:
-        wrapper_cmd += ["--permission-mode", permission]
+        # The cap is per cycle (one step-node visit), matching run-cc's
+        # per-visit retry budget; wf.max below is the run-wide backstop.
+        decision_attempts = sum(1 for a in attempts if a.get("class") == "decision")
+        cap = (step.retry + 1 + DISPATCH_DEBUG_GRANTS + DISPATCH_ABORTED_REDISPATCH
+               + DISPATCH_DECISION_GRANTS * decision_attempts)
+        if len(attempts) >= cap:
+            print(f"error: dispatch cap exceeded for step '{args.step_id}' "
+                  f"(cycle {cycle}): {len(attempts)} attempts already recorded, "
+                  f"cap is {cap} (retry={step.retry} + 1 initial + "
+                  f"{DISPATCH_DEBUG_GRANTS} debug + "
+                  f"{DISPATCH_ABORTED_REDISPATCH} aborted-redispatch"
+                  + (f" + {DISPATCH_DECISION_GRANTS}x{decision_attempts} decision"
+                     if decision_attempts else "") + "). "
+                  f"If this is a new <while>/<each> iteration rather than a "
+                  f"retry, pass --new-cycle", file=sys.stderr)
+            return 1
 
-    popen_kwargs = {}
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
-    else:
-        popen_kwargs["start_new_session"] = True
-    wrapper_proc = subprocess.Popen(
-        wrapper_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, close_fds=True, **popen_kwargs)
+        # What may follow a failed attempt is run-cc's ladder, not the
+        # orchestrator's generic retry: a class never re-run as-is (a refused
+        # call's re-run could reach the refused effect another way), a spent
+        # budget, the one fixed re-run, a fork awaiting its ruling. Enforced
+        # here, not left to prompt. The ladder view drops aborted attempts:
+        # an aborted attempt never finished, so there is nothing in it for
+        # the ladder to judge.
+        refusal = _dispatch_refusal(step, run_dir, cycle, _ladder_view(attempts),
+                                    args.fix)
+        if refusal:
+            print(f"error: {refusal}", file=sys.stderr)
+            return 1
 
-    started_at = time.time()
-    paths["handle"].write_text(json.dumps({
-        "wrapper_pid": wrapper_proc.pid, "attempt": seq, "cycle": cycle,
-        "started_at": started_at, "timeout": step.timeout,
-        # Not in reliability-spec.md §5.1's literal handle field list
-        # ({wrapper_pid, attempt, started_at, timeout}), but `wait`'s own
-        # signature (<handle> --max --vars --log, no xml/step-id) has
-        # nowhere else to get the step definition it needs for its
-        # record-equivalent job -- a genuine spec gap, resolved here by
-        # widening the handle rather than the CLI surface.
-        "xml": str(args.workflow), "step_id": args.step_id,
-        "run_dir": str(run_dir), "exit_path": str(paths["exit"]),
-        "result_path": str(paths["result"]),
-        "system_path": str(paths["system"]), "prompt_path": str(paths["prompt"]),
-        # Carried explicitly rather than re-derived from step_id: the
-        # per-cycle stem means `wait` cannot reconstruct it from the id alone.
-        "wait_path": str(paths["wait"]),
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+        log_path = run_dir / "steps.log"
+        executed = _count_step_executions(log_path)
+        if executed >= wf.max:
+            print(f"error: workflow max={wf.max} step executions reached "
+                  f"({executed} recorded in {log_path})", file=sys.stderr)
+            return 1
 
-    print(f"{paths['handle']} (dispatched, pid={wrapper_proc.pid}, "
-          f"cycle={cycle}, seq={seq})")
-    return 0
+        try:
+            # Same auto-enumeration as the B layer, keyed per cycle since the A
+            # layer has one (§14.3).
+            settled = decision_mod.settled_pairs(
+                decision_mod.decisions_dir(run_dir), f"{args.step_id}_c{cycle:02d}")
+            system, prompt = stepio.build_step_prompt_parts(
+                wf, step, variables, base_dir, fix=args.fix,
+                agents_cache=agents_cache, decision=settled or None)
+        except (stepio.StepIOError, decision_mod.DecisionError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+
+        dispatch_model, dispatch_tools = stepio.dispatch_for(step, agents_cache)
+        try:  # a broken hand-edited model map is a startup error, not silently ignored
+            dispatch_model = modelmap.resolve(dispatch_model, "cc", allow_legacy=True)
+        except modelmap.ModelMapError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        # Least privilege, same rule as run-cc: --permission-mode reaches only
+        # steps whose resolved tools can write.
+        permission = (args.permission_mode
+                      if model.tools_can_write(dispatch_tools) else None)
+
+        for p in (paths["exit"], paths["result"], paths["wait"]):
+            # Stale-read prevention (same principle as B-layer's `prompt
+            # --result`, reliability-spec.md §4.1 F6): a leftover exit/result
+            # from a prior attempt must never be mistaken for this one's, and a
+            # leftover wait record must not make this attempt look finished.
+            # Safe here: a still-live prior attempt already refused above,
+            # and a gone one was just settled to the ledger/log, never to
+            # these files.
+            if p.is_file():
+                p.unlink()
+        paths["system"].write_text(system, encoding="utf-8")
+        paths["prompt"].write_text(prompt, encoding="utf-8")
+
+        seq = len(attempts) + 1
+        token = secrets.token_hex(16)
+        wrapper_cmd = [sys.executable, "-m", "wfrun", "_wrapper",
+                      "--system-file", str(paths["system"]),
+                      "--prompt-file", str(paths["prompt"]),
+                      "--exit-file", str(paths["exit"]),
+                      "--result-file", str(paths["result"]),
+                      "--attempts-file", str(paths["attempts"]),
+                      "--seq", str(seq), "--cwd", str(base_dir),
+                      "--timeout", str(step.timeout),
+                      "--handle-file", str(paths["handle"]), "--token", token]
+        if dispatch_model:
+            wrapper_cmd += ["--model", dispatch_model]
+        if step.effort:
+            wrapper_cmd += ["--effort", step.effort]
+        if dispatch_tools:
+            wrapper_cmd += ["--tools", dispatch_tools]
+        if step.schema:
+            wrapper_cmd += ["--schema", step.schema]
+        if permission:
+            wrapper_cmd += ["--permission-mode", permission]
+
+        popen_kwargs = {}
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        # Written before Popen, token included, so the wrapper's own
+        # admission (which reads --handle-file under its own state-lock
+        # hold) always finds this attempt's token there; wrapper_pid is
+        # filled in below once Popen returns it. Atomic, and restored (or
+        # removed, if this cycle had none before) if the launch itself never
+        # happens.
+        started_at = time.time()
+        prior_handle = paths["handle"].read_bytes() if paths["handle"].is_file() else None
+        handle_fields = {
+            "wrapper_pid": None, "attempt": seq, "cycle": cycle,
+            "started_at": started_at, "timeout": step.timeout, "token": token,
+            # Not in reliability-spec.md §5.1's literal handle field list
+            # ({wrapper_pid, attempt, started_at, timeout}), but `wait`'s own
+            # signature (<handle> --max --vars --log, no xml/step-id) has
+            # nowhere else to get the step definition it needs for its
+            # record-equivalent job -- a genuine spec gap, resolved here by
+            # widening the handle rather than the CLI surface.
+            "xml": str(args.workflow), "step_id": args.step_id,
+            "run_dir": str(run_dir), "exit_path": str(paths["exit"]),
+            "result_path": str(paths["result"]),
+            "system_path": str(paths["system"]), "prompt_path": str(paths["prompt"]),
+            # Carried explicitly rather than re-derived from step_id: the
+            # per-cycle stem means `wait` cannot reconstruct it from the id alone.
+            "wait_path": str(paths["wait"]),
+        }
+        stepio.write_text_atomic(paths["handle"], json.dumps(
+            handle_fields, ensure_ascii=False, indent=2))
+        try:
+            wrapper_proc = subprocess.Popen(
+                wrapper_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, close_fds=True, **popen_kwargs)
+        except OSError as e:
+            if prior_handle is not None:
+                paths["handle"].write_bytes(prior_handle)
+            else:
+                paths["handle"].unlink(missing_ok=True)
+            print(f"error: failed to launch wrapper for step "
+                  f"'{args.step_id}': {e}", file=sys.stderr)
+            return 2
+
+        handle_fields["wrapper_pid"] = wrapper_proc.pid
+        stepio.write_text_atomic(paths["handle"], json.dumps(
+            handle_fields, ensure_ascii=False, indent=2))
+
+        print(f"{paths['handle']} (dispatched, pid={wrapper_proc.pid}, "
+              f"cycle={cycle}, seq={seq})")
+        return 0
+    finally:
+        _release_lock(state_lock)
 
 
 def cmd_run_wrapper(args) -> int:
-    """Internal: launched detached by `cmd_dispatch` only. Runs the actual
-    `claude -p` call with kill_tree=True (reliability-spec.md §5.1) and
-    persists exit.json / result.json / an attempts.json entry -- never
-    touches vars.json or steps.log (that is `wait`'s job)."""
-    prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+    """Internal: launched detached by `cmd_dispatch` only.
 
-    launched = claude_cli._launch(
-        prompt, system_prompt_file=args.system_file, model=args.model,
-        effort=args.effort, tools=args.tools, schema=args.schema,
-        timeout=args.timeout, cwd=args.cwd,
-        permission_mode=args.permission_mode, kill_tree=True)
+    Admission runs first: take the run lock, confirm this is still the
+    current attempt (token matches the handle, seq not already in the
+    ledger), and write a marker carrying this attempt's own pid and token
+    -- all under the per-step state lock, so it cannot interleave with an
+    observer's marker-then-probe read (`_attempt_state`). Only once
+    admitted does this run the actual `claude -p` call with kill_tree=True
+    (reliability-spec.md §5.1) and persist exit.json / result.json / an
+    attempts.json entry -- never touches vars.json or steps.log (that is
+    `wait`'s job).
 
-    exit_data = {"ended_at": time.time()}
-    if isinstance(launched, claude_cli.CliResult):
-        # Rejected before/without producing real output (env: resolution
-        # failure or a shim loud-failure refusal; timeout: the claude
-        # process itself never returned). There is no real stdout to
-        # persist, so result.json stays empty and `wait` must NOT try to
-        # re-derive a classification from it (empty stdout always reads as
-        # `env` via classify_result, which would silently discard a real
-        # `timeout`) -- exit_data carries the true classification directly.
-        exit_data.update(returncode=launched.exit_code, stderr=launched.stderr,
-                         early_class=launched.error_class, early_error=launched.error)
-        raw_stdout = ""
-        status = launched.error_class or "error"
-    else:
-        returncode, raw_stdout, stderr = launched
-        exit_data.update(returncode=returncode, stderr=stderr)
-        res = claude_cli.classify_result(returncode, raw_stdout, stderr, schema=args.schema)
-        status = "ok" if res.ok else (res.error_class or "error")
+    Fail-closed by default: an admission step that cannot prove
+    exclusivity exits without writing anything, rather than risk running
+    alongside another holder. The one exception is a lock call that raises
+    an errno meaning locking itself is not implemented here at all
+    (`runlock.is_unsupported`) -- there, this falls open like every other
+    participant, since no amount of retrying would ever succeed.
+    """
+    # Not yet under the state lock, so this read can land inside dispatch's
+    # atomic rewrite of the same handle (a transient PermissionError on
+    # Windows); retry briefly instead of dropping an attempt nobody will
+    # ever record.
+    handle = _read_json_retry(args.handle_file, RUN_LOCK_RETRY)
+    if handle is None:
+        return 1
 
-    # Order matters: exit.json is the completion authority `wait` polls for,
-    # so everything it will read must already be in place before it appears.
-    # Both writes are atomic (stepio.write_text_atomic) so `wait` can never
-    # observe a half-written file.
-    stepio.write_text_atomic(args.result_file, raw_stdout)
-    stepio.append_attempt(args.attempts_file, args.seq, status)
-    stepio.write_text_atomic(args.exit_file,
-                             json.dumps(exit_data, ensure_ascii=False, indent=2))
-    return 0
+    lock_paths = _a_layer_paths(Path(handle["run_dir"]), handle["step_id"],
+                                handle.get("cycle", 1))
+
+    state_lock = _acquire_with_retry(lock_paths["state_lock"], WRAPPER_ADMIT_WAIT)
+    if state_lock in (_LOCK_CONTENDED, _LOCK_UNAVAILABLE):
+        return 1
+
+    run_lock = _LOCK_CONTENDED
+    admitted = False
+    try:
+        # A short bounded retry, not a single non-blocking try: it absorbs
+        # the run lock's own probe-vs-admission race and any other
+        # transient holder, without ever blocking as long as a live
+        # wrapper would.
+        run_lock = _acquire_with_retry(lock_paths["run_lock"], RUN_LOCK_RETRY)
+        if run_lock is not _LOCK_UNAVAILABLE and run_lock is not _LOCK_CONTENDED:
+            fresh_handle = _read_json_tolerant(args.handle_file)
+            already_recorded = any(
+                isinstance(a, dict) and a.get("seq") == args.seq
+                for a in stepio.load_attempts(args.attempts_file))
+            # A token mismatch means a newer dispatch has replaced this
+            # attempt; an already-recorded seq means this admission is a
+            # duplicate. Either way: touch nothing, leave no trace.
+            if (fresh_handle is not None
+                    and fresh_handle.get("token") == args.token
+                    and not already_recorded):
+                stepio.write_text_atomic(lock_paths["marker"], json.dumps({
+                    "token": args.token, "cycle": handle.get("cycle", 1),
+                    "attempt": args.seq, "pid": os.getpid(),
+                    "acquired_at": time.time(),
+                }, ensure_ascii=False))
+                admitted = True
+    finally:
+        _release_lock(state_lock)
+
+    if not admitted:
+        _release_lock(run_lock)
+        return 1
+
+    try:
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+
+        launched = claude_cli._launch(
+            prompt, system_prompt_file=args.system_file, model=args.model,
+            effort=args.effort, tools=args.tools, schema=args.schema,
+            timeout=args.timeout, cwd=args.cwd,
+            permission_mode=args.permission_mode, kill_tree=True)
+
+        exit_data = {"ended_at": time.time()}
+        if isinstance(launched, claude_cli.CliResult):
+            # Rejected before/without producing real output (env: resolution
+            # failure or a shim loud-failure refusal; timeout: the claude
+            # process itself never returned). There is no real stdout to
+            # persist, so result.json stays empty and `wait` must NOT try to
+            # re-derive a classification from it (empty stdout always reads as
+            # `env` via classify_result, which would silently discard a real
+            # `timeout`) -- exit_data carries the true classification directly.
+            exit_data.update(returncode=launched.exit_code, stderr=launched.stderr,
+                             early_class=launched.error_class, early_error=launched.error)
+            raw_stdout = ""
+            status = launched.error_class or "error"
+        else:
+            returncode, raw_stdout, stderr = launched
+            exit_data.update(returncode=returncode, stderr=stderr)
+            res = claude_cli.classify_result(returncode, raw_stdout, stderr, schema=args.schema)
+            status = "ok" if res.ok else (res.error_class or "error")
+
+        # Order matters: exit.json is the completion authority `wait` polls
+        # for, so everything it will read must already be in place before it
+        # appears. Both writes are atomic (stepio.write_text_atomic) so
+        # `wait` can never observe a half-written file.
+        stepio.write_text_atomic(args.result_file, raw_stdout)
+        stepio.append_attempt(args.attempts_file, args.seq, status)
+        stepio.write_text_atomic(args.exit_file,
+                                 json.dumps(exit_data, ensure_ascii=False, indent=2))
+        return 0
+    finally:
+        # Released after exit.json is written on the success path (this is
+        # exactly the evidence `_attempt_state` relies on to tell a
+        # finished attempt from a merely-vanished one); released here
+        # regardless on any exception, so a wrapper that dies mid-launch
+        # still frees the lock for the observer to see FREE.
+        _release_lock(run_lock)
+
+
+def _settle_gone_wait(handle: dict, attempts_path: Path, steps_log: Path,
+                      state: _AttemptState) -> int:
+    """Record a gone attempt as aborted for `cmd_wait` (caller holds the
+    per-step state lock) and return `wait`'s exit code."""
+    wf = parser.parse_file(handle["xml"])
+    try:
+        step = stepio.find_step(wf, handle.get("step_id"))
+    except stepio.StepIOError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    attempt = handle.get("attempt")
+    stepio.record_aborted_attempt(
+        step, attempts_path, attempt, steps_log,
+        Path(handle["result_path"]),
+        {"evidence": state.evidence, "detected_by": "wait"})
+    print(f"aborted: attempt {attempt} is gone (evidence="
+          f"{state.evidence}, last known wrapper pid "
+          f"{_attempt_pid(state, handle)})", file=sys.stderr)
+    return 3
 
 
 def cmd_wait(args) -> int:
@@ -1221,19 +1704,106 @@ def cmd_wait(args) -> int:
     call_deadline = time.time() + args.max
     # See WAIT_ABORT_MARGIN: a wrapper that never appears is a different
     # failure mode (the process vanished) from one still legitimately
-    # running within its own timeout.
+    # running within its own timeout. OVERDUE_GRACE gives a wrapper that
+    # still holds the run lock past that deadline extra room -- HELD is
+    # positive evidence it is alive, merely late.
     abort_at = handle["started_at"] + handle["timeout"] + WAIT_ABORT_MARGIN
+    overdue_deadline = abort_at + OVERDUE_GRACE
+
+    attempt = handle.get("attempt")
+    run_dir = Path(handle["run_dir"])
+    step_id = handle.get("step_id")
+    paths = _a_layer_paths(run_dir, step_id, handle.get("cycle", 1))
+    attempts_path = paths["attempts"]
+    # An abort always settles to the run's own steps.log, regardless of
+    # what (if anything) this call's own --log points at: that is the one
+    # file the dispatch cap (`_count_step_executions`) is guaranteed to
+    # read, and the ledger is the idempotency key either detector shares.
+    steps_log = run_dir / "steps.log"
 
     while True:
         exit_data = _read_exit_json(exit_path)
         if exit_data is not None:
             return _finish_wait(handle, args, exit_data)
+
         now = time.time()
-        if now >= abort_at:
-            print("aborted: wrapper produced no exit.json past its deadline",
+        lock = _acquire_with_retry(paths["state_lock"], 0.0)
+        state = None
+        if lock is not _LOCK_CONTENDED:
+            try:
+                state = _attempt_state(handle, attempts_path, exit_path, paths, now)
+                if state.kind == "GONE":
+                    # Settled under the same hold as the evaluation: once
+                    # the lock is released, a late wrapper could be admitted
+                    # and run an attempt already reported as aborted.
+                    return _settle_gone_wait(handle, attempts_path, steps_log,
+                                             state)
+            finally:
+                _release_lock(lock)
+
+        if state is not None and state.kind == "DONE_ABORTED":
+            # Already settled by an earlier wait/dispatch call: replay the
+            # verdict, not a fresh liveness evaluation (idempotent, like
+            # `_finish_wait`'s own wait.json replay above).
+            print(f"aborted: attempt {attempt} already recorded "
+                  f"({state.entry.get('evidence', 'unknown')})", file=sys.stderr)
+            return 3
+
+        if state is not None and state.kind == "DONE_STUCK":
+            # The ledger already carries this attempt's final (non-aborted)
+            # class, but exit.json never appeared, and the wrapper that
+            # wrote it has provably released the run lock: not merely
+            # slow, gone. Nothing to settle (it is already recorded);
+            # nothing to gain by waiting further.
+            print(f"aborted: attempt {attempt} recorded "
+                  f"{state.entry.get('class')} but left no exit.json",
                   file=sys.stderr)
             return 3
+
+        # A ledger entry that is not provably stuck (the run lock's probe
+        # came back UNKNOWN, or the marker did not match -- most likely a
+        # legacy, token-less handle) is treated exactly like RUNNING below,
+        # including the overdue-grace cap, rather than guessed at -- but it
+        # must still hit that cap, or a legacy handle whose exit.json never
+        # arrives would report "running" forever (the exact P1 incident
+        # WAIT_ABORT_MARGIN exists to close). `unproven` carries the entry
+        # through so the cap's own message can still name its class.
+        unproven = None
+        if state is not None and state.kind == "DONE":
+            if _read_exit_json(exit_path) is not None:
+                continue  # the loop head will pick it up via _finish_wait
+            unproven = state.entry
+            state = _AttemptState("RUNNING")
+
+        state_lock_stuck = lock is _LOCK_CONTENDED
+        overdue = state is not None and state.kind == "OVERDUE"
+        if (state_lock_stuck or overdue
+                or unproven is not None) and now >= overdue_deadline:
+            # A state lock that stays contended on every poll, or a ledger
+            # entry that never gets an exit.json to confirm it, must still
+            # hit a time upper bound, exactly like a wrapper that stays
+            # overdue -- all three would otherwise keep `wait` returning
+            # "running" forever.
+            if state_lock_stuck:
+                print(f"aborted: attempt {attempt} -- the step's state lock "
+                      "stayed contended past the overdue grace window; stop "
+                      "and report", file=sys.stderr)
+            elif unproven is not None:
+                print(f"aborted: attempt {attempt} recorded "
+                      f"{unproven.get('class')} but left no exit.json past "
+                      "the overdue grace window -- stop and report",
+                      file=sys.stderr)
+            else:
+                print(f"aborted: attempt {attempt} (wrapper pid "
+                      f"{_attempt_pid(state, handle)}) is still running "
+                      "past its deadline -- stop and report", file=sys.stderr)
+            return 3
+
         if now >= call_deadline:
+            if overdue:
+                print(f"running: attempt {attempt} is past its own deadline "
+                      f"but still holds the run lock (wrapper pid "
+                      f"{_attempt_pid(state, handle)})", file=sys.stderr)
             print("running")
             return 10
         time.sleep(min(WAIT_POLL_INTERVAL, max(0.0, call_deadline - now)))
@@ -1548,6 +2118,12 @@ def main(argv=None) -> int:
     p_wrapper.add_argument("--tools")
     p_wrapper.add_argument("--schema")
     p_wrapper.add_argument("--permission-mode")
+    p_wrapper.add_argument("--handle-file", required=True,
+                           help="the handle dispatch wrote, for admission "
+                                "(run lock + marker) before launching")
+    p_wrapper.add_argument("--token", required=True,
+                           help="this attempt's token, checked against the "
+                                "handle's own during admission")
     p_wrapper.set_defaults(func=cmd_run_wrapper)
 
     p_wait = sub.add_parser(
