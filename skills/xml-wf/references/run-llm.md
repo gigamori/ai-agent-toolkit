@@ -34,7 +34,10 @@ ok/error, and true/false**. All content flows through wfrun and files:
 3. Create the run dir `runs/<name>_<ts>-llm/` and write `vars.json` with the
    resolved `<param>` values (ask the user for missing required ones) — the
    single moment you write values
-4. Create an empty `steps.log`
+4. Create an empty `steps.log` in the run dir (`runs/<name>_<ts>-llm/steps.log`).
+   Every `--log steps.log` below means this file. In layer A, `wait` writes an
+   aborted attempt to it whatever `--log` says, and `dispatch` counts it toward
+   `max`, so a `--log` naming any other file splits the run's record in two
 5. **Choose the protocol layer** (reliability-spec.md §5.2): run
    `claude --version`. Success → **layer A** (`dispatch`/`wait`, next
    section — deterministic timeout/kill, no subagent delegation needed);
@@ -74,15 +77,17 @@ $WFRUN dispatch <xml> <id> --vars vars.json --run-dir runs/<name>_<ts>-llm \
 #    if it reports "running" — keep --max <= 550 so one call always fits a
 #    single Bash tool invocation)
 $WFRUN wait runs/.../steps/<id>_handle.json --max 500 \
-    --vars vars.json --log steps.log
+    --vars vars.json --log runs/<name>_<ts>-llm/steps.log
 #   ok            (0)  -> vars.json updated; move on
 #   error: <class> (1)  -> dispatch again; see the paragraph after this block
 #   error: denied (details: <file>) (1) -> a tool call was refused; never
 #                          retried -- dispatch refuses it
 #   decision: ...  (4)  -> the step asked for a ruling; see "On decision"
 #   running        (10) -> not done yet; call wait again
-#   aborted: ...   (3)  -> the wrapper itself never finished (crashed/killed
-#                          externally) -- see "On abort" below, same as layer B
+#   aborted: ...   (3)  -> the attempt did not finish cleanly: its wrapper
+#                          vanished (crashed/killed), or wait could not settle
+#                          it; the line says which -- see "On aborted" after
+#                          this block, and "On abort" below for why
 #
 # Calling wait again on an ALREADY-FINISHED handle is safe and expected:
 # it replays the same verdict and exit code without re-appending to
@@ -106,10 +111,21 @@ settle the decision, or dispatch with `--fix` — so do exactly that.
 `on-error="debug"` is handled *for you* by `wait`: it runs the diagnosis
 in-process when the rules reach debug, and writes `steps/<id>_fix.md` on
 RETRY — you do not delegate a debug subagent in this layer.
-On `aborted`, re-`dispatch` the same step exactly once, with the same
-arguments; a second `aborted` stops and reports. A flat attempt cap
+
+**On aborted, `dispatch` decides too.** A vanished wrapper is recorded as
+aborted by whichever of `wait` and `dispatch` finds it (ledger and
+`steps.log`, so it counts toward `max`), and aborted attempts do not consume
+`retry`. After an `aborted:` line, re-`dispatch` the same step once, with the
+same arguments -- unless the line itself ends in `stop and report`. A second
+`aborted` in the same cycle stops and reports: `dispatch` refuses that
+re-dispatch. It also refuses one while the attempt is still running or still
+holds the run lock past its deadline, and when the ledger says `ok` but
+`exit.json` is missing (the finished result was never applied, and no wfrun
+command can apply it). Each refusal ends in the one thing to do -- call
+`wait`, run the call again after the other one returns, or stop and report --
+so do exactly that. A flat attempt cap
 (`retry`+1+debug(1)+aborted-redispatch(1), reliability-spec.md §5.1, F4/P5)
-stays underneath as the runaway backstop.
+counts aborted attempts too and stays underneath as the runaway backstop.
 
 **Cycles (`<while>` / `<each>` re-visits).** That budget is per *cycle* —
 one visit to the step node — exactly like run-cc, where every visit gets a
@@ -386,22 +402,27 @@ which the verdict message says so and asks for a person; human rulings marked
 `--decider human` never count. You keep no tally — the ledger in `decisions/`
 is the count, and `record` reads it.
 
-## On abort (`record` exit 3, or `poll` reports `deadline-exceeded`)
+## On abort (`record` exit 3, `poll` reports `deadline-exceeded`, or layer A's `wait` exit 3)
 
 `aborted` is a different failure mode from `error` and is handled
 separately, never folded into the `retry`/`on-error` machinery above: it
-means the subagent went silent (interrupted, connection drop, killed
-mid-turn) rather than finishing and reporting a failure. Retrying it like
-an ordinary `error` would burn the step's `retry` budget on an
-infrastructure event the step itself never got a chance to fail at, and
-handing it to `debug` makes no sense either — there is no execution to
-diagnose.
+means the subagent (in layer A, its wrapper) went silent (interrupted,
+connection drop, killed mid-turn) rather than finishing and reporting a
+failure. Retrying it like an ordinary `error` would burn the step's `retry`
+budget on an infrastructure event the step itself never got a chance to fail
+at, and handing it to `debug` makes no sense either — there is no execution
+to diagnose.
 
-- **Re-delegate the same step exactly once**, from move 1 (`prompt` again —
-  this also clears the stale result file and re-dispatches the handle with
-  a fresh `dispatched_at`)
-- If that re-attempt **also** aborts: stop and report to the user. Do not
-  retry a second time and do not fall through to `on-error`
+Who holds the one-retry budget differs by layer. In layer A, `dispatch` does,
+and "On aborted" in the layer A section is the whole rule. In layer B, only
+the bullets below do: `poll`'s `deadline-exceeded` records nothing, and no
+code consults the layer B ledger.
+
+- **Layer B: re-delegate the same step exactly once**, from move 1 (`prompt`
+  again — this also clears the stale result file and re-dispatches the handle
+  with a fresh `dispatched_at`)
+- Layer B: if that re-attempt **also** aborts: stop and report to the user. Do
+  not retry a second time and do not fall through to `on-error`
 - This one-retry budget is independent of the step's own `retry` attribute
   (aborted attempts do not consume it, and its exhaustion does not affect
   this one-time abort allowance)
@@ -482,6 +503,26 @@ them, do not paper over them:
     leave their transcripts incomplete when `record` reads them.
   - Pi has no permission layer, so nothing is checked there.
   - The no-retry rule for `error: denied` is prompt-level in this layer.
+
+**Layer A has three gaps of its own.** `dispatch` and `wait` decide whether an
+attempt is running, overdue or gone from a lock, not from your judgment. What
+that cannot close:
+
+- **No lock evidence, no proof.** A handle from before run locks (it has no
+  `token`), or a filesystem where locking is not implemented (`dispatch`
+  prints `warning: ... proceeding without it`), leaves only the clock: the
+  attempt's start plus the step's `timeout` plus a short margin. A wrapper
+  that is alive but slower than that can be judged gone, and the one permitted
+  re-dispatch then runs beside it.
+- **Orphaned children on macOS.** The run lock belongs to the wrapper. When the
+  wrapper is killed, nothing on macOS ties its `claude` child's life to the
+  wrapper's, so the lock frees and `aborted` is recorded while that child may
+  still be working; the re-dispatch can then run beside it.
+- **`wait` and `dispatch` for one step must not overlap.** The state lock
+  serializes two `dispatch` calls, but not the moment `wait` finishes an
+  attempt: overlapping `wait` calls can log the step twice and run a second
+  debug diagnosis, and a `wait` racing a `dispatch` can clash over the ledger.
+  Do not issue them in parallel Bash calls.
 
 ---
 

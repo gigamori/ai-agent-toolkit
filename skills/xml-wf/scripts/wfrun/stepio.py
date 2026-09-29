@@ -670,6 +670,39 @@ def update_attempt(attempts_path: str | Path, seq, fields: dict) -> bool:
     return False
 
 
+def record_aborted_attempt(step: model.Step, attempts_path: str | Path, seq,
+                           log_path: str | Path | None, result_path,
+                           fields: dict) -> bool:
+    """A-layer settle: record one aborted attempt to the run's step log and
+    ledger (reliability-spec.md §5.4.3). The B layer's own aborted path
+    (`_record_file` above) is untouched -- this is the A layer's own entry
+    point, called from `wfrun.__main__`'s dispatch/wait once they judge an
+    attempt gone.
+
+    Idempotent on `seq`: returns False and writes nothing when the ledger
+    already carries an entry for it (any class) -- a settle re-evaluated
+    after a crash between this function's own two writes must not
+    double-record. The log line is written before the ledger entry, so a
+    crash in between leaves at most one extra log line, never a missing
+    one (`_count_step_executions`'s docstring already reads this file
+    protectively).
+
+    `fields` carries at least {"evidence": "run-lock"|"deadline",
+    "detected_by": "dispatch"|"wait"}, merged into the ledger entry
+    alongside the fixed {seq, class: "aborted", ended_at}.
+    """
+    attempts_path = Path(attempts_path)
+    attempts = load_attempts(attempts_path)
+    if any(isinstance(a, dict) and a.get("seq") == seq for a in attempts):
+        return False
+    _append_log(log_path, step, "aborted", result_path)
+    attempts.append({"seq": seq, "class": "aborted", "ended_at": time.time(),
+                     **fields})
+    write_text_atomic(attempts_path,
+                      json.dumps(attempts, ensure_ascii=False, indent=2))
+    return True
+
+
 def apply_result(step: model.Step, res, vars_path: str | Path,
                  log_path: str | Path | None = None,
                  result_path: str | Path = "<result>",

@@ -117,6 +117,42 @@ An editor adding an LLM CLI launch goes through `run_claude`/`run_pi`, or
 calls `procbind.popen_bound` directly. A plain `subprocess.run`/`Popen` there
 reopens I2.
 
+## Layer A liveness and admission
+
+**I3** (2026-09-29): `wfrun dispatch` and `wfrun wait` decide whether a step's
+latest attempt is running, overdue, gone or done from evidence, and both must
+reach the same verdict for the same attempt, which is why both go through
+`_attempt_state`. The machinery is `cmd_dispatch`, `cmd_wait`,
+`cmd_run_wrapper` and `_attempt_state` in `scripts/wfrun/__main__.py`, over the
+lock driver `scripts/wfrun/runlock.py`. It is layer A only: run-cc, run-pi and
+layer B (`prompt`/`record`/`poll`) neither share it nor change with it. An
+editor of any of it keeps four things true:
+
+- **Admission before launch.** `cmd_run_wrapper` takes the step's run lock and
+  writes the marker carrying its own token and pid before it calls `_launch`.
+  On success its last write is `exit.json`, and the run lock is released only
+  after it. On an exception the lock is released anyway, in a `finally`, and
+  that is how an observer comes to see FREE and settle the attempt as gone. A
+  wrapper that cannot show it is the current attempt (for example the handle's
+  token is not its own, its seq is already in the ledger, or the run lock is
+  held elsewhere) exits without writing anything or launching. The one
+  exception is a filesystem where the lock call itself is unsupported: every
+  participant falls open there, and liveness reverts to the clock.
+- **`_attempt_state` reads in a fixed order:** `exit.json`, then the marker,
+  then the run-lock probe, and the ledger only once the probe is not HELD.
+  Reading the marker after the probe lets `dispatch` launch a second wrapper
+  beside one that is being admitted. Reading the ledger while the lock is held
+  can catch its replace mid-write on Windows and read a real attempt as absent.
+- **A PID is never evidence.** It can be reused, and behind a uv venv launcher
+  `Popen.pid` is not the wrapper's
+  ([`docs/dev/test-constraints.md`](../../dev/test-constraints.md)). The run
+  lock and the marker's token decide, then the ledger and `exit.json`, and only
+  last the clock.
+- **Locks are taken state first, run second, never the reverse.** The wrapper
+  retries for the run lock, within a bound, while holding the state lock, and
+  nothing takes the state lock while holding the run lock. Observers only probe
+  the run lock, without blocking.
+
 ## Test knowledge gate
 
 The test files under `scripts/tests/` carry no comments and no docstrings — they are read by

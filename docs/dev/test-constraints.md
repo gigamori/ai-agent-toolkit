@@ -26,6 +26,14 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   written with the platform default encoding is corrupted silently on such a host.
   Observed 2026-07-28.
 
+## xml-wf run-llm A layer -- Windows byte-range file locking
+
+- A second open handle on the same lock file, in the same process, gets `PermissionError` (errno 13 EACCES, winerror None) from `msvcrt.locking(LK_NBLCK, ...)` while another handle holds byte 0 -- the same result whether the second handle belongs to the same process or a different one. Closing a handle that never held the lock leaves the real holder's lock intact. Observed 2026-09-29 on this host (Windows 11, CPython 3.12.11 base interpreter, uv 0.7.18); the cross-process case held in 5 of 5 trials.
+- After the process holding the lock is killed, the lock stays held for roughly 0.2-0.4 ms, then becomes acquirable within about 5.2-5.6 ms (measured with perf_counter, 5 ms poll interval, 5 of 5 trials). Observed 2026-09-29, same host.
+- Hard-killing (`TerminateProcess`) the real detached `wfrun _wrapper` process that held the lock, then probing the lock every 50 ms with a non-blocking attempt (`runlock.probe`): the first probe, made right after the kill, still saw it held in every kill, and the next probe saw it free 50.5-51.2 ms after the kill (timed with perf_counter; 10 of 10 kills, 2 per run over 5 runs). That is an upper bound quantized by the 50 ms poll interval, consistent with the 5.2-5.6 ms above. Observed 2026-09-29, same host, while running the integration test that kills a real wrapper.
+- `os.replace` onto a file another handle has open for reading raises `PermissionError` (winerror 5) on Windows, in-process and cross-process alike; a read that overlaps the replace can also raise `PermissionError` on the reader's side. A tight-loop reader measured 1384 failed replacements out of 2000 and 922 failed reads out of 35093; the roughly 1 Hz poll rate an actual wait loop uses was not measured, so this is an upper bound on exposure, not the expected rate at that poll interval. Observed 2026-09-29, same host.
+- A `subprocess.Popen` launched through a uv-managed venv's `Scripts\python.exe` reports a `.pid` that is the launcher's pid, not the child interpreter's own `os.getpid()`; the child's own `ppid` is the launcher's pid. One measured pair: `proc.pid` 21620 vs. the child's own `os.getpid()` 23924. Observed 2026-09-29, same host.
+
 ## The claude CLI (`claude -p`)
 
 - A non-zero exit still carries a fully formed error JSON on stdout. Discarding stdout on
