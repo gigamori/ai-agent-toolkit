@@ -85,6 +85,27 @@ def _redact_secret(text: str, dsn: str) -> str:
     return out
 
 
+# DSN の scheme として受け付ける形（dialect+driver。例: redshift+redshift_connector）
+_SCHEME_PATTERN = r"[\w+]+"
+
+# scheme を読み取れない DSN のエラー表示名
+_UNKNOWN_DIALECT = "unknown"
+
+
+def _dsn_scheme(dsn: str) -> str:
+    """DSN の scheme（例: mysql+pymysql）を返す。エラー表示用。
+
+    scheme として読めない DSN（例: user:pass@host/db）は先頭に資格情報を含みうるため、
+    DSN の断片ではなく固定文字列を返す。
+    """
+    import re
+
+    scheme, sep, _ = dsn.strip().partition("://")
+    if not sep or not re.fullmatch(_SCHEME_PATTERN, scheme):
+        return _UNKNOWN_DIALECT
+    return scheme
+
+
 # --read-only 時に許可する先頭キーワード（読み取り / introspection 系）
 _READONLY_ALLOWED = ("select", "with", "show", "describe", "desc", "explain", "values", "pragma")
 
@@ -344,7 +365,7 @@ _NO_AUTOCOMMIT_BACKENDS = {"duckdb", "bigquery", "databricks"}
 
 
 def _backend_name(dsn: str) -> str:
-    return dsn.split("://", 1)[0].split("+", 1)[0].strip().lower()
+    return _dsn_scheme(dsn).split("+", 1)[0].lower()
 
 
 def _make_engine(dsn: str):
@@ -368,7 +389,7 @@ def cmd_query_simple(args: argparse.Namespace, sql: str, dsn: str) -> None:
             else:
                 print(json.dumps({"rowcount": result.rowcount}))
     except Exception as e:
-        dialect = dsn.split(":")[0] if ":" in dsn else dsn
+        dialect = _dsn_scheme(dsn)
         print(f"Error: Failed to connect [{dialect}]: {_redact_secret(str(e), dsn)}", file=sys.stderr)
         sys.exit(1)
 
@@ -379,7 +400,7 @@ def cmd_query_managed(args: argparse.Namespace, sql: str, control_stream, dsn: s
         engine = _make_engine(dsn)
         sa_conn = engine.connect()
     except Exception as e:
-        dialect = dsn.split(":")[0] if ":" in dsn else dsn
+        dialect = _dsn_scheme(dsn)
         print(f"Error: Failed to connect [{dialect}]: {_redact_secret(str(e), dsn)}", file=sys.stderr)
         sys.exit(1)
 
