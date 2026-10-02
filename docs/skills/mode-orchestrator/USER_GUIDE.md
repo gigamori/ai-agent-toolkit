@@ -147,7 +147,11 @@ is worth diagnosing. Four other outcomes deliberately bypass the loop:
   or its being unreachable, a permission prompt that was not approved, or an
   interrupted call — and keeps its verdict in the run directory as
   `NN-deny.txt`.
-- **`needs-human`** — the turn needs a decision only you can make.
+- **`needs-human`** — the turn needs a specific input, judgment, or action
+  only you can supply. Its reply includes `Reason: <specific observed blocker>`
+  and `Human request: <exact question to answer or action to take>` before
+  the final status line; it does not send you to the deliverable for these.
+  Complexity or unfinished work alone is not a human request.
 - **`needs-decision`** — the turn hit a fork, not a failure. It goes to the
   decision loop below instead.
 - **`aborted`** — the turn said *nothing* about the task. Either its reply

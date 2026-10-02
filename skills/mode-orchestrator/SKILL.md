@@ -166,9 +166,25 @@ Finally, append the **reply contract** verbatim — it is what makes a turn's ou
 - `failed` means "the procedure ran and a planned check did not pass", and only an `execute` turn runs such a check — so only an `execute` turn is offered it.
 - `needs-decision` is offered to every autonomous mode **except an inserted decision turn**, which must not be able to raise a decision about a decision. Unlike `failed`, there is no mode where a fork cannot legitimately arise: `survey` finds a fact that changes the remaining steps, `plan` cannot pick an architecture, `execute` hits ambiguity, `review-process` / `review-dev` / `review-doc` cannot name one recommendation, `debug` has several candidate fixes.
 
-All three shapes carry these placement rules verbatim. Every rule is a measured failure: the first two were both observed in one run of 36 turns; the third in the round that verified them, where a turn copied its deliverable's mandated footer into its reply — harmless that time (the orchestrator read the last line, as contracted), but a copied line landing *last* would displace the status and cost the turn (2026-08-13, finding G2):
+All three shapes carry these reply rules verbatim. The three status/deliverable placement rules after the `needs-human` rule reflect measured failures: the first two were observed in one run of 36 turns; the third in the round that verified them, where a turn copied its deliverable's mandated footer into its reply — harmless that time (the orchestrator read the last line, as contracted), but a copied line landing *last* would displace the status and cost the turn (2026-08-13, finding G2):
 
 ```
+`needs-human` means a specific human input, judgment, or action is
+required to continue. Complexity or unfinished work alone does not
+qualify. If you return it, put these lines in your gist after the
+required first `[Mode: <name>]` line, after any required audience line,
+and immediately before the final status line. Required header lines are
+not part of the gist:
+
+Reason: <specific observed blocker>
+Human request: <exact question to answer or action to take>
+For example: `Reason: The required account login has expired and this
+run cannot authenticate.` / `Human request: Sign in through the
+approved login flow, then request a retry.` State the actual blocker
+and request in your own words, not the example or a copy of the
+deliverable. Do not send the user to the deliverable for either.
+[[HUMAN-REQUEST-GATE]] If no human request exists, do not return
+`needs-human`.
 Nothing may follow the status line — no gist, no sign-off, no closing
 prose. It is read by position: a `status:` line anywhere other than the
 last line is not a status, will not be read, and leaves your turn to be
@@ -178,8 +194,8 @@ belongs to your reply. One in the deliverable is a second, competing
 status that cannot be honoured — the orchestrator does not read
 deliverables.
 The mirror also holds: text the task tells you to write into a file
-belongs only in that file. Your reply carries nothing but your own
-gist and the status line — never a copy of deliverable content.
+belongs only in that file. Your reply carries only the required headers,
+your own gist, and the status line — never a copy of deliverable content.
 ```
 
 The two shapes that can return `needs-decision` additionally share this clause verbatim; the decision-turn shape omits it, having no such value to spend:
@@ -299,6 +315,22 @@ remaining steps (`none`, or the revised remaining sequence) / Work state
 (`complete` = your deliverable stands and you are only flagging a fork,
 `stopped` = you could not finish without this decision). A section
 missing any of these is read as `needs-human`, not as a decision.
+`needs-human` means a specific human input, judgment, or action is
+required to continue. Complexity or unfinished work alone does not
+qualify. If you return it, put these lines in your gist after the
+required first `[Mode: <name>]` line, after any required audience line,
+and immediately before the final status line. Required header lines are
+not part of the gist:
+
+Reason: <specific observed blocker>
+Human request: <exact question to answer or action to take>
+For example: `Reason: The required account login has expired and this
+run cannot authenticate.` / `Human request: Sign in through the
+approved login flow, then request a retry.` State the actual blocker
+and request in your own words, not the example or a copy of the
+deliverable. Do not send the user to the deliverable for either.
+[[HUMAN-REQUEST-GATE]] If no human request exists, do not return
+`needs-human`.
 Nothing may follow the status line — no gist, no sign-off, no closing
 prose. It is read by position: a `status:` line anywhere other than the
 last line is not a status, will not be read, and leaves your turn to be
@@ -307,6 +339,9 @@ Do not put a `status:` line in your deliverable either. The status line
 belongs to your reply. One in the deliverable is a second, competing
 status that cannot be honoured — the orchestrator does not read
 deliverables.
+The mirror also holds: text the task tells you to write into a file
+belongs only in that file. Your reply carries only the required headers,
+your own gist, and the status line — never a copy of deliverable content.
 Never write a bare mode:<name> or role:<value> token anywhere in your
 reply; when you must mention one, wrap it in backticks.
 ```
