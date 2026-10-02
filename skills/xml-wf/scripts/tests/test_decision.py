@@ -1368,7 +1368,9 @@ class TestRecordVerdict(unittest.TestCase):
         from wfrun import parser
         wf = parser.parse_string(f'<workflow name="t" version="2" max="5">{step_xml}</workflow>')
         step = stepio.find_step(wf, "s1")
-        result = Path(tmp) / "s1_result.md"
+        steps = Path(tmp) / "steps"
+        steps.mkdir(exist_ok=True)
+        result = steps / "s1_result.md"
         result.write_text(text, encoding="utf-8")
         vars_path = Path(tmp) / "vars.json"
         vars_path.write_text("{}", encoding="utf-8")

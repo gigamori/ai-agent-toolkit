@@ -51,6 +51,8 @@ bash skills/mode-orchestrator/scripts/watchdog_test.sh
 bash skills/mode-orchestrator/scripts/deny_scan_test.sh
 bash skills/mode-orchestrator/scripts/pi_reply_test.sh
 bash skills/mode-orchestrator/scripts/execution_profiles_test.sh
+bash skills/mode-orchestrator/scripts/stop_observe_test.sh
+bash skills/mode-orchestrator/scripts/judge_gate_test.sh
 ```
 
 `execution_profiles_test.sh` is the profile gate for
@@ -83,14 +85,18 @@ other string alone.
 
 The gate unit is `skills/`. It walks the tree and takes every file named `test_*.py`,
 `*_test.py`, `test_*.sh` or `*_test.sh`, so a new skill or a new suite inside one is picked
-up without touching the gate — that is the invariant the unit was chosen for. 31 files are
+up without touching the gate — that is the invariant the unit was chosen for. 34 files are
 in scope today, counted in a checkout without the local-only skills under
 `skills/.private/`, which the gate also walks when they are present.
 
 Outside this gate, and carrying no assurance from it: `plugins/llm-wiki/tests/` and
 `plugins/taskflow/tests/`, which have their own gates and their own constraints documents;
 `plugins/role-mode/`; and `tests/test_tracked_path_hygiene.py` at the repository root,
-which is a repo-wide lint rather than a skill's suite.
+which is a repo-wide lint rather than a skill's suite, and so is
+`tests/lint_launch_contract.py`, which checks that the Pi CLI launch contract is the same
+in `skills/mode-orchestrator/references/harness-pi.md` and
+`skills/xml-wf/references/run-llm.md` (`uv run --no-project python tests/lint_launch_contract.py`,
+then the same command with `--self-test`).
 
 The gate's own blind spots, printed on every run: a citation phrased without one of its
 citation verbs; a document name written bare, which a fixture spells exactly as a citation
@@ -119,8 +125,10 @@ prevent. Migrated 2026-08-24, covering the two skills of the `ai-workflow` proje
   CLI and cost money, which the ordinary change loop does not run. They are instruments
   built to answer one question: what compliance rate a prompt achieves. Folding either into
   the normal loop puts it in scope that day. The gate names the exclusion on every run.
-- **Not tests at all:** `deny_scan.sh`, `watchdog.sh` and `pi_reply.js` are runtime scripts
-  that happen to sit beside their suites; `scripts/fixtures/` is fixture data.
+- **Not tests at all:** `deny_scan.sh`, `watchdog.sh`, `pi_reply.js`, `stop_observe.js`,
+  `judge_gate.js` and the helpers they load (`gate_util.js`, `proc_identity.js`,
+  `cc_transcripts.js`) are runtime scripts that happen to sit beside their suites;
+  `scripts/fixtures/` is fixture data.
 - **No test was deleted.** The self-declared-inadequacy sweep returned only the four
   source-text guards in `test_cli_encoding.py`, which assert that the four launcher call
   sites still pass `encoding=`/`errors=`. They are a lint wearing a test's clothes — a

@@ -104,8 +104,10 @@ class TestPromptRecord(unittest.TestCase):
         return code, out.getvalue().strip()
 
     def test_prompt_builds_file_and_prints_only_pointer(self):
-        prompt_file = str(self.dir / "s1_prompt.md")
-        result_file = str(self.dir / "s1_result.md")
+        steps = self.dir / "run" / "steps"
+        steps.mkdir(parents=True)
+        prompt_file = str(steps / "s1_prompt.md")
+        result_file = str(steps / "s1_result.md")
         code, out = self.run_cli(["prompt", self.xml, "s1", "--vars", self.vars_path,
                                   "--out", prompt_file, "--result", result_file])
         self.assertEqual(code, 0)
@@ -121,7 +123,8 @@ class TestPromptRecord(unittest.TestCase):
         self.assertIn("mode-output", content)
         self.assertIn("RULE-BODY", content)
         self.assertIn("Analyze data.csv", content)
-        self.assertIn(result_file, content)
+        handle = json.loads((steps / "s1_handle.json").read_text(encoding="utf-8"))
+        self.assertIn(handle["result_path"], content)
         self.assertIn("ERROR:", content)
 
     def test_prompt_dispatch_line_maps_model(self):
@@ -249,9 +252,11 @@ class TestRunLlmProtocol(unittest.TestCase):
         Path(self.xml).write_text(self.XML, encoding="utf-8")
         self.vars_path = str(self.dir / "vars.json")
         Path(self.vars_path).write_text("{}", encoding="utf-8")
-        self.result = self.dir / "s1_result.md"
-        self.handle = self.dir / "s1_handle.json"
-        self.prompt_file = str(self.dir / "s1_prompt.md")
+        self.steps = self.dir / "run" / "steps"
+        self.steps.mkdir(parents=True)
+        self.result = self.steps / "s1_result.md"
+        self.handle = self.steps / "s1_handle.json"
+        self.prompt_file = str(self.steps / "s1_prompt.md")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -262,37 +267,49 @@ class TestRunLlmProtocol(unittest.TestCase):
             code = main(argv)
         return code, out.getvalue().strip()
 
-    def dispatch(self, step_id="s1", attempt=1):
-        prompt_file = str(self.dir / f"{step_id}_prompt.md")
-        result_file = str(self.dir / f"{step_id}_result.md")
+    def dispatch(self, step_id="s1"):
+        prompt_file = str(self.steps / f"{step_id}_prompt.md")
+        result_file = str(self.steps / f"{step_id}_result.md")
         code, _ = self.run_cli(
             ["prompt", self.xml, step_id, "--vars", self.vars_path,
-             "--out", prompt_file, "--result", result_file, "--attempt", str(attempt)])
+             "--out", prompt_file, "--result", result_file])
         self.assertEqual(code, 0)
-        return prompt_file, result_file
+        return prompt_file, self.attempt(step_id)
+
+    def attempt(self, step_id="s1"):
+        return json.loads((self.steps / f"{step_id}_handle.json").read_text(encoding="utf-8"))
+
+    def write_result(self, body, step_id="s1", sentinel=True):
+        handle = self.attempt(step_id)
+        text = f"{body}\n{handle['sentinel']}" if sentinel else body
+        Path(handle["result_path"]).write_text(text, encoding="utf-8")
 
     def test_prompt_writes_handle_json(self):
-        prompt_file, result_file = self.dispatch(attempt=2)
-        handle = json.loads((self.dir / "s1_handle.json").read_text(encoding="utf-8"))
+        _, handle = self.dispatch()
         self.assertEqual(handle["step_id"], "s1")
-        self.assertEqual(handle["attempt"], 2)
-        self.assertEqual(handle["result_path"], result_file)
-        self.assertEqual(handle["sentinel"], "[[WFRUN-END step=s1]]")
+        self.assertEqual((handle["cycle"], handle["attempt"]), (1, 1))
+        self.assertEqual(handle["result_base"], str(self.result))
+        self.assertNotEqual(handle["result_path"], str(self.result))
+        self.assertTrue(handle["sentinel"].startswith("[[WFRUN-END step=s1 attempt=c01a01-"),
+                        handle["sentinel"])
         self.assertIsInstance(handle["dispatched_at"], (int, float))
         self.assertIsInstance(handle["timeout"], int)
 
     def test_prompt_writes_sentinel_and_reply_instructions(self):
-        prompt_file, _ = self.dispatch()
+        prompt_file, handle = self.dispatch()
         content = Path(prompt_file).read_text(encoding="utf-8")
-        self.assertIn("[[WFRUN-END step=s1]]", content)
+        self.assertIn(handle["sentinel"], content)
         self.assertIn('OK s1', content)
 
-    def test_prompt_deletes_stale_result_file(self):
-        result_file = self.dir / "s1_result.md"
-        result_file.write_text("stale leftover from a prior attempt",
+    def test_prompt_leaves_a_file_at_the_step_path_alone(self):
+        self.result.write_text("stale leftover from a prior attempt",
                                encoding="utf-8")
         self.dispatch()
-        self.assertFalse(result_file.is_file())
+        self.assertEqual(self.result.read_text(encoding="utf-8"),
+                         "stale leftover from a prior attempt")
+        code, out = self.run_cli(["poll", str(self.handle)])
+        self.assertEqual((code, out), (10, "running"),
+                         "only the attempt's own file can complete the attempt")
 
     def test_prompt_replan_has_no_handle_no_sentinel(self):
         prompt_file = str(self.dir / "r1_prompt.md")
@@ -338,8 +355,7 @@ class TestRunLlmProtocol(unittest.TestCase):
 
     def test_row3_missing_sentinel_no_reply_is_aborted(self):
         self.dispatch()
-        self.result.write_text("a partial answer with no end marker",
-                               encoding="utf-8")
+        self.write_result("a partial answer with no end marker", sentinel=False)
         code, out = self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                                   "--vars", self.vars_path])
         self.assertEqual(code, 3)
@@ -347,8 +363,7 @@ class TestRunLlmProtocol(unittest.TestCase):
 
     def test_row3_missing_sentinel_reply_claims_ok_is_error(self):
         self.dispatch()
-        self.result.write_text("looks done but forgot the marker",
-                               encoding="utf-8")
+        self.write_result("looks done but forgot the marker", sentinel=False)
         code, out = self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                                   "--vars", self.vars_path, "--reply", "OK s1"])
         self.assertEqual(code, 1)
@@ -367,7 +382,7 @@ class TestRunLlmProtocol(unittest.TestCase):
 
     def test_row4_empty_body_is_error(self):
         self.dispatch()
-        self.result.write_text("\n" + "[[WFRUN-END step=s1]]", encoding="utf-8")
+        self.write_result("")
         code, out = self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                                   "--vars", self.vars_path])
         self.assertEqual(code, 1)
@@ -375,7 +390,7 @@ class TestRunLlmProtocol(unittest.TestCase):
 
     def test_row5_error_prefix_current_behavior(self):
         self.dispatch()
-        self.result.write_text("ERROR: boom\n[[WFRUN-END step=s1]]", encoding="utf-8")
+        self.write_result("ERROR: boom")
         code, out = self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                                   "--vars", self.vars_path])
         self.assertEqual(code, 1)
@@ -384,8 +399,7 @@ class TestRunLlmProtocol(unittest.TestCase):
 
     def test_row6_reply_claims_error_but_file_is_clean_is_mismatch(self):
         self.dispatch()
-        self.result.write_text("a perfectly good report\n[[WFRUN-END step=s1]]",
-                               encoding="utf-8")
+        self.write_result("a perfectly good report")
         code, out = self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                                   "--vars", self.vars_path, "--reply", "ERROR: something"])
         self.assertEqual(code, 1)
@@ -393,9 +407,9 @@ class TestRunLlmProtocol(unittest.TestCase):
 
     def test_row7_success_strips_sentinel_from_extracted_value(self):
         self.dispatch(step_id="s2")
-        result2 = self.dir / "s2_result.md"
-        result2.write_text("42\n[[WFRUN-END step=s2]]", encoding="utf-8")
-        code, out = self.run_cli(["record", self.xml, "s2", "--result", str(result2),
+        self.write_result("42", step_id="s2")
+        code, out = self.run_cli(["record", self.xml, "s2",
+                                  "--result", str(self.steps / "s2_result.md"),
                                   "--vars", self.vars_path])
         self.assertEqual(code, 0)
         value = json.loads(Path(self.vars_path).read_text(encoding="utf-8"))["count"]
@@ -404,7 +418,7 @@ class TestRunLlmProtocol(unittest.TestCase):
 
     def test_row7_success_with_reply_ok_matches(self):
         self.dispatch()
-        self.result.write_text("done\n[[WFRUN-END step=s1]]", encoding="utf-8")
+        self.write_result("done")
         code, out = self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                                   "--vars", self.vars_path, "--reply", "OK s1"])
         self.assertEqual(code, 0)
@@ -418,13 +432,13 @@ class TestRunLlmProtocol(unittest.TestCase):
         self.assertEqual(entry["status"], "aborted")
 
     def test_attempts_json_written_when_handle_present(self):
-        self.dispatch(attempt=3)
-        self.result.write_text("done\n[[WFRUN-END step=s1]]", encoding="utf-8")
+        self.dispatch()
+        self.write_result("done")
         self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                      "--vars", self.vars_path])
-        attempts = json.loads((self.dir / "s1_attempts.json").read_text(encoding="utf-8"))
+        attempts = json.loads((self.steps / "s1_c01_attempts.json").read_text(encoding="utf-8"))
         self.assertEqual(len(attempts), 1)
-        self.assertEqual(attempts[0]["seq"], 3)
+        self.assertEqual(attempts[0]["seq"], 1)
         self.assertEqual(attempts[0]["class"], "ok")
         self.assertIn("ended_at", attempts[0])
 
@@ -432,11 +446,12 @@ class TestRunLlmProtocol(unittest.TestCase):
         self.result.write_text("done", encoding="utf-8")
         self.run_cli(["record", self.xml, "s1", "--result", str(self.result),
                      "--vars", self.vars_path])
-        self.assertFalse((self.dir / "s1_attempts.json").is_file())
+        self.assertFalse((self.steps / "s1_attempts.json").is_file())
+        self.assertFalse((self.steps / "s1_c01_attempts.json").is_file())
 
     def test_poll_done(self):
         self.dispatch()
-        self.result.write_text("done\n[[WFRUN-END step=s1]]", encoding="utf-8")
+        self.write_result("done")
         code, out = self.run_cli(["poll", str(self.handle)])
         self.assertEqual(code, 0)
         self.assertEqual(out, "done")
@@ -459,7 +474,7 @@ class TestRunLlmProtocol(unittest.TestCase):
 
     def test_poll_partial_file_without_sentinel_is_running_or_deadline(self):
         self.dispatch()
-        self.result.write_text("partial, still writing...", encoding="utf-8")
+        self.write_result("partial, still writing...", sentinel=False)
         code, out = self.run_cli(["poll", str(self.handle)])
         self.assertEqual(code, 10)
         self.assertEqual(out, "running")
@@ -468,7 +483,7 @@ class TestRunLlmProtocol(unittest.TestCase):
 class TestRecordDenyCheck(unittest.TestCase):
     XML = """
 <workflow name="t" version="2" max="10">
-  <step id="s1" output="report_path"><role>W</role><task>write it</task></step>
+  <step id="s1" output="report_path" retry="1"><role>W</role><task>write it</task></step>
 </workflow>
 """
     SESSION = "11111111-2222-3333-4444-555555555555"
@@ -481,8 +496,10 @@ class TestRecordDenyCheck(unittest.TestCase):
         Path(self.xml).write_text(self.XML, encoding="utf-8")
         self.vars_path = str(self.dir / "vars.json")
         Path(self.vars_path).write_text("{}", encoding="utf-8")
-        self.result = self.dir / "s1_result.md"
-        self.log = self.dir / "steps.log"
+        self.steps = self.dir / "run" / "steps"
+        self.steps.mkdir(parents=True)
+        self.result = self.steps / "s1_result.md"
+        self.log = self.dir / "run" / "steps.log"
         config = self.dir / "config"
         self.subagents = config / "projects" / "proj" / self.SESSION / "subagents"
         env = mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": self.SESSION,
@@ -499,10 +516,12 @@ class TestRecordDenyCheck(unittest.TestCase):
     def dispatch(self):
         code, out = self.run_cli(
             ["prompt", self.xml, "s1", "--vars", self.vars_path,
-             "--out", str(self.dir / "s1_prompt.md"), "--result", str(self.result)])
+             "--out", str(self.steps / "s1_prompt.md"), "--result", str(self.result)])
         self.assertEqual(code, 0)
-        handle = json.loads((self.dir / "s1_handle.json").read_text(encoding="utf-8"))
-        return handle["delegation"], out
+        return self.attempt()["delegation"], out
+
+    def attempt(self):
+        return json.loads((self.steps / "s1_handle.json").read_text(encoding="utf-8"))
 
     def subagent(self, description, lines):
         self.subagents.mkdir(parents=True, exist_ok=True)
@@ -512,8 +531,10 @@ class TestRecordDenyCheck(unittest.TestCase):
         (self.subagents / "agent-a1.jsonl").write_text(
             "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
-    def finish(self):
-        self.result.write_text("wrote it\n[[WFRUN-END step=s1]]\n", encoding="utf-8")
+    def finish(self, body="wrote it"):
+        handle = self.attempt()
+        Path(handle["result_path"]).write_text(f"{body}\n{handle['sentinel']}\n",
+                                               encoding="utf-8")
 
     def record(self, reply="OK s1"):
         argv = ["record", self.xml, "s1", "--result", str(self.result),
@@ -528,11 +549,13 @@ class TestRecordDenyCheck(unittest.TestCase):
 
     def test_prompt_issues_a_delegation_description(self):
         delegation, out = self.dispatch()
-        self.assertTrue(delegation.startswith("wfrun s1 a1 "), delegation)
+        self.assertTrue(delegation.startswith("wfrun s1 c01 a01 "), delegation)
         self.assertIn(f"description={delegation}", out)
 
-    def test_each_dispatch_gets_its_own_description(self):
+    def test_each_attempt_gets_its_own_description(self):
         first, _ = self.dispatch()
+        self.finish("ERROR: failed")
+        self.record(reply=None)
         second, _ = self.dispatch()
         self.assertNotEqual(first, second)
 
@@ -544,7 +567,7 @@ class TestRecordDenyCheck(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(out.startswith("error: denied (details: "), out)
         self.assertEqual(self.log_entry()["deny_check"], "DENIED 1")
-        attempts = json.loads((self.dir / "s1_attempts.json").read_text(encoding="utf-8"))
+        attempts = json.loads((self.steps / "s1_c01_attempts.json").read_text(encoding="utf-8"))
         self.assertEqual(attempts[-1]["class"], "denied")
 
     def test_denial_overrides_a_missing_result_file(self):
@@ -552,7 +575,7 @@ class TestRecordDenyCheck(unittest.TestCase):
         self.subagent(delegation, [_DENIAL_LINE])
         code, out = self.record(reply=None)
         self.assertEqual(code, 1,
-                         "an aborted step is re-dispatched once; a refused one must not be")
+                         "an aborted attempt may be run again; a refused one never")
         self.assertTrue(out.startswith("error: denied"), out)
 
     def test_clean_transcript_keeps_the_verdict(self):
@@ -574,11 +597,10 @@ class TestRecordDenyCheck(unittest.TestCase):
 
     def test_unresolved_check_leaves_the_verdict_line_intact(self):
         self.dispatch()
-        self.result.write_text(
+        self.finish(
             "DECISION: which join\nfork: two readings of merge\noptions:\n"
             "  1. A -- loses rows\n  2. B -- loses columns\n"
-            "recommendation: 1\nwork-state: stopped\n[[WFRUN-END step=s1]]\n",
-            encoding="utf-8")
+            "recommendation: 1\nwork-state: stopped")
         code, out = self.record()
         self.assertEqual(code, 4, out)
         verdict, note = out.splitlines()

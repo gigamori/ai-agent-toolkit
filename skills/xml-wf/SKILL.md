@@ -17,7 +17,7 @@ The canonical spec is `references/spec.md`.
 Always invoke the runner as (`${CLAUDE_SKILL_DIR}` resolves to this skill's directory):
 ```bash
 WFRUN="env PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts uv run python -m wfrun"
-$WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eval|ask} ...
+$WFRUN {validate|run|resume|plan|viz|prompt|record|decide|poll|stop|pids|judge|dispatch|wait|interp|eval|ask} ...
 ```
 
 ## Mode dispatch (decide from the arguments)
@@ -28,7 +28,7 @@ $WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eva
 | `--run-cc`, a **complete** `.xml` path, "run/execute" | **Run (batch)** | Read and follow `references/run-cc.md` |
 | `--run-pi`, "run on pi", "run without claude" | **Run (batch, pi backend)** | Read and follow `references/run-pi.md` |
 | `--resume`, a run dir path (contains `state.json`), "resume" | **Resume** | `references/run-cc.md` — "On failure / resume", or "On decision" when `state.json` says `awaiting-decision` |
-| `--run-llm`, "run interactively", "supervise step by step" | **LLM orchestration** | Read and follow `references/run-llm.md` |
+| `--run-llm`, "run interactively", "supervise step by step" | **LLM orchestration** | Before any other call, read `references/run-llm.md` alone (no parallel call) and follow it; never open the workflow XML: `wfrun plan` is your only view of it. The run dir is `<ws>/tmp/runs/<name>_<ts>-llm/` in the workspace you start in, and it is kept; a worktree the run creates follows that file's "Run dir and worktrees" contract |
 
 - For compound requests ("build it and run it"): Build → user approval → Run, in sequence
 - The default execution mode is **batch (`wfrun run`, deterministic)**.

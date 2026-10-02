@@ -10,6 +10,10 @@ Claude Code marks as a refused call.
 
 Pi has no permission layer, so outside Claude Code (no session id) the check
 does not apply.
+
+The same transcripts are what `wfrun stop` observes after a stop request on
+Claude Code (`delegation_transcripts`, `open_tool_calls`): whether any of them
+still grows, and whether any call in them may still have work running.
 """
 from __future__ import annotations
 
@@ -38,6 +42,13 @@ NOT_APPLICABLE = "n/a"
 _META_SUFFIX = ".meta.json"
 _TRANSCRIPT_SUFFIX = ".jsonl"
 _AGENT_PREFIX = "agent-"
+
+# Tools whose work can outlive their own call: an agent (in the background
+# unless the call says otherwise), a monitor, and a skill, which may fork an
+# agent. Whether such work has since ended is not read from the transcript
+# here, so a call that started any of it keeps a stop unconfirmed.
+BACKGROUND_TOOLS = ("Agent", "Task", "Monitor", "Skill")
+_BACKGROUND_FLAG = "run_in_background"
 
 
 @dataclass(frozen=True)
@@ -76,6 +87,73 @@ def check_delegation(handle: dict | None) -> DenyCheck:
     if kinds:
         return DenyCheck(DENIED, len(kinds), tuple(sorted(set(kinds))), str(transcript))
     return DenyCheck(CLEAN, transcript=str(transcript))
+
+
+@dataclass(frozen=True)
+class Delegation:
+    transcripts: tuple[Path, ...] = ()
+    reason: str = ""
+
+
+def delegation_transcripts(handle: dict | None) -> Delegation:
+    """The transcript of the subagent a layer-B attempt was delegated to,
+    then those of every agent it started at any depth -- or why there are
+    none. Resolved the way `check_delegation` resolves them."""
+    session = os.environ.get(SESSION_ENV, "").strip()
+    if handle is None or not session:
+        return Delegation(reason="not running under Claude Code")
+    description = handle.get("delegation")
+    if not description:
+        return Delegation(reason="the handle carries no delegation description")
+    transcript = _find_transcript(_projects_root(), session, description)
+    if transcript is None or not transcript.is_file():
+        return Delegation(reason=f"no transcript of an agent delegated as "
+                                 f"{description!r}")
+    return Delegation((transcript, *_descendants(transcript)))
+
+
+def _starts_background(block: dict) -> bool:
+    tool_input = block.get("input")
+    flag = tool_input.get(_BACKGROUND_FLAG) if isinstance(tool_input, dict) else None
+    if flag is True:
+        return True
+    return block.get("name") in BACKGROUND_TOOLS and flag is not False
+
+
+def open_tool_calls(paths) -> list[str]:
+    """Why work recorded in these transcripts may still be running, one line
+    per call: a tool call with no result, a call that started work in the
+    background, and a call refused or interrupted -- a stop interrupts a
+    running call that way, so its result says nothing about the work."""
+    found = []
+    for path in paths:
+        path = Path(path)
+        calls: dict[str, dict] = {}
+        answered = set()
+        for entry in _entries(path):
+            kind = entry.get(DENIAL_FIELD)
+            if isinstance(kind, str) and kind:
+                found.append(f"a call was refused or interrupted ({kind}) in "
+                             f"{path.name}")
+            content = (entry.get("message") or {}).get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and isinstance(block.get("id"), str):
+                    calls[block["id"]] = block
+                elif (block.get("type") == "tool_result"
+                      and isinstance(block.get("tool_use_id"), str)):
+                    answered.add(block["tool_use_id"])
+        for tool_id, block in calls.items():
+            name = block.get("name") or "?"
+            if tool_id not in answered:
+                found.append(f"{name} {tool_id} has no result in {path.name}")
+            elif _starts_background(block):
+                found.append(f"{name} {tool_id} started background work in "
+                             f"{path.name}")
+    return found
 
 
 def _projects_root() -> Path:

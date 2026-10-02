@@ -16,7 +16,8 @@ when the skill runs.
   non-developer human users. See also [USER_GUIDE_ja.md](USER_GUIDE_ja.md).
 - **[AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md)** — maintenance obligations
   for skill editors: multi-facet (cc/pi/run-llm) integrity, relationship to
-  mode-orchestrator, `modes/` propagation pointer.
+  mode-orchestrator (including the Pi CLI launch contract and the restart gate
+  the two skills align), `modes/` propagation pointer.
 
 The canonical technical spec is the skill's `references/spec.md`. This README
 summarizes it; the spec governs when they disagree.
@@ -109,7 +110,7 @@ the skill's directory on Claude Code):
 
 ```bash
 WFRUN="env PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts uv run python -m wfrun"
-$WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eval|ask} ...
+$WFRUN {validate|run|resume|plan|viz|prompt|record|decide|poll|stop|pids|judge|dispatch|wait|interp|eval|ask} ...
 ```
 
 Through the skill, the four modes are selected from natural language or flags:
@@ -119,7 +120,7 @@ Through the skill, the four modes are selected from natural language or flags:
 | `--build`, a task description, "ワークフロー化" | **Build** | Decompose the task into an approved plan table, then generate and validate the XML. Never executes the task. |
 | `--run-cc`, an `.xml` path, "run/execute" | **Run (batch)** | Validate → execute deterministically with `wfrun run`. The default execution mode. |
 | `--resume`, a run dir (holding `state.json`) | **Resume** | Continue a failed run from the point of failure. |
-| `--run-llm`, "run interactively" | **LLM orchestration** | The agent orchestrates step by step under human supervision, using `wfrun` helper subcommands and file-based exchange. |
+| `--run-llm`, "run interactively" | **LLM orchestration** | The agent orchestrates step by step under human supervision, using `wfrun` helper subcommands and file-based exchange. A step's `effort=` is not applied in this mode: neither the Agent tool nor the Pi delivery takes one. |
 
 ---
 
@@ -240,30 +241,38 @@ Helper subcommands for `run-llm` orchestration (task content never passes
 through the caller):
 
 ```
-wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT] [--attempt N]
-wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE]
-wfrun poll   <handle.json>              # layer B: done(0) / running(10) / deadline-exceeded(11)
+wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT] [--new-cycle] [--redispatch JUDGE_REPLY]
+wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE] [--answer FILE] [--debug-reply LINE] [--decider human|llm]
+wfrun poll   <handle.json> [--wait]     # done(0) / running(10) / deadline-exceeded(11)
+wfrun decide <wf.xml> <id> --result RESULT   # delegate an open decision to the llm decider, once
+wfrun stop   <handle.json> --facet cc|pi-cli [--task-stop stopped|completed|failed] [--observe 1..60]
+                                        # done(0) / confirmed(12) / unconfirmed(13)
+wfrun pids   <handle.json> PID [PID ...]     # Pi CLI: record an attempt's processes at launch
+wfrun judge  <wf.xml> <id> --result RESULT   # issue the one judge of an aborted attempt
 ```
 
-With `--result`, `prompt` also prints `description=wfrun <id> a<N> <token>`,
+With `--result`, `prompt` starts a new attempt of the step: it gives the attempt
+its own result file and its own sentinel, and it refuses (exit 1) when a new
+attempt may not start. It also prints `description=wfrun <id> cNN aNN <token>`,
 unique to the attempt. On Claude Code, pass it verbatim as the Agent call's
 description:
 - `record` uses it to find that subagent's transcript, together with every agent the subagent started, and to check them for refused tool calls.
-- If it finds a refusal, the step is `error: denied` whatever its result file says.
+- If it finds a refusal, the step is `error: denied` whatever its result file says, unless the attempt has a recorded stop and its result never completed: `record` then records the attempt `aborted` and prints the check's verdict on a second line, `deny-check: DENIED <n> (details: <transcript>)`.
 - If it cannot find the transcript, it still prints its verdict, followed by a second line `deny-check: NO-TRANSCRIPT: <reason>`, and never records the step as clean.
 - `steps.log` records the check's result as `deny_check`.
 
-The layer decides **who executes the steps**: layer A runs them through the
-claude CLI, layer B through the orchestrating agent's own subagent facility.
-The probe only checks whether the claude CLI exists, so on a non-Claude-Code
-harness that also has claude installed it picks A — select B explicitly when
-the steps are meant to run on that harness. Layer B also works on a harness
-with no subagent tool at all (Pi); `references/run-llm.md` gives the delivery
-shape.
+`run-llm` has no layer to choose and no claude CLI probe: every step runs
+through the orchestrating agent's own delegation facility, so it runs on the
+agent that is orchestrating, whatever else is installed. On Claude Code that is
+the Agent tool. On Pi it is a `subagent` tool when the host publishes one that
+passes the checks in `references/run-llm.md`, and otherwise a fresh `pi -p`
+process started from `bash`. After a missed deadline, the same reference gives
+the stop, judge and restart handling ("On abort").
 
-Layer A (environments where `claude --version` succeeds: no subagent
-delegation -- `wfrun` itself calls `claude -p` via a detached wrapper
-process. See `references/run-llm.md` for the full protocol):
+`dispatch` and `wait` are not part of `run-llm`, and `references/run-llm.md`
+does not describe them. They run a step through the claude CLI instead of a
+delegation facility: `wfrun` itself calls `claude -p` via a detached wrapper
+process.
 
 ```
 wfrun dispatch <wf.xml> <id> --vars V --run-dir D [--permission-mode M] [--fix TEXT] [--new-cycle]
@@ -320,6 +329,13 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 and `ask=` judgments without re-running) and starts actual execution at the
 first mismatch or unrecorded point. To fix a failing step, edit `workflow.xml`
 inside the run dir before resuming — do not change already-succeeded definitions.
+
+This layout is a batch run's. A `run-llm` run keeps its files in
+`<ws>/tmp/runs/<name>_<ts>-llm/` instead, where `<ws>` is the directory the
+session was started in: `vars.json`, `steps.log`, `steps/<id>_cNN_aNN_*` (one
+set of files per attempt), `replans/`, `decisions/`, and `worktrees.json` when the
+run creates a git worktree. It has no `state.json` or `events.jsonl`, it cannot
+be resumed with `wfrun resume`, and the run never deletes it.
 
 ---
 

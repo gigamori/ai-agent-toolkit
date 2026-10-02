@@ -14,8 +14,8 @@
 - **[USER_GUIDE_ja.md](USER_GUIDE_ja.md)** — 非開発者の人間ユーザ向けの実践的な
   手順ガイド。英語版は [USER_GUIDE.md](USER_GUIDE.md)。
 - **[AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md)** — スキル編集者向けの保守義務
-  （英語のみ）: 3面（cc/pi/run-llm）整合性、mode-orchestrator との関係、
-  `modes/` 伝播の参照先。
+  （英語のみ）: 3面（cc/pi/run-llm）整合性、mode-orchestrator との関係（Pi CLI の
+  起動契約と、両スキルがそろえている再投入ゲートを含む）、`modes/` 伝播の参照先。
 
 正典となる技術仕様はスキルの `references/spec.md` です。本 README はその要約であり、
 食い違う場合は spec が優先します。
@@ -105,7 +105,7 @@ xml-wf/                        # スキル本体
 
 ```bash
 WFRUN="env PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts uv run python -m wfrun"
-$WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eval|ask} ...
+$WFRUN {validate|run|resume|plan|viz|prompt|record|decide|poll|stop|pids|judge|dispatch|wait|interp|eval|ask} ...
 ```
 
 スキル経由では、4 つのモードを自然言語またはフラグから選択します。
@@ -115,7 +115,7 @@ $WFRUN {validate|run|resume|plan|viz|prompt|record|poll|dispatch|wait|interp|eva
 | `--build`、タスク説明、「ワークフロー化」 | **Build** | タスクを承認用のプラン表へ分解し、XML を生成・検証する。タスク自体は実行しない。 |
 | `--run-cc`、`.xml` パス、「実行」 | **Run（バッチ）** | 検証 → `wfrun run` で決定論的に実行。既定の実行モード。 |
 | `--resume`、run dir（`state.json` を含む） | **Resume** | 失敗した run を失敗地点から継続する。 |
-| `--run-llm`、「対話的に実行」 | **LLM オーケストレーション** | エージェントが `wfrun` ヘルパーサブコマンドとファイルベース交換を用い、人間の監督下でステップごとに進行する。 |
+| `--run-llm`、「対話的に実行」 | **LLM オーケストレーション** | エージェントが `wfrun` ヘルパーサブコマンドとファイルベース交換を用い、人間の監督下でステップごとに進行する。このモードではステップの `effort=` は適用されない（Agent ツールも Pi の配送も effort を受け取らない）。 |
 
 ---
 
@@ -227,27 +227,36 @@ run 開始時に `note:` 行で列挙される。`resume` は backend と同じ�
 経由しない）:
 
 ```
-wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT] [--attempt N]
-wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE]
-wfrun poll   <handle.json>              # B層: done(0) / running(10) / deadline-exceeded(11)
+wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT] [--new-cycle] [--redispatch JUDGE_REPLY]
+wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE] [--answer FILE] [--debug-reply LINE] [--decider human|llm]
+wfrun poll   <handle.json> [--wait]     # done(0) / running(10) / deadline-exceeded(11)
+wfrun decide <wf.xml> <id> --result RESULT   # 未決の decision を llm decider に 1 回だけ委譲する
+wfrun stop   <handle.json> --facet cc|pi-cli [--task-stop stopped|completed|failed] [--observe 1..60]
+                                        # done(0) / confirmed(12) / unconfirmed(13)
+wfrun pids   <handle.json> PID [PID ...]     # Pi CLI: 起動時に試行のプロセスを記録する
+wfrun judge  <wf.xml> <id> --result RESULT   # 中断した試行の判定役を 1 回だけ発行する
 ```
 
-`--result` を付けると、`prompt` はその試行に固有の
-`description=wfrun <id> a<N> <token>` も表示する。Claude Code では、これを Agent
-呼び出しの description にそのまま渡すこと。
+`--result` を付けると、`prompt` はステップの新しい試行を開始する。試行ごとに専用の
+結果ファイルと sentinel を与え、新しい試行を始めてはならないときは拒否する（exit 1）。
+あわせて、その試行に固有の `description=wfrun <id> cNN aNN <token>` も表示する。
+Claude Code では、これを Agent 呼び出しの description にそのまま渡すこと。
 - `record` はそれを手掛かりに、その subagent の transcript と、その subagent が起動したすべての agent の transcript を見つけ、拒否されたツール呼び出しを調べる。
-- 拒否が見つかれば、結果ファイルの内容にかかわらずステップは `error: denied` になる。
+- 拒否が見つかれば、結果ファイルの内容にかかわらずステップは `error: denied` になる。ただし、試行に停止の記録があり結果が完成しなかった場合は、`record` は試行を `aborted` と記録し、検査の判定を 2 行目の `deny-check: DENIED <n> (details: <transcript>)` として表示する。
 - transcript が見つからなければ、判定の次の行に `deny-check: NO-TRANSCRIPT: <理由>` が表示され、そのステップが clean として記録されることはない。
 - 調べた結果は `steps.log` に `deny_check` として残る。
 
-レイヤが決めるのは**誰がステップを実行するか**である。A層は claude CLI、B層は
-オーケストレータ自身の subagent 機能で実行する。判定は claude CLI の有無しか見ないため、
-Claude Code 以外の harness でも claude が入っていれば A層 が選ばれる。その harness 上で
-実行させたい場合は B層 を明示的に選ぶこと。B層 は subagent ツールを一切持たない harness
-（Pi）でも動作する。配送形は `references/run-llm.md` を参照。
+`run-llm` には選ぶべきレイヤも claude CLI の probe も無い。すべてのステップは
+オーケストレータ自身の委譲機能で実行するので、ほかに何が入っていても、
+オーケストレーションしているエージェント上で動く。Claude Code ではそれが Agent
+ツールである。Pi では、host が公開する `subagent` ツールが `references/run-llm.md` の
+確認を通ったときだけそれを使い、通らなければ `bash` から起動した新しい `pi -p`
+プロセスを使う。期限を過ぎたあとの停止・判定役・再投入の扱いは、同じ文書の
+"On abort" にある。
 
-A層（`claude --version` が成功する環境向け。サブエージェント委譲なしで `wfrun` 自身が
-detach したラッパープロセス経由で `claude -p` を呼ぶ。詳細は `references/run-llm.md`）:
+`dispatch` と `wait` は `run-llm` の一部ではなく、`references/run-llm.md` にも書かれて
+いない。ステップを委譲機能ではなく claude CLI で実行するコマンドで、`wfrun` 自身が
+detach したラッパープロセス経由で `claude -p` を呼ぶ。
 
 ```
 wfrun dispatch <wf.xml> <id> --vars V --run-dir D [--permission-mode M] [--fix TEXT] [--new-cycle]
@@ -303,6 +312,13 @@ runs/<name>_<YYYYMMDD-HHMMSS>/
 再実行せずに再利用）、最初の不一致または未記録の地点から実際の実行を始めます。
 失敗ステップを直すには、再開前に run dir 内の `workflow.xml` を編集します
 （成功済みの定義は変更しないこと）。
+
+この構成はバッチ run のものです。`run-llm` の run は、代わりに
+`<ws>/tmp/runs/<name>_<ts>-llm/`（`<ws>` はセッションを起動したディレクトリ）へ
+ファイルを置きます: `vars.json`、`steps.log`、`steps/<id>_cNN_aNN_*`（試行ごとに
+1 組のファイル）、`replans/`、`decisions/`、そして run が git worktree を作った場合は
+`worktrees.json`。`state.json` と `events.jsonl` は無く、`wfrun resume` で再開する
+ことはできず、run がこれを削除することもありません。
 
 ---
 

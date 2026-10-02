@@ -238,3 +238,68 @@ quote the request back."""
 ASK_SCHEMA = """\
 {"type":"object","properties":{"answer":{"type":"boolean"},"reason":{"type":"string"}},\
 "required":["answer","reason"]}"""
+
+# The re-dispatch judge of run-llm (llmgate.issue_judge): the one delegation
+# that decides whether an aborted attempt's work may run again from the start.
+# It is fixed -- this text, a fixed model class, tool list, deadline and budget
+# -- and worded for no particular skill, because mode-orchestrator delegates
+# the same judge under the same contract (its own implementation). Paths and
+# rules only: like every run-llm prompt it is assembled by code, so no task
+# content passes through the orchestrator. The record's fields are what code
+# checks (llmgate.check_judge), and the reply is one line because the reply is
+# the one channel back into an orchestrator that never reads task content.
+JUDGE_PROMPT = """\
+You judge one thing: whether running a piece of delegated work again from \
+the start could duplicate an effect of an earlier attempt at it. That attempt \
+stopped because {cause}, and it has been stopped for good. Decide nothing \
+else, and do none of the work yourself.
+
+## Evidence
+You may cite only these files, by line. Read what you need and change none of \
+them: their checksums are recorded in {manifest}, and a changed file voids \
+your record.
+{files}
+
+## How to judge
+- Work out from the evidence what the attempt did. Files it wrote or edited \
+are stock. Anything that acted outside files -- a command with side effects, \
+a request, a job, a message, an agent it started -- is flow.
+- Stock alone: a run from the start is safe only if it would rewrite those \
+files whole rather than add to them, and nothing else uses them in between.
+- Any flow: allow only if a cited line shows that repeating it cannot \
+duplicate its effect (it checks an idempotency key, or it only reads). If you \
+cannot see the state of an operation, deny.
+- Only cited lines are evidence. Your own reasoning, the work's name and its \
+mode are not. When the evidence is incomplete or ambiguous, deny.
+{deadline_clause}
+## Record
+Write this record to {record}, and write nothing to any other file:
+
+verdict: <allow or deny>
+method: <restart or none>
+{next_timeout_line}evidence:
+- <file path>#L<first>-L<last>: <what those lines show>
+limits: <what you could not check, or none>
+{sentinel}
+
+Replace each <...> with the value alone. method is restart only with allow, \
+and means running the work again from the start; adopting the attempt's \
+result or resuming it from a saved state are not choices here, so when a run \
+from the start is not safe the verdict is deny. Give one evidence line per \
+cited range. Copy the last line exactly as it stands.
+
+## Reply
+Your reply is exactly one line: `allow {record}` or `deny {record}`. Put \
+nothing else in it."""
+
+# Added to JUDGE_PROMPT when the attempt was stopped at its deadline: a restart
+# with the same deadline would only hit it again (llmgate.check_judge).
+JUDGE_DEADLINE_CLAUSE = """\
+- The attempt was stopped at its deadline of {d_prev} seconds, which began at \
+{t0}. A run with the same deadline would only hit it again. Allow only if you \
+also give a longer one, next-timeout greater than {d_prev}, and cite at least \
+one transcript line stamped between {t0} and {deadline} that shows the \
+attempt was still making progress.
+"""
+
+JUDGE_NEXT_TIMEOUT_LINE = "next-timeout: <seconds>\n"

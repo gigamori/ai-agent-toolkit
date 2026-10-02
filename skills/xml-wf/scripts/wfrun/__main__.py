@@ -15,11 +15,11 @@ import time
 from pathlib import Path
 
 from . import adjudicate as adjudicate_mod
-from . import adp, claude_cli
+from . import adp, ccdeny, claude_cli
 from . import decision as decision_mod
 from . import interp as interp_mod
 from . import lint as lint_mod
-from . import model, modelmap, modes, parser, runlock, stepio, viz
+from . import llmgate, model, modelmap, parser, runlock, stepio, viz
 from .ccdirs import claude_config_dirs
 from .executor import DecisionRequested, Executor, WorkflowFailure, decision_tables
 from .state import RunState, load_events
@@ -674,16 +674,37 @@ def cmd_prompt(args) -> int:
     from .agents import discover_agents
     if args.result:  # run-llm signature: file-based response protocol
         _warn_if_no_llm_guard()
+    elif args.new_cycle or args.redispatch:
+        print("error: --new-cycle and --redispatch need --result: they choose "
+              "the next attempt, and only --result has attempts", file=sys.stderr)
+        return 2
     wf = parser.parse_file(args.workflow)
     variables = _load_vars(args.vars)
     base_dir = Path(args.workflow).resolve().parent
     agents_cache = discover_agents(base_dir)
     try:
         step = stepio.find_step(wf, args.step_id)
-        if isinstance(step, model.Replan):
+    except stepio.StepIOError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    is_replan = isinstance(step, model.Replan)
+
+    # Admission comes before any write: a refused call leaves every file of
+    # the run as it was, earlier attempts' results included.
+    attempt = None
+    if args.result:
+        now = time.time()
+        attempt = (llmgate.admit_replan(step, args.result, args.fix, now)
+                   if is_replan else _admit_step_attempt(wf, step, args, now))
+        if isinstance(attempt, str):
+            print(f"error: {attempt}", file=sys.stderr)
+            return 1
+
+    try:
+        if is_replan:
             prompt = stepio.build_replan_prompt(
-                step, variables, agents_cache,
-                fix=args.fix, result_path=args.result)
+                step, variables, agents_cache, fix=args.fix,
+                result_path=attempt["output"] if attempt else None)
         else:
             # Settled rulings are enumerated from the decisions ledger, never
             # passed in: the orchestrator carries no memory of them, so it
@@ -696,42 +717,37 @@ def cmd_prompt(args) -> int:
             prompt = stepio.build_step_prompt(
                 wf, step, variables, base_dir=base_dir,
                 fix=args.fix, agents_cache=agents_cache,
-                result_path=args.result, decision=settled or None)
+                result_path=attempt["result_path"] if attempt else None,
+                decision=settled or None,
+                sentinel=attempt["sentinel"] if attempt else None)
     except (stepio.StepIOError, decision_mod.DecisionError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    delegation = None
-    if args.result:
-        result_file = Path(args.result)
-        if result_file.is_file():
-            # Stale-read prevention (reliability-spec.md §4.1, F6): a
-            # leftover result file from a prior attempt must never be
-            # mistaken for this attempt's output by `record`/`poll`.
-            result_file.unlink()
-        if not isinstance(step, model.Replan):
-            # Sentinel/handle machinery is step-only: a <replan>'s own XML
-            # well-formedness already proves completeness (§0, F1).
-            (result_file.parent).mkdir(parents=True, exist_ok=True)
-            delegation = stepio.delegation_description(step.id, args.attempt)
-            stepio.handle_path(step.id, args.result).write_text(json.dumps({
-                "step_id": step.id, "attempt": args.attempt,
-                "dispatched_at": time.time(), "timeout": step.timeout,
-                "result_path": str(args.result),
-                "sentinel": stepio.sentinel_line(step.id),
-                "delegation": delegation,
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(prompt, encoding="utf-8")
-    # Print only control-plane facts — never the prompt content.
     # model/tools are the RESOLVED dispatch values (step attrs > role frontmatter).
-    kind = "replan" if isinstance(step, model.Replan) else "step"
     dispatch_model, dispatch_tools = stepio.dispatch_for(step, agents_cache)
     try:  # the dispatch line carries the runner-resolved name ("llm" table)
         resolved = modelmap.resolve(dispatch_model, "llm", allow_legacy=True)
     except modelmap.ModelMapError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if attempt is not None and is_replan:
+        llmgate.record_replan(args.result, attempt)
+    elif attempt is not None:
+        # The attempt's own copy of its prompt, then the step's pointer to
+        # the attempt: `record`/`poll` read the attempt through the pointer.
+        # Sentinel/handle machinery is step-only: a <replan>'s own XML
+        # well-formedness already proves completeness (§0, F1).
+        Path(attempt["prompt_path"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(attempt["prompt_path"]).write_text(prompt, encoding="utf-8")
+        stepio.write_text_atomic(stepio.handle_path(step.id, args.result),
+                                 json.dumps(attempt, ensure_ascii=False, indent=2))
+    out.write_text(prompt, encoding="utf-8")
+
+    # Print only control-plane facts — never the prompt content.
+    kind = "replan" if is_replan else "step"
     facts = [kind] + [x for x in (model.role_label(step),) if x]
     if getattr(step, "mode", None):
         facts.append(f"mode={step.mode}")
@@ -741,12 +757,154 @@ def cmd_prompt(args) -> int:
                         else f" (mapped from {dispatch_model})"))
     if step.effort:
         facts.append(f"effort={step.effort}")
-    if dispatch_tools and not isinstance(step, model.Replan):
+    if dispatch_tools and not is_replan:
         facts.append(f"tools={dispatch_tools}")
-    if delegation:
-        facts.append(f"description={delegation}")
+    if attempt is not None:
+        facts.append("attempt=" + llmgate.attempt_label(attempt["cycle"],
+                                                        attempt["attempt"]))
+        facts.append(f"result={attempt['output' if is_replan else 'result_path']}")
+        facts.append(f"timeout={attempt['timeout']}")
+        if not is_replan:
+            facts.append(f"session-dir={llmgate.files_of(attempt)['session']}")
+            facts.append(f"description={attempt['delegation']}")
     print(f"{out} ({', '.join(facts)})")
     return 0
+
+
+def _admit_step_attempt(wf, step: model.Step, args, now: float) -> dict | str:
+    """The handle of the next run-llm attempt at `step`, or why none may
+    start. Writes nothing, except a ledger flag when the gate finds that a
+    stopped attempt completed after its stop was confirmed.
+
+    Liveness first, across cycles: an attempt with no recorded verdict
+    blocks every new attempt, `--new-cycle` included, and so does an aborted
+    one: it goes on only through its stop record and its judge
+    (`_after_abort`). Then the step's open decision, the debug diagnosis the
+    ladder is waiting for, and last the ladder and budgets shared with the
+    A layer (`_admission_refusal`)."""
+    result_base = Path(args.result)
+    steps_dir = result_base.parent
+    run_dir = steps_dir.parent
+    pointer_file = stepio.handle_path(step.id, result_base)
+    pointer = None
+    if pointer_file.exists():
+        pointer = llmgate.read_json(pointer_file)
+        if not stepio.is_attempt_handle(pointer):
+            return (f"step '{step.id}': {pointer_file} is not a per-attempt "
+                    "handle -- it was written by an older wfrun or is "
+                    "unreadable; start a new run directory")
+    if args.redispatch and pointer is None:
+        return (f"step '{step.id}': --redispatch replaces an aborted attempt, "
+                "and the step has no attempt yet")
+
+    latest, timeout, supersedes, record = None, step.timeout, None, None
+    if pointer is not None:
+        latest = pointer["cycle"]
+        label = llmgate.attempt_label(pointer["cycle"], pointer["attempt"])
+        entry = llmgate.ledger_entry(steps_dir, step.id, pointer["cycle"],
+                                     pointer["attempt"])
+        if entry is None:
+            return (f"step '{step.id}': attempt {label} has no recorded "
+                    "verdict -- poll it and record it once it is done; past "
+                    "its deadline, follow the abort procedure")
+        if entry.get("class") == "aborted":
+            granted = _after_abort(step, pointer, entry, label, args)
+            if isinstance(granted, str):
+                return granted
+            timeout, record = granted
+            if not args.new_cycle:
+                supersedes = {"cycle": pointer["cycle"],
+                              "attempt": pointer["attempt"]}
+        elif args.redispatch:
+            return (f"step '{step.id}': --redispatch applies only after an "
+                    f"aborted attempt, and attempt {label} ended "
+                    f"{entry.get('class')}")
+
+    pending = decision_mod.pending_request_id(
+        decision_mod.decisions_dir(run_dir), step.id)
+    if pending is not None:
+        return (f"step '{step.id}': decision {pending} has no ruling yet -- "
+                "settle it with record --answer, which says whether to re-run")
+
+    if latest is None:
+        cycle, attempts = 1, []
+    else:
+        cycle, attempts = _next_cycle(latest, stepio.load_attempts(
+            stepio.attempt_ledger_path(steps_dir, step.id, latest)),
+            args.new_cycle)
+    debug = _debug_pending(step, cycle, attempts, args.fix)
+    if debug:
+        return debug
+    refusal = _admission_refusal(wf, step, run_dir, cycle, attempts, args.fix,
+                                 decision_prefix=step.id)
+    if refusal:
+        return refusal
+    return llmgate.new_attempt(step.id, result_base, cycle, len(attempts) + 1,
+                               timeout, now, supersedes, record)
+
+
+def _after_abort(step: model.Step, pointer: dict, entry: dict, label: str,
+                 args) -> tuple[int, str | None] | str:
+    """(timeout, judge record) for the attempt that follows an aborted one,
+    or why there is none. Every way on needs a confirmed stop and no sign
+    that the attempt kept writing; the only way on is a restart of the same
+    cycle, which also needs a transcript with no refused call and the
+    judge's record."""
+    stop = llmgate.load_stop(pointer)
+    if stop is None:
+        return (f"step '{step.id}': attempt {label} was aborted and has no "
+                "stop record -- run `wfrun stop` on its handle first")
+    if stop.get("verdict") != llmgate.STOP_CONFIRMED:
+        reasons = "; ".join(stop.get("reasons", [])) or stop.get("verdict")
+        return (f"step '{step.id}': attempt {label} was aborted and its stop "
+                f"is unconfirmed ({reasons}); it is never run again -- stop "
+                "and report")
+    if (entry.get(llmgate.FLAG_LATE_COMPLETION)
+            or entry.get(llmgate.FLAG_STOP_CONTRADICTION)
+            or llmgate.is_complete(pointer)):
+        llmgate.flag_attempt(pointer, llmgate.FLAG_STOP_CONTRADICTION)
+        return (f"step '{step.id}': attempt {label} completed after its stop "
+                "was confirmed, so its stop evidence cannot be trusted -- "
+                "stop and report")
+    if args.new_cycle:
+        return (f"step '{step.id}': attempt {label} was aborted; --new-cycle "
+                "does not move past an aborted attempt -- run `wfrun judge`, "
+                "delegate the judge, and pass its reply with --redispatch; or "
+                "stop and report")
+    if not args.redispatch:
+        return (f"step '{step.id}': attempt {label} was aborted -- run "
+                "`wfrun judge`, delegate the judge, and pass its reply with "
+                "--redispatch; or stop and report")
+    # A refused call is never re-run, and a transcript that cannot be found
+    # cannot be judged (Claude Code only: Pi has no permission layer).
+    check = ccdeny.check_delegation(pointer)
+    if check.verdict == ccdeny.DENIED:
+        return (f"step '{step.id}': a tool call of attempt {label} was "
+                "refused, and a refused call is never re-run -- stop and report")
+    if check.verdict == ccdeny.NO_TRANSCRIPT:
+        return (f"step '{step.id}': the transcript of attempt {label} cannot "
+                f"be found ({check.reason}) -- stop and report")
+    return llmgate.check_judge(pointer, args.redispatch)
+
+
+def _debug_pending(step: model.Step, cycle: int, attempts: list,
+                   fix: str | None) -> str | None:
+    """Why a re-run must wait for the debug diagnosis: the ladder has handed
+    the cycle's last failed attempt to debug and no verdict is recorded yet.
+    run-llm delegates that diagnosis, where the A layer's `wait` runs it
+    in-process."""
+    view = _ladder_view(attempts)
+    if fix or not view:
+        return None
+    last = view[-1]
+    if last.get("debug") is not None:
+        return None
+    if not _debug_is_next(step, last.get("class"), last.get("seq"), attempts):
+        return None
+    return (f"step '{step.id}' cycle {cycle}: attempt {last.get('seq')} failed "
+            "with no retry left and on-error=\"debug\" -- delegate the debug "
+            "diagnosis, pass its reply to record --debug-reply, and do what "
+            "that prints")
 
 
 # `decision` (4) is a verdict, not a failure: run-llm's orchestrator decides
@@ -782,35 +940,436 @@ def cmd_record(args) -> int:
         except stepio.StepIOError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
+    elif args.debug_reply is not None:
+        code, message = _record_debug(step, args)
+        print(message)
+        return code
     else:
+        refusal = (_recorded_already(step, args.result)
+                   or _completed_after_stop(step, args.result, args.log))
+        if refusal:
+            print(refusal)
+            return RECORD_REFUSED
+        stopped = _stopped_unfinished(step, args.result)
+        if stopped is not None:
+            print(_record_stopped(step, stopped, args.log))
+            return RECORD_EXIT_CODES["aborted"]
         status, message = stepio.record_result(step, args.result, args.vars,
                                                args.log, reply=args.reply)
     print(message)
     return RECORD_EXIT_CODES[status]
 
 
+# The record of a decision request's one llm-decider delegation, next to the
+# request in `decisions/`.
+DECIDER_RECORD_SUFFIX = "_decider.json"
+
+
+def cmd_decide(args) -> int:
+    """Issue the one llm-decider delegation of a step's open decision request:
+    record it, then print the paths and description to delegate with. A
+    request is delegated once. Whether that delegation replied, ruled, or
+    vanished, a second one is refused: the request goes to a person."""
+    wf = parser.parse_file(args.workflow)
+    try:
+        step = stepio.find_step(wf, args.step_id)
+    except stepio.StepIOError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    dec_dir = stepio.decisions_dir_for_result(args.result)
+    rid = decision_mod.pending_request_id(dec_dir, step.id)
+    if rid is None:
+        print(f"error: step '{step.id}': no open decision request in {dec_dir}",
+              file=sys.stderr)
+        return 2
+    decider, decider_model = model.resolve_decider(wf, step)
+    if decider != model.DECIDER_LLM:
+        print(f"error: step '{step.id}': the decider is {decider}: present "
+              f"decision {rid} to a person; nothing is delegated", file=sys.stderr)
+        return 2
+    if decision_mod.llm_adjudications(dec_dir, step.id) >= model.DECISION_LLM_CAP:
+        print(f"error: step '{step.id}': an llm decider has already settled "
+              f"{model.DECISION_LLM_CAP} request(s) here, so decision {rid} is "
+              "for a person (record --answer ... --decider human)",
+              file=sys.stderr)
+        return 1
+    record_path = dec_dir / f"{rid}{DECIDER_RECORD_SUFFIX}"
+    if record_path.exists():
+        print(f"error: decision {rid} was already delegated to the llm decider "
+              f"({record_path}); a request is not delegated again -- present it "
+              "to a person and record their ruling with --decider human",
+              file=sys.stderr)
+        return 1
+    try:
+        resolved = modelmap.resolve(decider_model, "llm")
+    except modelmap.ModelMapError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    record = {
+        "request_id": rid, "step_id": step.id, "issued_at": time.time(),
+        "request_path": str(dec_dir / f"{rid}{decision_mod.REQUEST_SUFFIX}"),
+        "answer_path": str(dec_dir / f"{rid}{decision_mod.ANSWER_SUFFIX}"),
+        "model": resolved,
+        "description": (f"wfrun-decider {step.id} {rid} "
+                        f"{secrets.token_hex(stepio.DELEGATION_TOKEN_BYTES)}"),
+    }
+    llmgate.write_json(record_path, record)
+    print(f"{record['request_path']} (decider, model={resolved}, "
+          f"answer={record['answer_path']}, description={record['description']})")
+    return 0
+
+
+# `record` verdicts that change nothing: a second record of one attempt, a
+# late result that is not adopted, a debug reply that cannot be recorded.
+# Same code as an unusable --answer.
+RECORD_REFUSED = 2
+
+_DEBUG_REPLY_RE = re.compile(r"\s*(RETRY|FAIL)\b", re.IGNORECASE)
+
+
+def _recorded_already(step: model.Step, result_base: str) -> str | None:
+    """Why `record` must not record the attempt `result_base`'s handle names:
+    it already has a verdict. A result that completed after an aborted
+    verdict is flagged on the way out -- it is the one sign that something
+    kept writing after the attempt was judged over -- and never adopted."""
+    handle = stepio.load_handle(step.id, result_base)
+    if not stepio.is_attempt_handle(handle):
+        return None
+    steps_dir = Path(handle["result_path"]).parent
+    entry = llmgate.ledger_entry(steps_dir, step.id, handle["cycle"],
+                                 handle["attempt"])
+    if entry is None:
+        return None
+    label = llmgate.attempt_label(handle["cycle"], handle["attempt"])
+    if entry.get("class") == "aborted" and llmgate.is_complete(handle):
+        stop = llmgate.load_stop(handle)
+        confirmed = stop is not None and stop.get("verdict") == llmgate.STOP_CONFIRMED
+        llmgate.flag_attempt(handle, llmgate.FLAG_STOP_CONTRADICTION if confirmed
+                             else llmgate.FLAG_LATE_COMPLETION)
+        return (f"error: attempt {label} of step '{step.id}' was recorded "
+                "aborted and its result completed afterwards; that completion "
+                "is not adopted -- stop and report")
+    return (f"error: attempt {label} of step '{step.id}' is already recorded "
+            f"({entry.get('class')}); nothing recorded")
+
+
+def _completed_after_stop(step: model.Step, result_base: str,
+                          log_path: str | None) -> str | None:
+    """Why `record` must not adopt the attempt's result: its stop window
+    closed without a completion (the stop record says confirmed or
+    unconfirmed), and the result completed afterwards. The attempt is
+    recorded aborted instead, flagged the way `_recorded_already` flags a
+    completion after an aborted verdict: after a confirmed stop it
+    contradicts the stop evidence."""
+    handle = stepio.load_handle(step.id, result_base)
+    if not stepio.is_attempt_handle(handle):
+        return None
+    stop = llmgate.load_stop(handle)
+    if stop is None or stop.get("verdict") == llmgate.STOP_DONE:
+        return None
+    if not llmgate.is_complete(handle):
+        return None
+    flag = (llmgate.FLAG_STOP_CONTRADICTION
+            if stop.get("verdict") == llmgate.STOP_CONFIRMED
+            else llmgate.FLAG_LATE_COMPLETION)
+    stepio.record_aborted_attempt(
+        step, stepio.attempt_ledger_path(Path(handle["result_path"]).parent,
+                                         step.id, handle["cycle"]),
+        handle["attempt"], log_path, handle["result_path"],
+        {"token": handle["token"], flag: True})
+    label = llmgate.attempt_label(handle["cycle"], handle["attempt"])
+    return (f"error: attempt {label} of step '{step.id}' completed after its "
+            f"stop was observed ({stop.get('verdict')}); that completion is "
+            "not adopted and the attempt is recorded aborted -- stop and report")
+
+
+STOPPED_RECORD_MESSAGE = ("aborted: stopped before its result completed -- a "
+                          "reply is not read after a stop")
+
+
+def _stopped_unfinished(step: model.Step, result_base: str) -> dict | None:
+    """The handle of the attempt `result_base` names when its stop was
+    observed and its result is still incomplete: the stop settles it, so
+    `record` reads neither a reply nor the refusal check for its class."""
+    handle = stepio.load_handle(step.id, result_base)
+    if not stepio.is_attempt_handle(handle):
+        return None
+    stop = llmgate.load_stop(handle)
+    if stop is None or stop.get("verdict") == llmgate.STOP_DONE:
+        return None
+    if llmgate.is_complete(handle):
+        return None
+    return handle
+
+
+def _record_stopped(step: model.Step, handle: dict,
+                    log_path: str | None) -> str:
+    """Record the attempt `handle` names aborted and say so. A stop that cut
+    a running call can leave it recorded as refused: the refusal check still
+    runs, but its verdict is only logged and printed -- a stop is not a
+    denial, and the stop's own record decides whether the attempt may run
+    again."""
+    check = ccdeny.check_delegation(handle)
+    fields = {"token": handle["token"]}
+    deny_check = None
+    if check.verdict != ccdeny.NOT_APPLICABLE:
+        deny_check = check.label
+        fields["deny_check"] = deny_check
+    stepio.record_aborted_attempt(
+        step, stepio.attempt_ledger_path(Path(handle["result_path"]).parent,
+                                         step.id, handle["cycle"]),
+        handle["attempt"], log_path, handle["result_path"], fields,
+        deny_check=deny_check)
+    lines = [STOPPED_RECORD_MESSAGE]
+    if check.verdict == ccdeny.DENIED:
+        lines.append(f"deny-check: {check.label} (details: {check.transcript})")
+    elif check.verdict == ccdeny.NO_TRANSCRIPT:
+        lines.append(f"deny-check: {check.label}: {check.reason}")
+    return "\n".join(lines)
+
+
+def _record_debug(step: model.Step, args) -> tuple[int, str]:
+    """Attach the delegated debug diagnosis's verdict to the attempt it
+    diagnosed, the way the A layer's `wait` attaches its in-process one, so
+    the shared ladder admits `--fix` exactly once and only after RETRY. One
+    verdict per failed attempt: a second reply records nothing."""
+    handle = stepio.load_handle(step.id, args.result)
+    if not stepio.is_attempt_handle(handle):
+        return RECORD_REFUSED, (f"error: step '{step.id}' has no attempt to "
+                                "attach a debug verdict to")
+    steps_dir = Path(handle["result_path"]).parent
+    ledger = stepio.attempt_ledger_path(steps_dir, step.id, handle["cycle"])
+    attempts = stepio.load_attempts(ledger)
+    seq = handle["attempt"]
+    label = llmgate.attempt_label(handle["cycle"], seq)
+    entry = next((a for a in attempts
+                  if isinstance(a, dict) and a.get("seq") == seq), None)
+    if entry is None:
+        return RECORD_REFUSED, (f"error: attempt {label} of step '{step.id}' "
+                                "has no recorded verdict yet -- record it first")
+    if entry.get("debug") is not None:
+        return RECORD_REFUSED, (f"error: attempt {label} already carries the "
+                                f"debug verdict {entry['debug']}; a diagnosis "
+                                "is delegated once per failed attempt -- "
+                                "nothing recorded")
+    if not _debug_is_next(step, entry.get("class"), seq, attempts):
+        return RECORD_REFUSED, (f"error: the ladder does not hand attempt "
+                                f"{label} ({entry.get('class')}) to debug -- "
+                                "nothing recorded")
+    match = _DEBUG_REPLY_RE.match(args.debug_reply or "")
+    if match is None:
+        return RECORD_REFUSED, ("error: the debug reply is neither RETRY nor "
+                                "FAIL -- nothing recorded; stop and report")
+    if match.group(1).upper() == DEBUG_RETRY:
+        fix = _fix_path(steps_dir.parent, step.id)
+        try:
+            written = fix.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            written = ""
+        if not written:
+            return RECORD_REFUSED, (f"error: debug answered RETRY but wrote no "
+                                    f"fix to {fix} -- nothing recorded; stop "
+                                    "and report")
+        stepio.update_attempt(ledger, seq, {"debug": DEBUG_RETRY})
+        return 0, f'debug: RETRY -- redo from move 1 with --fix "$(cat {fix})"'
+    stepio.update_attempt(ledger, seq, {"debug": DEBUG_FAIL})
+    earlier = [a for a in _ladder_view(attempts) if a.get("seq", seq) < seq]
+    return 1, ("debug: FAIL -- "
+               + _on_error_action(step, {**entry, "debug": DEBUG_FAIL}, earlier))
+
+
+# How often `poll --wait` looks at the attempt's result file. It is a
+# background wake-up for a deadline, not a busy loop.
+POLL_WAIT_INTERVAL = 5.0
+
+
+def _poll_verdict(handle: dict) -> tuple[int, str]:
+    if llmgate.is_complete(handle):
+        return 0, "done"
+    # No kill authority here (B-layer limitation, reliability-spec.md §4.3):
+    # this only ever declares a verdict, never terminates the subagent.
+    if time.time() - handle["dispatched_at"] > handle["timeout"]:
+        return 11, "deadline-exceeded"
+    return 10, "running"
+
+
 def cmd_poll(args) -> int:
+    """done / running / deadline-exceeded for the attempt a handle names:
+    only that attempt's own file ending in its own sentinel is done.
+    `--wait` blocks until the verdict is not `running`; it reads the result
+    file and the clock and writes nothing, so a background wake-up at the
+    deadline never classifies or records the attempt."""
     handle_file = Path(args.handle)
     try:
         handle = json.loads(handle_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         print(f"error: cannot load handle file {handle_file}: {e}", file=sys.stderr)
         return 2
-    result_path = Path(handle["result_path"])
-    if result_path.is_file():
-        raw = result_path.read_text(encoding="utf-8")
-        text = modes.strip_mode_line(raw)
-        _, sentinel_ok = stepio.strip_sentinel_line(text, handle["step_id"])
-        if sentinel_ok:
-            print("done")
-            return 0
-    # No kill authority here (B-layer limitation, reliability-spec.md §4.3):
-    # this only ever declares a verdict, never terminates the subagent.
-    if time.time() - handle["dispatched_at"] > handle["timeout"]:
-        print("deadline-exceeded")
-        return 11
-    print("running")
-    return 10
+    while True:
+        code, verdict = _poll_verdict(handle)
+        if code != 10 or not args.wait:
+            print(verdict)
+            return code
+        time.sleep(POLL_WAIT_INTERVAL)
+
+
+# `stop`'s verdicts: `done` shares poll's 0 (record it now: the completion is
+# adopted); the other two continue poll's numbering, so no exit code means
+# two things.
+STOP_EXIT_CODES = {llmgate.STOP_DONE: 0, llmgate.STOP_CONFIRMED: 12,
+                   llmgate.STOP_UNCONFIRMED: 13}
+
+
+def _attempt_handle(path: str) -> dict | None:
+    handle = llmgate.read_json(path)
+    return handle if stepio.is_attempt_handle(handle) else None
+
+
+def cmd_stop(args) -> int:
+    """Observe a run-llm attempt after its stop request, for at most a
+    minute, and write its stop record: `done` (the result completed inside
+    the window -- record it), `confirmed`, or `unconfirmed` (record the
+    attempt, then stop and report). An attempt is observed once; asking
+    again prints the first record's verdict."""
+    handle = _attempt_handle(args.handle)
+    if handle is None:
+        print(f"error: {args.handle} is not a run-llm attempt handle",
+              file=sys.stderr)
+        return 2
+    if args.facet == llmgate.FACET_CC and not args.task_stop:
+        print("error: --facet cc needs --task-stop: what TaskStop reported",
+              file=sys.stderr)
+        return 2
+    if args.facet != llmgate.FACET_CC and args.task_stop:
+        print(f"error: --task-stop belongs to --facet {llmgate.FACET_CC} only",
+              file=sys.stderr)
+        return 2
+    if not 0 < args.observe <= llmgate.STOP_OBSERVE_MAX:
+        print(f"error: --observe takes 1 to {llmgate.STOP_OBSERVE_MAX} seconds",
+              file=sys.stderr)
+        return 2
+    label = llmgate.attempt_label(handle["cycle"], handle["attempt"])
+    entry = llmgate.ledger_entry(Path(handle["result_path"]).parent,
+                                 handle["step_id"], handle["cycle"],
+                                 handle["attempt"])
+    if entry is not None and entry.get("class") != "aborted":
+        print(f"error: attempt {label} is already recorded {entry.get('class')}; "
+              "there is nothing to stop", file=sys.stderr)
+        return 2
+    record = llmgate.observe_stop(handle, args.facet, args.task_stop, args.observe)
+    where = llmgate.files_of(handle)["stop"]
+    verdict = record["verdict"]
+    if verdict == llmgate.STOP_DONE:
+        print("done")
+    elif verdict == llmgate.STOP_CONFIRMED:
+        print(f"confirmed ({record['facet']}, cause={record['cause']}; "
+              f"record: {where})")
+    else:
+        print(f"unconfirmed: {'; '.join(record['reasons'])} -- record the "
+              f"attempt, then stop and report (record: {where})")
+    return STOP_EXIT_CODES[verdict]
+
+
+def cmd_pids(args) -> int:
+    """Record the processes a Pi CLI attempt was launched as, once, at
+    launch: the set its stop is later judged against."""
+    handle = _attempt_handle(args.handle)
+    if handle is None:
+        print(f"error: {args.handle} is not a run-llm attempt handle",
+              file=sys.stderr)
+        return 2
+    if any(pid <= 0 for pid in args.pids):
+        print("error: a PID is a positive integer", file=sys.stderr)
+        return 2
+    recorded = llmgate.record_pids(handle, args.pids)
+    if isinstance(recorded, str):
+        print(f"error: {recorded}", file=sys.stderr)
+        return 1
+    label = llmgate.attempt_label(handle["cycle"], handle["attempt"])
+    print(f"recorded {len(recorded['processes'])} process(es) of attempt {label}: "
+          + ", ".join(f"{p['pid']} ({p['image']})" for p in recorded["processes"]))
+    return 0
+
+
+def cmd_judge(args) -> int:
+    """Issue the one judge of an aborted run-llm attempt whose stop is
+    confirmed: write its evidence manifest, prompt and handle, and print the
+    paths and dispatch facts to delegate it with. Prints no content."""
+    wf = parser.parse_file(args.workflow)
+    try:
+        step = stepio.find_step(wf, args.step_id)
+    except stepio.StepIOError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    handle = stepio.load_handle(step.id, args.result)
+    if isinstance(step, model.Replan) or not stepio.is_attempt_handle(handle):
+        print(f"error: step '{step.id}' has no run-llm attempt to judge",
+              file=sys.stderr)
+        return 2
+    try:
+        resolved = modelmap.resolve(llmgate.JUDGE_MODEL, "llm")
+    except modelmap.ModelMapError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    refusal = _judge_refusal(wf, step, handle)
+    if refusal is None:
+        issued = llmgate.issue_judge(handle, llmgate.load_stop(handle))
+        refusal = issued if isinstance(issued, str) else None
+    if refusal:
+        print(f"error: {refusal}", file=sys.stderr)
+        return 1
+    judge = issued["judge"]
+    print(f"{judge['prompt_path']} (judge, model={resolved}, "
+          f"tools={','.join(llmgate.JUDGE_TOOLS)}, record={judge['record_path']}, "
+          f"handle={judge['handle_path']}, timeout={judge['timeout']}, "
+          f"description={judge['description']})")
+    return 0
+
+
+def _judge_refusal(wf: model.Workflow, step: model.Step, handle: dict
+                   ) -> str | None:
+    """Why no judge may be spent on `handle`'s attempt: it is not an aborted
+    attempt with a confirmed stop and a still-incomplete result, a tool call
+    of it was refused, its transcript cannot be found, or the restart a judge
+    could allow would be refused anyway (an open decision, the budgets)."""
+    steps_dir = Path(handle["result_path"]).parent
+    label = llmgate.attempt_label(handle["cycle"], handle["attempt"])
+    entry = llmgate.ledger_entry(steps_dir, step.id, handle["cycle"],
+                                 handle["attempt"])
+    if entry is None:
+        return (f"attempt {label} of step '{step.id}' has no recorded verdict "
+                "-- record it first; a judge weighs only an aborted attempt")
+    if entry.get("class") != "aborted":
+        return (f"attempt {label} of step '{step.id}' ended {entry.get('class')}; "
+                "a judge weighs only an aborted attempt")
+    if (entry.get(llmgate.FLAG_LATE_COMPLETION)
+            or entry.get(llmgate.FLAG_STOP_CONTRADICTION)):
+        return (f"attempt {label} completed after its stop or its verdict, so "
+                "its stop evidence cannot be trusted -- stop and report")
+    stop = llmgate.load_stop(handle)
+    if stop is None or stop.get("verdict") != llmgate.STOP_CONFIRMED:
+        return (f"the stop of attempt {label} is not confirmed; it is never "
+                "run again -- stop and report")
+    if llmgate.is_complete(handle):
+        llmgate.flag_attempt(handle, llmgate.FLAG_STOP_CONTRADICTION)
+        return (f"attempt {label} completed after its stop was confirmed, so "
+                "its stop evidence cannot be trusted -- stop and report")
+    check = ccdeny.check_delegation(handle)
+    if check.verdict == ccdeny.DENIED:
+        return (f"a tool call of attempt {label} was refused, and a refused "
+                "call is never re-run -- stop and report")
+    if check.verdict == ccdeny.NO_TRANSCRIPT:
+        return (f"the transcript of attempt {label} cannot be found "
+                f"({check.reason}), so no judge could read it -- stop and report")
+    pending = decision_mod.pending_request_id(
+        decision_mod.decisions_dir(steps_dir.parent), step.id)
+    if pending is not None:
+        return (f"step '{step.id}': decision {pending} has no ruling yet -- "
+                "settle it with record --answer, which says whether to re-run")
+    attempts = stepio.load_attempts(
+        stepio.attempt_ledger_path(steps_dir, step.id, handle["cycle"]))
+    return _admission_refusal(wf, step, steps_dir.parent, handle["cycle"],
+                              attempts, None, decision_prefix=step.id)
 
 
 # ===== A layer (reliability-spec.md §5): dispatch a detached wrapper that
@@ -960,12 +1519,78 @@ def _resolve_cycle(run_dir: Path, step_id: str, force_new: bool
     latest = _latest_cycle(run_dir / "steps", step_id)
     if latest is None:
         return 1, []
-    attempts = stepio.load_attempts(
-        _a_layer_paths(run_dir, step_id, latest)["attempts"])
+    return _next_cycle(latest, stepio.load_attempts(
+        _a_layer_paths(run_dir, step_id, latest)["attempts"]), force_new)
+
+
+def _next_cycle(latest: int, attempts: list, force_new: bool) -> tuple[int, list]:
+    """(cycle, attempts-so-far-in-that-cycle) after cycle `latest`, whose
+    ledger is `attempts`: a new cycle after a success or on `--new-cycle`,
+    else the same one. Shared by both layers (see `_resolve_cycle`)."""
     last_class = attempts[-1].get("class") if attempts else None
     if force_new or last_class == "ok":
         return latest + 1, []
     return latest, attempts
+
+
+def _admission_refusal(wf: model.Workflow, step: model.Step, run_dir: Path,
+                       cycle: int, attempts: list, fix: str | None,
+                       decision_prefix: str | None = None) -> str | None:
+    """Why run-cc's ladder and the run's budgets refuse the next attempt of
+    `step` in `cycle` (its ledger so far is `attempts`), or None. Shared by
+    the A layer's `dispatch` and the B layer's `prompt --result`, so both
+    layers count one set of budgets one way. `decision_prefix` is the id
+    prefix the layer files decision requests under (the A layer's `<id>_cNN`
+    by default; the B layer's bare step id)."""
+    # The one re-dispatch after an abort is a cycle-wide budget of its
+    # own, judged before the total-attempt cap so a run already spent
+    # on aborts is told to stop, not pointed at --new-cycle (a
+    # deviation from the total cap's own precedence, made for message
+    # accuracy only -- either order refuses the same calls). Counted by
+    # distinct seq, not raw entry count: the time-deadline fallback can
+    # in principle record the same seq twice (no lock evidence to key
+    # idempotency on), and that must not cost a second redispatch.
+    aborted_count = len({a.get("seq") for a in attempts
+                        if a.get("class") == "aborted"})
+    if aborted_count > DISPATCH_ABORTED_REDISPATCH:
+        return (f"step '{step.id}' cycle {cycle}: "
+                f"{aborted_count} attempts aborted; the one re-dispatch "
+                "after an abort is spent -- stop and report")
+
+    # The cap is per cycle (one step-node visit), matching run-cc's
+    # per-visit retry budget; wf.max below is the run-wide backstop.
+    decision_attempts = sum(1 for a in attempts if a.get("class") == "decision")
+    cap = (step.retry + 1 + DISPATCH_DEBUG_GRANTS + DISPATCH_ABORTED_REDISPATCH
+           + DISPATCH_DECISION_GRANTS * decision_attempts)
+    if len(attempts) >= cap:
+        return (f"dispatch cap exceeded for step '{step.id}' "
+                f"(cycle {cycle}): {len(attempts)} attempts already recorded, "
+                f"cap is {cap} (retry={step.retry} + 1 initial + "
+                f"{DISPATCH_DEBUG_GRANTS} debug + "
+                f"{DISPATCH_ABORTED_REDISPATCH} aborted-redispatch"
+                + (f" + {DISPATCH_DECISION_GRANTS}x{decision_attempts} decision"
+                   if decision_attempts else "") + "). "
+                f"If this is a new <while>/<each> iteration rather than a "
+                f"retry, pass --new-cycle")
+
+    # What may follow a failed attempt is run-cc's ladder, not the
+    # orchestrator's generic retry: a class never re-run as-is (a refused
+    # call's re-run could reach the refused effect another way), a spent
+    # budget, the one fixed re-run, a fork awaiting its ruling. Enforced
+    # here, not left to prompt. The ladder view drops aborted attempts:
+    # an aborted attempt never finished, so there is nothing in it for
+    # the ladder to judge.
+    refusal = _dispatch_refusal(step, run_dir, cycle, _ladder_view(attempts),
+                                fix, decision_prefix)
+    if refusal:
+        return refusal
+
+    log_path = run_dir / "steps.log"
+    executed = _count_step_executions(log_path)
+    if executed >= wf.max:
+        return (f"workflow max={wf.max} step executions reached "
+                f"({executed} recorded in {log_path})")
+    return None
 
 
 def _count_step_executions(log_path: Path) -> int:
@@ -1068,7 +1693,8 @@ def _on_error_action(step: model.Step, last: dict, earlier: list) -> str:
 
 
 def _plain_block(step: model.Step, run_dir: Path, cycle: int,
-                 attempts: list) -> tuple[str, str] | None:
+                 attempts: list, decision_prefix: str | None = None
+                 ) -> tuple[str, str] | None:
     """(why, what to do instead) when run-cc's ladder would not re-run the
     cycle's last attempt with the step's own prompt; None when it would."""
     if not attempts:
@@ -1082,7 +1708,8 @@ def _plain_block(step: model.Step, run_dir: Path, cycle: int,
         # Form (b) re-runs once the ruling is filed; before that, a re-run
         # executes the step a second time while the fork is still open.
         pending = decision_mod.pending_request_id(
-            decision_mod.decisions_dir(run_dir), f"{step.id}_c{cycle:02d}")
+            decision_mod.decisions_dir(run_dir),
+            decision_prefix or f"{step.id}_c{cycle:02d}")
         if pending is None:
             return None
         return (f"decision {pending} has no ruling yet",
@@ -1098,7 +1725,8 @@ def _plain_block(step: model.Step, run_dir: Path, cycle: int,
 
 
 def _dispatch_refusal(step: model.Step, run_dir: Path, cycle: int,
-                      attempts: list, fix: str | None) -> str | None:
+                      attempts: list, fix: str | None,
+                      decision_prefix: str | None = None) -> str | None:
     """Why run-cc's ladder (Executor._exec_step) would not make this dispatch,
     ending in the one thing to do instead; None when it would.
 
@@ -1113,11 +1741,11 @@ def _dispatch_refusal(step: model.Step, run_dir: Path, cycle: int,
     if fix:
         if attempts and attempts[-1].get("debug") == DEBUG_RETRY:
             return None
-        blocked = _plain_block(step, run_dir, cycle, attempts)
+        blocked = _plain_block(step, run_dir, cycle, attempts, decision_prefix)
         action = "dispatch without --fix" if blocked is None else blocked[1]
         return (f"{where}: no debug RETRY is recorded for its last attempt, "
                 f"so --fix has nothing to apply -- {action}")
-    blocked = _plain_block(step, run_dir, cycle, attempts)
+    blocked = _plain_block(step, run_dir, cycle, attempts, decision_prefix)
     if blocked is None:
         return None
     why, action = blocked
@@ -1451,57 +2079,9 @@ def cmd_dispatch(args) -> int:
         cycle, attempts = _resolve_cycle(run_dir, args.step_id, args.new_cycle)
         paths = _a_layer_paths(run_dir, args.step_id, cycle)
 
-        # The one re-dispatch after an abort is a cycle-wide budget of its
-        # own, judged before the total-attempt cap so a run already spent
-        # on aborts is told to stop, not pointed at --new-cycle (a
-        # deviation from the total cap's own precedence, made for message
-        # accuracy only -- either order refuses the same calls). Counted by
-        # distinct seq, not raw entry count: the time-deadline fallback can
-        # in principle record the same seq twice (no lock evidence to key
-        # idempotency on), and that must not cost a second redispatch.
-        aborted_count = len({a.get("seq") for a in attempts
-                            if a.get("class") == "aborted"})
-        if aborted_count > DISPATCH_ABORTED_REDISPATCH:
-            print(f"error: step '{args.step_id}' cycle {cycle}: "
-                  f"{aborted_count} attempts aborted; the one re-dispatch "
-                  "after an abort is spent -- stop and report", file=sys.stderr)
-            return 1
-
-        # The cap is per cycle (one step-node visit), matching run-cc's
-        # per-visit retry budget; wf.max below is the run-wide backstop.
-        decision_attempts = sum(1 for a in attempts if a.get("class") == "decision")
-        cap = (step.retry + 1 + DISPATCH_DEBUG_GRANTS + DISPATCH_ABORTED_REDISPATCH
-               + DISPATCH_DECISION_GRANTS * decision_attempts)
-        if len(attempts) >= cap:
-            print(f"error: dispatch cap exceeded for step '{args.step_id}' "
-                  f"(cycle {cycle}): {len(attempts)} attempts already recorded, "
-                  f"cap is {cap} (retry={step.retry} + 1 initial + "
-                  f"{DISPATCH_DEBUG_GRANTS} debug + "
-                  f"{DISPATCH_ABORTED_REDISPATCH} aborted-redispatch"
-                  + (f" + {DISPATCH_DECISION_GRANTS}x{decision_attempts} decision"
-                     if decision_attempts else "") + "). "
-                  f"If this is a new <while>/<each> iteration rather than a "
-                  f"retry, pass --new-cycle", file=sys.stderr)
-            return 1
-
-        # What may follow a failed attempt is run-cc's ladder, not the
-        # orchestrator's generic retry: a class never re-run as-is (a refused
-        # call's re-run could reach the refused effect another way), a spent
-        # budget, the one fixed re-run, a fork awaiting its ruling. Enforced
-        # here, not left to prompt. The ladder view drops aborted attempts:
-        # an aborted attempt never finished, so there is nothing in it for
-        # the ladder to judge.
-        refusal = _dispatch_refusal(step, run_dir, cycle, _ladder_view(attempts),
-                                    args.fix)
+        refusal = _admission_refusal(wf, step, run_dir, cycle, attempts, args.fix)
         if refusal:
             print(f"error: {refusal}", file=sys.stderr)
-            return 1
-
-        log_path = run_dir / "steps.log"
-        executed = _count_step_executions(log_path)
-        if executed >= wf.max:
-            print(f"error: workflow max={wf.max} step executions reached "
-                  f"({executed} recorded in {log_path})", file=sys.stderr)
             return 1
 
         try:
@@ -2108,9 +2688,14 @@ def main(argv=None) -> int:
     p_prompt.add_argument("--result", metavar="RESULT_FILE",
                           help="append the file-based response protocol pointing here")
     p_prompt.add_argument("--fix", help="debug-granted fix instruction to append")
-    p_prompt.add_argument("--attempt", type=int, default=1,
-                          help="attempt sequence number recorded in the "
-                               "step's handle.json (audit only)")
+    p_prompt.add_argument("--new-cycle", action="store_true",
+                          help="with --result: the next attempt opens a new "
+                               "cycle (a new <while>/<each> iteration after a "
+                               "failure the workflow tolerated)")
+    p_prompt.add_argument("--redispatch", metavar="JUDGE_REPLY",
+                          help="with --result: run an aborted attempt's step "
+                               "again; the judge's one-line reply "
+                               "('allow <record>')")
     p_prompt.set_defaults(func=cmd_prompt)
 
     p_rec = sub.add_parser(
@@ -2131,6 +2716,10 @@ def main(argv=None) -> int:
                             "this ruling file (first line 'option: <N|none>'). "
                             "Exits 0 when the step continues without "
                             "re-running, 5 when it must be re-run from move 1")
+    p_rec.add_argument("--debug-reply", metavar="LINE",
+                       help="the one-line reply of the debug diagnosis "
+                            "delegated for the step's last failed attempt "
+                            "(RETRY or FAIL); recorded on that attempt")
     p_rec.add_argument("--decider", choices=list(model.DECIDER_VALUES),
                        help="who wrote the --answer file. Defaults to the "
                             "workflow's own decider; pass 'human' when a "
@@ -2138,13 +2727,66 @@ def main(argv=None) -> int:
                             "them, so it does not spend the llm cap")
     p_rec.set_defaults(func=cmd_record)
 
+    p_decide = sub.add_parser(
+        "decide", help="run-llm: record and print the one llm-decider "
+                       "delegation of a step's open decision request "
+                       "(paths only; a request is delegated once)")
+    p_decide.add_argument("workflow")
+    p_decide.add_argument("step_id")
+    p_decide.add_argument("--result", required=True, metavar="RESULT_FILE",
+                          help="the step's --result path, as given to prompt")
+    p_decide.set_defaults(func=cmd_decide)
+
     p_poll = sub.add_parser(
         "poll", help="check a dispatched step's handle without blocking: "
                      "done(0) / running(10) / deadline-exceeded(11)")
     p_poll.add_argument("handle", metavar="HANDLE_FILE",
                         help="the steps/<id>_handle.json written by "
                              "'wfrun prompt --result'")
+    p_poll.add_argument("--wait", action="store_true",
+                        help="block until the attempt is done or past its "
+                             "deadline; writes nothing")
     p_poll.set_defaults(func=cmd_poll)
+
+    p_stop = sub.add_parser(
+        "stop", help="run-llm: after a stop request, observe an attempt for "
+                     "at most a minute and record whether its stop is "
+                     "confirmed: done(0) / confirmed(12) / unconfirmed(13)")
+    p_stop.add_argument("handle", metavar="HANDLE_FILE",
+                        help="the step's handle, as 'wfrun prompt --result' "
+                             "wrote it")
+    p_stop.add_argument("--facet", required=True, choices=list(llmgate.FACETS),
+                        help="how the attempt was delegated: the Claude Code "
+                             "Agent tool, or a Pi CLI process")
+    p_stop.add_argument("--task-stop", choices=list(llmgate.TASK_STOP_RESULTS),
+                        help="cc only: what TaskStop reported -- stopped; "
+                             "completed (the task had already ended); failed "
+                             "(the call errored or could not be made)")
+    p_stop.add_argument("--observe", type=int, default=llmgate.STOP_OBSERVE_MAX,
+                        metavar="SECONDS",
+                        help=f"observation window, 1 to "
+                             f"{llmgate.STOP_OBSERVE_MAX} (default)")
+    p_stop.set_defaults(func=cmd_stop)
+
+    p_pids = sub.add_parser(
+        "pids", help="run-llm, Pi CLI: record the processes an attempt was "
+                     "launched as (PID, image, creation time), once, at launch")
+    p_pids.add_argument("handle", metavar="HANDLE_FILE",
+                        help="the step's handle, as 'wfrun prompt --result' "
+                             "wrote it")
+    p_pids.add_argument("pids", nargs="+", type=int, metavar="PID",
+                        help="Windows PIDs: the launching shell and the CLI's "
+                             "own process")
+    p_pids.set_defaults(func=cmd_pids)
+
+    p_judge = sub.add_parser(
+        "judge", help="run-llm: issue the one judge of an aborted attempt whose "
+                      "stop is confirmed (paths only; one judge per attempt)")
+    p_judge.add_argument("workflow")
+    p_judge.add_argument("step_id")
+    p_judge.add_argument("--result", required=True, metavar="RESULT_FILE",
+                         help="the step's --result path, as given to prompt")
+    p_judge.set_defaults(func=cmd_judge)
 
     p_dispatch = sub.add_parser(
         "dispatch", help="A-layer (reliability-spec.md §5): launch a step's "
