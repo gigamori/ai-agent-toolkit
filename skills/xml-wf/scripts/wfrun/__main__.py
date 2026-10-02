@@ -1,6 +1,9 @@
-"""wfrun CLI: validate / run / resume / plan, plus LLM-orchestrator helpers
-(interp / eval / ask) that keep interpolation, condition evaluation and ask
-judgment deterministic even when an LLM drives the control flow."""
+"""wfrun CLI: validate / run / resume / plan / viz, plus the helpers an LLM
+orchestrator calls: interp / eval / ask (which keep interpolation, condition
+evaluation and ask judgment deterministic even when an LLM drives the control
+flow), run-llm's prompt / record / decide / poll / stop / pids / judge (a
+step's prompt, and the records of its attempts and decisions), and the A
+layer's dispatch / wait."""
 from __future__ import annotations
 
 import argparse
@@ -1604,9 +1607,11 @@ def _count_step_executions(log_path: Path) -> int:
 
     Retry attempts DO each count here, unlike run-cc (whose `_bump_limits`
     fires once per step-node visit, outside the retry loop). That is
-    deliberate: in run-llm there is no in-process step counter, so this log
-    is the only runaway backstop, and every attempt is a real `claude -p`
-    call. Erring toward counting them keeps the cap's protective meaning.
+    deliberate: when an LLM drives the run there is no in-process step
+    counter, so this log is the only runaway backstop, and every attempt is a
+    real model call (a subagent or a `pi -p` process under run-llm, a
+    `claude -p` wrapper under the A layer's `dispatch`). Erring toward
+    counting them keeps the cap's protective meaning.
     """
     count = 0
     try:
@@ -2108,10 +2113,11 @@ def cmd_dispatch(args) -> int:
                       if model.tools_can_write(dispatch_tools) else None)
 
         for p in (paths["exit"], paths["result"], paths["wait"]):
-            # Stale-read prevention (same principle as B-layer's `prompt
-            # --result`, reliability-spec.md §4.1 F6): a leftover exit/result
-            # from a prior attempt must never be mistaken for this one's, and a
-            # leftover wait record must not make this attempt look finished.
+            # Stale-read prevention (the B layer's `prompt --result` needs no
+            # deletion: each attempt has its own result file and a keyed
+            # sentinel): a leftover exit/result from a prior attempt must never
+            # be mistaken for this one's, and a leftover wait record must not
+            # make this attempt look finished.
             # Safe here: a still-live prior attempt already refused above,
             # and a gone one was just settled to the ledger/log, never to
             # these files.
@@ -2686,12 +2692,19 @@ def main(argv=None) -> int:
     p_prompt.add_argument("--vars", required=True, metavar="VARS_JSON")
     p_prompt.add_argument("--out", required=True, metavar="PROMPT_FILE")
     p_prompt.add_argument("--result", metavar="RESULT_FILE",
-                          help="append the file-based response protocol pointing here")
+                          help="admit the next attempt (exit 1 when it may not "
+                               "start) and append the file-based response "
+                               "protocol pointing at the attempt's own result "
+                               "file, derived from this path (a step's: "
+                               "<id>_cNN_aNN_result.md); a step's handle "
+                               "<id>_handle.json is written beside it")
     p_prompt.add_argument("--fix", help="debug-granted fix instruction to append")
     p_prompt.add_argument("--new-cycle", action="store_true",
                           help="with --result: the next attempt opens a new "
                                "cycle (a new <while>/<each> iteration after a "
-                               "failure the workflow tolerated)")
+                               "failure the workflow tolerated); refused after "
+                               "an aborted attempt, which goes on only "
+                               "through stop, judge and --redispatch")
     p_prompt.add_argument("--redispatch", metavar="JUDGE_REPLY",
                           help="with --result: run an aborted attempt's step "
                                "again; the judge's one-line reply "
@@ -2700,7 +2713,9 @@ def main(argv=None) -> int:
 
     p_rec = sub.add_parser(
         "record", help="record a step's result file: update vars, append log, "
-                       "print only ok/error/aborted")
+                       "print the verdict, never step content: ok(0) / "
+                       "error(1) / aborted(3) / decision(4) / rerun(5); a "
+                       "refused record exits 2")
     p_rec.add_argument("workflow")
     p_rec.add_argument("step_id")
     p_rec.add_argument("--result", required=True, metavar="RESULT_FILE")
@@ -2710,7 +2725,8 @@ def main(argv=None) -> int:
                        help="the single reply line the orchestrator received "
                             "back from the subagent (optional; enables the "
                             "claimed-ok-but-no-result / reply-file-mismatch "
-                            "checks when a handle.json exists for this step)")
+                            "checks; not read for an attempt whose stop is "
+                            "recorded as confirmed or unconfirmed)")
     p_rec.add_argument("--answer", metavar="ANSWER_FILE",
                        help="settle this step's open decision request with "
                             "this ruling file (first line 'option: <N|none>'). "
@@ -2738,11 +2754,13 @@ def main(argv=None) -> int:
     p_decide.set_defaults(func=cmd_decide)
 
     p_poll = sub.add_parser(
-        "poll", help="check a dispatched step's handle without blocking: "
-                     "done(0) / running(10) / deadline-exceeded(11)")
+        "poll", help="check a delegated attempt's handle (or a judge's): "
+                     "done(0) / running(10) / deadline-exceeded(11); returns "
+                     "at once unless --wait")
     p_poll.add_argument("handle", metavar="HANDLE_FILE",
                         help="the steps/<id>_handle.json written by "
-                             "'wfrun prompt --result'")
+                             "'wfrun prompt --result', or the judge handle "
+                             "that 'wfrun judge' prints")
     p_poll.add_argument("--wait", action="store_true",
                         help="block until the attempt is done or past its "
                              "deadline; writes nothing")

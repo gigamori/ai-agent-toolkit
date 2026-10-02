@@ -1,7 +1,8 @@
-"""OS file-lock driver for the run-llm A layer's run lock and state lock: a
-wrapper holds the run lock only while it is actually admitted and running,
-and releases it only after its own final write, so an observer's `probe`
-tells a live wrapper from a vanished one without trusting any PID.
+"""OS file-lock driver for the A layer's run lock and state lock: a wrapper
+holds the run lock only while it is actually admitted and running, and
+releases it only after its own final write, so an observer's `probe` tells a
+live wrapper from a vanished one without trusting any PID. `run` and `resume`
+take the run dir's lock through it as well.
 
 Domain-level primitives only (`probe` / `try_acquire` / `acquire` /
 `release`); `wfrun.__main__` is the only caller. Every lock file holds no

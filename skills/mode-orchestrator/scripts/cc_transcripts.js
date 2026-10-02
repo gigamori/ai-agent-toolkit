@@ -1,7 +1,9 @@
 // What a delegated Claude Code turn left in its session transcripts: which
 // files they are, whether any of them still changes, and whether any call in
 // them may still have work running. The one place the restart-gate scripts
-// read those transcripts.
+// find a turn's transcripts and read what may still be running in them.
+// judge_gate.js reads the files the stop record lists, for checksums, sizes,
+// line counts and time stamps only.
 //
 // A turn is found the way watchdog.sh and deny_scan.sh find it: by the
 // description given on its delegation call, matched verbatim against the

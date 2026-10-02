@@ -658,10 +658,10 @@ def _append_log(log_path, step: model.Step, status: str, result_path,
 def append_attempt(attempts_path: str | Path, seq, status: str,
                    fields: dict | None = None):
     """Append one {seq, class, ended_at} entry to a JSON-array attempts file
-    (reliability-spec.md §4.2/§5.1). Shared by both run-llm layers: the B
-    layer's `record` (via `_append_attempt` below) and the A layer's
-    dispatch wrapper (`wfrun _wrapper`, §5.1), which is also what
-    `wfrun dispatch` reads back to enforce the attempt cap (§5.1, F4/P5).
+    (reliability-spec.md §4.2/§5.1). Shared by run-llm's `record` (the B
+    layer, via `_append_attempt` below) and the A layer's dispatch wrapper
+    (`wfrun _wrapper`, §5.1), which is also what `wfrun dispatch` reads back
+    to enforce the attempt cap (§5.1, F4/P5).
     `fields` adds to the entry (the B layer's attempt token)."""
     attempts_path = Path(attempts_path)
     try:
@@ -702,15 +702,15 @@ def update_attempt(attempts_path: str | Path, seq, fields: dict) -> bool:
 def record_aborted_attempt(step: model.Step, attempts_path: str | Path, seq,
                            log_path: str | Path | None, result_path,
                            fields: dict, deny_check: str | None = None) -> bool:
-    """A-layer settle: record one aborted attempt to the run's step log and
-    ledger (reliability-spec.md §5.4.3). The B layer's own aborted path
-    (`_record_file` above) is untouched -- this is the A layer's own entry
-    point, called from `wfrun.__main__`'s dispatch/wait once they judge an
-    attempt gone. The B layer's `record` uses it for two cases only: an
-    attempt whose result completed after its stop window closed, which is
-    recorded aborted rather than adopted, and an attempt whose stop ended
-    without a completion, which is recorded aborted whatever reply came with
-    it, the refusal check's verdict going into the log as `deny_check`.
+    """Record one aborted attempt to the run's step log and ledger
+    (reliability-spec.md §5.4.3). The A layer's dispatch/wait in
+    `wfrun.__main__` call it once they judge an attempt gone. The B layer's
+    own aborted path (`_record_file`) does not come through here; its `record`
+    uses this function for two cases only: an attempt whose result completed
+    after its stop window closed, which is recorded aborted rather than
+    adopted, and an attempt whose stop ended without a completion, which is
+    recorded aborted whatever reply came with it, the refusal check's verdict
+    going into the log as `deny_check`.
 
     Idempotent on `seq`: returns False and writes nothing when the ledger
     already carries an entry for it (any class) -- a settle re-evaluated
@@ -720,9 +720,12 @@ def record_aborted_attempt(step: model.Step, attempts_path: str | Path, seq,
     one (`_count_step_executions`'s docstring already reads this file
     protectively).
 
-    `fields` carries at least {"evidence": "run-lock"|"deadline",
-    "detected_by": "dispatch"|"wait"}, merged into the ledger entry
-    alongside the fixed {seq, class: "aborted", ended_at}.
+    `fields` is merged into the ledger entry alongside the fixed
+    {seq, class: "aborted", ended_at}. The A layer passes {"evidence":
+    "run-lock"|"deadline", "detected_by": "dispatch"|"wait"}. The B layer's
+    `record` passes {"token": <the attempt's token>} plus a ledger flag
+    (`late_completion` or `stop_contradiction`: True) or, when the refusal
+    check applies (Claude Code), its `deny_check` label.
     """
     attempts_path = Path(attempts_path)
     attempts = load_attempts(attempts_path)
@@ -1058,7 +1061,10 @@ def record_result(step: model.Step, result_path: str | Path,
     calls first (ccdeny): one found makes the step `error: denied` whatever
     its result file says, and a transcript that cannot be resolved is
     reported as NO-TRANSCRIPT, never read as clean. The verdict goes into the
-    steps.log entry as `deny_check`.
+    steps.log entry as `deny_check`. An attempt whose stop record is not
+    `done` (`wfrun stop`: confirmed or unconfirmed) never gets here: `wfrun
+    record` records it `aborted` (or refuses, if it has a verdict already)
+    without reading `reply` or `_record_file`'s decision table.
     """
     result_path = Path(result_path)
     handle = load_handle(step.id, result_path)

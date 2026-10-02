@@ -27,7 +27,9 @@
 // not stop the launch: the attempt simply can never confirm a stop.
 //
 // `cc` and `pi-cli` -- observe the stop for at most --window seconds (default
-// and maximum 60, the ruled bound) and print one verdict word:
+// and maximum 60, the ruled bound; `pi-cli` can overrun it by one process
+// check, up to 20 s: PROBE_TIMEOUT_MS in proc_identity.js) and print one
+// verdict word:
 //   CONFIRMED    exit 0  the facet's evidence holds (below)
 //   UNCONFIRMED  exit 1  anything else; the reasons are on stderr and in the
 //                        record. An unconfirmed attempt is never run again

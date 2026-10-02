@@ -18,13 +18,15 @@
 // `<S>-judge-prompt.md` (the judge's whole prompt) and, through the judge,
 // `<S>-judge.md` (its record). It never overwrites any of them.
 //
-// `issue` refuses -- and writes nothing -- unless <S> names an attempt's first
-// run (it ends in `-1`: a turn key runs again at most once, so a later attempt
-// is never judged), the attempt's stop record says CONFIRMED and no judge was
-// issued for it before. It lists the evidence the judge may cite -- the
-// deliverable (when --deliv names a file that exists), the stop record, and the
-// transcripts -- each with its sha256, byte and line counts, and writes the
-// judge's prompt. Transcripts:
+// `issue` refuses -- and writes nothing, but for the one case below -- unless
+// <S> names an attempt's first run (it ends in `-1`: a turn key runs again at
+// most once, so a later attempt is never judged), the attempt's stop record
+// says CONFIRMED and no judge was issued for it before. It lists the evidence
+// the judge may cite -- the deliverable (when --deliv names a file that
+// exists), the stop record, and the transcripts -- each with its sha256, byte
+// and line counts, and writes the judge's prompt, then the manifest. If the
+// manifest turns out to exist by then (something other than `issue` wrote
+// it), it refuses with the prompt already written. Transcripts:
 //   cc      the ones the stop record lists (the turn's and those of every agent
 //           it started)
 //   pi-cli  the session file whose name carries the session id on the first
@@ -55,8 +57,10 @@
 //     attempt's own run (from its first transcript line to that deadline).
 // It prints `ALLOW <timeout> <record path>` (exit 0): run the attempt again
 // with that deadline -- the one it had before, or the longer one the judge
-// backed. Anything else prints REFUSED (exit 1), the reason on stderr: the
-// attempt is not run again; stop and report. A judge is never issued twice.
+// backed. A refusal prints REFUSED (exit 1), the reason on stderr; a usage
+// error (exit 64) or an internal error (exit 70) prints no verdict word. In
+// each case the attempt is not run again; stop and report. A judge is never
+// issued twice.
 //
 // Not checked, and not checkable here: who wrote the record, and whether what
 // it says about the evidence is true. The record's form, citations, checksums

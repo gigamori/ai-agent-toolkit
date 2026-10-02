@@ -465,10 +465,10 @@ def verdict_marker(dec_dir: str | Path, rid: str) -> Path:
 def request_ids(dec_dir: str | Path, prefix: str) -> list[str]:
     """Recorded request ids under `prefix`, in allocation order.
 
-    `prefix` is the step id on the run-llm B layer and `<id>_cNN` on the A
-    layer, which is what keeps the two apart: `s1_d01` never matches
-    `s1_c01_d*` and vice versa. Zero-padded sequence numbers make the plain
-    name sort the allocation order.
+    `prefix` is the step id for run-llm's `prompt`/`record` (the B layer) and
+    `<id>_cNN` for the A layer's `dispatch`/`wait`, which is what keeps the
+    two apart: `s1_d01` never matches `s1_c01_d*` and vice versa. Zero-padded
+    sequence numbers make the plain name sort the allocation order.
     """
     try:
         names = sorted(p.name for p in

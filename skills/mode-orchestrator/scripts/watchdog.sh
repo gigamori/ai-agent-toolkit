@@ -21,7 +21,8 @@
 # verdict messages state whether it was written, because a hung tail presents
 # exactly as "deliverable written, then transcript idle".
 #
-# On TIMEOUT / STALL the orchestrator classifies the turn `aborted` (see
+# On TIMEOUT / STALL the orchestrator classifies the turn `aborted` unless a
+# well-formed reply is adopted at the restart gate's completion checks (see
 # SKILL.md, Execution step 4). This script never kills anything: stopping the
 # subagent is the orchestrator's call, made with the harness's own task tools.
 #
@@ -39,10 +40,12 @@
 #     completion. It is NOT a liveness signal and is deliberately unused here.
 #   - A legitimate long tool call idles the transcript for the whole duration of
 #     that call, so STALL must exceed the longest tool call a turn may make.
-#   - A deliverable path is REUSED across attempts: SKILL.md re-runs an aborted
-#     turn onto the same file. So "the file exists" cannot mean "this turn wrote
-#     it"; the freshness bound below is what makes the observation answerable
-#     for this turn, and therefore what the verdict messages can rely on.
+#   - A re-run has its own deliverable path (SKILL.md, Execution step 4.6:
+#     `<turn key>-<mode>-attempt<n>.md`), so an earlier attempt's file is not
+#     at it. A file already at the path still must not count as this turn's
+#     output: the freshness bound below (non-empty, newer than t0) is what
+#     makes the observation answerable for this turn, and therefore what the
+#     verdict messages can rely on.
 #   - TaskStop ends this script without running its EXIT trap: the process
 #     dies as under SIGKILL or `taskkill /F`, not SIGTERM/SIGHUP (measured
 #     2026-09-29, claude v2.1.280, win32-x64). The normal path always ends in
@@ -223,9 +226,8 @@ META_SINCE=$((t0 - RESOLVE_BACKDATE))
 # grace window because the delegation call and this script start together and
 # their order is not guaranteed; a deliverable has no such race, since the turn
 # cannot have written its output before it started. Widening this window would
-# re-admit the previous attempt's leftover file — a re-run's deliverable path is
-# the SAME path — and the verdict message would then report someone else's file
-# as this turn's output.
+# re-admit a file older than this turn, and the verdict message would then
+# report someone else's file as this turn's output.
 
 TRANS=""
 STALE_NOTED=""
@@ -245,9 +247,8 @@ while :; do
       DELIV_AT=$elapsed
       trace "deliverable written after ${elapsed}s — continuing to monitor: $DELIV"
     elif [ -z "$STALE_NOTED" ]; then
-      # Left by an earlier attempt at this same turn. Say so once: a run that
-      # keeps starting against a stale deliverable is worth seeing in the trace,
-      # and silence here is what made the original defect invisible.
+      # Not newer than this watchdog's start, so not this turn's output. Say
+      # so once: a stale file at the path is worth seeing in the trace.
       STALE_NOTED=1
       trace "deliverable exists but is not newer than t0 — stale, ignoring: $DELIV"
     fi
