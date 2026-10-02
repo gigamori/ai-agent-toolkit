@@ -202,8 +202,8 @@ specifically want a human in the loop; otherwise normal **Run** is the default.
 
 ## 10. Reading the results
 
-Every run creates a folder under `runs/`, named with the workflow name and a
-timestamp. The pieces you'll care about:
+Every normal run creates a folder under `runs/`, named with the workflow name and
+a timestamp. The pieces you'll care about:
 
 - **Your deliverables** — the files your steps were told to write (their paths
   are reported at the end), plus longer text outputs under `outputs/`.
@@ -212,6 +212,14 @@ timestamp. The pieces you'll care about:
 - **`events.jsonl`** — a line-by-line log of everything that happened.
 - **`steps/…`** — for each step attempt, the exact prompt sent and the raw
   result. This is where you look to understand a specific step.
+
+An **interactive** run (§9) keeps its files in `<ws>/tmp/runs/<name>_<ts>-llm/`
+instead, where `<ws>` is the folder you started the session in. It has no
+`state.json` or `events.jsonl`, and it cannot be resumed. Look at `steps.log` (the
+log of each step attempt and judgment), `steps/` (the prompt and the result file
+of each attempt, named `<step>_cNN_aNN_…`), `decisions/` (decision requests and
+answers) and `vars.json` (the variables). When the run created a git worktree,
+`worktrees.json` lists it. The folder is kept after the run ends.
 
 You rarely need to open these by hand — ask the agent to summarize the run — but
 they're always there for inspection.
@@ -254,8 +262,9 @@ each run.
 - **Role** — the agent's persona for a step (named, written inline, or absent).
 - **Mode** — the working discipline for a step (`execute`, `survey`, `debug`, …).
 - **Parameter** — a value you set at run time (e.g. a date range or output path).
-- **Run directory** — the timestamped folder under `runs/` holding everything
-  about one execution.
+- **Run directory** — the timestamped folder holding everything about one
+  execution: under `runs/` for a normal run, under `<ws>/tmp/runs/` for an
+  interactive one (§10).
 - **Resume** — continuing a failed run from where it stopped.
 - **Decision request** — a step's way of saying "this is genuinely ambiguous
   and I won't guess"; the run stops for an answer (or an adjudicator model
@@ -359,7 +368,7 @@ optional — at most one form (either a `role=` attribute **or** an inline
 | `role` | no | — | Named role: a `.claude/agents/*.md` definition whose body is injected |
 | `mode` | no | — | Processing discipline (see the mode list below) |
 | `model` | no | role's setting | Difficulty class: `basic`, `pro`, `ultra` — a legacy `haiku`/`sonnet`/`opus` name still resolves (migration warning) |
-| `effort` | no | — | Reasoning effort: `low` … `max` |
+| `effort` | no | — | Reasoning effort: `low` … `max`. Not applied in an interactive run (§9) |
 | `output` | no | — | Variable name to store the result in |
 | `output-type` | no | `file` | `file` = save the response body to a file and store its path; `value` = store the response as a short value |
 | `schema` | no | — | A JSON Schema (inline, or `@path` to a file) that forces structured output. **claude CLI only** — on pi the whole workflow is refused at startup (see §2) |
@@ -369,7 +378,7 @@ optional — at most one form (either a `role=` attribute **or** an inline
 | `retry` | no | `0` | Times to re-run the identical prompt on failure |
 | `decider` | no | `human` | Who settles a decision request this step raises (see §8): `human` stops the run for your answer, `llm` lets an adjudicator model settle it on the spot. Also valid on `<workflow>` for the whole run |
 | `decider-model` | no | `ultra` | The adjudicator's model when `decider="llm"` |
-| `timeout` | no | `600` | Seconds before the step is killed as a failure |
+| `timeout` | no | `600` | Seconds before the step is killed as a failure. In an interactive run (§9) `wfrun` kills nothing: this is the attempt's deadline, and passing it leads to a stop request and an `aborted` attempt, which does not use up `retry` |
 | `on-error` | no | `fail` | `fail` (stop), `ignore` (record and continue), or `debug` (let the debug role diagnose). `debug` is **claude CLI only** — on pi the whole workflow is refused at startup (see §2) |
 
 **No role, named role, or inline role.** Leaving the role out is a fine

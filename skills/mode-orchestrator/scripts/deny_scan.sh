@@ -12,15 +12,21 @@
 # script greps for both, so the orchestrator can override a self-reported
 # `ok` with `blocked` on evidence instead of trust.
 #
-# Run it once per turn, after the turn's status line has been read (unlike
-# the watchdog it is not a race — the transcript is complete by then).
+# Run it on a finished attempt after its status line has been read, and on a
+# stopped attempt after its stop was observed (references/harness-cc.md). It
+# covers only what the transcripts hold when it runs: background work a turn
+# leaves running past its reply is not covered.
 # Claude Code only: Pi has no permission layer, so no denial can occur there
 # (see references/harness-pi.md).
 #
 # Output (stdout is the verdict, like watchdog.sh):
 #   CLEAN          exit 0 — no denial in the turn's transcript
 #   DENIED <n>     exit 1 — n denial results found: the turn's status is
-#                  `blocked` regardless of what its reply said
+#                  `blocked` regardless of what its reply said — unless
+#                  TaskStop was called for the attempt: a stop can leave a
+#                  trace that reads like a refusal, so the status is then
+#                  `needs-human` (references/harness-cc.md, "A stop is not a
+#                  denial")
 #   NO-TRANSCRIPT  exit 2 — the description resolved no transcript, or an
 #                  empty one; the check could not run (fail-visible: say so
 #                  in the run index, do not silently treat it as CLEAN)

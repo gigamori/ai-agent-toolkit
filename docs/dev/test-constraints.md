@@ -26,7 +26,7 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   written with the platform default encoding is corrupted silently on such a host.
   Observed 2026-07-28.
 
-## xml-wf run-llm A layer -- Windows byte-range file locking
+## xml-wf layer A and run-dir locking -- Windows byte-range file locking
 
 - A second open handle on the same lock file, in the same process, gets `PermissionError` (errno 13 EACCES, winerror None) from `msvcrt.locking(LK_NBLCK, ...)` while another handle holds byte 0 -- the same result whether the second handle belongs to the same process or a different one. Closing a handle that never held the lock leaves the real holder's lock intact. Observed 2026-09-29 on this host (Windows 11, CPython 3.12.11 base interpreter, uv 0.7.18); the cross-process case held in 5 of 5 trials.
 - After the process holding the lock is killed, the lock stays held for roughly 0.2-0.4 ms, then becomes acquirable within about 5.2-5.6 ms (measured with perf_counter, 5 ms poll interval, 5 of 5 trials). Observed 2026-09-29, same host.
@@ -106,6 +106,25 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   streams. A `system` event of subtype `permission_denied` appears for rule and approval
   refusals (with an `agent_id` when inside an agent), but not for a PreToolUse hook's.
   Observed 2026-09-26 on 2.1.270.
+- A `claude -p` child (2.1.286, `--model haiku`) refused a standalone `sleep 30` with
+  `Blocked: standalone sleep 30. To wait for a condition, use Monitor with an
+  until-loop …` although its allow list held `Bash(sleep *)`, so the refusal came from an
+  input guard and not from a permission rule. `sleep 2` and
+  `node -e "setTimeout(()=>{},2000)"` ran. Only those values were tried: where the guard
+  starts, and whether `sleep 120` is refused (expected, never run in a child), were not
+  measured. Observed 2026-10-02.
+- Headless `claude -p` 2.1.286 with `--permission-mode manual --permission-prompts none`
+  refused `exec bash <path>/watchdog.sh …` although the allow list held the exact rule
+  `Bash(exec bash <path>/watchdog.sh *)`; the reason given was `'exec' evaluates
+  arguments as shell code`. One run, and the child did not retry. Other permission modes
+  and an interactive session were not tried. Observed 2026-10-02.
+- A `bash <path>/watchdog.sh` started in the background without `exec` kept running
+  after TaskStop: two such watchdogs were still alive at 00:38:36 JST, 2 min 54 s and
+  about 2 min after their TaskStops, found by searching live process command lines and
+  then killed by pid. One session, Claude Code 2.1.286 on Windows. Observed 2026-10-03
+  JST (still 2026-10-02 in UTC). A search for the watchdogs of an earlier run on
+  2026-10-02 at 23:22 JST found none; no cause was established (an exit at their own
+  stall or deadline limit is possible but fits the times only in part).
 
 ## The pi CLI (`pi -p`)
 
@@ -138,6 +157,31 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   `skills/mode-orchestrator/scripts/fixtures/` are carved from a real stream captured
   against pi 0.84.1 on 2026-08-13. Only long text and thinking bodies were trimmed and
   toolResults emptied; every key and nesting level is as measured.
+
+## Git Bash on Windows — process ids, `node` and PowerShell
+
+- A bash `$!` in Git Bash is an MSYS process id, not a Windows one; `/proc/<pid>/winpid`
+  maps one to the other. A node process started in the background with `node -e … &` had
+  `$!` 142580, `/proc/$!/winpid` 27740 and a `process.pid` of 27740 as node itself
+  reported it; the shell's own `$$` mapped to 2828. Observed 2026-10-02 from Git Bash,
+  one run; no Git for Windows version was recorded.
+- Started from node as `usr/bin/bash.exe -c '<two statements>'` (`cat /proc/$$/winpid;
+  true`), the spawned child's `child.pid` equalled the shell's `/proc/$$/winpid` (25448 in
+  the one trial). With a lone command (`cat /proc/$$/winpid`) the two differed in all 4
+  trials (two shells, two runs each), for example 2636 and 30620. That fits bash
+  executing a lone command in place, which moves the shell's MSYS pid onto another
+  Windows process, but the cause was not measured. Observed 2026-10-02.
+- Git's `bin/bash.exe` is a wrapper: started from node with the same two-statement
+  script, `child.pid` was 25000 and the shell's winpid 26992. That the shell is the
+  wrapper's child is inferred from the mismatch and from a `taskkill /F /T` of the
+  wrapper's tree, after which both recorded process ids were gone within 0.2 s; no
+  parent pid was read. Observed 2026-10-02, one trial.
+- Reading a process through `powershell.exe` and
+  `[System.Diagnostics.Process]::GetProcessById`: a pid that does not exist raises
+  `ArgumentException`; a running one yields its name and its start time as a FILETIME;
+  pid 4 cannot be read; one call took 150 to 250 ms; a FILETIME is about 1.3e17, beyond
+  the exact range of a JavaScript number, so it has to travel as a string. Observed
+  2026-10-02 on Windows; the number of trials and the tool versions were not recorded.
 
 ## Claude Code transcripts — how a permission denial is serialized
 
@@ -191,6 +235,17 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   `Binary file <path> matches` instead of the matching lines, unless given `-a`. One session
   transcript on this machine held 11679 NUL bytes; no subagent transcript held any.
   Observed 2026-09-23.
+- A TaskStop that cut a running tool call left that call in the transcript as a refused
+  one, `toolDenialKind: user-rejected`, and the denial check reported it. Three
+  occurrences on 2026-10-02: a foreground Agent call of a mode-orchestrator turn stopped
+  at its deadline, about 04:09 JST (Claude Code 2.1.284; `deny_scan.sh` printed
+  `DENIED 1`, kind `user-rejected`); a Bash `node -e` call waiting on a timer, about
+  20:42 JST (2.1.286; wfrun's refusal check recorded `DENIED 1` and the step
+  `error: denied`); and a Bash call `node -e "setTimeout(()=>{},120000)"`, about 23:08
+  JST (2.1.286; `deny_scan.sh` printed `DENIED 1`, `user-rejected=1`). In each, the
+  transcript line carrying `toolDenialKind: user-rejected` is the result of the cut call
+  (for the first, stamped at the second of the stop). Two runs in which no call was open
+  at the stop read clean. One sample each.
 
 ## Measured model behaviour — prompt protocols
 

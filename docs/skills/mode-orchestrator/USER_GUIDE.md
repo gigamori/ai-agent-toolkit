@@ -50,8 +50,13 @@ to work out which harness it is on. On Claude Code that command needs
 permission, and an interactive session usually grants it on the spot — a
 headless one cannot ask, so it is refused and the run stops there. Allow that
 one command in the settings the run reads, or pass it via `--allowedTools`;
-`references/harness-cc.md` carries the exact string. Nothing to do for an
-ordinary interactive run.
+`references/harness-cc.md` carries the exact string. That is not always
+enough: under `--permission-prompts none`, the turn watchdog's launch command
+(`exec bash …/watchdog.sh …`) was refused even with an exact allow rule (Claude
+Code 2.1.286, 2026-10-02, one run), and the run then stops `blocked` at its first
+turn; other permission modes were not tried. On Claude Code the restart gate's
+scripts also run on `node`: without it, an aborted turn is never run again.
+Nothing to do for an ordinary interactive run.
 
 ## Invoking it — flags
 
@@ -142,11 +147,13 @@ is worth diagnosing. Four other outcomes deliberately bypass the loop:
   On Claude Code this is also machine-checked: after each turn's status line
   the orchestrator runs `scripts/deny_scan.sh` against the turn's transcript
   and those of any agents the turn started, and a detected denial overrides a
-  self-reported `ok`. The check counts every
+  self-reported `ok` (on a turn the orchestrator itself stopped it is
+  `needs-human` instead: the stop can leave a trace that reads like a refusal).
+  The check counts every
   refused call — a permission rule, a plugin's hook, the auto-mode classifier
   or its being unreachable, a permission prompt that was not approved, or an
-  interrupted call — and keeps its verdict in the run directory as
-  `NN-deny.txt`.
+  interrupted call — and keeps its verdict in the run directory, one file per
+  attempt (`05-1-deny.txt` for turn `05`'s first attempt).
 - **`needs-human`** — the turn needs a specific input, judgment, or action
   only you can supply. Its reply includes `Reason: <specific observed blocker>`
   and `Human request: <exact question to answer or action to take>` before
@@ -159,9 +166,13 @@ is worth diagnosing. Four other outcomes deliberately bypass the loop:
   in the wrong place, since the last line is the anchor and reading a status
   off-anchor would let a truncated reply pass as a finished one (interrupted, killed, or
   off-contract), or it never replied at all and the **turn watchdog** ended it
-  (see below). There is no failure to diagnose, so the orchestrator re-runs that
-  turn **once** and, if it is still unreadable, stops with `needs-human`. This
-  re-run does not consume the cycle cap.
+  (see below). There is no failure to diagnose, so the orchestrator does not
+  diagnose it. It runs that turn again **once** at most, and only through the
+  **restart gate**: the stop must be confirmed, the denial check (Claude Code)
+  clean, and a judge — one fixed `ultra` delegation, not a turn — must find in
+  the attempt's evidence that running the turn again from the start cannot
+  duplicate an effect it already had. Otherwise the run stops with `needs-human`
+  at the first abort. A re-run does not consume the cycle cap.
 
 Each turn ends its reply with a fixed final line — `status: <...>; file: <path>`
 — and the orchestrator reads the outcome from that line alone. That is why a
@@ -273,7 +284,10 @@ something wakes it, so an answer that never comes is a wait that never ends.
 
 So every turn is started alongside a **watchdog** (`scripts/watchdog.sh`) running
 in the background. It wakes the orchestrator only when something has gone wrong,
-reporting whichever comes first and then exiting — and that exit is the wake:
+reporting whichever comes first and then exiting — and that exit is the wake. If
+the watchdog cannot start (its command is refused, or it exits at once), the
+orchestrator stops that turn right away and ends the run `blocked`: a turn with
+no time bound is never left running. The two wakes:
 
 - the turn's **wall-clock deadline** passes — `TIMEOUT`;
 - the subagent's transcript **stops growing** for the stall threshold — `STALL`.
@@ -288,16 +302,20 @@ exists to prevent. It still watches the file, and both `TIMEOUT` and `STALL` say
 whether the turn had written it. That is what makes a hung tail legible: the
 deliverable is there and the transcript went quiet.
 
-"Written during this turn" is load-bearing in that message: a re-run writes to the
-same path as the attempt it replaces, so the file is often already there when the
-second attempt starts. The watchdog therefore counts only a deliverable newer than
+"Written during this turn" is load-bearing in that message: a file already sitting
+at the watched path would otherwise look like this turn's output (a re-run writes
+to its own path, `<turn key>-<mode>-attempt<n>.md`, but the check does not rely on
+that). The watchdog therefore counts only a deliverable newer than
 its own start; an older one is noted once in its trace as stale and never
 reported as this turn's output.
 
 The watchdog only reports; it never stops anything itself. On `TIMEOUT` or
-`STALL` the orchestrator stops the turn and classifies it `aborted`, then re-runs
-it once — exactly as it would an unreadable reply. Nothing is diagnosed, because
-a turn that never reported gives nothing to diagnose.
+`STALL` the orchestrator first checks whether a well-formed reply is already in
+hand (it then classifies the turn by that reply). Otherwise it stops the turn,
+watches the stop for at most 60 seconds, and classifies the turn `aborted`; the
+turn runs again only if the restart gate allows it (see `aborted` above) —
+exactly as for an unreadable reply. No failure is diagnosed, because a turn that
+never reported gives nothing to diagnose.
 
 Defaults are at the top of the script — edit them there:
 
@@ -316,7 +334,10 @@ outside — the transcript is idle either way — so the stall threshold is set 
 above the longest tool call a turn is expected to make. That detects a real hang
 late rather than cutting a working turn short. If a run keeps aborting turns that
 were still making progress, the budget is too tight; the run index records which
-check fired, so you can see that and raise it.
+check fired, so you can see that and raise it. These are a first attempt's
+budgets: a re-run runs under the seconds on its judge's `ALLOW` line, and after a
+`TIMEOUT` that figure is longer than the deadline the attempt hit, backed by a
+line of the attempt's own transcript.
 
 The watchdog bounds time, not correctness. It can tell you a turn ran too long;
 it cannot tell you a turn did the wrong thing.
@@ -343,13 +364,21 @@ the todolist. To add a spec for another task type, see
 ## Run directory and artifacts
 
 Each invocation creates one run directory at
-`<cwd>/tmp/runs/<YYYY-MM-DD>_<slug>/`:
+`<ws>/tmp/runs/<YYYY-MM-DD>_<slug>/`, where `<ws>` is the directory the session
+was started in (even if that is a worktree). A name already in use is never
+reused: a suffix is added. The run never deletes the directory. It holds:
 
 - `NN-<mode>.md` — one deliverable per turn, in order. Any turn inserted for
   turn `NN` — by either loop — takes the next free suffix letter, so a turn that
   goes through both reads as `05a-decision.md` → `05b-execute.md` →
   `05c-debug.md` → `05d-execute.md`. The mode is in the filename, so which loop
-  produced which artifact is never ambiguous.
+  produced which artifact is never ambiguous. A re-run after an abort writes
+  `<turn key>-<mode>-attempt<n>.md` (`05-execute-attempt2.md`); the earlier
+  attempt's files stay.
+- One set of files per attempt, named `<turn key>-<attempt>-…` (`05-1-deny.txt`,
+  `05-1-stop.json`, `05-1-evidence.json`, `05-1-judge-prompt.md`,
+  `05-1-judge.md`; on Pi's CLI route also `05-1-pids.json`, `raw/` and
+  `sessions/`).
 - `index.md` — the canonical run index. It contains the human-readable plan and
   exactly one machine-readable JSONL block; nested or prose `index.md` files are
   not run indexes. Before delegation, that block starts with the contract and
@@ -387,7 +416,11 @@ These are runtime artifacts — they are not committed.
 ## What it does not do
 
 - No rollback / checkpoint / worktree around `execute` turns — working-tree safety
-  is your git hygiene concern. Commit or stash WIP before an autonomous run.
+  is your git hygiene concern. Commit or stash WIP before an autonomous run. The
+  skill does not set a worktree up; one a run creates anyway is the run's own: it
+  is kept, and its deletion is reported as pending, unless the run is complete (or
+  you discard it) and a separate removal rule (`run_owned_worktree_removal`) is in
+  force.
 - No mid-**step** interruption and no resume scheduler. A `--decider=human` wait
   is not an exception: it happens at a step boundary, where every artifact is
   already written.

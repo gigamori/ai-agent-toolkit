@@ -4,7 +4,7 @@
 
 ## Multi-facet integrity
 
-xml-wf executes steps through three interchangeable facets, selected by mode/backend: **Run (batch)** (`--backend cc`, `references/run-cc.md`), **Run (batch, Pi)** (`--backend pi`, `references/run-pi.md`, driven by `scripts/wfrun/pi_cli.py`), and **LLM orchestration** (`--run-llm`, `references/run-llm.md`, which itself branches into layer A / claude CLI and layer B / subagent facility, working on any harness including Pi with no subagent tool).
+xml-wf executes steps through three interchangeable facets, selected by mode/backend: **Run (batch)** (`--backend cc`, `references/run-cc.md`), **Run (batch, Pi)** (`--backend pi`, `references/run-pi.md`, driven by `scripts/wfrun/pi_cli.py`), and **LLM orchestration** (`--run-llm`, `references/run-llm.md`: layer B only, with every step running through the orchestrating agent's own delegation facility on any harness, including Pi with no subagent tool, where it is a `subagent` tool the host publishes if that qualifies and otherwise a `pi -p` process). `wfrun dispatch`/`wait` (layer A) remain in `scripts/wfrun/__main__.py` but are not part of this mode.
 
 The `pi` backend is not a thin mirror of `cc`: it refuses some attributes outright (`schema=`, for one, because it cannot enforce structured output) and rewrites others. `references/run-pi.md` enumerates every such divergence and is the source of truth for all of them — read it there, and when a divergence changes, change it there.
 
@@ -20,20 +20,20 @@ Because Pi loads this skill via a symlink into `~/.pi/agent/skills/` (not a copy
 
 A step that had a tool call refused never counts as a success. That holds whatever refused the call: a permission rule, a PreToolUse hook, an approval that print mode cannot give, or the auto-mode classifier. It also holds wherever the call happened: in the step itself or in any agent it started. Each facet learns of it differently, and an editor must keep all of them true:
 
-- **Run (batch) on cc and run-llm layer A**
+- **Run (batch) on cc, and layer A's `dispatch`/`wait` (not part of run-llm)**
   - `claude_cli.classify_result` reads `permission_denials` from every `type:"result"` event of the child's `--output-format stream-json` output, and takes their union.
   - The union is load-bearing. A refusal inside a background agent is listed only on the result of the turn that started it, never on the last one, and `--output-format json` printed only the last.
   - A result that would pass while an event lacks the field is `unchecked`, never retried or debugged. The field was on every result measured, so its absence means the CLI changed.
   - Layer A's `dispatch` refuses to re-dispatch a cycle whose last attempt was `denied`.
 - **run-llm layer B on Claude Code**
-  - There is no result JSON. `record` reads the step subagent's own transcript through `wfrun/ccdeny.py`.
+  - There is no result JSON. `record`, and after an abort `wfrun stop`, `wfrun judge` and `prompt --redispatch`, read the step subagent's own transcript through `wfrun/ccdeny.py`.
   - It finds the subagent by the per-attempt Agent description `wfrun prompt` issues, looking only among the calling session's agents.
   - It adds every agent that subagent started, at any depth, and counts lines carrying a top-level `toolDenialKind`.
-  - A transcript that cannot be resolved is reported as NO-TRANSCRIPT, and the step keeps its status. It is never read as clean.
-  - Here the no-retry rule for a denied step lives at the prompt level only (`run-llm.md`).
+  - A transcript that cannot be resolved is reported as NO-TRANSCRIPT, and the step keeps its status. It is never read as clean, and it stops a restart: `wfrun judge` and `prompt --redispatch` refuse an attempt whose transcript cannot be found.
+  - A denied step is not re-run: `prompt` refuses it in code (`_admit_step_attempt`, through `_admission_refusal`), and `run-llm.md` says so as well. After a recorded stop, a refusal found in the transcript is not read as a denial: `record` records the attempt `aborted` and prints the check's verdict on a `deny-check:` line, and `wfrun judge` and `prompt --redispatch` refuse to restart an attempt whose transcript holds a refused call.
 - **Pi (run-pi, layer B on Pi):** there is no check. pi has no permission layer. An extension could block a tool call, but the block surfaces as an ordinary tool error with no marker to key on, and none is installed by default (`run-pi.md`).
 
-**Every refusal kind counts the same.** `denied` is one class, and this skill does not split "refused" from "did not run". That agrees with mode-orchestrator's ruling of 2026-09-25, so there is no divergence to record.
+**Every refusal kind counts the same.** `denied` is one class, and this skill does not split "refused" from "did not run". That agrees with mode-orchestrator's ruling of 2026-09-25, so there is no divergence to record. One case is read differently in layer B: a call that a stop cut (the orchestrator's TaskStop) can stay recorded as refused, and once the stop is recorded, `record` records the attempt `aborted`, not `denied`, with the check's verdict on a `deny-check:` line — a stop is not a denial, the rule mode-orchestrator's `harness-cc.md` states under the same name. `evals/deny_canary.py` does not reproduce such a call.
 
 **Two signals, on purpose:**
 - The batch facets key on `permission_denials`. It is the only refusal signal `claude -p` output carries: `toolDenialKind` exists only in transcripts, and `--no-session-persistence` writes none.
@@ -148,7 +148,9 @@ editor of any of it keeps four things true:
   `Popen.pid` is not the wrapper's
   ([`docs/dev/test-constraints.md`](../../dev/test-constraints.md)). The run
   lock and the marker's token decide, then the ledger and `exit.json`, and only
-  last the clock.
+  last the clock. This is layer A's rule. Layer B's Pi CLI stop (`wfrun pids`,
+  `wfrun stop --facet pi-cli`) does record PIDs, but as (PID, image, creation
+  time) identities (`procid.py`), and it counts any doubt as still running.
 - **Locks are taken state first, run second, never the reverse.** The wrapper
   retries for the run lock, within a bound, while holding the state lock, and
   nothing takes the state lock while holding the run lock. Observers only probe
@@ -220,6 +222,23 @@ What an editor of this skill has to do:
 xml-wf and `skills/mode-orchestrator/` are separate products that independently reimplement the same idea — running an isolated, mode-tagged turn per step — over different substrates (xml-wf: `wfrun`'s deterministic Python control flow over `<step>` elements; mode-orchestrator: one subagent call per todolist step). Neither is canonical for the other; there is no shared file, and — with the exceptions below — no propagation obligation between them.
 
 When a change here alters step-execution semantics in a way that looks generally useful (e.g. how a stale completion signal is discarded, how the harness/model resolution works, retry/escalation policy), consider whether `skills/mode-orchestrator/` would benefit from the same idea and note it for its maintainer — a suggestion to evaluate, not an obligation to port.
+
+## Pi CLI launch contract (shared with mode-orchestrator)
+
+A further exception to "no shared file": the launch contract of a Pi CLI delegation. This skill's `references/run-llm.md` ("Delegating on Pi") and mode-orchestrator's `references/harness-pi.md` (P1) carry the same block between `<!-- pi-cli-launch-contract:begin -->` and `<!-- pi-cli-launch-contract:end -->`, and each marks its own launch command (the fenced block after `<!-- pi-cli-launch-line -->`). Two copies of one text drift unless someone checks.
+
+- **Propagation, both directions.** An edit to the marked block here is made to the other copy in the same pass, and the other way round. Options outside the block stay each skill's own (here `--mode text`, `--tools`, `wfrun pids`; there `MODE_ORCH_DEPTH`, `--mode json`, the raw capture and `pi_reply.js`) and do not propagate.
+- **Run obligation.** After touching the launch text of either document, run `uv run --no-project python tests/lint_launch_contract.py` and then the same command with `--self-test`, from the checkout root. It fails when the two blocks differ, or when either skill's launch command lacks a common element (entry through node, `-p`, closed stdin, `--no-skills`, `--session-dir`, `MSYS_NO_PATHCONV=1`, the message through `"$PROMPT"`, the recorded PIDs) or has the elements out of order. It does not see a launch command outside the marked blocks, and it does not run the CLI. Exit 2 means it scanned nothing.
+- **The restart gate is aligned, not shared.** `wfrun stop`, `wfrun pids` and `wfrun judge` (`scripts/wfrun/llmgate.py`, `procid.py`, `ccdeny.py`, and `JUDGE_PROMPT` in `guardrails.py`) and mode-orchestrator's `scripts/stop_observe.js` and `scripts/judge_gate.js` implement one contract twice, on purpose: the same judge prompt body, record fields and reply grammar, the same `ultra` model class, `Read, Grep, Write` tools, 900-second deadline, one judge per attempt, every judge failure a refusal, and a 60-second window for observing a stop. The code, the tests and the files each one writes are independent, and they differ where the contract says nothing:
+  - the stop's cause: here the clock (`requested_at >= dispatched_at + timeout`), there the caller's `--cause`;
+  - a Claude Code observation: here it runs to the end of the window unless the result completes, there it returns at once when the stop cannot be confirmed any more; a Pi CLI observation there can also run up to 20 seconds past the window, because a process probe begun before the window ends is not cut short;
+  - the verdict words: `done` / `confirmed` / `unconfirmed` (exit 0 / 12 / 13) here, `CONFIRMED` / `UNCONFIRMED` (exit 0 / 1) there;
+  - the judge's end marker: `[[WFRUN-END step=<id> attempt=cNNaNN-judge-<token>]]` here, `[[MO-JUDGE-END <token>]]` there;
+  - the evidence the judge may cite: here the attempt's prompt, result, stop record and transcripts, there its deliverable (if any), stop record and transcripts;
+  - where the check of the judge's reply sits: inside `prompt --redispatch` here, so no restart skips it; the separate command `judge_gate.js check` there;
+  - how a second restart is refused: `_admission_refusal` here, and there `judge_gate.js issue` refuses a stem that does not end in `-1`.
+
+  Nothing detects drift between the two prompt texts or grammars: whoever changes one reads the other, and changes both or records why not.
 
 ## Decision contract (aligned with mode-orchestrator)
 

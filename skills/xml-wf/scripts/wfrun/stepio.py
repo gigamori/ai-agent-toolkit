@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import time
 from pathlib import Path
 
@@ -64,45 +63,53 @@ def _missing_expected(expect_file: str, variables: dict, step_id: str,
     return missing
 
 
-def sentinel_line(step_id: str) -> str:
+def sentinel_line(step_id: str, key: str | None = None) -> str:
     """The completion marker a run-llm step must write as the LAST non-empty
     line of its result file (reliability-spec.md §4.1). Absence of this line
     is what lets `record`/`poll` tell "still writing" or "died mid-write"
     apart from "wrote a genuinely short/empty answer" -- the well-formedness
     of a <replan> continuation's own XML already proves completeness, so
-    replans are deliberately exempted (reliability-spec.md §0, §4.1)."""
-    return f"[[WFRUN-END step={step_id}]]"
+    replans are deliberately exempted (reliability-spec.md §0, §4.1).
+
+    `key` names one attempt (its cycle, sequence and token). A keyed marker
+    completes that attempt only: a late write by an earlier attempt carries
+    the earlier key, so it can never pass for a later attempt's result."""
+    if key is None:
+        return f"[[WFRUN-END step={step_id}]]"
+    return f"[[WFRUN-END step={step_id} attempt={key}]]"
 
 
-# Random bytes in a delegation description. Retries reuse the step id and,
-# unless the orchestrator passes --attempt, the attempt number, so only the
-# token keeps one attempt's subagent apart from another's within a session.
+# Random bytes in a delegation description and an attempt key: the step id,
+# cycle and sequence repeat across runs and sessions, so only the token keeps
+# one attempt's subagent and sentinel apart from another's.
 DELEGATION_TOKEN_BYTES = 4
 
 
-def delegation_description(step_id: str, attempt: int) -> str:
+def delegation_description(step_id: str, cycle: int, seq: int, token: str) -> str:
     """The description a run-llm layer-B step attempt is delegated under.
 
     On Claude Code the orchestrator passes it verbatim as the Agent call's
     description, which is how `record` finds that subagent's transcript
     (ccdeny). Elsewhere it is printed and ignored."""
-    return f"wfrun {step_id} a{attempt} {secrets.token_hex(DELEGATION_TOKEN_BYTES)}"
+    return f"wfrun {step_id} c{cycle:02d} a{seq:02d} {token}"
 
 
-def strip_sentinel_line(text: str, step_id: str) -> tuple[str, bool]:
-    """Drop this step's trailing sentinel line, if the last non-empty line
-    of `text` is exactly `sentinel_line(step_id)`. Returns (text, present).
-    A sentinel for a *different* step id counts as absent -- record/poll
-    only ever look for their own step's marker.
+def strip_sentinel_line(text: str, step_id: str,
+                        sentinel: str | None = None) -> tuple[str, bool]:
+    """Drop the trailing sentinel line, if the last non-empty line of `text`
+    is exactly `sentinel` (default: the unkeyed `sentinel_line(step_id)`).
+    Returns (text, present). Any other marker -- another step's, another
+    attempt's -- counts as absent.
 
     Call this (and modes.strip_mode_line) before any value extraction or
     file-content check: the sentinel is protocol furniture, not part of the
     step's actual output (reliability-spec.md §4.2)."""
+    expected = sentinel if sentinel is not None else sentinel_line(step_id)
     lines = text.splitlines()
     idx = len(lines) - 1
     while idx >= 0 and lines[idx].strip() == "":
         idx -= 1
-    if idx >= 0 and lines[idx].strip() == sentinel_line(step_id):
+    if idx >= 0 and lines[idx].strip() == expected:
         return "\n".join(lines[:idx]), True
     return text, False
 
@@ -110,9 +117,26 @@ def strip_sentinel_line(text: str, step_id: str) -> tuple[str, bool]:
 def handle_path(step_id: str, result_path: str | Path) -> Path:
     """Sibling `<id>_handle.json` next to a step's result file (written by
     `wfrun prompt --result`, read by `wfrun record`/`wfrun poll`;
-    reliability-spec.md §4.1/§4.3). Its absence means a pre-Phase-2.2
-    ("legacy") caller: no sentinel/aborted machinery applies then."""
+    reliability-spec.md §4.1/§4.3). It names the step's current attempt.
+    Its absence means a pre-Phase-2.2 ("legacy") caller: no sentinel/aborted
+    machinery applies then."""
     return Path(result_path).parent / f"{step_id}_handle.json"
+
+
+# Keys every per-attempt handle carries. A handle without them was written by
+# an older wfrun, which kept one result file per step.
+ATTEMPT_HANDLE_KEYS = ("step_id", "cycle", "attempt", "token", "result_path",
+                       "sentinel")
+
+
+def is_attempt_handle(handle) -> bool:
+    return isinstance(handle, dict) and all(k in handle for k in ATTEMPT_HANDLE_KEYS)
+
+
+def attempt_ledger_path(steps_dir: str | Path, step_id: str, cycle: int) -> Path:
+    """The layer-B attempt ledger of one cycle (one step-node visit), the same
+    name the A layer gives its own: `steps/<id>_cNN_attempts.json`."""
+    return Path(steps_dir) / f"{step_id}_c{cycle:02d}_attempts.json"
 
 
 def load_handle(step_id: str, result_path: str | Path) -> dict | None:
@@ -309,7 +333,8 @@ def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dic
                             rules_cache: dict[str, str] | None = None,
                             agents_cache: dict[str, AgentDef] | None = None,
                             result_path: str | None = None,
-                            decision: list[tuple[str, str]] | None = None
+                            decision: list[tuple[str, str]] | None = None,
+                            sentinel: str | None = None
                             ) -> tuple[str, str]:
     """(system_text, user_text) for a step.
 
@@ -346,7 +371,7 @@ def build_step_prompt_parts(wf: model.Workflow, step: model.Step, variables: dic
     if result_path:
         user_parts.append(RESULT_PROTOCOL.format(
             result_path=result_path, step_id=step.id,
-            sentinel=sentinel_line(step.id)))
+            sentinel=sentinel or sentinel_line(step.id)))
     user_parts.append(GUARDRAILS)
     if value_output_rule_applies(step):
         user_parts.append(VALUE_LINE_RULE)
@@ -358,11 +383,13 @@ def build_step_prompt(wf: model.Workflow, step: model.Step, variables: dict,
                       rules_cache: dict[str, str] | None = None,
                       agents_cache: dict[str, AgentDef] | None = None,
                       result_path: str | None = None,
-                      decision: list[tuple[str, str]] | None = None) -> str:
+                      decision: list[tuple[str, str]] | None = None,
+                      sentinel: str | None = None) -> str:
     """Single combined prompt (run-llm / wfrun prompt): system part + user part."""
     system, user = build_step_prompt_parts(
         wf, step, variables, base_dir, fix=fix, rules_cache=rules_cache,
-        agents_cache=agents_cache, result_path=result_path, decision=decision)
+        agents_cache=agents_cache, result_path=result_path, decision=decision,
+        sentinel=sentinel)
     return f"{system}\n\n{user}"
 
 
@@ -528,11 +555,10 @@ def decisions_dir_for_result(result_path: str | Path) -> Path:
     """`decisions/` beside the directory holding the step's result file.
 
     run-llm keeps results in `<run>/steps/`, so this lands on
-    `<run>/decisions/` — the same place run-cc writes them. Crucially it is
-    NOT inside `steps/`: `wfrun prompt --result` deletes a leftover result
-    file before every attempt (stale-read prevention), which would otherwise
-    destroy the very request a form-(b) re-run has to quote back
-    (xml-wf-decision-request.md §14.1).
+    `<run>/decisions/` — the same place run-cc writes them. It is kept
+    outside `steps/`, where each attempt has its own result file, so the
+    request a form-(b) re-run has to quote back has one place across
+    attempts (xml-wf-decision-request.md §14.1).
     """
     return Path(result_path).parent.parent / "decisions"
 
@@ -629,12 +655,14 @@ def _append_log(log_path, step: model.Step, status: str, result_path,
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def append_attempt(attempts_path: str | Path, seq, status: str):
+def append_attempt(attempts_path: str | Path, seq, status: str,
+                   fields: dict | None = None):
     """Append one {seq, class, ended_at} entry to a JSON-array attempts file
-    (reliability-spec.md §4.2/§5.1). Shared by both run-llm layers: the B
-    layer's `record` (via `_append_attempt` below) and the A layer's
-    dispatch wrapper (`wfrun _wrapper`, §5.1), which is also what
-    `wfrun dispatch` reads back to enforce the attempt cap (§5.1, F4/P5)."""
+    (reliability-spec.md §4.2/§5.1). Shared by run-llm's `record` (the B
+    layer, via `_append_attempt` below) and the A layer's dispatch wrapper
+    (`wfrun _wrapper`, §5.1), which is also what `wfrun dispatch` reads back
+    to enforce the attempt cap (§5.1, F4/P5).
+    `fields` adds to the entry (the B layer's attempt token)."""
     attempts_path = Path(attempts_path)
     try:
         attempts = json.loads(attempts_path.read_text(encoding="utf-8"))
@@ -642,7 +670,8 @@ def append_attempt(attempts_path: str | Path, seq, status: str):
             attempts = []
     except (OSError, json.JSONDecodeError):
         attempts = []
-    attempts.append({"seq": seq, "class": status, "ended_at": time.time()})
+    attempts.append({"seq": seq, "class": status, "ended_at": time.time(),
+                     **(fields or {})})
     write_text_atomic(attempts_path,
                       json.dumps(attempts, ensure_ascii=False, indent=2))
 
@@ -672,12 +701,16 @@ def update_attempt(attempts_path: str | Path, seq, fields: dict) -> bool:
 
 def record_aborted_attempt(step: model.Step, attempts_path: str | Path, seq,
                            log_path: str | Path | None, result_path,
-                           fields: dict) -> bool:
-    """A-layer settle: record one aborted attempt to the run's step log and
-    ledger (reliability-spec.md §5.4.3). The B layer's own aborted path
-    (`_record_file` above) is untouched -- this is the A layer's own entry
-    point, called from `wfrun.__main__`'s dispatch/wait once they judge an
-    attempt gone.
+                           fields: dict, deny_check: str | None = None) -> bool:
+    """Record one aborted attempt to the run's step log and ledger
+    (reliability-spec.md §5.4.3). The A layer's dispatch/wait in
+    `wfrun.__main__` call it once they judge an attempt gone. The B layer's
+    own aborted path (`_record_file`) does not come through here; its `record`
+    uses this function for two cases only: an attempt whose result completed
+    after its stop window closed, which is recorded aborted rather than
+    adopted, and an attempt whose stop ended without a completion, which is
+    recorded aborted whatever reply came with it, the refusal check's verdict
+    going into the log as `deny_check`.
 
     Idempotent on `seq`: returns False and writes nothing when the ledger
     already carries an entry for it (any class) -- a settle re-evaluated
@@ -687,15 +720,18 @@ def record_aborted_attempt(step: model.Step, attempts_path: str | Path, seq,
     one (`_count_step_executions`'s docstring already reads this file
     protectively).
 
-    `fields` carries at least {"evidence": "run-lock"|"deadline",
-    "detected_by": "dispatch"|"wait"}, merged into the ledger entry
-    alongside the fixed {seq, class: "aborted", ended_at}.
+    `fields` is merged into the ledger entry alongside the fixed
+    {seq, class: "aborted", ended_at}. The A layer passes {"evidence":
+    "run-lock"|"deadline", "detected_by": "dispatch"|"wait"}. The B layer's
+    `record` passes {"token": <the attempt's token>} plus a ledger flag
+    (`late_completion` or `stop_contradiction`: True) or, when the refusal
+    check applies (Claude Code), its `deny_check` label.
     """
     attempts_path = Path(attempts_path)
     attempts = load_attempts(attempts_path)
     if any(isinstance(a, dict) and a.get("seq") == seq for a in attempts):
         return False
-    _append_log(log_path, step, "aborted", result_path)
+    _append_log(log_path, step, "aborted", result_path, deny_check=deny_check)
     attempts.append({"seq": seq, "class": "aborted", "ended_at": time.time(),
                      **fields})
     write_text_atomic(attempts_path,
@@ -965,11 +1001,16 @@ def _decision_b_reason(step: model.Step, payload, vars_path, result_path
 
 
 def _append_attempt(step_id: str, result_path, handle: dict, status: str):
-    """B-layer (`record`) attempts file: steps/<id>_attempts.json next to
-    the handle, keyed by the handle's own recorded `attempt` (reliability-
-    spec.md §4.2). Handle-bearing runs only — legacy callers get no attempts
-    file, matching their no-handle, no-sentinel treatment throughout this
-    module."""
+    """B-layer (`record`) attempts file: the cycle's ledger next to the
+    handle, keyed by the handle's own `attempt` and carrying its token
+    (reliability-spec.md §4.2). Handle-bearing runs only — legacy callers get
+    no attempts file, matching their no-handle, no-sentinel treatment
+    throughout this module."""
+    if is_attempt_handle(handle):
+        path = attempt_ledger_path(Path(handle["result_path"]).parent, step_id,
+                                   handle["cycle"])
+        append_attempt(path, handle["attempt"], status, {"token": handle["token"]})
+        return
     path = handle_path(step_id, result_path).with_name(f"{step_id}_attempts.json")
     append_attempt(path, handle.get("attempt"), status)
 
@@ -1020,10 +1061,17 @@ def record_result(step: model.Step, result_path: str | Path,
     calls first (ccdeny): one found makes the step `error: denied` whatever
     its result file says, and a transcript that cannot be resolved is
     reported as NO-TRANSCRIPT, never read as clean. The verdict goes into the
-    steps.log entry as `deny_check`.
+    steps.log entry as `deny_check`. An attempt whose stop record is not
+    `done` (`wfrun stop`: confirmed or unconfirmed) never gets here: `wfrun
+    record` records it `aborted` (or refuses, if it has a verdict already)
+    without reading `reply` or `_record_file`'s decision table.
     """
     result_path = Path(result_path)
     handle = load_handle(step.id, result_path)
+    if is_attempt_handle(handle):
+        # `result_path` names the step; the attempt's own file is the one
+        # its subagent was told to write.
+        result_path = Path(handle["result_path"])
     check = ccdeny.check_delegation(handle)
     if check.verdict == ccdeny.DENIED:
         _append_log(log_path, step, "error", result_path, deny_check=check.label)
@@ -1058,7 +1106,7 @@ def _record_file(step: model.Step, result_path: Path, vars_path: str | Path,
     text = modes.strip_mode_line(raw)
 
     if handle is not None:
-        text, sentinel_ok = strip_sentinel_line(text, step.id)
+        text, sentinel_ok = strip_sentinel_line(text, step.id, handle.get("sentinel"))
         if not sentinel_ok:
             status = "error" if claim == "ok" else "aborted"
             message = ("error: claimed-ok-but-no-result" if status == "error"

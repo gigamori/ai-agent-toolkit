@@ -456,21 +456,27 @@ than silently passing.
 
 ### Error handling (modernized ADP)
 
-run-llm's layer A (`wfrun dispatch`/`wait`) gets the same classes and the
-same retry/debug handling, enforced in code. The wrapper process calls
-`classify_result()` directly and records each attempt's class in the cycle's
-ledger. `wait` corrects that record when its own checks fail a step (an
+The layer-A commands `wfrun dispatch`/`wait` (not part of run-llm) get the same
+classes and the same retry/debug handling, enforced in code. The wrapper
+process calls `classify_result()` directly and records each attempt's class in
+the cycle's ledger. `wait` corrects that record when its own checks fail a step (an
 `expect-file` miss is `behavioral`, as here), runs the debug diagnosis only
 when the handling below reaches debug, and records the RETRY/FAIL. `dispatch`
 refuses any re-dispatch that handling would not make: a skipped class, a
 spent `retry`, `--fix` without the RETRY just recorded, a second fixed
-re-run, a re-run while a decision awaits its ruling. The orchestrator only
-re-dispatches and follows the refusal (`run-llm.md`). Layer B (`wfrun
-record`) has its own, text-based decision table instead (ok/error/aborted, no
-`error_class`) — see `run-llm.md`. On Claude Code, that table is preceded by
-a check of the step subagent's transcript, and of every agent the subagent
-started. A refused tool call there makes the step `error: denied`, and
-`run-llm.md` tells the orchestrator not to retry it.
+re-run, a re-run while a decision awaits its ruling. run-llm's step execution
+(layer B, `wfrun prompt`/`record`) gets the same retry/debug handling and
+budgets in code as well: `prompt --result` refuses a new attempt that handling
+would not make (a skipped class such as `denied`, a spent `retry`, `--fix`
+without a recorded debug RETRY, a second fixed re-run, an open decision, an
+aborted attempt not shown safe to run again). `wfrun record` has its own,
+text-based decision table instead (ok/error/aborted, no `error_class`) — see
+`run-llm.md`. On Claude Code, that table is preceded by a check of the step
+subagent's transcript, and of every agent the subagent started. A refused tool
+call there makes the step `error: denied` — unless `wfrun stop` recorded a stop
+for the attempt and its result never completed: `record` then records it
+`aborted` and shows the check's verdict on a `deny-check:` line, since a stop
+is not a denial. `prompt` refuses to re-run a `denied` step.
 
 Retry and debug are gated on `error_class`, not on error text:
 
@@ -647,8 +653,9 @@ wfrun viz <wf.xml> [--out FILE]                         # mermaid flowchart of t
   would fail; `wfrun run`/`resume` reject this at startup — copy bundled
   examples to a normal project directory before running them
 - The helper subcommands `interp` / `eval` / `ask` / `prompt` / `record` /
-  `poll` (layer B) and `dispatch` / `wait` (layer A) exist for
-  LLM-orchestrated execution; see `references/run-llm.md`
+  `decide` / `poll` / `stop` / `pids` / `judge` exist for LLM-orchestrated
+  execution (run-llm); see `references/run-llm.md`. `dispatch` / `wait` (layer A)
+  run a step through the claude CLI instead and are not part of run-llm
 - `viz` renders branch diamonds, loop-back edges, and parallel fan-out for
   docs and the build-mode approval gate. Its labels carry control-plane facts
   only (ids, roles, modes, models, conditions — never task bodies). `plan`'s
