@@ -14,7 +14,7 @@ case "$(uname -s)" in
   *) WINDOWS=0 ;;
 esac
 
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d)" && [ -d "$WORK" ] || { echo "mktemp -d failed (no temp dir to work in)" >&2; exit 2; }
 WORK="$(cd "$WORK" && { pwd -W 2>/dev/null || pwd; })"
 trap 'rm -rf "$WORK"' EXIT
 
