@@ -46,7 +46,8 @@ exec bash <this skill's dir>/scripts/watchdog.sh --deliv <the turn's deliverable
   id; the script resolves the transcript from `--desc`, within this session
   when `CLAUDE_CODE_SESSION_ID` is set in the Bash environment (with none, it
   searches every session's logs).
-- `DEADLINE_EXECUTE=2400` is a maintainer ruling, not a measurement. The only
+- `DEADLINE_EXECUTE=4800` is a maintainer ruling, not a measurement: every
+  `DEADLINE_*` was doubled uniformly by user ruling on 2026-10-04. The only
   data are two near-misses under the earlier 1500 s budget (1393 s, 1327 s);
   the tuning question stays open until several build-bearing `execute` turns
   are measured under one budget.

@@ -204,18 +204,18 @@ default; the maximum is `MAX_TIMEOUT_MS = 2_147_483_647`.
 
 | turn mode | `timeout` (seconds) |
 |---|---|
-| `survey` | 3600 |
-| `plan` | 2400 |
-| `execute` | 2400 |
-| `debug` | 900 |
-| `review-process` | 900 |
-| `review-dev` | 1800 |
-| anything else | 900 |
+| `survey` | 7200 |
+| `plan` | 4800 |
+| `execute` | 4800 |
+| `debug` | 1800 |
+| `review-process` | 1800 |
+| `review-dev` | 3600 |
+| anything else | 1800 |
 
 - `review-doc` deliberately has no row (a ruling): it takes `anything else`.
   Reopen only if a real review-doc turn times out; then add a row here and in
   `scripts/watchdog.sh` together.
-- An inserted decision turn runs as `review-dev` → 1800. A `--decider=human`
+- An inserted decision turn runs as `review-dev` → 3600. A `--decider=human`
   wait makes no call.
 - A re-run passes the seconds on its gate's `ALLOW` line instead (Re-run
   keying).

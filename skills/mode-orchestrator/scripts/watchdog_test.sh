@@ -269,13 +269,13 @@ run_wd --deliv - --desc "d" --mode plan --deadline 2 --poll 1 --project-root "$P
 expect "--deadline overrides the mode's budget" TIMEOUT 1
 
 expect_grep "STALL is configured at the top of the script" '^STALL=600$' "$WATCHDOG"
-expect_grep "DEADLINE_SURVEY is 3600" '^DEADLINE_SURVEY=3600$' "$WATCHDOG"
-expect_grep "DEADLINE_PLAN is 2400" '^DEADLINE_PLAN=2400$' "$WATCHDOG"
-expect_grep "DEADLINE_EXECUTE is 2400" '^DEADLINE_EXECUTE=2400$' "$WATCHDOG"
-expect_grep "DEADLINE_DEBUG is 900" '^DEADLINE_DEBUG=900$' "$WATCHDOG"
-expect_grep "DEADLINE_REVIEW_PROCESS is 900" '^DEADLINE_REVIEW_PROCESS=900$' "$WATCHDOG"
-expect_grep "DEADLINE_REVIEW_DEV is 1800" '^DEADLINE_REVIEW_DEV=1800$' "$WATCHDOG"
-expect_grep "DEADLINE_DEFAULT is 900" '^DEADLINE_DEFAULT=900$' "$WATCHDOG"
+expect_grep "DEADLINE_SURVEY is 7200" '^DEADLINE_SURVEY=7200$' "$WATCHDOG"
+expect_grep "DEADLINE_PLAN is 4800" '^DEADLINE_PLAN=4800$' "$WATCHDOG"
+expect_grep "DEADLINE_EXECUTE is 4800" '^DEADLINE_EXECUTE=4800$' "$WATCHDOG"
+expect_grep "DEADLINE_DEBUG is 1800" '^DEADLINE_DEBUG=1800$' "$WATCHDOG"
+expect_grep "DEADLINE_REVIEW_PROCESS is 1800" '^DEADLINE_REVIEW_PROCESS=1800$' "$WATCHDOG"
+expect_grep "DEADLINE_REVIEW_DEV is 3600" '^DEADLINE_REVIEW_DEV=3600$' "$WATCHDOG"
+expect_grep "DEADLINE_DEFAULT is 1800" '^DEADLINE_DEFAULT=1800$' "$WATCHDOG"
 expect_grep "POLL is 15" '^POLL=15$' "$WATCHDOG"
 expect_grep "the P2 launch line execs, so stopping the task reaches the watchdog" '^exec bash <this skill.s dir>/scripts/watchdog\.sh ' "$HARNESS_CC"
 

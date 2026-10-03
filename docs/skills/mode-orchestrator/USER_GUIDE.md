@@ -322,11 +322,11 @@ Defaults are at the top of the script — edit them there:
 | Setting | Default |
 |---|---|
 | Stall threshold | 600s |
-| Deadline, `survey` | 3600s |
-| Deadline, `plan` | 2400s |
-| Deadline, `execute` | 2400s |
-| Deadline, `review-dev` | 1800s |
-| Deadline, every other mode | 900s |
+| Deadline, `survey` | 7200s |
+| Deadline, `plan` | 4800s |
+| Deadline, `execute` | 4800s |
+| Deadline, `review-dev` | 3600s |
+| Deadline, every other mode | 1800s |
 | Poll interval | 15s |
 
 They are deliberately generous. A long tool call looks exactly like a hang from
