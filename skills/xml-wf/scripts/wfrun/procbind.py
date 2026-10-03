@@ -6,7 +6,7 @@ Invariant I2 (xml-wf-kill-safe-cleanup.md §1, §3.4): however this process ends
 behind is not an idle orphan: measured 2026-09-29 on win32 (claude v2.1.270,
 haiku), a `claude -p` whose parent was killed with `taskkill /F` finished its
 in-flight Bash call, then started and completed the next one and exited 0.
-run-cc's `resume` and the A layer's single re-dispatch after `aborted`
+run-cc's `resume` and the single re-dispatch after `aborted`
 (`dispatch`) would then run the same step a second time alongside it.
 
 The OS mechanics live here and nowhere else. The one public entry point is

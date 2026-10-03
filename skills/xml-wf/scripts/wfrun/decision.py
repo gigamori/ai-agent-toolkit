@@ -414,7 +414,7 @@ def answer_b_reason(answer: DecisionAnswer, recommendation: int | None) -> str |
 def request_id(step_id: str, cycle: int, seq: int) -> str:
     """Stable identity for one decision request.
 
-    Mirrors the A layer's per-cycle `<id>_cNN_` stem (`__main__._a_layer_paths`)
+    Mirrors `dispatch`'s per-cycle `<id>_cNN_` stem (`__main__._a_layer_paths`)
     so both ledgers read alike. `cycle` counts visits to the step node and
     `seq` counts decisions within one visit (§13.1).
     """
@@ -465,8 +465,8 @@ def verdict_marker(dec_dir: str | Path, rid: str) -> Path:
 def request_ids(dec_dir: str | Path, prefix: str) -> list[str]:
     """Recorded request ids under `prefix`, in allocation order.
 
-    `prefix` is the step id for run-llm's `prompt`/`record` (the B layer) and
-    `<id>_cNN` for the A layer's `dispatch`/`wait`, which is what keeps the
+    `prefix` is the step id for run-llm's `prompt`/`record` and
+    `<id>_cNN` for `dispatch`/`wait`, which is what keeps the
     two apart: `s1_d01` never matches `s1_c01_d*` and vice versa. Zero-padded
     sequence numbers make the plain name sort the allocation order.
     """
@@ -493,12 +493,14 @@ def allocate_request_id(dec_dir: str | Path, prefix: str) -> str:
 
 
 def step_request_ids(dec_dir: str | Path, step_id: str) -> list[str]:
-    """Every recorded request for `step_id`, both layers, in allocation order.
+    """Every recorded request for `step_id` from run-llm and `dispatch`/`wait`,
+    in allocation order.
 
-    The B layer files under `<id>_dNN` and the A layer under `<id>_cNN_dNN`.
+    run-llm files under `<id>_dNN` and `dispatch`/`wait` under `<id>_cNN_dNN`.
     Adjudication has to reach both: `record --answer` is the only settling
-    verb, and a caller that knew only the bare id would leave every A-layer
-    request permanently unanswerable -- detected, filed, and stuck.
+    verb, and a caller that knew only the bare id would leave every
+    `dispatch`/`wait` request permanently unanswerable -- detected, filed, and
+    stuck.
     """
     seen = dict.fromkeys(request_ids(dec_dir, step_id))
     try:
@@ -524,7 +526,8 @@ def pending_request_id(dec_dir: str | Path, prefix: str) -> str | None:
 
 
 def pending_step_request_id(dec_dir: str | Path, step_id: str) -> str | None:
-    """The step's open request, whichever layer filed it."""
+    """The step's open request, whichever of run-llm and `dispatch`/`wait`
+    filed it."""
     for rid in reversed(step_request_ids(dec_dir, step_id)):
         if not verdict_marker(dec_dir, rid).is_file():
             return rid
@@ -552,8 +555,8 @@ def llm_adjudications(dec_dir: str | Path, prefix: str) -> int:
 
     run-llm's cap tally. There is no events.jsonl here, so the verdict markers
     are the ledger -- the same artifacts that already carry the double-answer
-    guard. Scope follows the prefix and therefore the layer: `<id>_cNN` counts
-    one A-layer visit, a bare step id counts the B layer, which has no cycle
+    guard. Scope follows the prefix and therefore the path: `<id>_cNN` counts
+    one `dispatch`/`wait` visit, a bare step id counts run-llm, which has no cycle
     concept at all and so counts for the whole run (§15.7). Unreadable markers
     are skipped rather than assumed: an unparseable file is not evidence that
     an llm ruled.

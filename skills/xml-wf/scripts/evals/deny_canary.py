@@ -1,10 +1,10 @@
 """Refused-call detection canary (opt-in; calls the claude CLI and costs money).
 
 wfrun learns of a refused tool call only from what Claude Code emits: the
-`permission_denials` field of every stream-json result event (run-cc, and the
-layer-A `wait` and the wrapper that `dispatch` launches,
+`permission_denials` field of every stream-json result event (run-cc, `wait`,
+and the wrapper that `dispatch` launches,
 `claude_cli.classify_result`) and the `toolDenialKind` field of transcript
-lines (run-llm layer B, `ccdeny`). Either can move under a Claude Code upgrade
+lines (run-llm, `ccdeny`). Either can move under a Claude Code upgrade
 without any unit test noticing -- their fixtures are fixed. This harness
 launches real `claude -p` children and checks that each measured shape still
 classifies as it did (docs/dev/test-constraints.md, 2026-09-26).

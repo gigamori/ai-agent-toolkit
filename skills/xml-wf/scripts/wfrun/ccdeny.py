@@ -1,6 +1,6 @@
-"""Refused tool calls of a run-llm layer-B step, read from Claude Code's transcripts.
+"""Refused tool calls of a run-llm step, read from Claude Code's transcripts.
 
-Layer B delegates a step to a subagent through the orchestrator's own Agent
+run-llm delegates a step to a subagent through the orchestrator's own Agent
 tool, so the step's tool calls land in the orchestrator's session transcripts
 and nowhere wfrun reads otherwise. `wfrun prompt` issues the delegation a
 description unique to the attempt (`stepio.delegation_description`); this
@@ -66,7 +66,7 @@ class DenyCheck:
 
 
 def check_delegation(handle: dict | None) -> DenyCheck:
-    """Verdict for the subagent a layer-B step attempt was delegated to."""
+    """Verdict for the subagent a run-llm step attempt was delegated to."""
     session = os.environ.get(SESSION_ENV, "").strip()
     if handle is None or not session:
         return DenyCheck(NOT_APPLICABLE)
@@ -96,7 +96,7 @@ class Delegation:
 
 
 def delegation_transcripts(handle: dict | None) -> Delegation:
-    """The transcript of the subagent a layer-B attempt was delegated to,
+    """The transcript of the subagent a run-llm attempt was delegated to,
     then those of every agent it started at any depth -- or why there are
     none. Resolved the way `check_delegation` resolves them."""
     session = os.environ.get(SESSION_ENV, "").strip()

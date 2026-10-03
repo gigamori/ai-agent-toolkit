@@ -30,7 +30,7 @@ def write_text_atomic(path: str | Path, text: str) -> None:
     file: write a sibling temp file, then `os.replace` onto the target
     (atomic on both POSIX and Windows).
 
-    Required for the A layer's cross-process files: `wait` polls exit.json
+    Required for `dispatch`/`wait`'s cross-process files: `wait` polls exit.json
     from another process while the wrapper is writing it (a torn read used
     to crash `wait` outright), and `dispatch` reads attempts.json while a
     finishing wrapper appends to it -- a torn attempts.json reads back as
@@ -48,7 +48,7 @@ def _missing_expected(expect_file: str, variables: dict, step_id: str,
     exist. Relative paths resolve against `base_dir` when given -- the same
     directory the step's subprocess ran in -- mirroring
     executor._missing_expected. With base_dir=None they resolve against the
-    caller's cwd (the B layer's documented "orchestrator cwd = subagent
+    caller's cwd (run-llm's documented "orchestrator cwd = subagent
     cwd" premise)."""
     paths = interpolate(expect_file, variables)
     missing = []
@@ -86,7 +86,7 @@ DELEGATION_TOKEN_BYTES = 4
 
 
 def delegation_description(step_id: str, cycle: int, seq: int, token: str) -> str:
-    """The description a run-llm layer-B step attempt is delegated under.
+    """The description a run-llm step attempt is delegated under.
 
     On Claude Code the orchestrator passes it verbatim as the Agent call's
     description, which is how `record` finds that subagent's transcript
@@ -134,8 +134,8 @@ def is_attempt_handle(handle) -> bool:
 
 
 def attempt_ledger_path(steps_dir: str | Path, step_id: str, cycle: int) -> Path:
-    """The layer-B attempt ledger of one cycle (one step-node visit), the same
-    name the A layer gives its own: `steps/<id>_cNN_attempts.json`."""
+    """The run-llm attempt ledger of one cycle (one step-node visit), the same
+    name `dispatch` gives its own: `steps/<id>_cNN_attempts.json`."""
     return Path(steps_dir) / f"{step_id}_c{cycle:02d}_attempts.json"
 
 
@@ -658,11 +658,11 @@ def _append_log(log_path, step: model.Step, status: str, result_path,
 def append_attempt(attempts_path: str | Path, seq, status: str,
                    fields: dict | None = None):
     """Append one {seq, class, ended_at} entry to a JSON-array attempts file
-    (reliability-spec.md §4.2/§5.1). Shared by run-llm's `record` (the B
-    layer, via `_append_attempt` below) and the A layer's dispatch wrapper
+    (reliability-spec.md §4.2/§5.1). Shared by run-llm's `record` (via
+    `_append_attempt` below) and `dispatch`'s wrapper
     (`wfrun _wrapper`, §5.1), which is also what `wfrun dispatch` reads back
     to enforce the attempt cap (§5.1, F4/P5).
-    `fields` adds to the entry (the B layer's attempt token)."""
+    `fields` adds to the entry (run-llm's attempt token)."""
     attempts_path = Path(attempts_path)
     try:
         attempts = json.loads(attempts_path.read_text(encoding="utf-8"))
@@ -686,7 +686,7 @@ def load_attempts(attempts_path: str | Path) -> list:
 
 def update_attempt(attempts_path: str | Path, seq, fields: dict) -> bool:
     """Merge `fields` into the entry for attempt `seq`; False when the ledger
-    has none. The A layer's `wait` records here what it learns after the
+    has none. `wait` records here what it learns after the
     wrapper wrote the entry -- a verdict its own checks changed, and the debug
     diagnosis -- because the ledger is all `dispatch` reads."""
     attempts = load_attempts(attempts_path)
@@ -703,8 +703,8 @@ def record_aborted_attempt(step: model.Step, attempts_path: str | Path, seq,
                            log_path: str | Path | None, result_path,
                            fields: dict, deny_check: str | None = None) -> bool:
     """Record one aborted attempt to the run's step log and ledger
-    (reliability-spec.md §5.4.3). The A layer's dispatch/wait in
-    `wfrun.__main__` call it once they judge an attempt gone. The B layer's
+    (reliability-spec.md §5.4.3). `dispatch`/`wait` in
+    `wfrun.__main__` call it once they judge an attempt gone. run-llm's
     own aborted path (`_record_file`) does not come through here; its `record`
     uses this function for two cases only: an attempt whose result completed
     after its stop window closed, which is recorded aborted rather than
@@ -721,8 +721,8 @@ def record_aborted_attempt(step: model.Step, attempts_path: str | Path, seq,
     protectively).
 
     `fields` is merged into the ledger entry alongside the fixed
-    {seq, class: "aborted", ended_at}. The A layer passes {"evidence":
-    "run-lock"|"deadline", "detected_by": "dispatch"|"wait"}. The B layer's
+    {seq, class: "aborted", ended_at}. `dispatch`/`wait` pass {"evidence":
+    "run-lock"|"deadline", "detected_by": "dispatch"|"wait"}. run-llm's
     `record` passes {"token": <the attempt's token>} plus a ledger flag
     (`late_completion` or `stop_contradiction`: True) or, when the refusal
     check applies (Claude Code), its `deny_check` label.
@@ -746,27 +746,27 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
                  base_dir: str | Path | None = None,
                  decisions_dir: str | Path | None = None,
                  decision_prefix: str | None = None) -> tuple[str, str]:
-    """The shared second half of `record_result` (B layer) and `wfrun wait`
-    (A layer, reliability-spec.md §5.1: "B層 record 相当を兼ねる"): given an
+    """The shared second half of `record_result` (run-llm) and `wfrun wait`
+    (reliability-spec.md §5.1: "B層 record 相当を兼ねる"): given an
     ALREADY-CLASSIFIED `claude_cli.CliResult`, update vars.json and append
-    the log. Only how each layer got to a CliResult differs -- B parses a
-    sentinel-terminated result file itself; A already has one straight from
-    `claude_cli.classify_result()`.
+    the log. Only how each path got to a CliResult differs -- run-llm parses a
+    sentinel-terminated result file itself; `wait` already has one straight
+    from `claude_cli.classify_result()`.
 
     `result_path` is used only for error-message pointers (never read), and
-    `outputs_dir` only for `output-type="file"` steps (B passes the result
-    file itself instead; A has no such file and writes one here, mirroring
-    run-cc's `runs/<ts>/outputs/<id>.md`).
+    `outputs_dir` only for `output-type="file"` steps (run-llm passes the
+    result file itself instead; `wait` has no such file and writes one here,
+    mirroring run-cc's `runs/<ts>/outputs/<id>.md`).
 
     `decisions_dir`/`decision_prefix` name where a `DECISION:` payload is
-    filed and under which id (§14.1). The A layer passes its run dir and
-    `<id>_cNN` explicitly, since only it knows the cycle; the B layer lets
+    filed and under which id (§14.1). `wait` passes its run dir and
+    `<id>_cNN` explicitly, since only it knows the cycle; run-llm lets
     them default off the result path and the bare step id.
 
-    `base_dir` resolves relative `expect-file` paths. The A layer MUST pass
-    the same directory it gave the wrapper as cwd (the XML's parent):
-    unlike the B layer -- where the orchestrator and the subagent share a
-    cwd by construction -- an A-layer `wait` can be invoked from anywhere,
+    `base_dir` resolves relative `expect-file` paths. `wait` MUST pass
+    the same directory `dispatch` gave the wrapper as cwd (the XML's parent):
+    unlike run-llm -- where the orchestrator and the subagent share a
+    cwd by construction -- `wait` can be invoked from anywhere,
     so checking expect-file against the caller's cwd would report a
     correctly-written artifact as missing.
 
@@ -878,9 +878,10 @@ def adjudicate_answer(step: model.Step, result_path: str | Path,
     overrides it for the fallback paths a person is asked to answer.
     """
     dec_dir = Path(decisions_dir or decisions_dir_for_result(result_path))
-    # Search BOTH layers' namespaces unless the caller pinned one: an A-layer
-    # request is filed under `<id>_cNN_dNN`, and a bare-`<id>` lookup would
-    # leave it detected-but-unanswerable forever (§14.2, relaxed).
+    # Search BOTH run-llm's and `dispatch`/`wait`'s namespaces unless the
+    # caller pinned one: a `dispatch`/`wait` request is filed under
+    # `<id>_cNN_dNN`, and a bare-`<id>` lookup would leave it
+    # detected-but-unanswerable forever (§14.2, relaxed).
     if decision_prefix:
         rid = decision_mod.pending_request_id(dec_dir, decision_prefix)
         settled_ids = decision_mod.request_ids(dec_dir, decision_prefix)
@@ -971,7 +972,7 @@ def _decision_b_reason(step: model.Step, payload, vars_path, result_path
     """Why this ruling must re-run the step, or None if (a) is still open.
 
     Mirrors the batch predicate (§6) on the inputs run-llm actually has;
-    expect-file resolves against the caller's cwd, this layer's standing
+    expect-file resolves against the caller's cwd, run-llm's standing
     "orchestrator cwd = subagent cwd" premise.
     """
     if not payload.work_complete:
@@ -1001,7 +1002,7 @@ def _decision_b_reason(step: model.Step, payload, vars_path, result_path
 
 
 def _append_attempt(step_id: str, result_path, handle: dict, status: str):
-    """B-layer (`record`) attempts file: the cycle's ledger next to the
+    """run-llm (`record`) attempts file: the cycle's ledger next to the
     handle, keyed by the handle's own `attempt` and carrying its token
     (reliability-spec.md §4.2). Handle-bearing runs only — legacy callers get
     no attempts file, matching their no-handle, no-sentinel treatment
@@ -1158,7 +1159,7 @@ def _record_file(step: model.Step, result_path: Path, vars_path: str | Path,
     else:
         if step.expect_file:
             try:
-                # base_dir=None: cwd-relative, per this layer's documented
+                # base_dir=None: cwd-relative, per run-llm's documented
                 # "orchestrator cwd = subagent cwd" premise (see the
                 # docstring above and apply_result's base_dir note).
                 missing = _missing_expected(step.expect_file, variables,

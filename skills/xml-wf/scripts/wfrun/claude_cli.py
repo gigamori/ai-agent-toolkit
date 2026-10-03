@@ -329,7 +329,7 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
                     schema: str | None = None) -> CliResult:
     """Turn a completed claude -p invocation's (returncode, stdout, stderr)
     into a CliResult. Pure function of those three inputs plus `schema` --
-    shared, per reliability-spec.md §3.1, with the future A-layer wrapper
+    shared, per reliability-spec.md §3.1, with the future `dispatch` wrapper
     (§5.1), which reads the same fields back from its own exit.json/stdout
     files rather than from a live subprocess.Popen result.
 
@@ -585,7 +585,7 @@ def _launch(prompt: str, *, system_prompt: str | None = None,
     Returns either an early CliResult (the call was rejected before/without
     launching, or launching itself failed: env/timeout) or a
     (returncode, stdout, stderr) tuple for the caller to classify. Split out
-    from `run_claude()` so `wfrun`'s A-layer wrapper (reliability-spec.md
+    from `run_claude()` so `wfrun`'s `dispatch` wrapper (reliability-spec.md
     §5.1) can execute with `kill_tree=True` and persist the raw
     (returncode, stdout, stderr) to exit.json/result.json before handing
     the same three values to `classify_result()` itself.

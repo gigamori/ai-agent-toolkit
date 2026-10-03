@@ -2,8 +2,8 @@
 orchestrator calls: interp / eval / ask (which keep interpolation, condition
 evaluation and ask judgment deterministic even when an LLM drives the control
 flow), run-llm's prompt / record / decide / poll / stop / pids / judge (a
-step's prompt, and the records of its attempts and decisions), and the A
-layer's dispatch / wait."""
+step's prompt, and the records of its attempts and decisions), and dispatch /
+wait (the claude CLI path, not part of run-llm)."""
 from __future__ import annotations
 
 import argparse
@@ -199,7 +199,7 @@ def _lock_run_dir(run_dir: Path):
     """Take the run-dir lock without waiting. Returns the handle, or one of
     the `_acquire_with_retry` outcomes; `_LOCK_CONTENDED` means the caller
     must refuse. Where locking is unsupported or fails for another reason
-    the run proceeds unguarded, as layer A's dispatch does, but says so."""
+    the run proceeds unguarded, as `dispatch` does, but says so."""
     lock_path = run_dir / RUN_DIR_LOCK_NAME
     outcome = _acquire_with_retry(lock_path, 0)
     if outcome is _LOCK_CONTENDED:
@@ -783,8 +783,8 @@ def _admit_step_attempt(wf, step: model.Step, args, now: float) -> dict | str:
     blocks every new attempt, `--new-cycle` included, and so does an aborted
     one: it goes on only through its stop record and its judge
     (`_after_abort`). Then the step's open decision, the debug diagnosis the
-    ladder is waiting for, and last the ladder and budgets shared with the
-    A layer (`_admission_refusal`)."""
+    ladder is waiting for, and last the ladder and budgets shared with
+    `dispatch` (`_admission_refusal`)."""
     result_base = Path(args.result)
     steps_dir = result_base.parent
     run_dir = steps_dir.parent
@@ -894,7 +894,7 @@ def _debug_pending(step: model.Step, cycle: int, attempts: list,
                    fix: str | None) -> str | None:
     """Why a re-run must wait for the debug diagnosis: the ladder has handed
     the cycle's last failed attempt to debug and no verdict is recorded yet.
-    run-llm delegates that diagnosis, where the A layer's `wait` runs it
+    run-llm delegates that diagnosis, where `wait` runs it
     in-process."""
     view = _ladder_view(attempts)
     if fix or not view:
@@ -1133,7 +1133,7 @@ def _record_stopped(step: model.Step, handle: dict,
 
 def _record_debug(step: model.Step, args) -> tuple[int, str]:
     """Attach the delegated debug diagnosis's verdict to the attempt it
-    diagnosed, the way the A layer's `wait` attaches its in-process one, so
+    diagnosed, the way `wait` attaches its in-process one, so
     the shared ladder admits `--fix` exactly once and only after RETRY. One
     verdict per failed attempt: a second reply records nothing."""
     handle = stepio.load_handle(step.id, args.result)
@@ -1189,7 +1189,7 @@ POLL_WAIT_INTERVAL = 5.0
 def _poll_verdict(handle: dict) -> tuple[int, str]:
     if llmgate.is_complete(handle):
         return 0, "done"
-    # No kill authority here (B-layer limitation, reliability-spec.md §4.3):
+    # No kill authority here (run-llm limitation, reliability-spec.md §4.3):
     # this only ever declares a verdict, never terminates the subagent.
     if time.time() - handle["dispatched_at"] > handle["timeout"]:
         return 11, "deadline-exceeded"
@@ -1375,10 +1375,10 @@ def _judge_refusal(wf: model.Workflow, step: model.Step, handle: dict
                               attempts, None, decision_prefix=step.id)
 
 
-# ===== A layer (reliability-spec.md §5): dispatch a detached wrapper that
-# self-enforces the step timeout with kill-tree cleanup, poll its exit.json
-# via `wait`. `_wrapper` is launched only by `dispatch` -- never invoke it
-# directly. =====
+# ===== claude CLI path, not part of run-llm (reliability-spec.md §5): dispatch
+# a detached wrapper that self-enforces the step timeout with kill-tree
+# cleanup, poll its exit.json via `wait`. `_wrapper` is launched only by
+# `dispatch` -- never invoke it directly. =====
 
 # Attempt-cap enforcement (F4/P5): one dispatch call = one attempts.json
 # entry, whatever kind (deterministic retry, the one debug-granted retry, or
@@ -1400,8 +1400,8 @@ WAIT_POLL_INTERVAL = 1.0
 # seeing exit.json and calls it aborted (wrapper process itself vanished --
 # killed externally, crashed, host issue). Not in reliability-spec.md §5.1's
 # literal 3-outcome list for `wait` (ok/error/running); added deliberately
-# so this layer has a path out of "running" forever, matching what `poll`
-# already provides for the B layer -- without it, a wrapper that never
+# so `wait` has a path out of "running" forever, matching what `poll`
+# already provides for run-llm -- without it, a wrapper that never
 # writes exit.json reproduces the exact P1 incident (passive wait, no
 # liveness signal) this whole spec exists to close.
 WAIT_ABORT_MARGIN = 30
@@ -1430,7 +1430,7 @@ DEBUG_FAIL = "FAIL"
 
 
 def _check_base_dir(base_dir: Path) -> str | None:
-    """Same guard as Executor._check_base_dir (executor.py), for the A-layer
+    """Same guard as Executor._check_base_dir (executor.py), for `dispatch`/`wait`
     commands below, which don't go through Executor. Returns an error
     message, or None if the directory is fine. Protects both `~/.claude` and
     the `CLAUDE_CONFIG_DIR` dir when set (union) — see executor.py's
@@ -1529,7 +1529,8 @@ def _resolve_cycle(run_dir: Path, step_id: str, force_new: bool
 def _next_cycle(latest: int, attempts: list, force_new: bool) -> tuple[int, list]:
     """(cycle, attempts-so-far-in-that-cycle) after cycle `latest`, whose
     ledger is `attempts`: a new cycle after a success or on `--new-cycle`,
-    else the same one. Shared by both layers (see `_resolve_cycle`)."""
+    else the same one. Shared by `dispatch`/`wait` and run-llm (see
+    `_resolve_cycle`)."""
     last_class = attempts[-1].get("class") if attempts else None
     if force_new or last_class == "ok":
         return latest + 1, []
@@ -1541,10 +1542,10 @@ def _admission_refusal(wf: model.Workflow, step: model.Step, run_dir: Path,
                        decision_prefix: str | None = None) -> str | None:
     """Why run-cc's ladder and the run's budgets refuse the next attempt of
     `step` in `cycle` (its ledger so far is `attempts`), or None. Shared by
-    the A layer's `dispatch` and the B layer's `prompt --result`, so both
-    layers count one set of budgets one way. `decision_prefix` is the id
-    prefix the layer files decision requests under (the A layer's `<id>_cNN`
-    by default; the B layer's bare step id)."""
+    `dispatch` and run-llm's `prompt --result`, so the two count one set of
+    budgets one way. `decision_prefix` is the id prefix the caller files
+    decision requests under (`dispatch`'s `<id>_cNN` by default; run-llm's
+    bare step id)."""
     # The one re-dispatch after an abort is a cycle-wide budget of its
     # own, judged before the total-attempt cap so a run already spent
     # on aborts is told to stop, not pointed at --new-cycle (a
@@ -1610,7 +1611,7 @@ def _count_step_executions(log_path: Path) -> int:
     deliberate: when an LLM drives the run there is no in-process step
     counter, so this log is the only runaway backstop, and every attempt is a
     real model call (a subagent or a `pi -p` process under run-llm, a
-    `claude -p` wrapper under the A layer's `dispatch`). Erring toward
+    `claude -p` wrapper under `dispatch`). Erring toward
     counting them keeps the cap's protective meaning.
     """
     count = 0
@@ -2090,8 +2091,8 @@ def cmd_dispatch(args) -> int:
             return 1
 
         try:
-            # Same auto-enumeration as the B layer, keyed per cycle since the A
-            # layer has one (§14.3).
+            # Same auto-enumeration as run-llm's, keyed per cycle since
+            # `dispatch` has one (§14.3).
             settled = decision_mod.settled_pairs(
                 decision_mod.decisions_dir(run_dir), f"{args.step_id}_c{cycle:02d}")
             system, prompt = stepio.build_step_prompt_parts(
@@ -2113,7 +2114,7 @@ def cmd_dispatch(args) -> int:
                       if model.tools_can_write(dispatch_tools) else None)
 
         for p in (paths["exit"], paths["result"], paths["wait"]):
-            # Stale-read prevention (the B layer's `prompt --result` needs no
+            # Stale-read prevention (run-llm's `prompt --result` needs no
             # deletion: each attempt has its own result file and a keyed
             # sentinel): a leftover exit/result from a prior attempt must never
             # be mistaken for this one's, and a leftover wait record must not
@@ -2509,7 +2510,8 @@ def _finish_wait(handle: dict, args, exit_data: dict) -> int:
         # expect-file must be checked against the directory the wrapper ran
         # the step in (the XML's parent), not wherever `wait` was invoked.
         base_dir=Path(handle["xml"]).resolve().parent,
-        # The A layer knows its cycle, so its requests are filed per cycle.
+        # `dispatch`/`wait` know their cycle, so their requests are filed per
+        # cycle.
         decisions_dir=decision_mod.decisions_dir(handle["run_dir"]),
         decision_prefix=f"{step.id}_c{handle.get('cycle', 1):02d}")
     print(message)
@@ -2807,9 +2809,10 @@ def main(argv=None) -> int:
     p_judge.set_defaults(func=cmd_judge)
 
     p_dispatch = sub.add_parser(
-        "dispatch", help="A-layer (reliability-spec.md §5): launch a step's "
-                         "claude -p call in a detached, self-timing-out "
-                         "wrapper and return immediately")
+        "dispatch", help="claude CLI path, not part of run-llm "
+                         "(reliability-spec.md §5): launch a step's claude -p "
+                         "call in a detached, self-timing-out wrapper and "
+                         "return immediately")
     p_dispatch.add_argument("workflow")
     p_dispatch.add_argument("step_id")
     p_dispatch.add_argument("--vars", required=True, metavar="VARS_JSON")
@@ -2849,8 +2852,10 @@ def main(argv=None) -> int:
     p_wrapper.set_defaults(func=cmd_run_wrapper)
 
     p_wait = sub.add_parser(
-        "wait", help="A-layer: poll a dispatched step's handle up to --max "
-                     "seconds; on completion, update vars/log like record")
+        "wait", help="claude CLI path, not part of run-llm "
+                     "(reliability-spec.md §5): poll a dispatched step's "
+                     "handle up to --max seconds; on completion, update "
+                     "vars/log like record")
     p_wait.add_argument("handle", metavar="HANDLE_FILE")
     p_wait.add_argument("--max", type=float, default=60,
                         help="seconds to watch for exit.json before "

@@ -1,8 +1,8 @@
-"""Per-attempt records and the re-dispatch gate of run-llm (layer B).
+"""Per-attempt records and the re-dispatch gate of run-llm.
 
 run-llm hands every step to the orchestrator's own subagent facility -- the
 Agent tool on Claude Code, a fresh CLI process elsewhere -- so no wfrun
-process owns an attempt's lifetime the way the A layer's wrapper does. What
+process owns an attempt's lifetime the way `dispatch`'s wrapper does. What
 code can still decide about an attempt is decided here, the same way for
 every facility:
 
@@ -36,7 +36,7 @@ every facility:
   adopted.
 
 The ladder and the budgets (retry, debug, decision, the one re-dispatch after
-an abort, the run-wide max) are the A layer's own, applied to both layers by
+an abort, the run-wide max) are `dispatch`'s own, applied to run-llm as well by
 `__main__._admission_refusal`; nothing here counts them.
 """
 from __future__ import annotations

@@ -23,7 +23,7 @@ a human (§5 fail-closed, §15.4).
 
 `adjudicate` hardcodes run_claude like adp.diagnose does; `adjudicate_text` is
 runner-agnostic and `adjudicate_pi` binds it to run_pi. The run-llm path uses
-NEITHER: its orchestrator delegates to a harness-native subagent so layer B
+NEITHER: its orchestrator delegates to a harness-native subagent so run-llm
 stays free of claude dependencies (§15.7, decision D8).
 """
 from __future__ import annotations

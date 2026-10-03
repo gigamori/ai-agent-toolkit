@@ -53,7 +53,7 @@ Two details are deliberate. It says "include in rule 4's report" rather than
 restating what the report should be: rule 4 says "no marker, no template", and a
 line that declares itself part of rule 4's report resolves that collision in the
 wording instead of leaving two orders to arbitrate -- the collision class §12
-measured once already, when "Reply with exactly these lines" met layer B's own
+measured once already, when "Reply with exactly these lines" met run-llm's own
 reply contract and the request vanished as an `aborted`. And it demands no
 position ("include", not "end with"), so the run-llm sentinel requirement (the
 LAST non-empty line of the result file, stepio.sentinel_line) stays satisfiable
@@ -62,9 +62,9 @@ costs nothing (xml-wf-decision-request.md §18.6, §12, §18.3).
 
 Rule 5 deliberately avoids the word "reply" and pivots on "final response":
 each execution layer defines where the final response goes (run-cc: the
-response itself; run-llm layer B: stepio.RESULT_PROTOCOL's result FILE, with
+response itself; run-llm: stepio.RESULT_PROTOCOL's result FILE, with
 the reply channel carrying only a one-line OK/ERROR). An earlier wording said
-"Reply with exactly these lines", and a layer-B subagent duly put the payload
+"Reply with exactly these lines", and a run-llm subagent duly put the payload
 into the reply channel and wrote no result file -- the request vanished as an
 `aborted` (measured 2026-08-13 E2E; xml-wf-decision-request.md §12).
 """

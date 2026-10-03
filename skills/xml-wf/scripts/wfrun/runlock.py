@@ -1,5 +1,5 @@
-"""OS file-lock driver for the A layer's run lock and state lock: a wrapper
-holds the run lock only while it is actually admitted and running, and
+"""OS file-lock driver for the run lock and state lock of `dispatch`/`wait`: a
+wrapper holds the run lock only while it is actually admitted and running, and
 releases it only after its own final write, so an observer's `probe` tells a
 live wrapper from a vanished one without trusting any PID. `run` and `resume`
 take the run dir's lock through it as well.
