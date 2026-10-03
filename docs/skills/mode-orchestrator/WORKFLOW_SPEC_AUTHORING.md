@@ -27,6 +27,17 @@ not name models or establish a general effort default keyed by mode. The shared
 profile resolves a selected effort to the harness model only after final-turn
 classification or an explicit bound pin.
 
+## Turn-facing policy (optional)
+
+A spec may carry sections beyond the four above that a turn must follow, as
+`research` does with its Turn policy. The orchestrator reads a spec only for its
+sequence, effort pins and failure-policy caps, and never injects spec text into a
+turn's prompt. Such a section therefore reaches a turn only when the todolist
+passes the spec file, or an artifact holding the section, to that turn as an
+input. A spec that relies on this says so in its Authoring guidance, and has
+each todolist step name its step id in its text so the turn knows which sections
+apply to it.
+
 ## Binding and precedence
 
 A numbered todolist step may carry at most one `(model: VALUE)`, one

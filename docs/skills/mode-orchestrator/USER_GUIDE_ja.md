@@ -180,7 +180,10 @@ bound `(infer)` 行も最終 instruction の分類を使う。この metadata �
 ガイダンスまたは警告に留まり、ターンは自身の model または effort metadata が勝たない限り
 inferred effort を使う。明示 model と effort は常に binding より優先する。
 
-本スキルは開発／実装作業向けの spec **`dev`**（`workflows/dev.md`）を同梱する（調査 → 設計 → レビュー → 実装 → クラス名指し → テスト → レビュー → docs 同期）。`--workflow=dev` または todolist 内での名指しで有効化する。別のタスク種別の spec を追加するには `WORKFLOW_SPEC_AUTHORING.md` を参照。
+本スキルは spec を 2 つ同梱する。`--workflow=<name>` または todolist 内での名指しで有効化する。別のタスク種別の spec を追加するには `WORKFLOW_SPEC_AUTHORING.md` を参照。
+
+- **`dev`**（`workflows/dev.md`）: 開発／実装作業向け（調査 → 設計 → レビュー → 実装 → クラス名指し → テスト → レビュー → docs 同期）。
+- **`research`**（`workflows/research.md`）: 範囲の定まった問いに対する証拠ベースの調査向け（method → gather → validate → reason → draft → challenge。1 回目で見つかった欠落を埋める 2 回目は任意）。ターン向けの証拠・範囲の方針も持つが、それがターンに届くのは todolist が spec ファイルをそのターンの入力として渡したときだけ。
 
 ## run ディレクトリと成果物
 
@@ -224,4 +227,4 @@ change-report が「どのファイルを編集したか」と主張する内容
 
 - LLM 向け仕様: `SKILL.md`（`skills/mode-orchestrator/` 配下）。
 - workflow spec の書き方: 同じフォルダの `WORKFLOW_SPEC_AUTHORING.md`。
-- 同梱の `dev` spec: `skills/mode-orchestrator/workflows/dev.md`。
+- 同梱の spec: `skills/mode-orchestrator/workflows/dev.md` と `skills/mode-orchestrator/workflows/research.md`。

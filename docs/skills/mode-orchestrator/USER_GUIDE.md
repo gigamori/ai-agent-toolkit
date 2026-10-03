@@ -355,11 +355,18 @@ classification. Without that metadata, every workflow row is guidance or a
 warning only, and the turn uses inferred effort unless its own model or effort
 metadata wins. Explicit model and effort always outrank a binding.
 
-The skill ships one spec, **`dev`** (`workflows/dev.md`), for development /
-implementation work (investigate → design → review → build → name the class →
-test → review → sync docs). Activate it with `--workflow=dev` or by naming it in
-the todolist. To add a spec for another task type, see
+The skill ships two specs. Activate one with `--workflow=<name>` or by naming it
+in the todolist. To add a spec for another task type, see
 `WORKFLOW_SPEC_AUTHORING.md`.
+
+- **`dev`** (`workflows/dev.md`), for development / implementation work
+  (investigate → design → review → build → name the class → test → review →
+  sync docs).
+- **`research`** (`workflows/research.md`), for evidence-led research on a
+  bounded question (method → gather → validate → reason → draft → challenge,
+  with an optional second round for gaps the first one found). It also carries
+  turn-facing evidence and scope policies, which reach a turn only when the
+  todolist passes the spec file to that turn as an input.
 
 ## Run directory and artifacts
 
@@ -434,4 +441,5 @@ claim about which file it edited; change-reports are self-attested.
 
 - LLM-facing spec: `SKILL.md` (under `skills/mode-orchestrator/`).
 - Authoring a workflow spec: `WORKFLOW_SPEC_AUTHORING.md` next to this file.
-- The bundled `dev` spec: `skills/mode-orchestrator/workflows/dev.md`.
+- The bundled specs: `skills/mode-orchestrator/workflows/dev.md` and
+  `skills/mode-orchestrator/workflows/research.md`.
