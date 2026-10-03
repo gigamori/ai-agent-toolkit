@@ -556,8 +556,8 @@ def llm_adjudications(dec_dir: str | Path, prefix: str) -> int:
     run-llm's cap tally. There is no events.jsonl here, so the verdict markers
     are the ledger -- the same artifacts that already carry the double-answer
     guard. Scope follows the prefix and therefore the path: `<id>_cNN` counts
-    one `dispatch`/`wait` visit, a bare step id counts run-llm, which has no cycle
-    concept at all and so counts for the whole run (§15.7). Unreadable markers
+    one `dispatch`/`wait` visit; a bare step id (run-llm's prefix) has no cycle
+    in it, so its rulings count for the whole run (§15.7). Unreadable markers
     are skipped rather than assumed: an unparseable file is not evidence that
     an llm ruled.
     """

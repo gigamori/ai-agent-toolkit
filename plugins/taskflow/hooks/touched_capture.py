@@ -572,11 +572,13 @@ def _is_scratch_path(rel: str) -> bool:
     """True for a normalized path under the workspace's own `tmp/` — scratch,
     never task or note material.
 
-    `<cwd>/tmp/` is the one temporary root a workspace has: not indexed, not
-    committed, no promise that anything survives. The mode-orchestrator run
-    directory lives there, so a single orchestrated run would otherwise append
-    hundreds of its own artifact paths to the ledger and bury the source edits
-    the round is actually about.
+    The `tmp/` under the workspace root (`STATE_ROOT`) is the one temporary
+    root a workspace has: not indexed, not committed, no promise that anything
+    survives. The mode-orchestrator run directory, `<ws>/tmp/runs` (`<ws>` is
+    the directory the session was started in), is under it when `<ws>` is the
+    workspace root or is under that `tmp/`, so a single orchestrated run would
+    otherwise append hundreds of its own artifact paths to the ledger and bury
+    the source edits the round is actually about.
 
     Anchored at the workspace root: a nested `sub/tmp/` is ordinary work and
     stays recorded. A leading `./` is stripped first so the spelling of the

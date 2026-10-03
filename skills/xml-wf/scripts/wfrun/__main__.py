@@ -1430,8 +1430,8 @@ DEBUG_FAIL = "FAIL"
 
 
 def _check_base_dir(base_dir: Path) -> str | None:
-    """Same guard as Executor._check_base_dir (executor.py), for `dispatch`/`wait`
-    commands below, which don't go through Executor. Returns an error
+    """Same guard as Executor._check_base_dir (executor.py), for `dispatch`,
+    which doesn't go through Executor; `wait` doesn't call it. Returns an error
     message, or None if the directory is fine. Protects both `~/.claude` and
     the `CLAUDE_CONFIG_DIR` dir when set (union) — see executor.py's
     docstring for why union rather than env-only."""
@@ -1529,8 +1529,8 @@ def _resolve_cycle(run_dir: Path, step_id: str, force_new: bool
 def _next_cycle(latest: int, attempts: list, force_new: bool) -> tuple[int, list]:
     """(cycle, attempts-so-far-in-that-cycle) after cycle `latest`, whose
     ledger is `attempts`: a new cycle after a success or on `--new-cycle`,
-    else the same one. Shared by `dispatch`/`wait` and run-llm (see
-    `_resolve_cycle`)."""
+    else the same one. Shared by `dispatch` (via `_resolve_cycle`) and
+    run-llm's `prompt --result` (via `_admit_step_attempt`)."""
     last_class = attempts[-1].get("class") if attempts else None
     if force_new or last_class == "ok":
         return latest + 1, []

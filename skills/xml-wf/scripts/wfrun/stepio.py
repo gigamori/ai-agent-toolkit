@@ -746,22 +746,26 @@ def apply_result(step: model.Step, res, vars_path: str | Path,
                  base_dir: str | Path | None = None,
                  decisions_dir: str | Path | None = None,
                  decision_prefix: str | None = None) -> tuple[str, str]:
-    """The shared second half of `record_result` (run-llm) and `wfrun wait`
+    """The second half of `wfrun wait`, parallel to run-llm's `record_result`
     (reliability-spec.md §5.1: "B層 record 相当を兼ねる"): given an
     ALREADY-CLASSIFIED `claude_cli.CliResult`, update vars.json and append
-    the log. Only how each path got to a CliResult differs -- run-llm parses a
-    sentinel-terminated result file itself; `wait` already has one straight
-    from `claude_cli.classify_result()`.
+    the log. `wait` is its only caller in wfrun; `record_result` does the same
+    in its own code (`_record_file`) and does not come through here. They
+    differ in how they classify, among other things -- run-llm parses a
+    sentinel-terminated result file itself; `wait` already has a CliResult,
+    from `claude_cli.classify_result()` or exit.json's `early_class`.
 
-    `result_path` is used only for error-message pointers (never read), and
-    `outputs_dir` only for `output-type="file"` steps (run-llm passes the
-    result file itself instead; `wait` has no such file and writes one here,
-    mirroring run-cc's `runs/<ts>/outputs/<id>.md`).
+    `result_path` is never read: it names the result file in messages and
+    the log, and is itself the value of an `output-type="file"` step when
+    `outputs_dir` is omitted, as in run-llm's `_record_file`. `wait` passes
+    `outputs_dir` and writes the response text there, mirroring run-cc's
+    `runs/<ts>/outputs/<id>.md`.
 
     `decisions_dir`/`decision_prefix` name where a `DECISION:` payload is
-    filed and under which id (§14.1). `wait` passes its run dir and
-    `<id>_cNN` explicitly, since only it knows the cycle; run-llm lets
-    them default off the result path and the bare step id.
+    filed and under which id (§14.1). `wait` passes its decisions dir and
+    `<id>_cNN` explicitly, filing its requests per cycle. Left out, they
+    default off the result path and the bare step id, as run-llm's
+    `_record_file` does.
 
     `base_dir` resolves relative `expect-file` paths. `wait` MUST pass
     the same directory `dispatch` gave the wrapper as cwd (the XML's parent):

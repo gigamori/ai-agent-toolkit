@@ -329,9 +329,10 @@ def classify_result(returncode: int, stdout: str, stderr: str, *,
                     schema: str | None = None) -> CliResult:
     """Turn a completed claude -p invocation's (returncode, stdout, stderr)
     into a CliResult. Pure function of those three inputs plus `schema` --
-    shared, per reliability-spec.md §3.1, with the future `dispatch` wrapper
-    (§5.1), which reads the same fields back from its own exit.json/stdout
-    files rather than from a live subprocess.Popen result.
+    shared, per reliability-spec.md §3.1, with `wfrun dispatch`'s wrapper
+    (§5.1) and with `wait`, which reads the same fields back from the
+    wrapper's exit.json/result.json files rather than from a live
+    subprocess.Popen result.
 
     Classification order (reliability-spec.md §3.1, §13.5, §13.9.1):
     unparseable stdout or no result event -> env; permission_denials on any

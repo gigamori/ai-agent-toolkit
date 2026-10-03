@@ -410,7 +410,7 @@ string-matching `error`.
    stream-json`), and the union over all result events is read: a refusal
    inside an agent the step started in the background is listed only on the
    result of the turn that started it, never on the last one. The other
-   fields below come from the last result event. run-llm layer B has no
+   fields below come from the last result event. run-llm has no
    result JSON; there, on Claude Code, `record` checks the step subagent's
    transcript instead (see "Error handling")
 2. `claude` result JSON reports `is_error` — the exit code is not checked
@@ -456,7 +456,7 @@ than silently passing.
 
 ### Error handling (modernized ADP)
 
-The layer-A commands `wfrun dispatch`/`wait` (not part of run-llm) get the same
+The `wfrun dispatch`/`wait` commands (not part of run-llm) get the same
 classes and the same retry/debug handling, enforced in code. The wrapper
 process calls `classify_result()` directly and records each attempt's class in
 the cycle's ledger. `wait` corrects that record when its own checks fail a step (an
@@ -465,7 +465,7 @@ when the handling below reaches debug, and records the RETRY/FAIL. `dispatch`
 refuses any re-dispatch that handling would not make: a skipped class, a
 spent `retry`, `--fix` without the RETRY just recorded, a second fixed
 re-run, a re-run while a decision awaits its ruling. run-llm's step execution
-(layer B, `wfrun prompt`/`record`) gets the same retry/debug handling and
+(`wfrun prompt`/`record`) gets the same retry/debug handling and
 budgets in code as well: `prompt --result` refuses a new attempt that handling
 would not make (a skipped class such as `denied`, a spent `retry`, `--fix`
 without a recorded debug RETRY, a second fixed re-run, an open decision, an
@@ -654,7 +654,7 @@ wfrun viz <wf.xml> [--out FILE]                         # mermaid flowchart of t
   examples to a normal project directory before running them
 - The helper subcommands `interp` / `eval` / `ask` / `prompt` / `record` /
   `decide` / `poll` / `stop` / `pids` / `judge` exist for LLM-orchestrated
-  execution (run-llm); see `references/run-llm.md`. `dispatch` / `wait` (layer A)
+  execution (run-llm); see `references/run-llm.md`. `dispatch` / `wait`
   run a step through the claude CLI instead and are not part of run-llm
 - `viz` renders branch diamonds, loop-back edges, and parallel fan-out for
   docs and the build-mode approval gate. Its labels carry control-plane facts
