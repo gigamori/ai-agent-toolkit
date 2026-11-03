@@ -35,33 +35,37 @@ resolution.
 
 ## Route selection — subagent or CLI (before the first delegation)
 
-A host may publish a `subagent` tool. Two run-level checks decide whether it
-may be used at all; then the table below decides each turn, and a turn that
-misses any row takes the CLI route (P1, P2). Decide before anything is
-dispatched: a mismatch found after real work was sent is not a safe fallback,
-and a re-run of a turn uses the route of its first attempt.
+A host may publish a `subagent` tool. Two run-level preconditions decide
+whether a run may delegate at all; then the table below decides each turn,
+and a turn that misses any row takes the CLI route (P1, P2). Decide before
+anything is dispatched: a mismatch found after real work was sent is not a
+safe fallback, and a re-run of a turn uses the route of its first attempt.
 
 Once per run, before the first delegation:
 
-1. **Schema.** The published `subagent` tool's schema has a top-level `timeout`
-   (seconds). The tool's name alone is not this check.
-2. **Probe.** Call the tool once with a top-level `timeout` and a task that
-   touches nothing (reply with the word OK), naming an agent whose definition
-   grants no write or shell tool. The first line of the returned content starts
-   with `[subagent] outcome=` and the outcome is `completed`. A call without
-   `timeout` may legitimately lack that line, so an untimed probe shows nothing
-   either way. No such agent to name is a failed probe.
+1. **Permission.** The delegation permission state comes from the
+   observation route the host publishes (Delegation contract §1) —
+   structured startup information or a read-only query. `deny` is `blocked`
+   before any delegation, on either route; unobservable is `unknown` — not
+   permitted, not unspecified — and stops the run before delegating on
+   either route, naming the missing publication. Pi core has no permission
+   layer; a host extension's policy is observed only through what the host
+   publishes. The existence of the CLI binary, of shell access, or of a
+   `subagent` tool is never the permission ground.
+2. **Schema.** The published `subagent` tool's schema has a top-level `timeout`
+   (seconds). The tool's name alone is not this check. No live agent is
+   launched to discover capabilities: the former OK probe moved to isolated
+   host-compatibility testing (Delegation contract §1), and the published
+   schema and description are the pre-call grounds. The tool being absent or
+   unreadable puts the whole run on the CLI route.
 
-Either check failing, or the tool being absent or unreadable, puts the whole run
-on the CLI route. Both checks say only that a deadline and a result notice
-exist; the turn still has to be served. Per turn, one miss puts that turn on
-the CLI route:
+Per turn, one miss puts that turn on the CLI route:
 
 | the turn needs | the subagent route meets it only if |
 |---|---|
-| the turn's `planned_override` | the schema shows an explicit-model field; nothing else carries a model |
-| both recursion layers: `MODE_ORCH_DEPTH=1` in the child's environment, and no skills loaded in it | the tool's published description says both; the schema shows no environment field to set per call |
-| an audit id for the attempt's `delegation_ref` | the probe's control line carries `run=<session id>`; without it there is no id to record |
+| the turn's approved binding | the schema shows a field carrying an explicit model, or an effort field whose host-side resolution is published with the resolved reference confirmable (contract §3); nothing else carries a model |
+| both recursion layers: per-call recursion suppression in the child, and no skills loaded in it | the published schema or description shows both (a per-call field, or a host-fixed behavior); do not fill either in from memory |
+| an audit id for the attempt's `delegation_ref` | the published output contract shows the control line and its `run=` id; the first real call's control line confirms it |
 
 Effort, tool restriction and working directory decide nothing here: this skill
 passes none of them for a turn on either route. A capability that the
@@ -69,13 +73,17 @@ published schema or description does not show is unmet; do not fill it in
 from memory. Record the route and the reason in the run index prose (above
 the JSONL block), at the first delegation and again whenever a later turn
 takes the other route. The subagent route has not been exercised on a live
-host.
+host under this contract.
 
 ### The subagent route
 
 - One `subagent` call per turn, single mode (`agent` and `task`): `task` is the
-  assembled prompt, the model is `planned_override`, and the top-level `timeout`
-  is the turn's value from P2's table, counted from the call.
+  assembled prompt, the model is the approved binding, and the top-level
+  `timeout` is the turn's value from P2's table, counted from the call. The
+  current published schema has no explicit-model field and no expected-
+  resolution launch field (Delegation contract §1 and §3 name these as
+  required host capabilities): until one is published, the call records what it
+  actually carried and nothing else.
 - The first line of the returned content is the tool's control line, not part
   of the turn's reply. Split it off. Read the turn's status from the child's own
   text, by Execution step 3, only when the control line says
@@ -144,7 +152,7 @@ What this skill adds to the contract:
   `bash` tool passes `process.env` to children (verified end-to-end).
 - `--no-skills` is layer 2. Both layers are required; an unbounded recursive Pi
   subagent swarm has happened.
-- `--model` — pass `planned_override` on every turn. A rejected model → the
+- `--model` — pass the turn's approved binding on every launch. A rejected model → the
   extractor does not run → missing status → `aborted`; the CLI had started, so
   the restart gate decides (`aborted` handling below).
 - `--mode json` — event JSONL, one object per line: `session`, `agent_start`,
@@ -311,8 +319,9 @@ the session path in the run index.
    shape, changing only this: `PROMPT_FILE` is the already-written
    `<S>-judge-launch-prompt.md`; the preflight diagnostic stops `blocked`
    without launching or reissuing the judge. No file-writing call is placed
-   between `issue` and launch. `--model` is the model `ultra` resolves to in
-   `references/execution-profiles.md`; add `--tools read,grep,write`;
+   between `issue` and launch. `--model` is the model the `ultra` policy class
+   resolves to under the delegation contract's source priority (the profile
+   row is the default); add `--tools read,grep,write`;
    `<turn-key>-<attempt>` becomes `<turn-key>-<attempt>-judge` in the raw path
    and the stem; the `bash` `timeout` is the printed timeout. The extractor's
    stdout is the judge's reply; check it:
@@ -356,7 +365,11 @@ None. pi has no permission layer, so the reply contract's denial clause cannot
 trigger and there is no `deny_scan.sh` counterpart. For `blocked` this means
 SKILL.md's machine-detected source does not exist here; the whole weight sits
 on the self-judged clause in the injected prompt, including its "unless a rule
-permits it" half. Do not carry over Claude Code intuitions.
+permits it" half. Do not carry over Claude Code intuitions. The pre-delegation
+permission gate is a different mechanism: it reads what the host publishes
+before any delegation (Route selection step 1) — its absence on this host
+today is why a Pi run stops before delegating instead of discovering denials
+afterwards.
 
 ## Residual risks specific to this harness
 
@@ -369,3 +382,10 @@ permits it" half. Do not carry over Claude Code intuitions.
   (the CLI's node and the shell around it): their descendants, detached or
   not, and anything done outside files are not observed. That the recorded
   node is the process doing the work is unverified on a real host.
+- Until the host publishes the policy observation route and the binding
+  fields the delegation contract requires, a Pi run stops before delegating —
+  `unknown` permission, named in the report. That is the contract's
+  transitional state, not a defect to route around: no probe, no CLI detour,
+  no silent relaxation. Live completion of the new contract on this facet is
+  claimed only after the host work lands and the integration round confirms
+  it through real triggers.

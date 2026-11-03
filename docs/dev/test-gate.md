@@ -54,6 +54,7 @@ bash skills/mode-orchestrator/scripts/pi_launch_test.sh
 bash skills/mode-orchestrator/scripts/execution_profiles_test.sh
 bash skills/mode-orchestrator/scripts/stop_observe_test.sh
 bash skills/mode-orchestrator/scripts/judge_gate_test.sh
+bash skills/mode-orchestrator/scripts/delegation_plan_test.sh
 ```
 
 `execution_profiles_test.sh` is the profile gate for

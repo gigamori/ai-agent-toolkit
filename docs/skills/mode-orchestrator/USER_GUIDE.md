@@ -63,7 +63,7 @@ Nothing to do for an ordinary interactive run.
 | Flag | Effect |
 |---|---|
 | _(none)_ | Present the turn plan and wait for your approval before executing. |
-| `--auto` | Skip the approval gate; run all turns without per-plan confirmation. |
+| `--auto` | Skip the approval gate; run all turns without per-plan confirmation — for what the plan already pins. A model resolution newly derived at run time (natural language, abbreviation, alias, prefix, series) still needs your explicit approval; headless, the run stops before starting and shows it. |
 | `--roles` / `--roles=always` | Infer and attach a fitting role to every turn. Default: no inferred roles, but a role explicitly stated in the todolist is honored. |
 | `--workflow=<name>` | Load a workflow spec (`workflows/<name>.md`) as task-type guidance. A spec name declared inside the todolist is honored the same way. Default: no spec — run exactly as the todolist dictates. |
 | `--decider=llm` | Delegate `needs-decision` forks to an inserted turn that decides. Default `human` — the run pauses at the step boundary and shows you the question, except a fork between instructions a model wrote, which an inserted turn decides under either value. See the decision loop below. |
@@ -87,8 +87,11 @@ mode is inferred from the step's content.
 ## Per-turn effort and model
 
 `references/execution-profiles.md` maps `basic`, `pro`, and `ultra` to one model
-per harness. Every autonomous turn receives the resolved model as its planned
-override.
+per harness. It is the mandatory skill-default binding — the last of three
+model-request sources (see the delegation contract's model-request sources).
+The runs run under a permission gate: the orchestrator reads what the host
+publishes about delegation permission before any turn is delegated, and
+`deny` / unobservable stops the run before delegating.
 
 A numbered todolist step may carry at most one `(model: VALUE)`, one
 `(effort: basic|pro|ultra)`, and one `(workflow-step: ID)` anywhere on its first
@@ -99,20 +102,37 @@ remaining instruction is classified, and copied to every turn split from that st
 Write separate numbered steps when split responsibilities need different explicit
 values.
 
-1. `(model: VALUE)` wins. The turn records effort `-` and source `step-model`; if
-   an effort is also present, the plan warns that it was ignored.
-2. `(effort: VALUE)` selects that effort with source `step-effort`.
-3. `(workflow-step: ID)` selects exactly one matching active workflow row only. A
+Effort comes first, from:
+
+1. `(effort: VALUE)` — source `step-effort`.
+2. `(workflow-step: ID)` selects exactly one matching active workflow row only. A
    duplicate ID blocks. A pinned `basic`, `pro`, or `ultra` cell uses source `workflow-effort`; `(infer)` leaves
    the final instruction to classification with source `inferred-effort`.
-4. Without an explicit model, effort, or bound pin, the orchestrator classifies
+3. Without an explicit effort or bound pin, the orchestrator classifies
    the final instruction as `basic`, `pro`, or `ultra`; use `pro` when unsure.
+
+The model request is adopted separately, by priority: the execution-time
+prompt (whole-run, per-step, or per-effort wording — a per-step `(model:
+VALUE)` is such a request, normalized from the input document you designated
+for the run) → the environment's child-agent model setting (only an absent or
+unset setting falls through; an invalid or unreadable one stops the run
+instead of being silently replaced) → the skill-default profile, source
+`step-model` when the request came from step metadata. A resolved model makes
+the turn's effort `null`. Quotations in the document, past-run records and
+artifact mentions are not requests. The plan shows, per turn, where the model
+request came from, its original wording and scope, and what it resolved to.
 
 A workflow row never binds by sequence position, matching mode, or semantic
 similarity. Inserted debug and llm-decision turns alone use the policy-selected
-`ultra` effort with source `policy-effort`. The plan records effort, source,
-resolved model, and `planned_override`. A missing or malformed profile, mapping,
-or pin stops as `blocked`; there is no harness-default or cross-effort fallback.
+`ultra` effort with source `policy-effort`. A missing or malformed profile, mapping,
+or pin stops as `blocked`; there is no harness-default or cross-effort fallback,
+and a broken profile is never hidden by a higher source.
+
+Under `--auto`, the plan runs without per-turn confirmation only while every
+model resolution it uses is an exact match of what you specified. A model
+resolved at run time from natural language, an abbreviation, an alias, a
+prefix, or a series always needs your explicit approval of scope and target —
+headless, the run stops before starting and shows you the resolution.
 
 ## Failure recovery loop
 
@@ -401,31 +421,48 @@ reused: a suffix is added. The run never deletes the directory. It holds:
   initial plan records:
 
   ```json
-  {"record":"contract","version":"adaptive-effort-v1"}
-  {"record":"plan","id":"r0","replaces":null,"after_turn":null}
+  {"record":"contract","version":"mo-delegation-v2"}
+  {"record":"plan","id":"r0","replaces":null,"after_turn":null,"digest":"<sha256>","approval_ref":"ap1","contingency_policy_ref":"cp1"}
   ```
 
   An initial turn always uses literal `"kind":"planned"`; its mode is recorded
-  separately and is never a kind value. It then writes a planned turn definition:
+  separately and is never a kind value. It then writes a planned turn definition —
+  the selection records where the model request came from, its wording and scope,
+  and what it resolved to:
 
   ```json
-  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"ultra","source":"inferred-effort","model":"opus","planned_override":"opus"}
+  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"ultra","effort_source":"inferred-effort","budget_refs":{"recovery_owner":"03","decision_owner":"03","restart_owner":"03"},"rebinds":null,"amendment_ref":null,"selection":{"source":"skill","request":"(default profile)","scope_ref":"input doc step 2","resolution_ref":"res-03","resolved_model":"opus","granularity":"harness-ref","thinking":{"state":"undisclosed"}},"dispatch_plan":{"route":"native-subagent","args":{"model":"opus"}}}
   ```
 
-  Only after a delegation attempt finishes or aborts does it append actual call
-  evidence:
+  Only after a delegation call finishes or aborts does it append actual call
+  evidence — the delegation record carries what the call actually carried:
 
   ```json
-  {"record":"attempt","turn":"03","attempt":1,"actual_override":"opus","delegation_ref":"raw/03-1.jsonl","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
+  {"record":"delegation","id":"d1","owner":"03","owner_kind":"turn","plan":"r0","approval_ref":"ap1","resolution_ref":"res-03","policy_ref":"perm1","route":"native-subagent","actual_selection_args":{"model":"opus"},"call_ref":"raw/03-1.jsonl","reported_model":"opus","reported_thinking":null}
+  {"record":"attempt","turn":"03","attempt":1,"delegation_id":"d1","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
   ```
 
-  `planned_override` belongs only to the turn definition; `actual_override`
-  belongs only to its attempt record. Each is the exact model argument only
-  (for example `haiku`), never an effort/model display such as `basic/haiku`. A split step may have several planned turn
+  `dispatch_plan` / `actual_selection_args` carry exactly one of model / effort /
+  a fixed resolution reference; the actual one is what the call carried, never
+  back-filled from the plan. The resolved model is never a tier. A run that stops
+  before a call (denied permission, a changed resolution) records no delegation
+  or attempt; a call that never started records its delegation with null reports
+  and the attempt's effective status carries the classification (`blocked`,
+  `stale-plan`, `aborted`). A split step may have several planned turn
   keys with the same numbered `step`, and an aborted retry adds the next attempt
   to the same turn. The index also records statuses, decision insertions,
-  amendments, human-decision waits, and the check that caused an aborted retry.
-  It is an inspection index, not a resumable scheduler.
+  amendments, human-decision waits, and the check that caused an aborted retry;
+  resolution, permission and approval details live in the run directory's
+  append-only `approvals.jsonl` / `resolutions.jsonl` / `policy.jsonl`, referenced
+  by the `*_ref` fields. A dynamic insertion rides the plan's approved
+  contingency policy and carries a `derived` approval bound to it; its
+  delegation references that derived approval.
+  `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` check the
+  ledger's integrity — data consistency, not evidence authenticity; run them
+  with the run's three evidence files, since a rule whose evidence is missing
+  is a violation, not a skip.
+  It is an inspection index, not a resumable scheduler. Previous
+  `adaptive-effort-v1` runs stay read-only.
 
 These are runtime artifacts — they are not committed.
 

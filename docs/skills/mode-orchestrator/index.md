@@ -25,12 +25,13 @@ exists), and the restart gate's `scripts/stop_observe.js` and
 `gate_util.js`, `proc_identity.js` and `cc_transcripts.js` they load).
 
 `scripts/watchdog_test.sh`, `scripts/deny_scan_test.sh`,
-`scripts/stop_observe_test.sh`, `scripts/judge_gate_test.sh`, and
-`scripts/execution_profiles_test.sh` ship alongside those scripts but are not
+`scripts/stop_observe_test.sh`, `scripts/judge_gate_test.sh`,
+`scripts/pi_reply_test.sh`, and `scripts/delegation_plan_test.sh` ship
+alongside those scripts but are not
 runtime. Run them with `bash scripts/<name>_test.sh` after touching the script
 or profile they cover. The profile gate validates execution-profile **shape**,
-not content — bound models are freely editable; the watchdog, denial and
-restart-gate suites build their own fake session logs and records, so they need
+not content — bound models are freely editable; the watchdog, denial,
+restart-gate and delegation-plan suites build their own fake session logs, ledgers and records, so they need
 no `claude` CLI and no prior run. Adaptive routing additionally requires the external evidence checker's
 registered `--self-test`; see `AUTHORING_CONTRACT.md`.
 

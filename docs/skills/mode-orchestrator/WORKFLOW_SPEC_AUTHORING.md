@@ -52,17 +52,19 @@ A workflow effort pin applies only when exactly one row's `id` is named by
 is classified and records `inferred-effort`. An unbound row is guidance only;
 position, matching mode, and semantic similarity never create a binding.
 
-1. `(model: VALUE)` wins. The turn records effort `-` and source `step-model`.
-2. `(effort: VALUE)` uses source `step-effort`.
-3. A bound pinned workflow row uses source `workflow-effort`.
-4. A bound `(infer)` row or no binding uses source `inferred-effort`.
-5. `references/execution-profiles.md` resolves a selected effort to the exact
-   harness model.
+1. `(effort: VALUE)` uses source `step-effort`.
+2. A bound pinned workflow row uses source `workflow-effort`.
+3. A bound `(infer)` row or no binding uses source `inferred-effort`.
+4. The model request is adopted separately, by priority: the execution-time
+   prompt (a step's `(model: VALUE)` is one, normalized from the input
+   document) → the environment's child-agent model setting → the mandatory
+   default, `references/execution-profiles.md`, which resolves a selected
+   effort to the exact harness model. A resolved model makes the turn's
+   effort `null`.
 
-If a step has both model and effort metadata, model wins and the plan warns that
-its effort was ignored. A missing or malformed profile, missing harness cell, or
+A missing or malformed profile, missing harness cell, or
 invalid workflow pin is `blocked`. It never uses a harness default or an effort
-fallback.
+fallback, and a higher-priority source never hides a broken profile.
 
 ## Adding a task type
 
@@ -70,4 +72,4 @@ fallback.
 2. Give every recommended-sequence row a stable unique `id` and a valid effort
    cell; duplicate IDs are a blocking invalid spec. Keep model routing out of the spec.
 3. Generate a turn plan and confirm explicit bindings, inferred rows, effort
-   sources, failure policy, and planned overrides.
+   sources, model-request sources, failure policy, and planned dispatches.

@@ -36,7 +36,7 @@ path/to/plan.md に mode-orchestrator を使って
 | フラグ | 効果 |
 |---|---|
 | _(なし)_ | turn plan を提示し、実行前に承認を待つ。 |
-| `--auto` | 承認ゲートを飛ばし、全ターンを承認なしで実行する。 |
+| `--auto` | 承認ゲートを飛ばし、plan が確定済みの内容について全ターンを承認なしで実行する。実行時に新たに導出した model 解決（自然言語・略称・別名・接頭辞・系列）は利用者の明示承認が必要 — headless では開始前に停止して解決内容を見せる。 |
 | `--roles` / `--roles=always` | 各ターンに適合する role を推論して付与する。デフォルト: role は推論しないが、todolist に明示された role は honor する。 |
 | `--workflow=<name>` | workflow spec（`workflows/<name>.md`）をタスク種別のガイダンスとして読み込む。todolist 内で spec 名を宣言しても同様に honor される。デフォルト: spec なし — todolist の指定どおりに実行。 |
 | `--decider=llm` | `needs-decision` の分岐を挿入されたターンに裁定させる。デフォルトは `human` — run はステップ境界で止まり、質問を提示する。ただしモデルが書いた指示どうしの分岐は、どちらの値でも挿入されたターンが裁定する。後述の decision ループを参照。 |
@@ -54,7 +54,10 @@ mode は hybrid で決定: ステップが mode を名指ししていれば hono
 ## ターンごとの effort と model
 
 `references/execution-profiles.md` は `basic`、`pro`、`ultra` を harness ごとの
-model へ対応付ける。全 autonomous ターンは解決済み model を planned override として受け取る。
+model へ対応付ける。これは必須の skill 既定 binding であり、3つの model 要求元の
+最後に置かれる（delegation contract の model 要求源の節参照）。run は許可ゲートの下で動く:
+orchestrator はどのターンを委譲する前にも、ホストが公開している委譲許可の情報を読み、
+`deny` または観測不能なら委譲前に run を停止する。
 
 番号付き todolist の各ステップには、ordinal の後の最初の物理行のどこかに
 `(model: VALUE)` を最大1つ、`(effort: basic|pro|ultra)` を最大1つ、
@@ -64,20 +67,33 @@ run を `blocked` にする。認識された metadata は残りの instruction 
 そのステップから分割された全ターンへコピーする。分割した責務ごとに異なる明示値が必要なら、
 番号付きステップを分ける。
 
-1. `(model: VALUE)` が最優先。ターンの effort は `-`、source は `step-model` になる。
-   effort もある場合、plan はそれが無視されたことを警告する。
-2. `(effort: VALUE)` はその effort を source `step-effort` として選ぶ。
-3. `(workflow-step: ID)` はちょうど1つの一致する active workflow 行だけを選ぶ。重複 ID は block する。pin された
+effort はまず次の順で決まる:
+
+1. `(effort: VALUE)` — source `step-effort`。
+2. `(workflow-step: ID)` はちょうど1つの一致する active workflow 行だけを選ぶ。重複 ID は block する。pin された
    `basic`、`pro`、`ultra` の cell は source `workflow-effort` を使い、`(infer)` は
    最終 instruction の分類に委ね source `inferred-effort` になる。
-4. 明示 model、effort、bound pin のいずれも無い場合、orchestrator は最終 instruction を
+3. 明示 effort、bound pin のいずれも無い場合、orchestrator は最終 instruction を
    `basic`、`pro`、`ultra` に分類する。不明なら `pro` を使う。
+
+model 要求は別に採用される。優先順位は: 実行時プロンプト（run 全体・ステップ単位・
+effort 単位の指定 — ステップの `(model: VALUE)` も、今回の実行対象として指定した
+入力文書から正規化された実行時要求である）→ 実行環境の子エージェント用モデル設定
+（`absent` / `unset` のときだけ下位へ落ちる。`invalid` や観測不能は黙って置き換えず
+run を停止する）→ skill 既定の profile（要求がステップ metadata 由来なら source
+`step-model`）。解決済み model があるターンの effort は `null` になる。文書内の引用、
+過去 run の記録、成果物での言及は要求ではない。plan はターンごとに、model 要求の出典と
+元の文言・適用範囲、解決先を見せる。
 
 workflow 行が sequence position、mode の一致、semantic similarity で自動的に bind されることは
 ない。挿入される debug と llm-decision ターンだけが、policy で選ばれた `ultra` effort を
-source `policy-effort` として使う。turn plan は effort、source、解決 model、
-`planned_override` を記録する。profile、mapping、pin の欠落または不正は `blocked` で停止し、
-harness default や effort 間 fallback は無い。
+source `policy-effort` として使う。profile、mapping、pin の欠落または不正は `blocked` で停止し、
+harness default や effort 間 fallback は無く、壊れた profile を上位指定が隠すこともない。
+
+`--auto` の下では、使われる全 model 解決が指定内容との exact match である間だけ、
+plan はターンごとの確認なしで走る。実行時に自然言語・略称・別名・接頭辞・系列から
+新たに解決した model は、適用範囲と解決先の明示的承認を常に必要とする — headless なら
+run は開始前に停止し、解決内容を見せる。
 
 ## Failure リカバリループ
 
@@ -194,23 +210,26 @@ inferred effort を使う。明示 model と effort は常に binding より優�
 - `index.md` — canonical run index。人間が読む plan と、機械可読な JSONL block をちょうど1つ含む。入れ子の、または prose だけの `index.md` は run index ではない。delegation 前にこの block は contract と初期 plan record を書く:
 
   ```json
-  {"record":"contract","version":"adaptive-effort-v1"}
-  {"record":"plan","id":"r0","replaces":null,"after_turn":null}
+  {"record":"contract","version":"mo-delegation-v2"}
+  {"record":"plan","id":"r0","replaces":null,"after_turn":null,"digest":"<sha256>","approval_ref":"ap1","contingency_policy_ref":"cp1"}
   ```
 
-  初期ターンの `"kind":"planned"` は常にこのliteralであり、modeは別に記録してkindにはしない。続けて次のような planned turn definition を書く:
+  初期ターンの `"kind":"planned"` は常にこのliteralであり、modeは別に記録してkindにはしない。続けて次のような planned turn definition を書く — selection に model 要求の出源と文言・適用範囲、解決先を記録する:
 
   ```json
-  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"ultra","source":"inferred-effort","model":"opus","planned_override":"opus"}
+  {"record":"turn","key":"03","plan":"r0","kind":"planned","step":2,"parent":null,"inherits":null,"inputs":[],"mode":"plan","effort":"ultra","effort_source":"inferred-effort","budget_refs":{"recovery_owner":"03","decision_owner":"03","restart_owner":"03"},"rebinds":null,"amendment_ref":null,"selection":{"source":"skill","request":"(default profile)","scope_ref":"input doc step 2","resolution_ref":"res-03","resolved_model":"opus","granularity":"harness-ref","thinking":{"state":"undisclosed"}},"dispatch_plan":{"route":"native-subagent","args":{"model":"opus"}}}
   ```
 
-  delegation attempt が完了または abort した**後だけ**、実際の call evidence を追記する:
+  delegation call が完了または abort した**後だけ**、実際の call evidence を追記する — delegation record は call が実際に渡したものを運ぶ:
 
   ```json
-  {"record":"attempt","turn":"03","attempt":1,"actual_override":"opus","delegation_ref":"raw/03-1.jsonl","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
+  {"record":"delegation","id":"d1","owner":"03","owner_kind":"turn","plan":"r0","approval_ref":"ap1","resolution_ref":"res-03","policy_ref":"perm1","route":"native-subagent","actual_selection_args":{"model":"opus"},"call_ref":"raw/03-1.jsonl","reported_model":"opus","reported_thinking":null}
+  {"record":"attempt","turn":"03","attempt":1,"delegation_id":"d1","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
   ```
 
-  `planned_override` は turn definition だけに属し、`actual_override` は対応する attempt record だけに属する。どちらも `haiku` のような exact model argument だけであり、`basic/haiku` のような effort/model 表示ではない。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録する。検査用インデックスであり、再開可能なスケジューラではない。
+  `dispatch_plan` / `actual_selection_args` は model / effort / 固定解決参照のちょうど1つを運び、actual は call が実際に渡したものであり plan からの後付けではない。解決 model は tier ではない。call 前に停止した run（許可拒否、解決変動）は delegation も attempt も残さず、call しても開始しなかった場合は delegation に null の報告を残し、attempt の effective status が分類（`blocked`、`stale-plan`、`aborted`）を運ぶ。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録し、解決・許可・承認の詳細は run ディレクトリの追記専用 `approvals.jsonl` / `resolutions.jsonl` / `policy.jsonl` に置かれ `*_ref` で参照される。動的挿入は plan の承認済み contingency policy に従い、それに紐付く `derived` 承認を運び、その delegation は当該 derived 承認を `approval_ref` に持つ。
+  `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` が台帳の整合性を検査する — データの整合であって証跡の真正ではない。run の3つの証跡ファイルを渡して実行する。証跡が欠ける規則は黙ってskipではなく違反になる。
+  検査用インデックスであり、再開可能なスケジューラではない。以前の `adaptive-effort-v1` の run は読取り専用で保持される。
 
 これらはランタイム成果物 — コミットしない。
 

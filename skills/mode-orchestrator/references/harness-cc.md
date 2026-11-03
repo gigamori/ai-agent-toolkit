@@ -4,17 +4,39 @@ Read this when Step -1 resolved the harness to Claude Code. It defines the two
 primitives `SKILL.md`'s `## Execution` refers to — **P1 delegation** and
 **P2 time-bound** — plus the denial check and the moves of the restart gate.
 
+## Delegation permission (before the first delegation)
+
+The permission state comes from the observation route Claude Code publishes —
+never from launching a real agent to discover it, and never from scanning
+settings files (the skill does not read private configuration). What is
+verifiable today: the permission layer enforces at the tool boundary, so a
+refusal surfaces after a call is attempted, and the Step -1 probe's own
+refusal is policy evidence about that one command. Claude Code publishes no
+pre-delegation read of its effective delegation policy, so under the contract
+the state reads `unknown` until the host contract lands: the run stops before
+delegating, naming the missing publication. A denial observed after a call is
+the launch boundary's `blocked` path (the contract's host-result table) —
+never grounds to retry the same work in another shape.
+
 ## P1 — Delegation
 
 - One turn = one general-purpose subagent call, run in the background, passing
-  `planned_override` as the model. The `turn` record is in `index.md` before
-  the call; append an `attempt` record after it (actual override, delegation
-  reference/transcript, reported/effective status, file). A planned value is
-  never evidence that the call happened.
-- Every autonomous turn has an override. Profile fault → `blocked` before
-  delegation. Launch rejection (the call errors at the tool boundary and no
-  subagent starts) started nothing → Execution step 4's direct re-run with the
-  same effort/source/model/override. Never fall back across efforts or to the
+  the approved selection's binding as the call's `model` — the exact concrete
+  value the plan approved, at the granularity Claude Code publishes (a model
+  reference name, never a tier, never a claimed physical id). The launch
+  entry re-checks the permission state and the approved resolution before the
+  first model request; the Delegation contract's host-result table classifies
+  what happened before any subagent started. The `turn` record is in
+  `index.md` before the call; after it, append the `delegation` record (the
+  exact selection arguments the call carried, the reference/transcript, the
+  reported model/thinking) and the `attempt` record (reported/effective
+  status, file). A planned value is never evidence that the call happened.
+- Every autonomous turn has an approved binding. Profile fault → `blocked`
+  before delegation. A pre-call refusal the permission system issued is the
+  launch boundary's `blocked` path: no delegation record, no re-run. A launch
+  rejection at the tool boundary that no permission rule caused (for example
+  an out-of-enum `model`) started nothing → Execution step 4's direct re-run
+  with the same approved binding. Never fall back across efforts or to the
   session model.
 - The subagent writes `NN-<mode>.md` in the run directory and returns a
   ≤3-line gist plus the reply-contract status line.
@@ -115,7 +137,9 @@ Sending and recording it:
   stands; record it with that line in place of a path.
 
 The check covers only what the transcripts hold when it runs; background work
-a turn leaves running past its reply is not covered.
+a turn leaves running past its reply is not covered. It is evidence about
+calls already made — post-hoc, never the pre-delegation permission gate, and
+never a way to turn a route that gate stopped into a permitted one.
 
 **Serialization drift and the canary.** The scan matches the literal
 `"is_error":true` together with the `"toolDenialKind"` field — and, for
@@ -207,8 +231,9 @@ On `TIMEOUT`, on `STALL`, or on a reply whose last line is not a well-formed
    record=<record>, timeout=<seconds>, description=<d>)`; anything else (a
    refusal, exit 1; exit 64 or 70) is `needs-human`. The timeout counts from
    `issue`, so delegate the judge in the very next message: a
-   `general-purpose` Agent call in the background, with the model `ultra`
-   resolves to in `references/execution-profiles.md`, the printed description
+   `general-purpose` Agent call in the background, with the model the `ultra`
+   policy class resolves to under the delegation contract's source priority
+   (the profile row is the default), the printed description
    verbatim, and only this message: `Read <prompt> and execute its
    instructions. Use only these tools: Read, Grep, Write. Reply to me with the
    single line it asks for.` In the same message start its watchdog:
@@ -264,8 +289,12 @@ still runs (its judge, its re-run), and stop with `needs-human`.
 
 ## Out-of-scope note
 
-Helper scripts, each with its test: `scripts/watchdog.sh`
-(`watchdog_test.sh`), `scripts/deny_scan.sh` (`deny_scan_test.sh`), and the
+The delegation-plan validator `scripts/delegation_plan.js`
+(`delegation_plan_test.sh`) is the one further helper the skill carries; it
+checks the v2 ledger, a planned call and the audit trail on data only. The
+rest of this note covers the P2/denial/restart helpers, each with its test:
+`scripts/watchdog.sh` (`watchdog_test.sh`), `scripts/deny_scan.sh`
+(`deny_scan_test.sh`), and the
 restart gate's `scripts/stop_observe.js` (`stop_observe_test.sh`) and
 `scripts/judge_gate.js` (`judge_gate_test.sh`), which load `gate_util.js`,
 `proc_identity.js` and `cc_transcripts.js`. They are scripts because the
