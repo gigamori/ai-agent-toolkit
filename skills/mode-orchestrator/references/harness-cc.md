@@ -167,6 +167,14 @@ or pass it as `--allowedTools`:
 
 Without it the run stops at Step -1, by design.
 
+A second rule the headless run needs: `--allowedTools` carries an allow **list**
+— with only the probe rule on it, every other tool (file reads included) is
+denied in `-p` mode, and the run blocks on unreadable references instead of
+the permission gate. Add the skill directory for the session —
+`--add-dir C:/Users/<user>/.claude/skills/mode-orchestrator` — alongside the
+probe rule (measured 2026-11-04, E2E round: two runs lost to exactly this
+before the third completed).
+
 Under `--permission-prompts none` the P2 command `exec bash …` was refused even
 with an exact allow rule (`'exec' evaluates arguments as shell code`; Claude
 Code 2.1.286, 2026-10-02, one run), so such a run stops `blocked` at its first

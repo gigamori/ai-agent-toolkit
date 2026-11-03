@@ -234,7 +234,7 @@ function extractLedgerBlock(text, source) {
       continue;
     }
     if (isObject(parsed) && parsed.record === CONTRACT_FIRST) {
-      return block;
+      return block.join("\n");
     }
   }
   throw new Refusal(`${source}: no JSONL block whose first record is ${CONTRACT_FIRST}`);

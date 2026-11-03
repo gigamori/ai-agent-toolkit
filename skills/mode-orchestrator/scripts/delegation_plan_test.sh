@@ -641,6 +641,21 @@ const scenarios = {
     built.evidence.approvals.find((a) => a.key === "da1").parent_approval_ref = "da1";
     emit(built);
   },
+  "md-v1-index"() {
+    const records = [
+      { record: "contract", version: "adaptive-effort-v1" },
+      { record: "plan", id: "r0", replaces: null, after_turn: null },
+    ];
+    fs.writeFileSync("index.md", "# Run index\n\n## Turn plan\n\n```json\n" + records.map((r) => JSON.stringify(r)).join("\n") + "\n```\n");
+    fs.writeFileSync("approvals.jsonl", "");
+    fs.writeFileSync("resolutions.jsonl", "");
+    fs.writeFileSync("policy.jsonl", "");
+  },
+  "md-v2-index"() {
+    const built = buildBase();
+    emit(built);
+    fs.writeFileSync("index.md", "# Run index\n\nprose above the block; the fenced block below is the ledger\n\n```json\n" + built.ledger.map((r) => JSON.stringify(r)).join("\n") + "\n```\n");
+  },
   "dispatch-both-args"() {
     const built = buildBase();
     emit(built, { turn: "03", route: "native-subagent", args: { model: "opus", effort: "pro" } });
@@ -840,5 +855,11 @@ expect_violation "insertion delegation without the covering approval is rejected
 
 build "derived-cycle"
 expect_violation "cyclic derived approval chain is rejected" "derived approval chain is cyclic" validate --file ledger.jsonl "${EV[@]}"
+
+build "md-v1-index"
+expect_refused "v1 contract inside an .md index is refused" "not a mo-delegation-v2 ledger" validate --file index.md "${EV[@]}"
+
+build "md-v2-index"
+expect_ok "v2 ledger inside an .md index validates" validate --file index.md "${EV[@]}"
 
 printf 'delegation_plan_test: %s cases passed\n' "$pass"
