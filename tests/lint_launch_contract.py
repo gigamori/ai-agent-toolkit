@@ -61,7 +61,7 @@ LINE_ELEMENTS = (
     ("non-interactive", r"(?<![\w-])-p(?![\w-])"),
     ("no skills", r"--no-skills"),
     ("session kept", r"--session-dir\s+\S+"),
-    ("message passed through the variable", r'"\$PROMPT"'),
+    ("message passed through the variable", r'"\$PROMPT"(?=\s*(?:\\|<|&|$))'),
     ("stdin closed", r"<\s*/dev/null"),
     ("background launch captured", r"child=\$!"),
     ("CLI process translated", r"/proc/\$child/winpid"),
@@ -69,10 +69,28 @@ LINE_ELEMENTS = (
     ("call waits for the CLI", r"wait \$child"),
 )
 
+MO_PREFLIGHT_ELEMENTS = (
+    ("attempt message file selected", r'^PROMPT_FILE="<run-dir>/<turn-key>-<attempt>-prompt\.md"$'),
+    ("message read failure stops before launch",
+     r'^PROMPT=\$\(< "\$PROMPT_FILE"\) \|\| \{\n'
+     r'[^\n]*mode-orchestrator: prompt preflight failed:[^\n]*\n\s*exit 64\n\}'),
+    ("empty message stops before launch",
+     r'^\[\[ -n "\$PROMPT" \]\] \|\| \{\n'
+     r'[^\n]*mode-orchestrator: prompt preflight failed:[^\n]*\n\s*exit 64\n\}'),
+)
+
+
+def line_elements(name: str):
+    if name == DOCS[0]:
+        return MO_PREFLIGHT_ELEMENTS + LINE_ELEMENTS[1:]
+    return LINE_ELEMENTS
+
+
 NOT_SEEN = (
     "not seen by this gate: a launch line copied outside the marked blocks; "
     "wording around the blocks; a skill's own options (--mode, --tools, "
-    "MODE_ORCH_DEPTH); the real CLI."
+    "MODE_ORCH_DEPTH); prompt-file creation or overwrite safety; "
+    "shell execution and the real CLI."
 )
 
 
@@ -149,11 +167,12 @@ def check_docs(texts: dict[str, str]) -> list[str]:
         lines = launch_lines(text)
         if not lines:
             failures.append(f"{name}: no launch line is marked")
+        elements = line_elements(name)
         for number, body in enumerate(lines, 1):
             failures += [f"{name}: launch line {number} lacks: {missing}"
-                         for missing in missing_elements(body, LINE_ELEMENTS)]
+                         for missing in missing_elements(body, elements)]
             failures += [f"{name}: launch line {number}: {problem}"
-                         for problem in out_of_order(body, LINE_ELEMENTS)]
+                         for problem in out_of_order(body, elements)]
     if len(set(blocks.values())) > 1:
         failures.append("the contract blocks differ between: " + ", ".join(blocks))
     return failures
@@ -168,7 +187,7 @@ def drop_first(text: str, pattern: str) -> str:
     return re.sub(pattern, "", text, count=1, flags=re.MULTILINE)
 
 
-def one_edge_edits(text: str):
+def one_edge_edits(text: str, elements):
     """(label, edited text) pairs, each differing from `text` by one edge."""
     begin = text.index(CONTRACT_BEGIN)
     end = text.index(CONTRACT_END)
@@ -176,7 +195,7 @@ def one_edge_edits(text: str):
         yield (f"removing contract element '{label}'",
                text[:begin] + drop_first(text[begin:end], pattern) + text[end:])
     start = text.index(LINE_MARKER)
-    for label, pattern in LINE_ELEMENTS:
+    for label, pattern in elements:
         yield (f"removing launch element '{label}'",
                text[:start] + drop_first(text[start:], pattern))
     waited = drop_first(text[start:], r"wait \$child")
@@ -200,7 +219,7 @@ def self_test(texts: dict[str, str]) -> list[str]:
         return problems
     for target, raw in texts.items():
         text = normalize(raw)
-        for label, edited in one_edge_edits(text):
+        for label, edited in one_edge_edits(text, line_elements(target)):
             if edited == text or not check_docs({**texts, target: edited}):
                 problems.append(f"{target}: {label} was not detected")
     return problems

@@ -161,14 +161,39 @@ What this skill adds to the contract:
   attempt, in the existing run directory. It is silent on success. A stop is
   observed against this record (`aborted` handling below).
 
+**Prepare the message before this call.** Use the file-writing tool, not a
+shell heredoc, to save the assembled prompt as UTF-8 at
+`<run-dir>/<turn-key>-<attempt>-prompt.md`. Use that attempt's own path for
+normal, recovery, decision and re-run turns; never overwrite an earlier
+attempt's file. Retain it with the run. The judge's launch message has a
+separate path, specified below. This short call reads the file into the
+positional argument; it does not use Pi's `@file` include or stdin. Keeping
+only the path in the command avoids truncating a long Git Bash `-c` script;
+it does not remove the OS limit on the later node argument vector.
+
+A failed write stops the run `blocked` before calling the shell. In the call,
+read failure or empty content exits 64 with the fixed diagnostic prefix
+`mode-orchestrator: prompt preflight failed`. Treat that diagnostic as
+`blocked`, not `aborted`: record the path, failure stage and actual diagnostic
+in run index prose, then stop. There is no delegation, attempt record, stop
+observation, judge or retry. This takes precedence over the direct re-run
+rule for commands rejected before launch. Do not classify an arbitrary exit
+64 without that prefix as this preflight failure. Once the CLI starts, its
+failures keep the existing `aborted` handling.
+
 Invocation shape (substitute the P0 values; do not re-derive them):
 
 <!-- pi-cli-launch-line -->
 ```
-PROMPT=$(cat <<'PI_PROMPT_END'
-<the assembled prompt, verbatim>
-PI_PROMPT_END
-)
+PROMPT_FILE="<run-dir>/<turn-key>-<attempt>-prompt.md"
+PROMPT=$(< "$PROMPT_FILE") || {
+  printf 'mode-orchestrator: prompt preflight failed: cannot read %s\n' "$PROMPT_FILE" >&2
+  exit 64
+}
+[[ -n "$PROMPT" ]] || {
+  printf 'mode-orchestrator: prompt preflight failed: empty %s\n' "$PROMPT_FILE" >&2
+  exit 64
+}
 MSYS_NO_PATHCONV=1 MODE_ORCH_DEPTH=1 node <pi-cli-entry> -p --mode json \
    --model <the turn's resolved model> \
    --no-skills --session-dir <run-dir>/sessions "$PROMPT" \
@@ -265,7 +290,15 @@ the session path in the run index.
    Execution step 3 and record the timeout as superseded. Otherwise the turn is
    `aborted`.
 4. **Gate.** No denial check exists here. `UNCONFIRMED`, or a turn key that
-   already ran again → no restart, `needs-human`. Otherwise issue the judge:
+   already ran again → no restart, `needs-human`. Otherwise, before issuing
+   the judge, save this fixed launch message with the file-writing tool as
+   UTF-8 at `<S>-judge-launch-prompt.md`:
+
+   `Read <S>-judge-prompt.md and execute its instructions. Use only these tools: read, grep, write. Reply to me with the single line it asks for.`
+
+   `<S>-judge-prompt.md` is the instruction file `issue` will create, not the
+   launch message: never write over it. A launch-message write failure stops
+   `blocked` without issuing a judge. Once the message is saved, issue once:
 
    ```
    node <pi-scripts>/judge_gate.js issue --stem <S> --deliv <the attempt's deliverable path, or -> --raw <run-dir>/raw/<turn-key>-<attempt>.jsonl --session-dir <run-dir>/sessions
@@ -275,9 +308,10 @@ the session path in the run index.
    record=<record>, timeout=<seconds>, description=<d>)`; anything else (a
    refusal, exit 1; exit 64 or 70) is `needs-human`. The timeout counts from
    `issue`, so launch the judge in the very next call, with P1's invocation
-   shape, changing only this: the message is `Read <prompt> and execute its instructions. Use only
-   these tools: read, grep, write. Reply to me with the single line it asks
-   for.`; `--model` is the model `ultra` resolves to in
+   shape, changing only this: `PROMPT_FILE` is the already-written
+   `<S>-judge-launch-prompt.md`; the preflight diagnostic stops `blocked`
+   without launching or reissuing the judge. No file-writing call is placed
+   between `issue` and launch. `--model` is the model `ultra` resolves to in
    `references/execution-profiles.md`; add `--tools read,grep,write`;
    `<turn-key>-<attempt>` becomes `<turn-key>-<attempt>-judge` in the raw path
    and the stem; the `bash` `timeout` is the printed timeout. The extractor's
@@ -300,6 +334,8 @@ the session path in the run index.
   stem; the `bash` `timeout` from the `ALLOW` line. No
   keyed watchdog exists, and nothing of an earlier attempt is overwritten: raw
   paths and stems are numbered per attempt, child sessions are UUID-named.
+- A prompt-file write failure or the preflight diagnostic is terminal
+  `blocked` as P1 specifies; it never takes this direct re-run path.
 - A command the shell rejected started nothing: record it
   (`reported_status: null`, `effective_status: "aborted"`, `file: "-"`) and
   re-run it directly as the next attempt number (Execution step 4), with the

@@ -50,6 +50,7 @@ cd skills/xml-wf/scripts && uv run --no-project python -m unittest discover -s t
 bash skills/mode-orchestrator/scripts/watchdog_test.sh
 bash skills/mode-orchestrator/scripts/deny_scan_test.sh
 bash skills/mode-orchestrator/scripts/pi_reply_test.sh
+bash skills/mode-orchestrator/scripts/pi_launch_test.sh
 bash skills/mode-orchestrator/scripts/execution_profiles_test.sh
 bash skills/mode-orchestrator/scripts/stop_observe_test.sh
 bash skills/mode-orchestrator/scripts/judge_gate_test.sh

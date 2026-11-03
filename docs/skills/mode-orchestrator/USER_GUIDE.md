@@ -136,7 +136,11 @@ task's authorized scope) also stops the run.
 Only `failed` — "the work ran, a check didn't pass, and it looks fixable here" —
 is worth diagnosing. Four other outcomes deliberately bypass the loop:
 
-- **`blocked`** — including any turn whose tool call the **permission system
+- **`blocked`** — on Pi's CLI route, a prompt-file write failure, read failure
+  or empty message stops before the CLI starts. It is not retried and enters
+  neither the abort restart gate nor recovery; the run index records the
+  path and diagnostic, not a delegation attempt that never happened.
+  This also includes any turn whose tool call the **permission system
   denied**. A denial is not an in-repo bug: re-running the turn hits the same
   wall every cycle, so the run stops and asks you instead. The turn cannot
   waive this itself: even a denial it judged inessential — one it finished
@@ -385,7 +389,12 @@ reused: a suffix is added. The run never deletes the directory. It holds:
 - One set of files per attempt, named `<turn key>-<attempt>-…` (`05-1-deny.txt`,
   `05-1-stop.json`, `05-1-evidence.json`, `05-1-judge-prompt.md`,
   `05-1-judge.md`; on Pi's CLI route also `05-1-pids.json`, `raw/` and
-  `sessions/`).
+  `sessions/`). Pi CLI messages are saved as UTF-8 with the file-writing
+  tool before the short shell call, at `<turn key>-<attempt>-prompt.md`.
+  Each attempt keeps its own file. The judge's short launch message uses
+  `<turn key>-<attempt>-judge-launch-prompt.md`, distinct from the
+  `…-judge-prompt.md` instructions produced by the judge gate. These files
+  remain with the run; they are not created by a long shell heredoc.
 - `index.md` — the canonical run index. It contains the human-readable plan and
   exactly one machine-readable JSONL block; nested or prose `index.md` files are
   not run indexes. Before delegation, that block starts with the contract and

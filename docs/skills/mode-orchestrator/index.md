@@ -33,3 +33,9 @@ not content — bound models are freely editable; the watchdog, denial and
 restart-gate suites build their own fake session logs and records, so they need
 no `claude` CLI and no prior run. Adaptive routing additionally requires the external evidence checker's
 registered `--self-test`; see `AUTHORING_CONTRACT.md`.
+
+Run `bash skills/mode-orchestrator/scripts/pi_launch_test.sh` from the repository
+root after changing Pi's documented launch or preflight. It executes the marked
+launch with a local CLI fixture and the real extractor, checks prompt-file
+refusal/fidelity, and on Windows exercises the real PID recorder and observer.
+It does not call a model. Run the test knowledge gate first.

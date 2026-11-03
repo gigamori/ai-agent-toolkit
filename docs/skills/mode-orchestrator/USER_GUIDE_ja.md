@@ -93,7 +93,7 @@ harness default や effort 間 fallback は無い。
 
 診断する価値があるのは `failed`（作業は走った・check が通らなかった・ここで直せそう）だけ。次の4つは意図的にループを迂回する:
 
-- **`blocked`** — ツール呼び出しが**権限システムに拒否**されたターンを含む。拒否はリポジトリ内のバグではないので、再実行しても毎サイクル同じ壁に当たる。run を止めて利用者に尋ねる。ターン自身がこれを免除することはできない — 拒否された呼び出しを「不可欠でない」と判断し、それ無しでタスクを完了できた場合でも、status は `ok` ではなく必ず `blocked` になる。拒否された呼び出しの効果を別の手段で再現してもならない（拒否された `git stash` の代わりに `cp` や編集でファイルを戻すなど）。別の、より安全な操作は再現に当たらない。Claude Code ではこれを機械検査も行う: 各ターンの status 行を読んだ後に `scripts/deny_scan.sh` がターンと、そのターンが起動した agent の transcript を走査し、検出された拒否は自己申告の `ok` を上書きする（orchestrator 自身が停止したターンでは、代わりに `needs-human` になる: 停止が拒否に見える痕跡を残すことがあるため）。検査は拒否された呼び出しをすべて数える — 権限ルール、plugin の hook、auto mode classifier（到達できなかった場合を含む）、承認されなかった許可確認、中断された呼び出し。判定結果は run ディレクトリに試行ごとのファイルとして残る（ターン `05` の 1 回目の試行なら `05-1-deny.txt`）。
+- **`blocked`** — Pi の CLI 経路では、プロンプトファイルの書込失敗・読込失敗・空内容も CLI 起動前に停止する。再試行せず、abort の再投入ゲートにもリカバリにも入れない。run index にはパスと診断を記録し、実行されていない委譲の attempt は作らない。ツール呼び出しが**権限システムに拒否**されたターンも含む。拒否はリポジトリ内のバグではないので、再実行しても毎サイクル同じ壁に当たる。run を止めて利用者に尋ねる。ターン自身がこれを免除することはできない — 拒否された呼び出しを「不可欠でない」と判断し、それ無しでタスクを完了できた場合でも、status は `ok` ではなく必ず `blocked` になる。拒否された呼び出しの効果を別の手段で再現してもならない（拒否された `git stash` の代わりに `cp` や編集でファイルを戻すなど）。別の、より安全な操作は再現に当たらない。Claude Code ではこれを機械検査も行う: 各ターンの status 行を読んだ後に `scripts/deny_scan.sh` がターンと、そのターンが起動した agent の transcript を走査し、検出された拒否は自己申告の `ok` を上書きする（orchestrator 自身が停止したターンでは、代わりに `needs-human` になる: 停止が拒否に見える痕跡を残すことがあるため）。検査は拒否された呼び出しをすべて数える — 権限ルール、plugin の hook、auto mode classifier（到達できなかった場合を含む）、承認されなかった許可確認、中断された呼び出し。判定結果は run ディレクトリに試行ごとのファイルとして残る（ターン `05` の 1 回目の試行なら `05-1-deny.txt`）。
 - **`needs-human`** — 利用者にしか提供できない具体的な情報・判断・操作が必要なターン。
   返答には `Reason: <specific observed blocker>` と
   `Human request: <exact question to answer or action to take>` を最終 status 行の前に含め、
@@ -190,7 +190,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
 起動ごとに `<ws>/tmp/runs/<YYYY-MM-DD>_<slug>/` に run ディレクトリを1つ作る（`<ws>` はセッションを起動したディレクトリで、worktree の中で起動していてもそれ）。同名がすでにあれば再利用せず接尾辞を足す。run がこのディレクトリを削除することはない。中身:
 
 - `NN-<mode>.md` — ターンごとの deliverable を順に。起点ターン `NN` に対して挿入されたターンは、どちらのループのものでも次の空き接尾辞を取る。両方を通ったターンは `05a-decision.md` → `05b-execute.md` → `05c-debug.md` → `05d-execute.md` と読める。ファイル名に mode が入るので、どのループの成果物かは常に一意。abort の後の再実行は `<turn key>-<mode>-attempt<n>.md`（`05-execute-attempt2.md`）に書き、前の試行のファイルは残る。
-- 試行ごとの 1 組のファイル。名前は `<turn key>-<attempt>-…`（`05-1-deny.txt`、`05-1-stop.json`、`05-1-evidence.json`、`05-1-judge-prompt.md`、`05-1-judge.md`。Pi の CLI 経路ではさらに `05-1-pids.json`、`raw/`、`sessions/`）。
+- 試行ごとの 1 組のファイル。名前は `<turn key>-<attempt>-…`（`05-1-deny.txt`、`05-1-stop.json`、`05-1-evidence.json`、`05-1-judge-prompt.md`、`05-1-judge.md`。Pi の CLI 経路ではさらに `05-1-pids.json`、`raw/`、`sessions/`）。Pi CLI に渡すメッセージは、短い shell 呼出しの前に書込ツールで UTF-8 の `<turn key>-<attempt>-prompt.md` へ保存し、試行ごとに別ファイルとして残す。judge の短い起動メッセージは `<turn key>-<attempt>-judge-launch-prompt.md` とし、judge gate が生成する指示本文 `…-judge-prompt.md` と区別する。これらも run に保持し、長文の shell heredoc では作らない。
 - `index.md` — canonical run index。人間が読む plan と、機械可読な JSONL block をちょうど1つ含む。入れ子の、または prose だけの `index.md` は run index ではない。delegation 前にこの block は contract と初期 plan record を書く:
 
   ```json
