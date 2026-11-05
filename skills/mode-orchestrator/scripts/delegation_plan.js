@@ -738,7 +738,7 @@ class Checker {
         inherits: t.inherits,
         inputs: t.inputs,
         mode: t.mode,
-        role: t.role === undefined ? null : t.role,
+        ...(t.role === undefined ? {} : { role: t.role }),
         effort: t.effort,
         budget_refs: t.budget_refs,
         selection: {

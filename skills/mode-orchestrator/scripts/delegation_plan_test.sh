@@ -29,7 +29,7 @@ function snapshotOf(turns, contingency) {
     contingency_policy_ref: contingency === undefined ? null : contingency,
     turns: turns.map((t) => ({
       key: t.key, kind: t.kind, step: t.step, parent: t.parent, inherits: t.inherits,
-      inputs: t.inputs, mode: t.mode, role: t.role === undefined ? null : t.role,
+      inputs: t.inputs, mode: t.mode, ...(t.role === undefined ? {} : { role: t.role }),
       effort: t.effort, budget_refs: t.budget_refs,
       selection: {
         source: t.selection.source, request: t.selection.request, scope_ref: t.selection.scope_ref,
@@ -651,6 +651,15 @@ const scenarios = {
     fs.writeFileSync("resolutions.jsonl", "");
     fs.writeFileSync("policy.jsonl", "");
   },
+  "role-absent"() {
+    const built = buildBase();
+    for (const r of built.ledger) if (r.record === "turn") delete r.role;
+    const turns = built.ledger.filter((r) => r.record === "turn");
+    const d = digest(snapshotOf(turns));
+    built.ledger[1].digest = d;
+    built.evidence.approvals[0].target_digest = d;
+    emit(built);
+  },
   "md-v2-index"() {
     const built = buildBase();
     emit(built);
@@ -858,6 +867,9 @@ expect_violation "cyclic derived approval chain is rejected" "derived approval c
 
 build "md-v1-index"
 expect_refused "v1 contract inside an .md index is refused" "not a mo-delegation-v2 ledger" validate --file index.md "${EV[@]}"
+
+build "role-absent"
+expect_ok "a turn without role is digested without a role member" validate --file ledger.jsonl "${EV[@]}"
 
 build "md-v2-index"
 expect_ok "v2 ledger inside an .md index validates" validate --file index.md "${EV[@]}"
