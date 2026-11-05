@@ -43,29 +43,38 @@ safe fallback, and a re-run of a turn uses the route of its first attempt.
 
 Once per run, before the first delegation:
 
-1. **Permission.** The delegation permission state comes from the
-   observation route the host publishes (Delegation contract §1) —
-   structured startup information or a read-only query. `deny` is `blocked`
-   before any delegation, on either route; unobservable is `unknown` — not
-   permitted, not unspecified — and stops the run before delegating on
-   either route, naming the missing publication. Pi core has no permission
-   layer; a host extension's policy is observed only through what the host
-   publishes. The existence of the CLI binary, of shell access, or of a
-   `subagent` tool is never the permission ground.
+1. **Permission.** Call the read-only `delegation_contract` tool with
+   `{"operation":"observe"}` — published by pi-extensions `ea1007a` /
+   pi-studio `52a0444` and later builds. It returns the overall
+   `allow|deny|unknown` with scope, grounds and revision, separate
+   native/CLI route states (`permitted|unsupported|denied|unknown`), and
+   the per-effort setting states. `deny` is `blocked` before any
+   delegation. `unknown` — which this host reports on the CLI **always**
+   (its adapter cannot enumerate tool-boundary policies), and in Studio
+   whenever any extension failed to load or **any** `tool_call` handler
+   is registered — is not permitted, not unspecified, and stops the run
+   the same way, naming the observation result. The CLI route publishes
+   `unsupported`: that is not permission to fall back to shell execution.
+   If the session has no `delegation_contract` tool, the running build
+   predates the published contract and the observation route does not
+   exist → `unknown`. A tool being present is never itself the permission
+   ground, and no live agent is launched to discover any of this.
 2. **Schema.** The published `subagent` tool's schema has a top-level `timeout`
-   (seconds). The tool's name alone is not this check. No live agent is
-   launched to discover capabilities: the former OK probe moved to isolated
-   host-compatibility testing (Delegation contract §1), and the published
-   schema and description are the pre-call grounds. The tool being absent or
-   unreadable puts the whole run on the CLI route.
+   (seconds); contract builds also expose `expectedResolution` (the pinned
+   binding field) and publish the per-child delegation evidence. The tool's
+   name alone is not this check. The published schema and description are
+   the pre-call grounds; the tool being absent or unreadable puts the whole
+   run on the CLI route — which step 1 then blocks.
 
-Per turn, one miss puts that turn on the CLI route:
+Per turn, one miss puts that turn on the CLI route (which the permission
+state in step 1 governs — on this host it is `unknown`/`unsupported`, so a
+v2 run effectively never dispatches through the CLI route):
 
 | the turn needs | the subagent route meets it only if |
 |---|---|
-| the turn's approved binding | the schema shows a field carrying an explicit model, or an effort field whose host-side resolution is published with the resolved reference confirmable (contract §3); nothing else carries a model |
-| both recursion layers: per-call recursion suppression in the child, and no skills loaded in it | the published schema or description shows both (a per-call field, or a host-fixed behavior); do not fill either in from memory |
-| an audit id for the attempt's `delegation_ref` | the published output contract shows the control line and its `run=` id; the first real call's control line confirms it |
+| the turn's approved binding | the schema shows `expectedResolution` (resolve first with `delegation_contract` `{"operation":"resolve"}` — exactly one `request.model` or `request.effort`, plus `requiredEffort` — and pass the returned `resolutionRef`, omitting `model`/`effort`); nothing else carries a model |
+| both recursion layers: per-call recursion suppression in the child, and no skills loaded in it | the observe result's enforced constraints (recursion, skill discovery) cover both; do not fill either in from memory |
+| an audit id for the attempt's `delegation_ref` | the published output contract shows the evidence lines (`[subagent] evidence=…`, and the conditional `run=` control line); the first real call confirms it |
 
 Effort, tool restriction and working directory decide nothing here: this skill
 passes none of them for a turn on either route. A capability that the
@@ -78,12 +87,12 @@ host under this contract.
 ### The subagent route
 
 - One `subagent` call per turn, single mode (`agent` and `task`): `task` is the
-  assembled prompt, the model is the approved binding, and the top-level
-  `timeout` is the turn's value from P2's table, counted from the call. The
-  current published schema has no explicit-model field and no expected-
-  resolution launch field (Delegation contract §1 and §3 name these as
-  required host capabilities): until one is published, the call records what it
-  actually carried and nothing else.
+  assembled prompt, the binding is the approved `expectedResolution` (resolve,
+  approve, then pass the returned `resolutionRef` and omit `model`/`effort`),
+  and the top-level `timeout` is the turn's value from P2's table, counted from
+  the call. On builds without the published contract there is no pinning field:
+  the route is unmet (table above) and the run has already stopped at step 1's
+  `unknown` — a call is never made with an unpinned free-form model.
 - The first line of the returned content is the tool's control line, not part
   of the turn's reply. Split it off. Read the turn's status from the child's own
   text, by Execution step 3, only when the control line says
@@ -97,6 +106,12 @@ host under this contract.
   the JSONL block); its `run=` id is the attempt record's `delegation_ref`.
 
 ## P1 — Delegation (CLI route)
+
+Under the published contract this route is `unsupported` and its permission is
+always `unknown` (Route selection step 1), so a v2 run never dispatches through
+it. The mechanics below remain for the restart gate's stop-observation tooling,
+for the judge launch (which the permission gate governs the same way), and for
+any future pinned CLI launcher the host may publish.
 
 A blocking, non-interactive `pi -p` call from the `bash` tool; the assembled
 prompt is the **positional message argument**.
@@ -367,9 +382,10 @@ SKILL.md's machine-detected source does not exist here; the whole weight sits
 on the self-judged clause in the injected prompt, including its "unless a rule
 permits it" half. Do not carry over Claude Code intuitions. The pre-delegation
 permission gate is a different mechanism: it reads what the host publishes
-before any delegation (Route selection step 1) — its absence on this host
-today is why a Pi run stops before delegating instead of discovering denials
-afterwards.
+before any delegation (Route selection step 1). On this host the
+observation usually reads `unknown` (CLI always; Studio under any load error
+or tool_call handler), which is why a Pi run stops before delegating instead
+of discovering denials afterwards.
 
 ## Residual risks specific to this harness
 
@@ -382,10 +398,16 @@ afterwards.
   (the CLI's node and the shell around it): their descendants, detached or
   not, and anything done outside files are not observed. That the recorded
   node is the process doing the work is unverified on a real host.
-- Until the host publishes the policy observation route and the binding
-  fields the delegation contract requires, a Pi run stops before delegating —
-  `unknown` permission, named in the report. That is the contract's
-  transitional state, not a defect to route around: no probe, no CLI detour,
-  no silent relaxation. Live completion of the new contract on this facet is
-  claimed only after the host work lands and the integration round confirms
-  it through real triggers.
+- The host contract is published (pi-extensions `ea1007a`, pi-studio
+  `52a0444`), but its observability rule keeps the gate closed on most real
+  configurations: the CLI adapter always reports `unknown`, and Studio
+  reports `unknown` whenever any extension failed to load or any `tool_call`
+  handler is registered. A live v2 delegation therefore needs a Studio
+  session with neither — an acceptance-environment decision, not something
+  this skill routes around. Two further published limits to carry into any
+  claim: the launch-time payload guard holds only for providers honoring the
+  before-send payload callback (not a universal transport boundary), and the
+  unpinned legacy model path still expands aliases/prefixes — v2 runs never
+  use it, since the binding must be pinned. The judge on this facet launches
+  through the CLI route, so under `unknown` it stops as the contract's own
+  restart-judge rules require — recorded, not worked around.
