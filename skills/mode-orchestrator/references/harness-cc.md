@@ -4,19 +4,30 @@ Read this when Step -1 resolved the harness to Claude Code. It defines the two
 primitives `SKILL.md`'s `## Execution` refers to — **P1 delegation** and
 **P2 time-bound** — plus the denial check and the moves of the restart gate.
 
-## Delegation permission (before the first delegation)
+## Route availability (before the first delegation)
 
-The permission state comes from the observation route Claude Code publishes —
-never from launching a real agent to discover it, and never from scanning
-settings files (the skill does not read private configuration). What is
-verifiable today: the permission layer enforces at the tool boundary, so a
-refusal surfaces after a call is attempted, and the Step -1 probe's own
-refusal is policy evidence about that one command. Claude Code publishes no
-pre-delegation read of its effective delegation policy, so under the contract
-the state reads `unknown` until the host contract lands: the run stops before
-delegating, naming the missing publication. A denial observed after a call is
-the launch boundary's `blocked` path (the contract's host-result table) —
-never grounds to retry the same work in another shape.
+The only pre-delegation question is whether the native route exists: the
+`Agent` tool (general-purpose subagent) is listed in this session. If it is
+not, the run is `blocked` before delegating, naming that absence. No
+permission state is read: Claude Code publishes none, and none is needed.
+Rules and PreToolUse hooks refuse a call at the tool boundary, so a refusal
+surfaces after a call is attempted, and the skill never launches a real agent,
+scans settings files or reads private configuration to find out earlier.
+
+Why delegating does not widen authority: a general-purpose subagent's tool
+calls are subject to the same permission rules and PreToolUse hooks as the
+parent's. Measured 2026-11-05 on Claude Code 2.1.318, `claude -p`, three
+single runs with a control arm, each in a throwaway workspace with the rule
+or hook passed through `--settings`: with no rule or hook the child read the file and ran
+the command; with a `Read` deny rule the child's read was refused; with a
+PreToolUse hook the child's Bash call was refused and the hook payload named
+the child (`agent_id`, `agent_type`). Not verified: other rule shapes and
+hook events, permission modes, user/managed/plugin layers, MCP tools in the
+child, other versions or models. Do not extend the claim past those.
+
+A refusal observed after a call is the launch boundary's `blocked` path (the
+contract's host-result table) — never grounds to retry the same work in
+another shape.
 
 ## P1 — Delegation
 
@@ -24,7 +35,7 @@ never grounds to retry the same work in another shape.
   the approved selection's binding as the call's `model` — the exact concrete
   value the plan approved, at the granularity Claude Code publishes (a model
   reference name, never a tier, never a claimed physical id). The launch
-  entry re-checks the permission state and the approved resolution before the
+  entry re-checks native availability and the approved resolution before the
   first model request; the Delegation contract's host-result table classifies
   what happened before any subagent started. The `turn` record is in
   `index.md` before the call; after it, append the `delegation` record (the
@@ -138,8 +149,8 @@ Sending and recording it:
 
 The check covers only what the transcripts hold when it runs; background work
 a turn leaves running past its reply is not covered. It is evidence about
-calls already made — post-hoc, never the pre-delegation permission gate, and
-never a way to turn a route that gate stopped into a permitted one.
+calls already made — post-hoc. It does not stand in for a pre-delegation
+check, and never turns a stopped run into a permitted one.
 
 **Serialization drift and the canary.** The scan matches the literal
 `"is_error":true` together with the `"toolDenialKind"` field — and, for
@@ -169,8 +180,8 @@ Without it the run stops at Step -1, by design.
 
 A second rule the headless run needs: `--allowedTools` carries an allow **list**
 — with only the probe rule on it, every other tool (file reads included) is
-denied in `-p` mode, and the run blocks on unreadable references instead of
-the permission gate. Add the skill directory for the session —
+denied in `-p` mode, and the run blocks on unreadable references, a stop
+unrelated to delegation. Add the skill directory for the session —
 `--add-dir C:/Users/<user>/.claude/skills/mode-orchestrator` — alongside the
 probe rule (measured 2026-11-04, E2E round: two runs lost to exactly this
 before the third completed).

@@ -1,13 +1,12 @@
 # Delegation contract — `mo-delegation-v2`
 
-The normative definitions for how mode-orchestrator delegates within the
-environment's permission scope, adopts a model request, resolves and approves
-it, pins it at launch, and records the run. `SKILL.md` and both harness
+The normative definitions for how mode-orchestrator delegates without giving a
+child more authority than the parent, adopts a model request, resolves and
+approves it, pins it at launch, and records the run. `SKILL.md` and both harness
 references point here instead of restating structures; this file is the one
 place each structure is defined. Concepts are named here, not any host's API:
-where a host does not yet publish the route a check needs, the check reads
-`unknown` and the run stops before delegation (see §1) — it is never relaxed
-to keep a run moving.
+where a host does not yet publish the route a check needs, the run stops
+before delegation (see §1) — the check is never relaxed to keep a run moving.
 
 Node helper: `scripts/delegation_plan.js` validates the data this file
 defines (`validate`, `dispatch-check`, `audit`). It proves the integrity of
@@ -15,41 +14,59 @@ the data handed to it and nothing more: not the truth of a host's evidence,
 not the authenticity of an approval event, and it cannot stop a shell that
 bypasses it. Enforcement lives at the host's launch entry.
 
-## 1. Permission gate
+## 1. Route availability and the invariant
 
-Before the first delegation, and again at each launch entry, the run holds a
-permission state for delegation. It is observed through the route the harness
-reference names — structured startup information or a read-only query the
-host publishes. The skill never searches a private settings file for it, and
-never launches a real agent to discover it.
+**A delegation never gives a child more authority than the parent session
+has.** This is not a state read before the call: a refusal is decided per
+call at the host's call boundary (a `tool_call` handler or tool
+replacement on Pi; the permission rules and PreToolUse hooks on Claude Code)
+and cannot be read ahead. It holds because of the **route**: the native
+subagent route carries the host's mandatory guards into the child, so a
+parent doing the same work itself is under the same guards. A permission
+state is therefore not computed, and the presence of a handler, a load error
+or an extension never decides whether to delegate. A refusal that does occur
+is classified afterwards (§6).
 
-| observed state | run behavior |
+The only question asked before the first delegation, and again at the launch
+entry, is whether the **native route is available**, with its published
+constraints and reason. It is read through the route the harness reference
+names — structured startup information or a read-only query the host
+publishes. The skill never searches a private settings file for it, and never
+launches a real agent to discover it.
+
+| observed | run behavior |
 |---|---|
-| effective policy `deny` | `blocked` before delegation. No route change, no CLI detour |
-| `allow`, with required capabilities and constraint maintenance confirmed | plan and run within that scope |
-| native capability `unsupported` | an alternative route only when that route's own permission is independently `allow` **and** every constraint is confirmed maintained there |
-| policy or setting unobservable / contradictory | `unknown`. Never read as permitted or as unspecified. No delegation |
-| a tool is merely invisible | that alone classifies nothing. Fall back to the route's published policy information |
+| native `available`, required capabilities (model-fixing field, recursion suppression, skills disabled) confirmed | plan and run within the published constraints |
+| native `unavailable` (delegation off, profile invalid, tool absent) | `blocked` before delegation, quoting the host's reason string. No CLI detour |
+| no observation route (a build before the contract) | the model cannot be fixed: `blocked` before delegation, naming the old build |
+| extension load error, presence of `tool_call` handlers | not a delegation input. The parent doing the work itself is in the same state |
+
+A v2 run never starts a child through the CLI or a free shell, the judge
+included. The existence of a shell, a CLI binary or skill text is never
+grounds for delegation, and a refused or disabled capability is not
+re-created by a CLI that could run it.
 
 Constraint comparisons that may be coded: allowed-tools subsets, non-growth of
 recursion caps, launch counts and deadlines, fixed cwd equality, skill
 disablement kept. The meaning of an arbitrary hook or policy sentence is not
 generally comparable in code; when the host cannot guarantee a constraint
-applies on a route, that route is not chosen. A CLI route is chosen only when
-positive permission for that route and equal-or-stronger constraints are
-confirmed on it. The existence of a shell, a CLI binary or skill text is
-never grounds for delegation.
+applies on a route, that route is not chosen.
 
-Recursion and skills: a child never re-delegates. On a native route the call
-must carry the host's per-call recursion suppression (a `nested: false`
-equivalent); on the CLI route the reference's env-and-flag layers apply. The
-child must not load skills — host-fixed, call-specified, or the permitted
-CLI's `--no-skills`. "Don't use them" in the prompt is not an equivalent
-guarantee. The orchestrator is never restarted from a child. `MODE_ORCH_DEPTH`
-stays as the CLI route's defense, not as the permission ground for any route.
-A refused operation is not retried in another shape; permission withdrawal
+Recursion and skills: a child never re-delegates. The call must carry the
+host's per-call recursion suppression (a `nested: false` equivalent). The
+child must not load skills — host-fixed or call-specified. "Don't use them" in
+the prompt is not an equivalent guarantee. The orchestrator is never
+restarted from a child. `MODE_ORCH_DEPTH` stays as the defense of the CLI
+mechanics that remain only for stop observation, not as a delegation ground.
+A refused operation is not retried in another shape; a withdrawn permission
 stops the run. Only an ordinary transient launch failure feeds the existing
 not-started/`aborted` rules.
+
+Known exception: a Pi child of a taskflow-enabled session runs without
+taskflow's `tool_call` refusals (its `child-ledger` mode does not register
+them), so a refusal such as the project-notes scan denial does not apply to
+the child. It is a residual risk of the invariant, tracked by the taskflow
+project, not something the run works around.
 
 ## 2. Model request sources
 
@@ -185,10 +202,24 @@ directory, referenced by `*_ref` fields — never inlined into the index:
   `source`, `observed_state` (for an environment source), `candidates`,
   `match`, `resolved_model`, `granularity`, `thinking`
   (`{state, value?}`), `grounds`.
-- `policy.jsonl` — `permission` records (`key`, `state`, `scope`, `revision`,
-  `grounds`), `route-policy` records (`key`, `route`, `state`, `constraints`,
-  `grounds`), and `env-model-setting` records (`key`, `state`, `per_effort`,
-  `grounds`).
+- `policy.jsonl` — `route-policy` records (`key`, `route`, `state`,
+  `constraints`, `grounds`) with `state` `available | unavailable`, and
+  `env-model-setting` records (`key`, `state`, `per_effort`, `grounds`). A
+  new run writes no `permission` record. A recorded run may still carry
+  `permission` records and the route states `permitted | unsupported |
+  denied | unknown | allow | deny`: they are read, resolved by `policy_ref`
+  and not inspected. The dispatch input's `observed.policy_state` is likewise
+  read and not inspected.
+- Route names: a new run writes `native-subagent` for the native route in
+  `dispatch_plan.route`, `delegation.route`, the dispatch input and its
+  `route-policy`. Recorded runs also used `native` and `subagent`; those three
+  are the native routes, and any other route — CLI, shell, anything else — is
+  rejected on every turn, delegation and dispatch, whatever the policy record
+  says. A delegation's `policy_ref` names a `route-policy` (or, in a recorded
+  run, a `permission`) record; a current-vocabulary one must be `available`.
+  `dispatch-check` takes the last current-vocabulary `route-policy` record for
+  the dispatch route in file order and requires it to be `available`; no such
+  record refuses the dispatch.
 
 No secrets, credentials or unneeded configuration go into any of these. The
 ledger is inspection evidence, not a resumable scheduler; the status
@@ -260,8 +291,8 @@ restart-judge has its own rules below — it owns no turn or attempt.
 
 | observed result | records / run behavior | retry budget |
 |---|---|---|
-| denial, invalidity or unobservability before any call | no delegation, no attempt; grounds in prose. Run `blocked`; a question is presented only when a concrete human choice is required | none consumed. No detour, no retry |
-| called, then policy denial, never started | delegation + attempt, `effective_status: blocked`. Permission grounds and not-started evidence saved; run stops | none. Not fed to the existing not-started direct re-run |
+| native `unavailable`, invalidity or an absent observation route before any call | no delegation, no attempt; the host's reason in prose. Run `blocked`; a question is presented only when a concrete human choice is required | none consumed. No detour, no retry |
+| called, then refused at the host call boundary, never started | delegation + attempt, `effective_status: blocked`. The refusal and not-started evidence saved; run stops | none. Not fed to the existing not-started direct re-run |
 | called, resolution changed, never started | delegation + attempt, `reported_status: null`, `effective_status: stale-plan`. Back to replanning / the required approval; the unexecuted tail is replaced | call number recorded; restart / recovery / decision budgets not consumed. Re-sending the same plan without approval is forbidden |
 | transient launch failure, not-started confirmed | delegation + attempt, `effective_status: aborted`. Existing not-started direct re-run rules only | the existing once-per-turn-key restart budget. No plan or model change |
 | start state unknown, or timeout / drop after start | delegation + attempt, `effective_status: aborted`. Existing stop observation and judge | existing budgets, only where the existing gate allows |
@@ -277,7 +308,7 @@ missing is not re-read as "undisclosed from the start" — the contract cannot
 be confirmed, so the run stops. When the host cannot prove not-started, the
 run does not re-inject on a zero-effect guess.
 
-**Restart-judge rules.** Before `issue`: if permission, model resolution,
+**Restart-judge rules.** Before `issue`: if native availability, model resolution,
 approval or launch preparation cannot be completed, do not issue — stop.
 Policy or capability shortfall is `blocked`; a concrete human decision wait is
 `needs-human`. After `issue`: the actual call is tracked by its delegation
@@ -302,8 +333,8 @@ executed boundary. `cause` is `todolist` / `model-resolution` / `policy` /
 `user-revision`. Only unstarted turns rebind; when a turn has any call at
 all, rebinding requires evidence that every call of the turn was unstarted.
 Started or start-unknown work is never re-read as unstarted. A successor plan
-that is not approved launches nothing. Re-planning never lifts a permission
-withdrawal — that stops the run.
+that is not approved launches nothing. Re-planning never lifts a refusal at the
+call boundary — that stops the run.
 
 Amendment lineage and loop lineage are separate fields: `amendment_ref` /
 `amendment_item` carry where a replacement came from; `parent` / `inherits`
@@ -367,4 +398,8 @@ It proves the integrity of the data it is given. It does not prove: that a
 policy record reflects the host's real policy; that an approval event
 happened or was made by the user; that a host launched what the records say;
 that a shell call did not bypass the helper. Those grounds live in the host's
-launch entry and the user's event, not in this validator.
+launch entry and the user's event, not in this validator. Because the record
+version stayed `mo-delegation-v2` across the route-availability change, the
+helper cannot tell a recorded run from a new run that wrongly writes the old
+vocabulary: such a run passes. Writing only the current vocabulary is the
+orchestrator's obligation, not something the helper enforces.

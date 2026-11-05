@@ -19,8 +19,8 @@ started per turn to bound it in wall-clock time; Pi uses the `bash` tool's
 native `timeout` instead, see `references/harness-pi.md`), and
 `scripts/deny_scan.sh` (Claude Code only — run after each turn's status line,
 and again inside the restart gate for an aborted attempt, to detect permission
-denials the turn did not report; Pi has no permission layer, so no counterpart
-exists), and the restart gate's `scripts/stop_observe.js` and
+denials the turn did not report; Pi publishes no scannable denial evidence, so no
+counterpart exists), and the restart gate's `scripts/stop_observe.js` and
 `scripts/judge_gate.js` (run on `node` on both harnesses, with the helpers
 `gate_util.js`, `proc_identity.js` and `cc_transcripts.js` they load).
 

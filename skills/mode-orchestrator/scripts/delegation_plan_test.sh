@@ -119,11 +119,11 @@ function baseEvidence() {
     ],
     policy: [
       {
-        record: "permission", key: "perm1", state: "allow", scope: "subagent delegation",
-        revision: "rev-1", grounds: "published policy information",
+        record: "route-policy", key: "rp1", route: "native-subagent", state: "available",
+        constraints: { nested: false, child_skills: "disabled" }, grounds: "published delegation contract",
       },
     ],
-    dispatch: { turn: "03", route: "native-subagent", args: { effort: "pro" }, observed: { policy_state: "allow" } },
+    dispatch: { turn: "03", route: "native-subagent", args: { effort: "pro" } },
   };
 }
 
@@ -131,7 +131,7 @@ function baseDelegations() {
   return [
     {
       record: "delegation", id: "d1", owner: "01", owner_kind: "turn", plan: "r0",
-      approval_ref: "ap1", resolution_ref: "res-01", policy_ref: "perm1",
+      approval_ref: "ap1", resolution_ref: "res-01", policy_ref: "rp1",
       route: "native-subagent", actual_selection_args: { model: "sonnet" },
       call_ref: "task-01", reported_model: "sonnet", reported_thinking: null,
     },
@@ -141,7 +141,7 @@ function baseDelegations() {
     },
     {
       record: "delegation", id: "d2", owner: "02", owner_kind: "turn", plan: "r0",
-      approval_ref: "ap1", resolution_ref: "res-02", policy_ref: "perm1",
+      approval_ref: "ap1", resolution_ref: "res-02", policy_ref: "rp1",
       route: "native-subagent", actual_selection_args: { model: "sonnet" },
       call_ref: "task-02", reported_model: "sonnet", reported_thinking: null,
     },
@@ -185,7 +185,7 @@ function buildRebind() {
   ledger.push(raising);
   ledger.push({
     record: "delegation", id: "d4", owner: "04", owner_kind: "turn", plan: "r0",
-    approval_ref: "ap1", resolution_ref: "res-04", policy_ref: "perm1",
+    approval_ref: "ap1", resolution_ref: "res-04", policy_ref: "rp1",
     route: "native-subagent", actual_selection_args: { model: "sonnet" },
     call_ref: "task-04", reported_model: "sonnet", reported_thinking: null,
   });
@@ -209,7 +209,7 @@ function buildRebind() {
   ledger.push(staleTurn);
   ledger.push({
     record: "delegation", id: "d5", owner: "04a", owner_kind: "turn", plan: "r0",
-    approval_ref: "da1", resolution_ref: "res-04a", policy_ref: "perm1",
+    approval_ref: "da1", resolution_ref: "res-04a", policy_ref: "rp1",
     route: "native-subagent", actual_selection_args: { model: "sonnet" },
     call_ref: "task-04a", reported_model: null, reported_thinking: null,
   });
@@ -269,7 +269,7 @@ function buildRebind() {
   ledger.push(rebindTurn);
   ledger.push({
     record: "delegation", id: "d6", owner: "04b", owner_kind: "turn", plan: "r1",
-    approval_ref: "ap2", resolution_ref: "res-04b", policy_ref: "perm1",
+    approval_ref: "ap2", resolution_ref: "res-04b", policy_ref: "rp1",
     route: "native-subagent", actual_selection_args: { model: "opus" },
     call_ref: "task-04b", reported_model: "opus", reported_thinking: null,
   });
@@ -290,7 +290,7 @@ function buildRebind() {
   });
   ledger[1].after_turn = null;
   ledger[1].contingency_policy_ref = "cp1";
-  evidence.dispatch = { turn: "04b", route: "native-subagent", args: { model: "opus" }, observed: { policy_state: "allow" } };
+  evidence.dispatch = { turn: "04b", route: "native-subagent", args: { model: "opus" } };
   ledger[1].digest = digest(snapshotOf([ledger[2], ledger[3], ledger[4], raising], "cp1"));
   evidence.approvals[0].target_digest = ledger[1].digest;
   evidence.approvals[0].snapshot_keys = ["01", "02", "03", "04"];
@@ -320,6 +320,13 @@ function findTurn(ledger, key) {
 
 function writeJsonl(name, records) {
   fs.writeFileSync(name, records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+}
+
+function redigest(built) {
+  const turns = built.ledger.filter((r) => r.record === "turn" && r.plan === "r0");
+  const value = digest(snapshotOf(turns));
+  built.evidence.approvals[0].target_digest = value;
+  built.ledger.find((r) => r.record === "plan" && r.id === "r0").digest = value;
 }
 
 function emit(built, dispatch) {
@@ -468,7 +475,7 @@ const scenarios = {
     built.evidence.approvals[0].target_digest = built.ledger[1].digest;
     built.ledger.push({
       record: "delegation", id: "d7", owner: "04a", owner_kind: "turn", plan: "r0",
-      approval_ref: "ap1", resolution_ref: "res-04a", policy_ref: "perm1",
+      approval_ref: "ap1", resolution_ref: "res-04a", policy_ref: "rp1",
       route: "native-subagent", actual_selection_args: { model: "sonnet" },
       call_ref: "task-04a-2", reported_model: "sonnet", reported_thinking: null,
     });
@@ -509,7 +516,7 @@ const scenarios = {
     const built = buildBase();
     built.ledger.push({
       record: "delegation", id: "d9", owner: "01-1", owner_kind: "restart-judge", plan: "r0",
-      approval_ref: "ap1", resolution_ref: "res-01", policy_ref: "perm1",
+      approval_ref: "ap1", resolution_ref: "res-01", policy_ref: "rp1",
       route: "native-subagent", actual_selection_args: { model: "sonnet" },
       call_ref: "task-judge", reported_model: "sonnet", reported_thinking: null,
     });
@@ -538,7 +545,7 @@ const scenarios = {
     const built = buildRebind();
     built.ledger.push({
       record: "delegation", id: "d7", owner: "04a", owner_kind: "turn", plan: "r0",
-      approval_ref: "ap1", resolution_ref: "res-04a", policy_ref: "perm1",
+      approval_ref: "ap1", resolution_ref: "res-04a", policy_ref: "rp1",
       route: "native-subagent", actual_selection_args: { model: "sonnet" },
       call_ref: "task-04a-2", reported_model: null, reported_thinking: null,
     });
@@ -583,10 +590,100 @@ const scenarios = {
   },
   "dispatch-model"() {
     const built = buildBase();
-    emit(built, { turn: "03", route: "native-subagent", args: { model: "sonnet" }, observed: { policy_state: "allow" } });
+    emit(built, { turn: "03", route: "native-subagent", args: { model: "sonnet" } });
   },
-  "dispatch-deny"() {
+  "dispatch-legacy-state"() {
     const built = buildBase();
+    emit(built, { turn: "03", route: "native-subagent", args: { effort: "pro" }, observed: { policy_state: "deny" } });
+  },
+  "dispatch-unavailable"() {
+    const built = buildBase();
+    findRecord({ ledger: built.evidence.policy }, "route-policy", "key", "rp1").state = "unavailable";
+    emit(built);
+  },
+  "dispatch-cli"() {
+    const built = buildBase();
+    findTurn(built.ledger, "03").dispatch_plan.route = "pi-cli";
+    emit(built, { turn: "03", route: "pi-cli", args: { effort: "pro" } });
+  },
+  "delegation-cli-route"() {
+    const built = buildBase();
+    findTurn(built.ledger, "01").dispatch_plan.route = "pi-cli";
+    findRecord(built, "delegation", "id", "d1").route = "pi-cli";
+    emit(built);
+  },
+  "policy-cli-route"() {
+    const built = buildBase();
+    findRecord({ ledger: built.evidence.policy }, "route-policy", "key", "rp1").route = "pi-cli";
+    emit(built);
+  },
+  "route-state-unknown-word"() {
+    const built = buildBase();
+    findRecord({ ledger: built.evidence.policy }, "route-policy", "key", "rp1").state = "maybe";
+    emit(built);
+  },
+  "legacy-ref-cli-route"() {
+    const built = buildBase();
+    built.evidence.policy.push({ record: "permission", key: "perm-x", state: "deny", scope: "subagent delegation", revision: "rev-0", grounds: "recorded by an earlier build" });
+    findTurn(built.ledger, "01").dispatch_plan.route = "pi-cli";
+    const d1 = findRecord(built, "delegation", "id", "d1");
+    d1.route = "pi-cli";
+    d1.policy_ref = "perm-x";
+    redigest(built);
+    emit(built);
+  },
+  "shell-route"() {
+    const built = buildBase();
+    findTurn(built.ledger, "01").dispatch_plan.route = "bash-shell";
+    findRecord(built, "delegation", "id", "d1").route = "bash-shell";
+    redigest(built);
+    emit(built);
+  },
+  "plan-cli-route"() {
+    const built = buildBase();
+    findTurn(built.ledger, "03").dispatch_plan.route = "pi-cli";
+    redigest(built);
+    emit(built);
+  },
+  "policy-ref-env"() {
+    const built = buildBase();
+    built.evidence.policy.push({ record: "env-model-setting", key: "env1", state: "unset", per_effort: {}, grounds: "published setting state" });
+    findRecord(built, "delegation", "id", "d1").policy_ref = "env1";
+    emit(built);
+  },
+  "dispatch-no-route-policy"() {
+    const built = buildBase();
+    built.evidence.policy = [{ record: "route-policy", key: "rpz", route: "native", state: "available", constraints: {}, grounds: "published delegation contract" }];
+    emit(built);
+  },
+  "dispatch-newer-available"() {
+    const built = buildBase();
+    built.evidence.policy.unshift({ record: "route-policy", key: "rp0", route: "native-subagent", state: "unavailable", constraints: {}, grounds: "earlier revision" });
+    emit(built);
+  },
+  "recorded-native-allow"() {
+    const built = buildBase();
+    for (const r of built.ledger) {
+      if (r.record === "turn") r.dispatch_plan.route = "native";
+      if (r.record === "delegation") { r.route = "native"; r.policy_ref = "rp-rec"; }
+    }
+    built.evidence.policy = [
+      { record: "permission", key: "p-rec", state: "allow", scope: "host-managed delegation", revision: "rev-rec", grounds: "recorded by an earlier build" },
+      { record: "route-policy", key: "rp-rec", route: "native", state: "allow", constraints: { nested: false, skills: "disabled" }, grounds: "recorded by an earlier build" },
+      { record: "env-model-setting", key: "env-rec", state: "configured", per_effort: {}, grounds: "recorded by an earlier build" },
+    ];
+    redigest(built);
+    emit(built);
+  },
+  "legacy-run"() {
+    const built = buildBase();
+    built.evidence.policy.push(
+      { record: "permission", key: "perm-old", state: "deny", scope: "subagent delegation", revision: "rev-0", grounds: "recorded by an earlier build" },
+      { record: "route-policy", key: "rp-old", route: "pi-cli", state: "unknown", constraints: {}, grounds: "recorded by an earlier build" },
+      { record: "route-policy", key: "rp-old2", route: "native-subagent", state: "permitted", constraints: {}, grounds: "recorded by an earlier build" },
+    );
+    findRecord(built, "delegation", "id", "d1").policy_ref = "perm-old";
+    findRecord(built, "delegation", "id", "d2").policy_ref = "rp-old";
     emit(built, { turn: "03", route: "native-subagent", args: { effort: "pro" }, observed: { policy_state: "deny" } });
   },
   "dispatch-stale-old-key"() {
@@ -596,7 +693,7 @@ const scenarios = {
   },
   "dispatch-rebind-ok"() {
     const built = buildRebind();
-    emit(built, { turn: "04b", route: "native-subagent", args: { model: "opus" }, observed: { policy_state: "allow" } });
+    emit(built, { turn: "04b", route: "native-subagent", args: { model: "opus" } });
   },
   "dispatch-stale-no-amendment"() {
     const built = buildRebind();
@@ -841,8 +938,51 @@ expect_violation "amendment-derived planned turn with a parent is rejected" "pla
 build "dispatch-model"
 expect_violation "dispatch model off the approved resolution is rejected" "differs from the approved resolution" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
 
-build "dispatch-deny"
-expect_violation "dispatch under a denied policy is rejected" "launch blocked: policy state deny" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+build "dispatch-legacy-state"
+expect_ok "a recorded policy_state is read and not inspected" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+
+build "dispatch-unavailable"
+expect_violation "dispatch on an unavailable native route is rejected" "launch blocked: native route native-subagent unavailable" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+expect_violation "delegation on an unavailable native route is rejected" "delegation only on an available native route" audit --file ledger.jsonl "${EV[@]}"
+
+build "dispatch-cli"
+expect_violation "dispatch through the CLI route is rejected" "a v2 dispatch goes only through a native route" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+
+build "delegation-cli-route"
+expect_violation "a delegation on the CLI route is rejected" "a v2 delegation goes only through a native route" audit --file ledger.jsonl "${EV[@]}"
+
+build "policy-cli-route"
+expect_violation "a current-vocabulary route-policy naming the CLI is rejected" "route-policy names a non-native route" audit --file ledger.jsonl "${EV[@]}"
+
+build "route-state-unknown-word"
+expect_violation "an unrecognized route-policy state is rejected" "route-policy state not recognized: maybe" audit --file ledger.jsonl "${EV[@]}"
+
+build "legacy-ref-cli-route"
+expect_violation "a CLI delegation pointing at an old permission record is rejected" "a v2 delegation goes only through a native route" audit --file ledger.jsonl "${EV[@]}"
+
+build "shell-route"
+expect_violation "a delegation on a shell route without cli in its name is rejected" "a v2 delegation goes only through a native route" audit --file ledger.jsonl "${EV[@]}"
+
+build "plan-cli-route"
+expect_violation "a CLI dispatch_plan is rejected at validate" "a v2 dispatch_plan goes only through a native route" validate --file ledger.jsonl "${EV[@]}"
+
+build "policy-ref-env"
+expect_violation "a policy_ref naming an env-model-setting record is rejected" "policy_ref must name a route-policy record" audit --file ledger.jsonl "${EV[@]}"
+
+build "dispatch-no-route-policy"
+expect_violation "dispatch with no route-policy record for its route is rejected" "launch blocked: no available route-policy record for native-subagent" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+
+build "dispatch-newer-available"
+expect_ok "dispatch passes when the latest route-policy record is available" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+
+build "recorded-native-allow"
+expect_ok "a run recorded with route native and state allow is read" audit --file ledger.jsonl "${EV[@]}"
+expect_ok "a run recorded with route native and state allow validates" validate --file ledger.jsonl "${EV[@]}"
+
+build "legacy-run"
+expect_ok "a run recorded with permission records and old route states is read" audit --file ledger.jsonl "${EV[@]}"
+expect_ok "a recorded old-vocabulary run still validates" validate --file ledger.jsonl "${EV[@]}"
+expect_ok "a recorded policy_state of deny is not inspected" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
 
 build "dispatch-both-args"
 expect_violation "dispatch with model and effort together is rejected" "exactly one of model|effort|resolution_ref" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"

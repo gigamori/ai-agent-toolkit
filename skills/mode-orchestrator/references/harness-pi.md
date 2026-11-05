@@ -3,10 +3,12 @@
 Read this when Step -1 resolved the harness to Pi. Pi's built-in tools are
 `read | bash | edit | write | grep | find | ls`: no subagent tool and no
 background commands. A host may publish a `subagent` tool on top of them;
-**Route selection** below decides, before the first delegation, whether turns
-go through it or through a fresh `pi -p` process started from the `bash` tool
-(the CLI route). On the CLI route **P1 delegation** and **P2 time-bound** both
-go through the `bash` tool.
+**Route selection** below decides, before the first delegation, whether that
+native route is available. A v2 run delegates only through it — the restart
+judge included. A fresh `pi -p` process started from the `bash` tool (the CLI
+route; **P1 delegation** and **P2 time-bound** go through the `bash` tool)
+is described below for its stop-observation mechanics and recorded runs, and
+is not a fallback.
 
 ## P0 — Paths (resolve once, before the first delegation)
 
@@ -33,42 +35,43 @@ Every other helper script of this skill sits in the same directory as
 `<pi-reply>`; `<pi-scripts>` below means that directory. It is not a third
 resolution.
 
-## Route selection — subagent or CLI (before the first delegation)
+## Route selection — native availability (before the first delegation)
 
-A host may publish a `subagent` tool. Two run-level preconditions decide
-whether a run may delegate at all; then the table below decides each turn,
-and a turn that misses any row takes the CLI route (P1, P2). Decide before
-anything is dispatched: a mismatch found after real work was sent is not a
-safe fallback, and a re-run of a turn uses the route of its first attempt.
+A host may publish a `subagent` tool. One run-level availability read and one
+schema check decide whether a run may delegate at all; then the table below
+decides each turn. A turn that misses a row does not move to the CLI route:
+the run stops `blocked`, naming the unmet capability. Decide before anything
+is dispatched: a mismatch found after real work was sent is not a safe
+fallback.
 
 Once per run, before the first delegation:
 
-1. **Permission.** Call the read-only `delegation_contract` tool with
-   `{"operation":"observe"}` — published by pi-extensions `ea1007a` /
-   pi-studio `52a0444` and later builds. It returns the overall
-   `allow|deny|unknown` with scope, grounds and revision, separate
-   native/CLI route states (`permitted|unsupported|denied|unknown`), and
-   the per-effort setting states. `deny` is `blocked` before any
-   delegation. `unknown` — which this host reports on the CLI **always**
-   (its adapter cannot enumerate tool-boundary policies), and in Studio
-   whenever any extension failed to load or **any** `tool_call` handler
-   is registered — is not permitted, not unspecified, and stops the run
-   the same way, naming the observation result. The CLI route publishes
-   `unsupported`: that is not permission to fall back to shell execution.
-   If the session has no `delegation_contract` tool, the running build
-   predates the published contract and the observation route does not
-   exist → `unknown`. A tool being present is never itself the permission
-   ground, and no live agent is launched to discover any of this.
+1. **Availability.** Call the read-only `delegation_contract` tool with
+   `{"operation":"observe"}`. It returns the native route's
+   `available|unavailable` with a reason string (delegation disabled by
+   configuration, profile invalid, tool absent), the constraints it enforces,
+   and the per-effort setting states. `unavailable` is `blocked` before any
+   delegation, quoting the reason. No permission is read or computed: whether
+   a `tool_call` handler (taskflow's, for one) is registered, or an extension
+   failed to load, decides nothing — a refusal is decided per call at the
+   host's boundary and classified afterwards (the contract's host-result
+   table). If the session has no `delegation_contract` tool, the running build
+   predates the contract and cannot pin a model → `blocked`, naming the old
+   build. A build that still answers in the earlier vocabulary (overall
+   `allow|deny|unknown`, route states `permitted|unsupported|denied|unknown`;
+   pi-extensions `ea1007a` / pi-studio `52a0444`) is read only for its native
+   route state: `permitted` counts as available; any other value is treated
+   as `unavailable` and quoted as that build's answer (a transitional stop, no
+   worse than before). The CLI entry of any answer is ignored. A tool being
+   present is never itself a ground, and no live agent is launched to
+   discover any of this.
 2. **Schema.** The published `subagent` tool's schema has a top-level `timeout`
    (seconds); contract builds also expose `expectedResolution` (the pinned
    binding field) and publish the per-child delegation evidence. The tool's
    name alone is not this check. The published schema and description are
-   the pre-call grounds; the tool being absent or unreadable puts the whole
-   run on the CLI route — which step 1 then blocks.
+   the pre-call grounds; the tool being absent or unreadable is `blocked`.
 
-Per turn, one miss puts that turn on the CLI route (which the permission
-state in step 1 governs — on this host it is `unknown`/`unsupported`, so a
-v2 run effectively never dispatches through the CLI route):
+Per turn, a miss in the table below is `blocked` for the run:
 
 | the turn needs | the subagent route meets it only if |
 |---|---|
@@ -91,8 +94,8 @@ host under this contract.
   approve, then pass the returned `resolutionRef` and omit `model`/`effort`),
   and the top-level `timeout` is the turn's value from P2's table, counted from
   the call. On builds without the published contract there is no pinning field:
-  the route is unmet (table above) and the run has already stopped at step 1's
-  `unknown` — a call is never made with an unpinned free-form model.
+  the route is unmet (table above) and the run has already stopped at step 1
+  — a call is never made with an unpinned free-form model.
 - The first line of the returned content is the tool's control line, not part
   of the turn's reply. Split it off. Read the turn's status from the child's own
   text, by Execution step 3, only when the control line says
@@ -107,11 +110,10 @@ host under this contract.
 
 ## P1 — Delegation (CLI route)
 
-Under the published contract this route is `unsupported` and its permission is
-always `unknown` (Route selection step 1), so a v2 run never dispatches through
-it. The mechanics below remain for the restart gate's stop-observation tooling,
-for the judge launch (which the permission gate governs the same way), and for
-any future pinned CLI launcher the host may publish.
+A v2 run never dispatches through this route, and the restart judge does not
+use it either (Route selection). The mechanics below remain for the restart
+gate's stop-observation tooling, for reading recorded runs, and for any future
+pinned CLI launcher the host may publish.
 
 A blocking, non-interactive `pi -p` call from the `bash` tool; the assembled
 prompt is the **positional message argument**.
@@ -285,6 +287,14 @@ default; the maximum is `MAX_TIMEOUT_MS = 2_147_483_647`.
 
 ## `aborted` handling (Execution step 4) — CLI route
 
+A v2 run does not reach this section. Its turns go through the subagent
+route, whose `aborted` attempt has an `UNCONFIRMED` stop and ends
+`needs-human` ("The subagent route" above), so on this facet the restart gate
+never issues a judge. The moves below, including the native judge launch in
+move 4, apply to recorded CLI-route runs and to a subagent route that one day
+gains a stop observer; `issue` still takes the CLI raw stream (`--raw`), which
+the subagent route does not produce. Until both change, no judge runs here.
+
 The moves of `SKILL.md`'s restart gate on this route, after a call that
 returned `Command timed out after <N> seconds`, or one whose extractor gave no
 reply ending in a well-formed `status:` line. `<S>` is the attempt's stem,
@@ -330,16 +340,18 @@ the session path in the run index.
    It prints one line, `<prompt> (judge, model=ultra, tools=Read,Grep,Write,
    record=<record>, timeout=<seconds>, description=<d>)`; anything else (a
    refusal, exit 1; exit 64 or 70) is `needs-human`. The timeout counts from
-   `issue`, so launch the judge in the very next call, with P1's invocation
-   shape, changing only this: `PROMPT_FILE` is the already-written
-   `<S>-judge-launch-prompt.md`; the preflight diagnostic stops `blocked`
-   without launching or reissuing the judge. No file-writing call is placed
-   between `issue` and launch. `--model` is the model the `ultra` policy class
-   resolves to under the delegation contract's source priority (the profile
-   row is the default); add `--tools read,grep,write`;
-   `<turn-key>-<attempt>` becomes `<turn-key>-<attempt>-judge` in the raw path
-   and the stem; the `bash` `timeout` is the printed timeout. The extractor's
-   stdout is the judge's reply; check it:
+   `issue`, so launch the judge in the very next call, through the subagent
+   route ("The subagent route" above): one `subagent` call whose `task` is the
+   already-written launch message (the content of `<S>-judge-launch-prompt.md`),
+   binding the `ultra` policy class's model — resolved and approved before
+   `issue` under the delegation contract's source priority, the profile row
+   being the default — by passing the approved `resolutionRef` as
+   `expectedResolution`, with `timeout` the printed timeout. Never the CLI. If
+   the model resolution, approval or launch preparation is not complete before
+   `issue`, do not issue: stop. No file-writing call is placed between `issue`
+   and launch. The judge's tool restriction (read, grep, write) is in the
+   launch message only; the host does not enforce it. Split off the control
+   line as above; the rest of the child's text is the judge's reply; check it:
 
    ```
    node <pi-scripts>/judge_gate.js check --stem <S> --reply "<the judge's reply, verbatim>"
@@ -376,16 +388,18 @@ every delegated turn is headless and never waits.
 
 ## Denial check
 
-None. pi has no permission layer, so the reply contract's denial clause cannot
-trigger and there is no `deny_scan.sh` counterpart. For `blocked` this means
-SKILL.md's machine-detected source does not exist here; the whole weight sits
-on the self-judged clause in the injected prompt, including its "unless a rule
-permits it" half. Do not carry over Claude Code intuitions. The pre-delegation
-permission gate is a different mechanism: it reads what the host publishes
-before any delegation (Route selection step 1). On this host the
-observation usually reads `unknown` (CLI always; Studio under any load error
-or tool_call handler), which is why a Pi run stops before delegating instead
-of discovering denials afterwards.
+None. Core pi has no permission layer of its own. A host such as Pi Studio
+adds guards (shell guard, workspace sandbox, permission gate, protected paths)
+that a native child also carries, and an extension may refuse a call from a
+`tool_call` handler — but none of them publishes a transcript form this skill
+can scan, so there is no `deny_scan.sh` counterpart. For `blocked` this means
+SKILL.md's machine-detected source does not exist here; a refusal reaches the
+run only as a refused call or in the child's own report, and otherwise the
+weight sits on the self-judged clause in the injected prompt, including its
+"unless a rule permits it" half. Do not carry over Claude Code intuitions.
+There is no pre-delegation permission check either: refusals are classified
+afterwards (the contract's host-result table). Route selection step 1 reads
+availability, not permission.
 
 ## Residual risks specific to this harness
 
@@ -398,16 +412,20 @@ of discovering denials afterwards.
   (the CLI's node and the shell around it): their descendants, detached or
   not, and anything done outside files are not observed. That the recorded
   node is the process doing the work is unverified on a real host.
-- The host contract is published (pi-extensions `ea1007a`, pi-studio
-  `52a0444`), but its observability rule keeps the gate closed on most real
-  configurations: the CLI adapter always reports `unknown`, and Studio
-  reports `unknown` whenever any extension failed to load or any `tool_call`
-  handler is registered. A live v2 delegation therefore needs a Studio
-  session with neither — an acceptance-environment decision, not something
-  this skill routes around. Two further published limits to carry into any
-  claim: the launch-time payload guard holds only for providers honoring the
-  before-send payload callback (not a universal transport boundary), and the
-  unpinned legacy model path still expands aliases/prefixes — v2 runs never
-  use it, since the binding must be pinned. The judge on this facet launches
-  through the CLI route, so under `unknown` it stops as the contract's own
-  restart-judge rules require — recorded, not worked around.
+- The host contract is published (pi-extensions `ea1007a`, `fd9a789`;
+  pi-studio `52a0444`) in a version whose `observe` still computes a
+  permission state that reads `unknown` under any `tool_call` handler. A
+  request to the host asks it to publish native `available|unavailable` with a
+  reason instead; until a build answers that, Route selection step 1
+  treats a non-`permitted` native state as unavailable and a run in such a
+  session stops before delegating. Live completion of the R2 contract on this
+  facet is not claimed. Further published limits to carry into any claim: the
+  launch-time payload guard holds only for providers honoring the before-send
+  payload callback (not a universal transport boundary), and the unpinned
+  legacy model path still expands aliases/prefixes — v2 runs never use it,
+  since the binding must be pinned.
+- A Pi child of a taskflow-enabled session runs without taskflow's `tool_call`
+  refusals (its `child-ledger` mode registers none), so a refusal such as the
+  project-notes scan denial does not apply to it. The invariant "a child is not
+  wider than the parent" has this one known exception, tracked by the taskflow
+  project.

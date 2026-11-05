@@ -67,6 +67,11 @@ const EFFECTIVE_ONLY = ["stale-plan"];
 
 const ENV_FALL_THROUGH = ["absent", "unset"];
 const ENV_CONFIGURED = "configured";
+const ROUTE_STATES_CURRENT = ["available", "unavailable"];
+const ROUTE_STATES_LEGACY = ["permitted", "unsupported", "denied", "unknown", "allow", "deny"];
+const NATIVE_ROUTE_CURRENT = "native-subagent";
+const NATIVE_ROUTES = [NATIVE_ROUTE_CURRENT, "native", "subagent"];
+const POLICY_REF_RECORDS = ["route-policy", "permission"];
 
 const FIELD_SETS = {
   contract: { required: ["record", "version"], optional: [] },
@@ -391,6 +396,8 @@ class Checker {
     if (extra.length > 0) this.violation(where, `dispatch_plan unlisted keys: ${extra.join(", ")}`);
     if (typeof plan.route !== "string" || plan.route === "") {
       this.violation(where, "dispatch_plan.route must be a route name");
+    } else if (!NATIVE_ROUTES.includes(plan.route)) {
+      this.violation(where, `a v2 dispatch_plan goes only through a native route (got ${plan.route})`);
     }
     this.checkBindingArgs(plan.args, where, "dispatch_plan.args");
   }
@@ -819,7 +826,7 @@ class Checker {
       this.violation("evidence", "resolution evidence required (--resolutions): source and match rules unverifiable without it");
     }
     if (!evidence.policy && this.ledger.delegations.length > 0) {
-      this.violation("evidence", "policy evidence required (--policy): permission-state rule unverifiable without it");
+      this.violation("evidence", "policy evidence required (--policy): route availability rule unverifiable without it");
     }
   }
 
@@ -900,9 +907,17 @@ class Checker {
     if (evidence.policy) {
       for (const { line, entry } of this.ledger.delegations) {
         const where = `line ${line} (delegation ${entry.id})`;
-        const permission = evidence.policy.byKey.get(entry.policy_ref);
-        if (!permission) continue;
-        this.check(permission.state === "allow", where, `delegation only under permission allow (got ${permission.state})`);
+        this.check(NATIVE_ROUTES.includes(entry.route), where, `a v2 delegation goes only through a native route (got ${entry.route})`);
+        const policy = evidence.policy.byKey.get(entry.policy_ref);
+        if (!policy) continue;
+        this.check(POLICY_REF_RECORDS.includes(policy.record), where, `policy_ref must name a route-policy record (got ${policy.record})`);
+        if (policy.record !== "route-policy") continue;
+        if (ROUTE_STATES_CURRENT.includes(policy.state)) {
+          this.check(policy.state === "available", where, `delegation only on an available native route (got ${policy.state})`);
+          this.check(NATIVE_ROUTES.includes(policy.route), where, `route-policy names a non-native route: ${policy.route}`);
+        } else {
+          this.check(ROUTE_STATES_LEGACY.includes(policy.state), where, `route-policy state not recognized: ${policy.state}`);
+        }
       }
     }
   }
@@ -1174,6 +1189,18 @@ function opDispatchCheck(args) {
   }
   const plan = turnEntry.dispatch_plan || {};
   checker.check(dispatch.route === plan.route, where, `route differs from the approved dispatch_plan (${dispatch.route} vs ${plan.route})`);
+  checker.check(NATIVE_ROUTES.includes(dispatch.route), where, `a v2 dispatch goes only through a native route (got ${dispatch.route})`);
+  if (evidence.policy) {
+    let latest = null;
+    for (const record of evidence.policy.byKey.values()) {
+      if (record.record === "route-policy" && record.route === dispatch.route && ROUTE_STATES_CURRENT.includes(record.state)) latest = record;
+    }
+    if (latest === null) {
+      checker.violation(where, `launch blocked: no available route-policy record for ${dispatch.route}`);
+    } else if (latest.state !== "available") {
+      checker.violation(where, `launch blocked: native route ${latest.route} unavailable (${latest.grounds})`);
+    }
+  }
   const present = checker.checkBindingArgs(dispatch.args, where, "dispatch.args");
   const selection = turnEntry.selection;
   if (present && present.includes("model")) {
@@ -1187,9 +1214,6 @@ function opDispatchCheck(args) {
   if (isObject(observed)) {
     const extra = Object.keys(observed).filter((k) => !["policy_state", "model", "thinking", "revision"].includes(k));
     if (extra.length > 0) checker.violation(where, `observed unlisted keys: ${extra.join(", ")}`);
-    if (observed.policy_state !== undefined && observed.policy_state !== "allow") {
-      checker.violation(where, `launch blocked: policy state ${observed.policy_state}`);
-    }
     if (typeof observed.model === "string" && selection.resolved_model !== null && observed.model !== selection.resolved_model) {
       checker.violation(where, `observed model differs from the approved resolution (${observed.model} vs ${selection.resolved_model})`);
     }

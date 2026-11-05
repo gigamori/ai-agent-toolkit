@@ -55,9 +55,11 @@ mode は hybrid で決定: ステップが mode を名指ししていれば hono
 
 `references/execution-profiles.md` は `basic`、`pro`、`ultra` を harness ごとの
 model へ対応付ける。これは必須の skill 既定 binding であり、3つの model 要求元の
-最後に置かれる（delegation contract の model 要求源の節参照）。run は許可ゲートの下で動く:
-orchestrator はどのターンを委譲する前にも、ホストが公開している委譲許可の情報を読み、
-`deny` または観測不能なら委譲前に run を停止する。
+最後に置かれる（delegation contract の model 要求源の節参照）。委譲はホストの native subagent 経路だけを通る（CLI や自由 shell への迂回はせず、restart judge も同じ）。
+orchestrator はどのターンを委譲する前にも、その経路が利用可能かを読み、
+`unavailable`（または model を固定できないビルド）なら、ホストの理由を引用して委譲前に run を停止する。
+許可状態は読まない: 子が親より広い権限を持たないのは、この経路がホストのガードを子へ運ぶためであり、
+呼出し時の拒否は事後に分類する（`blocked`）。
 
 番号付き todolist の各ステップには、ordinal の後の最初の物理行のどこかに
 `(model: VALUE)` を最大1つ、`(effort: basic|pro|ultra)` を最大1つ、
@@ -227,7 +229,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
   {"record":"attempt","turn":"03","attempt":1,"delegation_id":"d1","reported_status":"ok","effective_status":"ok","file":"03-plan.md"}
   ```
 
-  `dispatch_plan` / `actual_selection_args` は model / effort / 固定解決参照のちょうど1つを運び、actual は call が実際に渡したものであり plan からの後付けではない。解決 model は tier ではない。call 前に停止した run（許可拒否、解決変動）は delegation も attempt も残さず、call しても開始しなかった場合は delegation に null の報告を残し、attempt の effective status が分類（`blocked`、`stale-plan`、`aborted`）を運ぶ。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録し、解決・許可・承認の詳細は run ディレクトリの追記専用 `approvals.jsonl` / `resolutions.jsonl` / `policy.jsonl` に置かれ `*_ref` で参照される。動的挿入は plan の承認済み contingency policy に従い、それに紐付く `derived` 承認を運び、その delegation は当該 derived 承認を `approval_ref` に持つ。
+  `dispatch_plan` / `actual_selection_args` は model / effort / 固定解決参照のちょうど1つを運び、actual は call が実際に渡したものであり plan からの後付けではない。解決 model は tier ではない。call 前に停止した run（経路の利用不能、解決変動）は delegation も attempt も残さず、call しても開始しなかった場合は delegation に null の報告を残し、attempt の effective status が分類（`blocked`、`stale-plan`、`aborted`）を運ぶ。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録し、解決・許可・承認の詳細は run ディレクトリの追記専用 `approvals.jsonl` / `resolutions.jsonl` / `policy.jsonl` に置かれ `*_ref` で参照される。動的挿入は plan の承認済み contingency policy に従い、それに紐付く `derived` 承認を運び、その delegation は当該 derived 承認を `approval_ref` に持つ。
   `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` が台帳の整合性を検査する — データの整合であって証跡の真正ではない。plan の digest は同じ script の `digest` 操作で計算し、手計算しない。run の3つの証跡ファイルを渡して実行する。証跡が欠ける規則は黙ってskipではなく違反になる。
   検査用インデックスであり、再開可能なスケジューラではない。以前の `adaptive-effort-v1` の run は読取り専用で保持される。
 

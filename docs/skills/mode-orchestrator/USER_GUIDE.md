@@ -89,9 +89,13 @@ mode is inferred from the step's content.
 `references/execution-profiles.md` maps `basic`, `pro`, and `ultra` to one model
 per harness. It is the mandatory skill-default binding — the last of three
 model-request sources (see the delegation contract's model-request sources).
-The runs run under a permission gate: the orchestrator reads what the host
-publishes about delegation permission before any turn is delegated, and
-`deny` / unobservable stops the run before delegating.
+Delegation goes through the host's native subagent route only — the CLI and
+free shell are never a fallback, the restart judge included. Before any turn is
+delegated the orchestrator reads whether that route is available; `unavailable`
+(or a build that cannot pin a model) stops the run before delegating and
+quotes the host's reason. No permission state is read: a child is not given
+more authority than the parent because the route carries the host's guards
+into it, and a refusal at a call is classified afterwards (`blocked`).
 
 A numbered todolist step may carry at most one `(model: VALUE)`, one
 `(effort: basic|pro|ultra)`, and one `(workflow-step: ID)` anywhere on its first
@@ -445,7 +449,7 @@ reused: a suffix is added. The run never deletes the directory. It holds:
   `dispatch_plan` / `actual_selection_args` carry exactly one of model / effort /
   a fixed resolution reference; the actual one is what the call carried, never
   back-filled from the plan. The resolved model is never a tier. A run that stops
-  before a call (denied permission, a changed resolution) records no delegation
+  before a call (an unavailable route, a changed resolution) records no delegation
   or attempt; a call that never started records its delegation with null reports
   and the attempt's effective status carries the classification (`blocked`,
   `stale-plan`, `aborted`). A split step may have several planned turn
