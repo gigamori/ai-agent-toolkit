@@ -67,8 +67,9 @@ Once per run, before the first delegation:
    discover any of this.
 2. **Schema.** The published `subagent` tool's schema has a top-level `timeout`
    (seconds); contract builds also expose `expectedResolution` (the pinned
-   binding field) and publish the per-child delegation evidence. The tool's
-   name alone is not this check. The published schema and description are
+   binding field); the per-child delegation evidence is published in the
+   observe result of step 1. The tool's name alone is not this check. The
+   published schema and description, together with that observe result, are
    the pre-call grounds; the tool being absent or unreadable is `blocked`.
 
 Per turn, a miss in the table below is `blocked` for the run:
@@ -77,15 +78,15 @@ Per turn, a miss in the table below is `blocked` for the run:
 |---|---|
 | the turn's approved binding | the schema shows `expectedResolution` (resolve first with `delegation_contract` `{"operation":"resolve"}` — exactly one `request.model` or `request.effort`, plus `requiredEffort` — and pass the returned `resolutionRef`, omitting `model`/`effort`); nothing else carries a model |
 | both recursion layers: per-call recursion suppression in the child, and no skills loaded in it | the observe result's enforced constraints (recursion, skill discovery) cover both; do not fill either in from memory |
-| an audit id for the attempt's `delegation_ref` | the published output contract shows the evidence lines (`[subagent] evidence=…`, and the conditional `run=` control line); the first real call confirms it |
+| an audit id for the attempt's `delegation_ref` | the observe result publishes it: `resultEvidence` names where the per-child evidence comes back, and `controlLine` names the evidence line (`[subagent] evidence=…`) and any conditional `run=` line. The first real call confirms it |
 
 Effort, tool restriction and working directory decide nothing here: this skill
-passes none of them for a turn on either route. A capability that the
-published schema or description does not show is unmet; do not fill it in
-from memory. Record the route and the reason in the run index prose (above
+passes none of them for a turn on either route. A capability that neither
+the published schema and description nor the observe result shows is unmet;
+do not fill it in from memory. Record the route and the reason in the run index prose (above
 the JSONL block), at the first delegation and again whenever a later turn
-takes the other route. The subagent route has not been exercised on a live
-host under this contract.
+takes the other route. How far the subagent route under this contract has
+been exercised on a live host is under Residual risks.
 
 ### The subagent route
 
@@ -412,20 +413,23 @@ availability, not permission.
   (the CLI's node and the shell around it): their descendants, detached or
   not, and anything done outside files are not observed. That the recorded
   node is the process doing the work is unverified on a real host.
-- The host contract is published (pi-extensions `ea1007a`, `fd9a789`;
-  pi-studio `52a0444`) in a version whose `observe` still computes a
-  permission state that reads `unknown` under any `tool_call` handler. A
-  request to the host asks it to publish native `available|unavailable` with a
-  reason instead; until a build answers that, Route selection step 1
-  treats a non-`permitted` native state as unavailable and a run in such a
-  session stops before delegating. Live completion of the R2 contract on this
-  facet is not claimed. Further published limits to carry into any claim: the
+- Builds that publish native `available|unavailable` with a reason
+  (pi-extensions `ea497f6`, pi-studio `00bcd6a`) carried one live run in a
+  taskflow-enabled session (a `tool_call` handler loaded): observe
+  `available`, resolve, approval, pinned launch, evidence with approved =
+  dispatched = reported, a completed turn, and a ledger that validated and
+  audited. One run of one survey turn; recovery, decision and parallel paths
+  were not exercised live. Older builds (pi-extensions `ea1007a`, `fd9a789`;
+  pi-studio `52a0444`) still compute a permission state that reads `unknown`
+  under any `tool_call` handler; Route selection step 1 reads them as stated
+  there, and a run in such a session stops before delegating. Further
+  published limits to carry into any claim: the
   launch-time payload guard holds only for providers honoring the before-send
   payload callback (not a universal transport boundary), and the unpinned
   legacy model path still expands aliases/prefixes — v2 runs never use it,
   since the binding must be pinned.
-- A Pi child of a taskflow-enabled session runs without taskflow's `tool_call`
-  refusals (its `child-ledger` mode registers none), so a refusal such as the
-  project-notes scan denial does not apply to it. The invariant "a child is not
-  wider than the parent" has this one known exception, tracked by the taskflow
-  project.
+- From pi-extensions `c647291` a taskflow child (`child-ledger` mode) runs
+  taskflow's project-notes scan denial too; on older builds that denial does
+  not reach the child. The denial judges the `grep` tool only: a scan through
+  `bash` or `find`/`read` is not judged, in the parent or the child, so it does
+  not make a project-notes scan impossible in a child.

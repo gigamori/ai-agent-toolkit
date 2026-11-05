@@ -62,11 +62,11 @@ A refused operation is not retried in another shape; a withdrawn permission
 stops the run. Only an ordinary transient launch failure feeds the existing
 not-started/`aborted` rules.
 
-Known exception: a Pi child of a taskflow-enabled session runs without
-taskflow's `tool_call` refusals (its `child-ledger` mode does not register
-them), so a refusal such as the project-notes scan denial does not apply to
-the child. It is a residual risk of the invariant, tracked by the taskflow
-project, not something the run works around.
+Taskflow's project-notes scan denial reaches a Pi child of a taskflow-enabled
+session from pi-extensions `c647291` on; on older builds it does not, which
+leaves the invariant with that one exception there. The denial judges the
+`grep` tool only, in the parent and the child alike. Neither case is
+something the run works around.
 
 ## 2. Model request sources
 
