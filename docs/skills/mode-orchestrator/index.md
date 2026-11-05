@@ -32,8 +32,8 @@ runtime. Run them with `bash scripts/<name>_test.sh` after touching the script
 or profile they cover. The profile gate validates execution-profile **shape**,
 not content — bound models are freely editable; the watchdog, denial,
 restart-gate and delegation-plan suites build their own fake session logs, ledgers and records, so they need
-no `claude` CLI and no prior run. Adaptive routing additionally requires the external evidence checker's
-registered `--self-test`; see `AUTHORING_CONTRACT.md`.
+no `claude` CLI and no prior run. Adaptive routing on the v1 path additionally requires the external evidence checker's
+registered `--self-test` (it does not apply to v2 runs); see `AUTHORING_CONTRACT.md`.
 
 Run `bash skills/mode-orchestrator/scripts/pi_launch_test.sh` from the repository
 root after changing Pi's documented launch or preflight. It executes the marked

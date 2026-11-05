@@ -359,7 +359,9 @@ provided is a violation naming the missing file, never a silent skip.
 `dispatch-check` checks one planned call against the approved resolution —
 binding shape, model/effort/resolution agreement, an optionally reported
 observed state, and it refuses a key an amendment has superseded or a turn
-sitting on a stale-plan attempt.
+sitting on a stale-plan attempt. `digest` prints a plan's snapshot digest
+under the same reconstruction rule `validate` re-computes with, so the
+orchestrator never canonicalizes the snapshot by hand.
 
 It proves the integrity of the data it is given. It does not prove: that a
 policy record reflects the host's real policy; that an approval event

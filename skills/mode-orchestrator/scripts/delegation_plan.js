@@ -7,6 +7,7 @@
 //   node delegation_plan.js dispatch-check --file <...> --dispatch <call.json>
 //        [same evidence flags]
 //   node delegation_plan.js audit --file <...> [same evidence flags]
+//   node delegation_plan.js digest --file <...> --plan <id> [--approvals f]
 //
 // Structures and rules: references/delegation-contract.md. This script never
 // launches a model, a CLI or an agent; it proves the integrity of the data
@@ -1204,10 +1205,28 @@ function opDispatchCheck(args) {
   return 0;
 }
 
+function opDigest(args) {
+  const { flags } = parseArguments(args, ["file", "plan", "approvals"]);
+  const ledger = readLedger(requireFlag(flags, "file"));
+  ledger.index();
+  const planId = requireFlag(flags, "plan");
+  const evidence = flags.approvals ? { approvals: readEvidenceFile(flags.approvals, ["approval", "contingency"], "approvals") } : {};
+  const checker = new Checker(ledger, evidence);
+  const plan = ledger.get(planId);
+  if (!plan || plan.record !== "plan") throw new Refusal(`plan unresolved: ${planId}`);
+  const { keys, source } = checker.snapshotKeysFor(plan);
+  if (keys === null) throw new Refusal(`${planId}: snapshot keys need approval evidence with snapshot_keys (${source})`);
+  const missing = keys.filter((k) => { const t = ledger.get(k); return !t || t.record !== "turn"; });
+  if (missing.length > 0) throw new Refusal(`${planId}: snapshot keys without turn records: ${missing.join(", ")}`);
+  process.stdout.write(`DIGEST ${planId} ${digestOf(checker.snapshotFor(plan, keys))} keys=${keys.join(",")}\n`);
+  return 0;
+}
+
 const USAGE = [
   `usage: node ${SCRIPT}.js validate --file <index.md|ledger.jsonl> [--approvals f] [--resolutions f] [--policy f]`,
   `       node ${SCRIPT}.js audit --file <...> [same evidence flags]`,
   `       node ${SCRIPT}.js dispatch-check --file <...> --dispatch <call.json> [same evidence flags]`,
+  `       node ${SCRIPT}.js digest --file <...> --plan <id> [--approvals f]`,
 ];
 
 runCli(SCRIPT, USAGE, function main(args) {
@@ -1216,5 +1235,6 @@ runCli(SCRIPT, USAGE, function main(args) {
   if (operation === "validate") return opValidate(rest);
   if (operation === "audit") return opAudit(rest);
   if (operation === "dispatch-check") return opDispatchCheck(rest);
+  if (operation === "digest") return opDigest(rest);
   throw new UsageError(`unknown operation: ${operation}`);
 });

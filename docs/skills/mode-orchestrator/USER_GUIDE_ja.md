@@ -228,7 +228,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
   ```
 
   `dispatch_plan` / `actual_selection_args` は model / effort / 固定解決参照のちょうど1つを運び、actual は call が実際に渡したものであり plan からの後付けではない。解決 model は tier ではない。call 前に停止した run（許可拒否、解決変動）は delegation も attempt も残さず、call しても開始しなかった場合は delegation に null の報告を残し、attempt の effective status が分類（`blocked`、`stale-plan`、`aborted`）を運ぶ。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録し、解決・許可・承認の詳細は run ディレクトリの追記専用 `approvals.jsonl` / `resolutions.jsonl` / `policy.jsonl` に置かれ `*_ref` で参照される。動的挿入は plan の承認済み contingency policy に従い、それに紐付く `derived` 承認を運び、その delegation は当該 derived 承認を `approval_ref` に持つ。
-  `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` が台帳の整合性を検査する — データの整合であって証跡の真正ではない。run の3つの証跡ファイルを渡して実行する。証跡が欠ける規則は黙ってskipではなく違反になる。
+  `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` が台帳の整合性を検査する — データの整合であって証跡の真正ではない。plan の digest は同じ script の `digest` 操作で計算し、手計算しない。run の3つの証跡ファイルを渡して実行する。証跡が欠ける規則は黙ってskipではなく違反になる。
   検査用インデックスであり、再開可能なスケジューラではない。以前の `adaptive-effort-v1` の run は読取り専用で保持される。
 
 これらはランタイム成果物 — コミットしない。

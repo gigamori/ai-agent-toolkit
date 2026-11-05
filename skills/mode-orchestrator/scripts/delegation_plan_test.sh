@@ -871,6 +871,19 @@ expect_refused "v1 contract inside an .md index is refused" "not a mo-delegation
 build "role-absent"
 expect_ok "a turn without role is digested without a role member" validate --file ledger.jsonl "${EV[@]}"
 
+build base
+BASE_DIGEST=$(cd "$tmp" && node -e 'process.stdout.write(require("fs").readFileSync("approvals.jsonl","utf8").split("\n").filter(Boolean).map(JSON.parse)[0].target_digest)')
+OUT=$(cd "$tmp" && node "$script" digest --file ledger.jsonl --plan r0)
+[[ "$OUT" == "DIGEST r0 $BASE_DIGEST keys=01,02,03" ]] || { printf 'FAIL digest equals the approved snapshot digest: %s vs %s\n' "$OUT" "$BASE_DIGEST" >&2; exit 1; }
+pass=$((pass + 1))
+expect_refused "digest refuses an unknown plan" "plan unresolved" digest --file ledger.jsonl --plan r9
+
+build "role-absent"
+OUT=$(cd "$tmp" && node "$script" digest --file ledger.jsonl --plan r0)
+WANT=$(cd "$tmp" && node -e 'process.stdout.write(require("fs").readFileSync("ledger.jsonl","utf8").split("\n").filter(Boolean).map(JSON.parse)[1].digest)')
+[[ "$OUT" == "DIGEST r0 $WANT keys=01,02,03" ]] || { printf 'FAIL digest omits an absent role like the validator: %s vs %s\n' "$OUT" "$WANT" >&2; exit 1; }
+pass=$((pass + 1))
+
 build "md-v2-index"
 expect_ok "v2 ledger inside an .md index validates" validate --file index.md "${EV[@]}"
 

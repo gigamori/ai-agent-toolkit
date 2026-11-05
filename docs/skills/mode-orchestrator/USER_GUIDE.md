@@ -458,7 +458,8 @@ reused: a suffix is added. The run never deletes the directory. It holds:
   contingency policy and carries a `derived` approval bound to it; its
   delegation references that derived approval.
   `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` check the
-  ledger's integrity — data consistency, not evidence authenticity; run them
+  ledger's integrity — data consistency, not evidence authenticity; its
+  `digest` operation computes the plan digest so it is never hand-computed. Run them
   with the run's three evidence files, since a rule whose evidence is missing
   is a violation, not a skip.
   It is an inspection index, not a resumable scheduler. Previous
