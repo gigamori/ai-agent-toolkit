@@ -29,7 +29,7 @@ path/to/plan.md に mode-orchestrator を使って
 
 リジェクト時は何が欠けているかを名指しし、十分な todolist の提供を求める。ギャップを推測で埋めない。
 
-**headless で起動する場合の前提が 1 つある**（`claude -p`、ラッパースクリプト、入れ子 run）。ゲートの前に、スキルはどのハーネス上に居るかを判定する小さなシェルコマンドを 1 回実行する。Claude Code ではこのコマンドに許可が要り、対話セッションならその場で承認できるが、**headless は尋ねる相手が居ないため拒否され、run はそこで止まる**。その run が読む設定でこの 1 コマンドを許可するか、`--allowedTools` で渡すこと。正確な文字列は `references/harness-cc.md` にある。ただし、これで足りるとは限らない: `--permission-prompts none` では、ターン watchdog の起動コマンド（`exec bash …/watchdog.sh …`）が、完全一致の allow rule があっても拒否された（Claude Code 2.1.286、2026-10-02、1 回）。その run は最初のターンで `blocked` になる。ほかの権限モードは試していない。Claude Code では再投入ゲートのスクリプトも `node` で動き、`node` が無ければ中断したターンは再実行されない。通常の対話実行では何もしなくてよい。
+**headless で起動する場合の前提が 1 つある**（`claude -p`、ラッパースクリプト、入れ子 run）。ゲートの前に、スキルはどのハーネス上に居るかを判定する小さなシェルコマンドを 1 回実行する。Claude Code ではこのコマンドに許可が要り、対話セッションならその場で承認できるが、**headless は尋ねる相手が居ないため拒否され、run はそこで止まる**。その run が読む設定でこの 1 コマンドを許可するか、`--allowedTools` で渡すこと。正確な文字列は `references/harness-cc.md` にある。ただし、これで足りるとは限らない: ターン watchdog の起動コマンド（`exec bash …/watchdog.sh …`）は、完全一致の allow rule があっても `--permission-mode default` と `acceptEdits` で拒否され（Claude Code 2.1.318、2026-11-06、各 1 回）、`--permission-prompts none` でも拒否された（2.1.286、2026-10-02、1 回）。その run は最初のターンで `blocked` になる。`--permission-mode auto` では実行され、run は完走した（headless と対話で各 1 回）。Claude Code では再投入ゲートのスクリプトも `node` で動き、`node` が無ければ中断したターンは再実行されない。通常の対話実行では何もしなくてよい。
 
 ## 起動 — フラグ
 

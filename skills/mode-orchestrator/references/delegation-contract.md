@@ -180,9 +180,13 @@ directory, referenced by `*_ref` fields — never inlined into the index:
   `mode_policy`, `effort_policy`, `model_binding`, `scope`, `tool_constraints`,
   `caps`).
 - `resolutions.jsonl` — `resolution` records: `key`, `turn`, `request`,
-  `source`, `observed_state` (for an environment source), `candidates`,
-  `match`, `resolved_model`, `granularity`, `thinking`
-  (`{state, value?}`), `grounds`.
+  `source`, `observed_state`, `candidates`, `match`, `resolved_model`,
+  `granularity`, `thinking` (`{state, value?}`), `grounds`.
+  `observed_state` is the state of the environment's child-agent model
+  setting, carried by an `environment` source (`configured`) or a `skill`
+  source (`absent` or `unset`); a harness that has no such setting records
+  `absent`. For a `runtime` source it is null: the validator requires the
+  field but checks its value only for `environment` and `skill` sources.
 - `policy.jsonl` — `route-policy` records (`key`, `route`, `state`,
   `constraints`, `grounds`) with `state` `available | unavailable`, and
   `env-model-setting` records (`key`, `state`, `per_effort`, `grounds`). A

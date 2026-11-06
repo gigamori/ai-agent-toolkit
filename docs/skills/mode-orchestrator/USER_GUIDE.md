@@ -51,10 +51,12 @@ permission, and an interactive session usually grants it on the spot — a
 headless one cannot ask, so it is refused and the run stops there. Allow that
 one command in the settings the run reads, or pass it via `--allowedTools`;
 `references/harness-cc.md` carries the exact string. That is not always
-enough: under `--permission-prompts none`, the turn watchdog's launch command
-(`exec bash …/watchdog.sh …`) was refused even with an exact allow rule (Claude
-Code 2.1.286, 2026-10-02, one run), and the run then stops `blocked` at its first
-turn; other permission modes were not tried. On Claude Code the restart gate's
+enough: the turn watchdog's launch command (`exec bash …/watchdog.sh …`) was
+refused even with an exact allow rule under `--permission-mode default` and
+`acceptEdits` (Claude Code 2.1.318, 2026-11-06, one run each) and under
+`--permission-prompts none` (2.1.286, 2026-10-02, one run), and the run then stops
+`blocked` at its first turn. Under `--permission-mode auto` it ran, and a run
+completed (one run each, headless and interactive). On Claude Code the restart gate's
 scripts also run on `node`: without it, an aborted turn is never run again.
 Nothing to do for an ordinary interactive run.
 

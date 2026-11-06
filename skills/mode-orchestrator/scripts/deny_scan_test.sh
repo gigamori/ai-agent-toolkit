@@ -57,6 +57,7 @@ DENIAL_CLASSIFIER='{"type":"user","message":{"content":[{"type":"tool_result","i
 DENIAL_MANUAL="{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"is_error\":true,\"content\":\"The user doesn't want to proceed with this tool use.\"}]}}"
 DENIAL_TOOL_PLAIN='{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"tool_use_id":"toolu_x"}]},"toolUseResult":"Error: Permission to use Bash has been denied. IMPORTANT: You *may* attempt to accomplish this action using other tools."}'
 DENIAL_TOOL_WITHCMD='{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"tool_use_id":"toolu_y"}]},"toolUseResult":"Error: Permission to use Bash with command hostname has been denied."}'
+DENIAL_RULE_NO_KIND='{"type":"user","message":{"content":[{"type":"tool_result","content":"<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>","is_error":true,"tool_use_id":"toolu_r"}]},"toolUseResult":"Error: File is in a directory that is denied by your permission settings."}'
 TOOL_ERROR='{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"tool_use_id":"toolu_z"}]},"toolUseResult":"Error: Exit code 2\nls: cannot access: No such file or directory"}'
 OK_RESULT='{"type":"user","message":{"content":[{"type":"tool_result","is_error":false,"content":"file written"}]}}'
 ASSISTANT='{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
@@ -95,6 +96,12 @@ T="$(mk_agent "$R" sess1 ddb 'turn four-b desc')"
 printf '%s\n%s\n' "$ASSISTANT" "$DENIAL_TOOL_PLAIN" > "$T"
 run_ds --desc 'turn four-b desc' --project-root "$R"
 expect "current tool-denial wording detected" "DENIED 1" 1
+
+R="$WORK/t4e"
+T="$(mk_agent "$R" sess1 dde 'turn four-e desc')"
+printf '%s\n' "$DENIAL_RULE_NO_KIND" > "$T"
+run_ds --desc 'turn four-e desc' --project-root "$R"
+expect "permission-settings denial without toolDenialKind detected" "DENIED 1" 1
 
 R="$WORK/t4c"
 T="$(mk_agent "$R" sess1 ddc 'turn four-c desc')"

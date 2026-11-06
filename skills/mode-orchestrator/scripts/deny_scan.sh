@@ -78,6 +78,13 @@ set -u
 #      before the tool name so an Edit/Write/WebFetch denial trips it too. It
 #      is NOT narrowed to Bash: this repo has only ever measured Bash denials,
 #      and over-fitting to that sample is how patterns 1-2 went stale.
+#   4. Permission-rule wording for a file access, measured 2026-11-06 on a
+#      real child transcript from Claude Code 2.1.318 (`claude -p`, a
+#      `permissions.deny` rule on Read): the tool_result carries
+#        "<tool_use_error>File is in a directory that is denied by your
+#        permission settings.</tool_use_error>" with "is_error":true and no
+#      "toolDenialKind" field, so patterns 1-3 and the field all missed it.
+#      Only this Read wording is measured; other tools' wording is not.
 #
 # DRIFT INCIDENT 2026-08-12: patterns 1-2 detected nothing on either of the
 # two denials above while `"is_error":true` still matched, i.e. only the
@@ -91,6 +98,7 @@ PATTERNS=(
   'Permission for this action was denied'
   "The user doesn't want to proceed"
   'Permission to use '
+  'denied by your permission settings'
 )
 
 # Structural denial marker. Claude Code writes it on the denied call's own

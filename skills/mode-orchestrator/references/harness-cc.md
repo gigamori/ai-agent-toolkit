@@ -10,6 +10,8 @@ The only pre-delegation question is whether the native route exists: the
 `Agent` tool (general-purpose subagent) is listed in this session. If it is
 not, the run is `blocked` before delegating, naming that absence. No
 permission state is read: Claude Code publishes none, and none is needed.
+Claude Code publishes no environment child-agent model setting either, so the
+skill default's resolution records `observed_state: absent`.
 Rules and PreToolUse hooks refuse a call at the tool boundary, so a refusal
 surfaces after a call is attempted, and the skill never launches a real agent,
 scans settings files or reads private configuration to find out earlier.
@@ -186,10 +188,12 @@ unrelated to delegation. Add the skill directory for the session —
 probe rule (measured 2026-11-04, E2E round: two runs lost to exactly this
 before the third completed).
 
-Under `--permission-prompts none` the P2 command `exec bash …` was refused even
-with an exact allow rule (`'exec' evaluates arguments as shell code`; Claude
-Code 2.1.286, 2026-10-02, one run), so such a run stops `blocked` at its first
-turn (Wakes).
+Whether the P2 command `exec bash …` runs depends on the permission mode. With
+an exact allow rule under `claude -p` (Claude Code 2.1.318, 2026-11-06, one run
+per mode) it was refused under `default` and `acceptEdits` (`'exec' evaluates
+arguments as shell code`) and ran under `auto`; it was also refused under
+`--permission-prompts none` (2.1.286, 2026-10-02, one run). Where it is refused,
+the run stops `blocked` at its first turn (Wakes).
 
 ## Stop and restart (Execution step 4)
 
