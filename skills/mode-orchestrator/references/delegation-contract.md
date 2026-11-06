@@ -5,8 +5,8 @@ child more authority than the parent, adopts a model request, resolves and
 approves it, pins it at launch, and records the run. `SKILL.md` and both harness
 references point here instead of restating structures; this file is the one
 place each structure is defined. Concepts are named here, not any host's API:
-where a host does not yet publish the route a check needs, the run stops
-before delegation (see §1) — the check is never relaxed to keep a run moving.
+where a host does not publish the observation route, the run stops before
+delegation (see §1).
 
 Node helper: `scripts/delegation_plan.js` validates the data this file
 defines (`validate`, `dispatch-check`, `audit`). It proves the integrity of
@@ -36,10 +36,15 @@ launches a real agent to discover it.
 
 | observed | run behavior |
 |---|---|
-| native `available`, required capabilities (model-fixing field, recursion suppression, skills disabled) confirmed | plan and run within the published constraints |
+| native `available` | plan and run within the published constraints |
 | native `unavailable` (delegation off, profile invalid, tool absent) | `blocked` before delegation, quoting the host's reason string. No CLI detour |
 | no observation route (a build before the contract) | the model cannot be fixed: `blocked` before delegation, naming the old build |
 | extension load error, presence of `tool_call` handlers | not a delegation input. The parent doing the work itself is in the same state |
+
+What a call reveals — the model-fixing field, recursion suppression, skills
+disabled, the evidence lines — is not checked before delegating. Every call
+carries the approved binding and recursion off, and a shortfall is classified
+from the call's result (§6).
 
 A v2 run never starts a child through the CLI or a free shell, the judge
 included. The existence of a shell, a CLI binary or skill text is never
@@ -49,8 +54,7 @@ re-created by a CLI that could run it.
 Constraint comparisons that may be coded: allowed-tools subsets, non-growth of
 recursion caps, launch counts and deadlines, fixed cwd equality, skill
 disablement kept. The meaning of an arbitrary hook or policy sentence is not
-generally comparable in code; when the host cannot guarantee a constraint
-applies on a route, that route is not chosen.
+generally comparable in code.
 
 Recursion and skills: a child never re-delegates. The call must carry the
 host's per-call recursion suppression (a `nested: false` equivalent). The
@@ -129,12 +133,13 @@ never-newest rule is added.
 
 ## 4. Approval evidence
 
-Approval binds a plan snapshot digest to a user event. Three kinds:
+Approval ties a plan to a user event. Three kinds:
 
-- `user-plan` — the user approved a displayed plan. Carries the displayed
-  digest, a reference to the original event, and the scope.
-- `auto-invocation` — the user's actual `--auto` invocation instruction.
-  Legal only when every resolution the plan snapshot uses is `exact`: the
+- `user-plan` — the user approved a presented plan. Carries a reference to
+  the original event, and the scope.
+- `auto-invocation` — the user's actual `--auto` invocation instruction; its
+  `event_ref` quotes that text, `--auto` included.
+  Legal only when every resolution the plan uses is `exact`: the
   user-designated model reference matches, with no candidate choice, version
   selection, or semantic interpretation. A mechanical or unique resolution is
   not a user approval; neither is an LLM-written `approved: true`. Under
@@ -143,12 +148,9 @@ Approval binds a plan snapshot digest to a user event. Three kinds:
   and target; a non-interactive run stops before starting, as `needs-human`,
   showing the resolution and the concrete approval request.
 - `derived` — an insertion or re-execution derived from an already-approved
-  plan or contingency policy. Carries the parent approval reference, the
-  concrete turn digest, and the policy-conformance check. For a dynamic
-  insertion — a dynamic turn whose `amendment_ref` is null — the concrete
-  digest is this contract's plan-snapshot digest computed over exactly that
-  turn within its plan, the record carries `contingency_ref` naming the
-  plan's approved contingency policy, the insertion's kind must be in that
+  plan or contingency policy. Carries the parent approval reference. For a dynamic
+  insertion — a dynamic turn whose `amendment_ref` is null — the record
+  carries `contingency_ref` naming the plan's approved contingency policy, the insertion's kind must be in that
   policy's `allowed_kinds`, the parent chain must reach a plan approval
   without a cycle, and the insertion's delegations carry this derived
   approval as their `approval_ref`. A plan with a null
@@ -158,27 +160,6 @@ Match kinds recorded in resolution evidence: `exact`, `alias`, `prefix`,
 `series`, `nl-interpret`. Only `exact` may ride `auto-invocation`. When the
 scope's reading or the match kind cannot be confirmed, approval is not
 skipped.
-
-### Digest
-
-The plan snapshot's digest is sha256 over the snapshot's canonical JSON:
-objects with keys sorted lexicographically, arrays in order, no whitespace,
-UTF-8. The snapshot contains, per turn: `key`, `kind`, `step` (the work's own
-text), `parent`, `inherits`, `inputs`, `mode`, `role` when present, `effort`,
-`budget_refs`, `selection` (`source`, `request`, `scope_ref`,
-`resolved_model`, `granularity`, `thinking`), and `dispatch_plan`; plus the
-plan's `contingency_policy_ref`. It excludes times, revisions, approval
-references, lineage metadata (`rebinds`, `amendment_ref`, `amendment_item`)
-and everything outside the plan. A dynamically inserted turn is never folded
-back into an earlier snapshot: its digest lives in its own `derived` approval.
-
-Snapshot reconstruction for re-computation: for an initial plan, its
-first-appearance planned turns in ledger order; for a plan created by an
-amendment, its replacement turns in ledger order. When the approval evidence
-carries `snapshot_keys`, that ordered list is authoritative. The snapshot
-stays the binding and the route: the applicable constraints live in the
-route-policy evidence the delegations reference (`policy_ref`), not in the
-snapshot — a deliberate reading of what the ledger records carry.
 
 ## 5. Ledger — run-directory record structures
 
@@ -192,8 +173,8 @@ the ledger's time order; nothing in a record carries a clock.
 Evidence lives in three append-only JSONL files beside `index.md` in the run
 directory, referenced by `*_ref` fields — never inlined into the index:
 
-- `approvals.jsonl` — `approval` records (`key`, `kind`, `target_digest`,
-  `event_ref` or `parent_approval_ref`, `scope`, optional `snapshot_keys`,
+- `approvals.jsonl` — `approval` records (`key`, `kind`, `event_ref`,
+  `parent_approval_ref` — each null where it does not apply — `scope`,
   optional `contingency_ref` on a `derived` approval)
   and `contingency` records (`key`, `allowed_kinds`, `origin_turn`,
   `mode_policy`, `effort_policy`, `model_binding`, `scope`, `tool_constraints`,
@@ -209,7 +190,8 @@ directory, referenced by `*_ref` fields — never inlined into the index:
   `permission` records and the route states `permitted | unsupported |
   denied | unknown | allow | deny`: they are read, resolved by `policy_ref`
   and not inspected. The dispatch input's `observed.policy_state` is likewise
-  read and not inspected.
+  read and not inspected, and so are `plan.digest`, `target_digest` and
+  `snapshot_keys` in a recorded run; a new run writes none of them.
 - Route names: a new run writes `native-subagent` for the native route in
   `dispatch_plan.route`, `delegation.route`, the dispatch input and its
   `route-policy`. Recorded runs also used `native` and `subagent`; those three
@@ -228,7 +210,7 @@ vocabulary children return is unchanged.
 | record | fields besides `record` |
 |---|---|
 | `contract` | `version` = `mo-delegation-v2`; must be the block's first line |
-| `plan` | `id`, `replaces`, `after_turn`, `digest`, `approval_ref`, `contingency_policy_ref` |
+| `plan` | `id`, `replaces`, `after_turn`, `approval_ref`, `contingency_policy_ref` |
 | `turn` | `key`, `plan`, `kind`, `step`, `parent`, `inherits`, `inputs`, `mode`, `effort`, `effort_source`, `budget_refs`, `rebinds`, `amendment_ref`, `selection`, `dispatch_plan`; `role` optional; `amendment_item` required when `amendment_ref` is non-null |
 | `delegation` | `id`, `owner`, `owner_kind`, `plan`, `approval_ref`, `resolution_ref`, `policy_ref`, `route`, `actual_selection_args`, `call_ref`, `reported_model`, `reported_thinking` |
 | `attempt` | `turn`, `attempt`, `delegation_id`, `reported_status`, `effective_status`, `file` |
@@ -244,7 +226,7 @@ vocabulary children return is unchanged.
   same one-of shape as `actual_selection_args`.
 - `actual_selection_args`: what the call actually carried — `model` only,
   `effort` only, or a published fixed resolution reference (`resolution_ref`
-  only). Never back-filled from a planned value. `model` and `effort` are
+  only: the host's reference, not the resolutions.jsonl key). Never back-filled from a planned value. `model` and `effort` are
   never sent together.
 - `effort_source`: `step-model` / `step-effort` / `workflow-effort` /
   `inferred-effort` / `policy-effort` / `inherited`. The v1 `source` field
@@ -283,8 +265,8 @@ the current policy still matches the approved result. A settings revision that
 changed while the effective result stays semantically the same needs no
 re-approval; only the data proves it. A pre-launch re-read alone does not beat
 the gap between check and call: pinning to the approved result or an atomic
-entry check is what does, and a revision or digest written into JSON is not by
-itself a guarantee.
+entry check is what does, and a revision written into JSON is not by itself a
+guarantee.
 
 For ordinary turns and their recovery, decision and re-run turns. The
 restart-judge has its own rules below — it owns no turn or attempt.
@@ -327,8 +309,8 @@ of any host-side stale prevention.
 
 ## 7. Rebinding and amendment
 
-An amendment replaces the complete unexecuted tail under a new plan: a new
-snapshot and digest, `replaces` naming the old plan, `after_turn` the last
+An amendment replaces the complete unexecuted tail under a new plan:
+`replaces` naming the old plan, `after_turn` the last
 executed boundary. `cause` is `todolist` / `model-resolution` / `policy` /
 `user-revision`. Only unstarted turns rebind; when a turn has any call at
 all, rebinding requires evidence that every call of the turn was unstarted.
@@ -381,8 +363,8 @@ turn>`.
 
 `scripts/delegation_plan.js` reads only the data named above. `validate`
 checks block structure, v2-only vocabulary, exact field sets (unlisted keys
-rejected), reference integrity, kind/lineage rules, budget ownership, digest
-re-computation, approval bindings and the insertion-approval rules. `audit`
+rejected), reference integrity, kind/lineage rules, budget ownership, approval
+bindings and the insertion-approval rules. `audit`
 adds the delegation/attempt conversion rules of §6, the report-contradiction
 stop, stale-plan handling and budget non-double-count. `validate` and `audit`
 run with the run's three evidence files: a rule whose evidence file is not
@@ -390,16 +372,18 @@ provided is a violation naming the missing file, never a silent skip.
 `dispatch-check` checks one planned call against the approved resolution —
 binding shape, model/effort/resolution agreement, an optionally reported
 observed state, and it refuses a key an amendment has superseded or a turn
-sitting on a stale-plan attempt. `digest` prints a plan's snapshot digest
-under the same reconstruction rule `validate` re-computes with, so the
-orchestrator never canonicalizes the snapshot by hand.
+sitting on a stale-plan attempt.
 
 It proves the integrity of the data it is given. It does not prove: that a
 policy record reflects the host's real policy; that an approval event
 happened or was made by the user; that a host launched what the records say;
-that a shell call did not bypass the helper. Those grounds live in the host's
+that a shell call did not bypass the helper; that the ledger was not edited
+after approval. An `auto-invocation` whose `event_ref` has no `--auto` is a
+violation, which catches an honest mislabel only: a string containing it
+passes, and so does a self-written `user-plan`. Those grounds live in the host's
 launch entry and the user's event, not in this validator. Because the record
-version stayed `mo-delegation-v2` across the route-availability change, the
+version stayed `mo-delegation-v2` across the route-availability change and the
+removal of the plan digest, the
 helper cannot tell a recorded run from a new run that wrongly writes the old
 vocabulary: such a run passes. Writing only the current vocabulary is the
 orchestrator's obligation, not something the helper enforces.

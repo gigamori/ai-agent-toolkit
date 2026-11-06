@@ -132,6 +132,8 @@ similarity. Inserted debug and llm-decision turns alone use the policy-selected
 or pin stops as `blocked`; there is no harness-default or cross-effort fallback,
 and a broken profile is never hidden by a higher source.
 
+Without `--auto`, a run with nobody to answer ends at the presented plan.
+
 Under `--auto`, the plan runs without per-turn confirmation only while every
 model resolution it uses is an exact match of what you specified. A model
 resolved at run time from natural language, an abbreviation, an alias, a
@@ -426,7 +428,7 @@ reused: a suffix is added. The run never deletes the directory. It holds:
 
   ```json
   {"record":"contract","version":"mo-delegation-v2"}
-  {"record":"plan","id":"r0","replaces":null,"after_turn":null,"digest":"<sha256>","approval_ref":"ap1","contingency_policy_ref":"cp1"}
+  {"record":"plan","id":"r0","replaces":null,"after_turn":null,"approval_ref":"ap1","contingency_policy_ref":"cp1"}
   ```
 
   An initial turn always uses literal `"kind":"planned"`; its mode is recorded
@@ -462,8 +464,7 @@ reused: a suffix is added. The run never deletes the directory. It holds:
   contingency policy and carries a `derived` approval bound to it; its
   delegation references that derived approval.
   `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` check the
-  ledger's integrity — data consistency, not evidence authenticity; its
-  `digest` operation computes the plan digest so it is never hand-computed. Run them
+  ledger's integrity — data consistency, not evidence authenticity. Run them
   with the run's three evidence files, since a rule whose evidence is missing
   is a violation, not a skip.
   It is an inspection index, not a resumable scheduler. Previous

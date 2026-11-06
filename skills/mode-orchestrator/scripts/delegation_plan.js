@@ -1,5 +1,5 @@
 // delegation_plan.js -- the v2 delegation-plan validator: schema, source
-// priority, references, digests, approval bindings, launch agreement, audit.
+// priority, references, approval bindings, launch agreement, audit.
 //
 //   node delegation_plan.js validate --file <index.md|ledger.jsonl>
 //        [--approvals approvals.jsonl] [--resolutions resolutions.jsonl]
@@ -7,7 +7,6 @@
 //   node delegation_plan.js dispatch-check --file <...> --dispatch <call.json>
 //        [same evidence flags]
 //   node delegation_plan.js audit --file <...> [same evidence flags]
-//   node delegation_plan.js digest --file <...> --plan <id> [--approvals f]
 //
 // Structures and rules: references/delegation-contract.md. This script never
 // launches a model, a CLI or an agent; it proves the integrity of the data
@@ -22,7 +21,6 @@
 
 "use strict";
 
-const crypto = require("crypto");
 const fs = require("fs");
 
 const util = require("./gate_util");
@@ -76,8 +74,8 @@ const POLICY_REF_RECORDS = ["route-policy", "permission"];
 const FIELD_SETS = {
   contract: { required: ["record", "version"], optional: [] },
   plan: {
-    required: ["record", "id", "replaces", "after_turn", "digest", "approval_ref", "contingency_policy_ref"],
-    optional: [],
+    required: ["record", "id", "replaces", "after_turn", "approval_ref", "contingency_policy_ref"],
+    optional: ["digest"],
   },
   turn: {
     required: ["record", "key", "plan", "kind", "step", "parent", "inherits", "inputs", "mode",
@@ -103,7 +101,7 @@ const FIELD_SETS = {
 
 const EVIDENCE_SETS = {
   approvals: {
-    approval: { required: ["record", "key", "kind", "target_digest", "event_ref", "parent_approval_ref", "scope"], optional: ["snapshot_keys", "contingency_ref"] },
+    approval: { required: ["record", "key", "kind", "event_ref", "parent_approval_ref", "scope"], optional: ["contingency_ref", "target_digest", "snapshot_keys"] },
     contingency: {
       required: ["record", "key", "allowed_kinds", "origin_turn", "mode_policy", "effort_policy",
         "model_binding", "scope", "tool_constraints", "caps"],
@@ -130,6 +128,8 @@ const AMENDMENT_KEY = /^amend-[0-9]+$/;
 const PLAN_ID = /^r[0-9]+$/;
 const JUDGE_OWNER = /^[A-Za-z0-9-]+-[0-9]+$/;
 
+const AUTO_FLAG = /(^|[^\w-])--auto(?![\w-])/;
+
 const MAX_PRINTED_VIOLATIONS = 20;
 
 function canonicalJson(value) {
@@ -143,8 +143,9 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
-function digestOf(snapshot) {
-  return crypto.createHash("sha256").update(Buffer.from(canonicalJson(snapshot), "utf8")).digest("hex");
+function plannedHostRef(turn) {
+  const args = turn.dispatch_plan && turn.dispatch_plan.args;
+  return args ? args.resolution_ref : undefined;
 }
 
 function originKey(key) {
@@ -467,7 +468,6 @@ class Checker {
         }
       } else if (entry.record === "plan") {
         if (typeof entry.id !== "string" || !PLAN_ID.test(entry.id)) this.violation(where, `plan id shape: ${entry.id}`);
-        if (typeof entry.digest !== "string" || !/^[0-9a-f]{64}$/.test(entry.digest)) this.violation(where, "plan.digest must be sha256 hex");
       } else if (entry.record === "delegation") {
         if (!OWNER_KINDS.includes(entry.owner_kind)) this.violation(where, `owner_kind not in ${OWNER_KINDS.join("|")}`);
         if (entry.owner_kind === "restart-judge" && !JUDGE_OWNER.test(String(entry.owner))) {
@@ -705,18 +705,11 @@ class Checker {
     }
   }
 
-  snapshotKeysFor(planEntry) {
-    const planId = planEntry.id;
-    if (this.evidence.approvals) {
-      const approval = this.evidence.approvals.byKey.get(planEntry.approval_ref);
-      if (approval && approval.record === "approval" && Array.isArray(approval.snapshot_keys)) {
-        return { keys: approval.snapshot_keys, source: "approval evidence" };
-      }
-    }
+  planTurnKeys(planEntry) {
     const isInitial = planEntry.replaces === null;
     const keys = [];
     for (const { entry } of this.ledger.turns) {
-      if (entry.plan !== planId) continue;
+      if (entry.plan !== planEntry.id) continue;
       if (isInitial) {
         if (entry.kind === "planned" && (entry.amendment_ref === null || entry.amendment_ref === undefined) && (entry.rebinds === null || entry.rebinds === undefined)) {
           keys.push(entry.key);
@@ -725,54 +718,7 @@ class Checker {
         keys.push(entry.key);
       }
     }
-    const hasContingency = planEntry.contingency_policy_ref !== null && planEntry.contingency_policy_ref !== undefined;
-    if (hasContingency && !this.evidence.approvals) {
-      return { keys: null, source: "unverifiable" };
-    }
-    return { keys, source: "ledger structure" };
-  }
-
-  snapshotFor(planEntry, keys) {
-    const turns = keys
-      .map((key) => this.ledger.get(key))
-      .filter((t) => t !== null && t.record === "turn");
-    return {
-      contingency_policy_ref: planEntry.contingency_policy_ref,
-      turns: turns.map((t) => ({
-        key: t.key,
-        kind: t.kind,
-        step: t.step,
-        parent: t.parent,
-        inherits: t.inherits,
-        inputs: t.inputs,
-        mode: t.mode,
-        ...(t.role === undefined ? {} : { role: t.role }),
-        effort: t.effort,
-        budget_refs: t.budget_refs,
-        selection: {
-          source: t.selection.source,
-          request: t.selection.request,
-          scope_ref: t.selection.scope_ref,
-          resolved_model: t.selection.resolved_model,
-          granularity: t.selection.granularity,
-          thinking: t.selection.thinking,
-        },
-        dispatch_plan: t.dispatch_plan,
-      })),
-    };
-  }
-
-  digests() {
-    for (const { line, entry } of this.ledger.plans) {
-      const where = `line ${line} (plan ${entry.id})`;
-      const { keys, source } = this.snapshotKeysFor(entry);
-      if (keys === null) {
-        this.violation(where, `digest not verifiable without snapshot_keys in approval evidence (${source})`);
-        continue;
-      }
-      const computed = digestOf(this.snapshotFor(entry, keys));
-      this.check(computed === entry.digest, where, `digest mismatch (recorded ${entry.digest}, computed ${computed} over ${source})`);
-    }
+    return keys;
   }
 
   approvals() {
@@ -790,18 +736,15 @@ class Checker {
         this.violation(where, `approval kind not in ${APPROVAL_KINDS.join("|")}: ${approval.kind}`);
         continue;
       }
-      this.check(approval.target_digest === entry.digest, where, "approval.target_digest must equal the plan digest");
       if (approval.kind === "auto-invocation") {
         this.check(typeof approval.event_ref === "string" && approval.event_ref !== "", where, "auto-invocation carries the original invocation event reference");
+        this.check(AUTO_FLAG.test(String(approval.event_ref)), where, "auto-invocation event_ref must contain the invocation's --auto");
         if (evidence.resolutions) {
-          const { keys } = this.snapshotKeysFor(entry);
-          if (keys !== null) {
-            for (const key of keys) {
-              const turn = ledger.get(key);
-              if (!turn || turn.record !== "turn") continue;
-              const resolution = evidence.resolutions.byKey.get(turn.selection.resolution_ref);
-              this.check(resolution !== undefined && resolution.match === "exact", where, `auto-invocation needs exact resolution for ${key} (got ${resolution ? resolution.match : "unresolved"})`);
-            }
+          for (const key of this.planTurnKeys(entry)) {
+            const turn = ledger.get(key);
+            if (!turn || turn.record !== "turn") continue;
+            const resolution = evidence.resolutions.byKey.get(turn.selection.resolution_ref);
+            this.check(resolution !== undefined && resolution.match === "exact", where, `auto-invocation needs exact resolution for ${key} (got ${resolution ? resolution.match : "unresolved"})`);
           }
         }
       } else if (approval.kind === "user-plan") {
@@ -851,17 +794,15 @@ class Checker {
         continue;
       }
       this.check(Array.isArray(contingency.allowed_kinds) && contingency.allowed_kinds.includes(entry.kind), where, `insertion kind not allowed by the contingency policy: ${entry.kind}`);
-      const concrete = digestOf(this.snapshotFor(plan, [entry.key]));
-      const covering = [...evidence.approvals.byKey.values()].find((a) => a.kind === "derived" && a.target_digest === concrete && a.contingency_ref === contingencyRef);
-      if (!covering) {
-        this.violation(where, `no derived approval covers this insertion (concrete digest ${concrete})`);
-        continue;
-      }
-      this.checkDerivedChain(covering, where);
       for (const { line: delegationLine, entry: delegation } of ledger.delegations) {
-        if (delegation.owner_kind === "turn" && delegation.owner === entry.key) {
-          this.check(delegation.approval_ref === covering.key, `line ${delegationLine} (delegation ${delegation.id})`, `an insertion's delegation carries the covering derived approval (got ${delegation.approval_ref}, want ${covering.key})`);
+        if (delegation.owner_kind !== "turn" || delegation.owner !== entry.key) continue;
+        const dWhere = `line ${delegationLine} (delegation ${delegation.id})`;
+        const covering = evidence.approvals.byKey.get(delegation.approval_ref);
+        if (!covering || covering.kind !== "derived" || covering.contingency_ref !== contingencyRef) {
+          this.violation(dWhere, `an insertion's delegation carries the covering derived approval (got ${delegation.approval_ref}, want a derived approval with contingency_ref ${contingencyRef})`);
+          continue;
         }
+        this.checkDerivedChain(covering, dWhere);
       }
     }
   }
@@ -963,7 +904,8 @@ class Checker {
       } else if (binding && binding.effort !== undefined) {
         this.check(turn.effort !== null && binding.effort === turn.effort, where, "actual effort must equal the turn's effort");
       } else if (binding && binding.resolution_ref !== undefined) {
-        this.check(binding.resolution_ref === selection.resolution_ref, where, "actual resolution_ref must equal the approved one");
+        const planned = plannedHostRef(turn);
+        if (planned !== undefined) this.check(binding.resolution_ref === planned, where, "actual resolution_ref must equal the planned one");
       }
       if (turn.dispatch_plan && turn.dispatch_plan.route !== undefined) {
         this.check(delegation.route === turn.dispatch_plan.route, where, "delegation route agrees with dispatch_plan");
@@ -1096,7 +1038,6 @@ class Checker {
     this.references();
     this.lineage();
     this.budgets();
-    this.digests();
     this.approvals();
     this.insertions();
     this.sources();
@@ -1208,7 +1149,8 @@ function opDispatchCheck(args) {
   } else if (present && present.includes("effort")) {
     checker.check(turnEntry.effort !== null && dispatch.args.effort === turnEntry.effort, where, "dispatch effort differs from the turn's effort");
   } else if (present && present.includes("resolution_ref")) {
-    checker.check(dispatch.args.resolution_ref === selection.resolution_ref, where, "dispatch resolution_ref differs from the approved one");
+    const planned = plannedHostRef(turnEntry);
+    if (planned !== undefined) checker.check(dispatch.args.resolution_ref === planned, where, "dispatch resolution_ref differs from the planned one");
   }
   const observed = dispatch.observed;
   if (isObject(observed)) {
@@ -1229,28 +1171,10 @@ function opDispatchCheck(args) {
   return 0;
 }
 
-function opDigest(args) {
-  const { flags } = parseArguments(args, ["file", "plan", "approvals"]);
-  const ledger = readLedger(requireFlag(flags, "file"));
-  ledger.index();
-  const planId = requireFlag(flags, "plan");
-  const evidence = flags.approvals ? { approvals: readEvidenceFile(flags.approvals, ["approval", "contingency"], "approvals") } : {};
-  const checker = new Checker(ledger, evidence);
-  const plan = ledger.get(planId);
-  if (!plan || plan.record !== "plan") throw new Refusal(`plan unresolved: ${planId}`);
-  const { keys, source } = checker.snapshotKeysFor(plan);
-  if (keys === null) throw new Refusal(`${planId}: snapshot keys need approval evidence with snapshot_keys (${source})`);
-  const missing = keys.filter((k) => { const t = ledger.get(k); return !t || t.record !== "turn"; });
-  if (missing.length > 0) throw new Refusal(`${planId}: snapshot keys without turn records: ${missing.join(", ")}`);
-  process.stdout.write(`DIGEST ${planId} ${digestOf(checker.snapshotFor(plan, keys))} keys=${keys.join(",")}\n`);
-  return 0;
-}
-
 const USAGE = [
   `usage: node ${SCRIPT}.js validate --file <index.md|ledger.jsonl> [--approvals f] [--resolutions f] [--policy f]`,
   `       node ${SCRIPT}.js audit --file <...> [same evidence flags]`,
   `       node ${SCRIPT}.js dispatch-check --file <...> --dispatch <call.json> [same evidence flags]`,
-  `       node ${SCRIPT}.js digest --file <...> --plan <id> [--approvals f]`,
 ];
 
 runCli(SCRIPT, USAGE, function main(args) {
@@ -1259,6 +1183,5 @@ runCli(SCRIPT, USAGE, function main(args) {
   if (operation === "validate") return opValidate(rest);
   if (operation === "audit") return opAudit(rest);
   if (operation === "dispatch-check") return opDispatchCheck(rest);
-  if (operation === "digest") return opDigest(rest);
   throw new UsageError(`unknown operation: ${operation}`);
 });

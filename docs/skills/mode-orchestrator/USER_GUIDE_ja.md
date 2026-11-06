@@ -92,6 +92,8 @@ workflow 行が sequence position、mode の一致、semantic similarity で自�
 source `policy-effort` として使う。profile、mapping、pin の欠落または不正は `blocked` で停止し、
 harness default や effort 間 fallback は無く、壊れた profile を上位指定が隠すこともない。
 
+`--auto` なしで応答者がいない run は、plan の提示で終わる。
+
 `--auto` の下では、使われる全 model 解決が指定内容との exact match である間だけ、
 plan はターンごとの確認なしで走る。実行時に自然言語・略称・別名・接頭辞・系列から
 新たに解決した model は、適用範囲と解決先の明示的承認を常に必要とする — headless なら
@@ -213,7 +215,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
 
   ```json
   {"record":"contract","version":"mo-delegation-v2"}
-  {"record":"plan","id":"r0","replaces":null,"after_turn":null,"digest":"<sha256>","approval_ref":"ap1","contingency_policy_ref":"cp1"}
+  {"record":"plan","id":"r0","replaces":null,"after_turn":null,"approval_ref":"ap1","contingency_policy_ref":"cp1"}
   ```
 
   初期ターンの `"kind":"planned"` は常にこのliteralであり、modeは別に記録してkindにはしない。続けて次のような planned turn definition を書く — selection に model 要求の出源と文言・適用範囲、解決先を記録する:
@@ -230,7 +232,7 @@ inferred effort を使う。明示 model と effort は常に binding より優�
   ```
 
   `dispatch_plan` / `actual_selection_args` は model / effort / 固定解決参照のちょうど1つを運び、actual は call が実際に渡したものであり plan からの後付けではない。解決 model は tier ではない。call 前に停止した run（経路の利用不能、解決変動）は delegation も attempt も残さず、call しても開始しなかった場合は delegation に null の報告を残し、attempt の effective status が分類（`blocked`、`stale-plan`、`aborted`）を運ぶ。分割された1ステップは、同じ番号付き `step` を持つ複数の planned turn key を持ちうる。aborted retry は同じ turn に次の attempt を追加する。index は status、decision 挿入、amendment、human decision wait、aborted retry を生じさせた check も記録し、解決・許可・承認の詳細は run ディレクトリの追記専用 `approvals.jsonl` / `resolutions.jsonl` / `policy.jsonl` に置かれ `*_ref` で参照される。動的挿入は plan の承認済み contingency policy に従い、それに紐付く `derived` 承認を運び、その delegation は当該 derived 承認を `approval_ref` に持つ。
-  `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` が台帳の整合性を検査する — データの整合であって証跡の真正ではない。plan の digest は同じ script の `digest` 操作で計算し、手計算しない。run の3つの証跡ファイルを渡して実行する。証跡が欠ける規則は黙ってskipではなく違反になる。
+  `scripts/delegation_plan.js validate` / `dispatch-check` / `audit` が台帳の整合性を検査する — データの整合であって証跡の真正ではない。run の3つの証跡ファイルを渡して実行する。証跡が欠ける規則は黙ってskipではなく違反になる。
   検査用インデックスであり、再開可能なスケジューラではない。以前の `adaptive-effort-v1` の run は読取り専用で保持される。
 
 これらはランタイム成果物 — コミットしない。

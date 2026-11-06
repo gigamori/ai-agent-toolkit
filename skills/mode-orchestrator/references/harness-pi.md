@@ -37,77 +37,65 @@ resolution.
 
 ## Route selection — native availability (before the first delegation)
 
-A host may publish a `subagent` tool. One run-level availability read and one
-schema check decide whether a run may delegate at all; then the table below
-decides each turn. A turn that misses a row does not move to the CLI route:
-the run stops `blocked`, naming the unmet capability. Decide before anything
-is dispatched: a mismatch found after real work was sent is not a safe
-fallback.
+A host may publish a `subagent` tool. One run-level availability read decides
+whether a run may delegate at all. What a call reveals is not checked
+beforehand: make the call as The subagent route says and classify its result.
+A turn does not move to the CLI route.
 
-Once per run, before the first delegation:
-
-1. **Availability.** Call the read-only `delegation_contract` tool with
-   `{"operation":"observe"}`. It returns the native route's
-   `available|unavailable` with a reason string (delegation disabled by
-   configuration, profile invalid, tool absent), the constraints it enforces,
-   and the per-effort setting states. `unavailable` is `blocked` before any
-   delegation, quoting the reason. No permission is read or computed: whether
-   a `tool_call` handler (taskflow's, for one) is registered, or an extension
-   failed to load, decides nothing — a refusal is decided per call at the
-   host's boundary and classified afterwards (the contract's host-result
-   table). If the session has no `delegation_contract` tool, the running build
-   predates the contract and cannot pin a model → `blocked`, naming the old
-   build. A build that still answers in the earlier vocabulary (overall
-   `allow|deny|unknown`, route states `permitted|unsupported|denied|unknown`;
-   pi-extensions `ea1007a` / pi-studio `52a0444`) is read only for its native
-   route state: `permitted` counts as available; any other value is treated
-   as `unavailable` and quoted as that build's answer (a transitional stop, no
-   worse than before). The CLI entry of any answer is ignored. A tool being
-   present is never itself a ground, and no live agent is launched to
-   discover any of this.
-2. **Schema.** The published `subagent` tool's schema has a top-level `timeout`
-   (seconds); contract builds also expose `expectedResolution` (the pinned
-   binding field); the per-child delegation evidence is published in the
-   observe result of step 1. The tool's name alone is not this check. The
-   published schema and description, together with that observe result, are
-   the pre-call grounds; the tool being absent or unreadable is `blocked`.
-
-Per turn, a miss in the table below is `blocked` for the run:
-
-| the turn needs | the subagent route meets it only if |
-|---|---|
-| the turn's approved binding | the schema shows `expectedResolution` (resolve first with `delegation_contract` `{"operation":"resolve"}` — exactly one `request.model` or `request.effort`, plus `requiredEffort` — and pass the returned `resolutionRef`, omitting `model`/`effort`); nothing else carries a model |
-| both recursion layers: per-call recursion suppression in the child, and no skills loaded in it | the observe result's enforced constraints (recursion, skill discovery) cover both; do not fill either in from memory |
-| an audit id for the attempt's `delegation_ref` | the observe result publishes it: `resultEvidence` names where the per-child evidence comes back, and `controlLine` names the evidence line (`[subagent] evidence=…`) and any conditional `run=` line. The first real call confirms it |
+Once per run, before the first delegation, call the read-only
+`delegation_contract` tool with `{"operation":"observe"}`. It returns the
+native route's `available|unavailable` with a reason string (delegation disabled by
+configuration, profile invalid, tool absent), the constraints it enforces,
+and the per-effort setting states. `unavailable` is `blocked` before any
+delegation, quoting the reason. No permission is read or computed: whether
+a `tool_call` handler (taskflow's, for one) is registered, or an extension
+failed to load, decides nothing — a refusal is decided per call at the
+host's boundary and classified afterwards (the contract's host-result
+table). If the session has no `delegation_contract` tool, the running build
+predates the contract and cannot pin a model → `blocked`, naming the old
+build. A build that still answers in the earlier vocabulary (overall
+`allow|deny|unknown`, route states `permitted|unsupported|denied|unknown`;
+pi-extensions `ea1007a` / pi-studio `52a0444`) is read only for its native
+route state: `permitted` counts as available; any other value is treated
+as `unavailable` and quoted as that build's answer (a transitional stop, no
+worse than before). The CLI entry of any answer is ignored. A tool being
+present is never itself a ground, and no live agent is launched to
+discover any of this.
 
 Effort, tool restriction and working directory decide nothing here: this skill
-passes none of them for a turn on either route. A capability that neither
-the published schema and description nor the observe result shows is unmet;
-do not fill it in from memory. Record the route and the reason in the run index prose (above
-the JSONL block), at the first delegation and again whenever a later turn
+passes none of them for a turn on either route. Record the route and the
+reason in the run index prose (above the JSONL block), at the first delegation and again whenever a later turn
 takes the other route. How far the subagent route under this contract has
 been exercised on a live host is under Residual risks.
 
 ### The subagent route
 
-- One `subagent` call per turn, single mode (`agent` and `task`): `task` is the
-  assembled prompt, the binding is the approved `expectedResolution` (resolve,
-  approve, then pass the returned `resolutionRef` and omit `model`/`effort`),
-  and the top-level `timeout` is the turn's value from P2's table, counted from
-  the call. On builds without the published contract there is no pinning field:
-  the route is unmet (table above) and the run has already stopped at step 1
-  — a call is never made with an unpinned free-form model.
-- The first line of the returned content is the tool's control line, not part
-  of the turn's reply. Split it off. Read the turn's status from the child's own
-  text, by Execution step 3, only when the control line says
+- One `subagent` call per turn, single mode (`agent` and `task`), with
+  `nested: false`: `task` is the assembled prompt, the binding is the approved
+  `expectedResolution` (resolve with `delegation_contract`
+  `{"operation":"resolve"}` — `agent`, exactly one `request.model` or
+  `request.effort`, and `requiredEffort` — approve, then pass the returned
+  `resolutionRef` and omit `model`/`effort`; give the call the same `agent` and
+  `agentScope` as the resolve, since a different one makes the reference
+  stale), and the top-level `timeout` is the turn's value from P2's table,
+  counted from the call. A build without the published contract has no pinning field, and
+  the run has already stopped at Route selection: a call is never made with an
+  unpinned free-form model.
+- The leading `[subagent]` lines of the returned content are the tool's, not
+  part of the turn's reply: on a pinned call `evidence=…` comes first, then the
+  control line `outcome=…` (with `run=…` once a child session exists). Split
+  them off. Read the turn's status from the child's own text, by Execution
+  step 3, only when the control line says
   `outcome=completed` and shows no `unconfirmed_descendants`. Any other outcome
   (`stopped`, `stop_unconfirmed`, `error`, `not_started`), `completed` with
   `unconfirmed_descendants`, no control line, or one that does not parse, is a
-  turn that reported nothing: `aborted`.
+  turn that reported nothing: `aborted`. The exception is a result whose
+  evidence shows the turn never started: the contract's host-result table
+  classifies it (a refusal is `blocked`, a changed resolution `stale-plan`).
 - This route has no stop observer, so an `aborted` attempt on it has an
   `UNCONFIRMED` stop and Execution step 4's restart gate refuses it:
   `needs-human`. The control line's outcome goes in the run index prose (above
-  the JSONL block); its `run=` id is the attempt record's `delegation_ref`.
+  the JSONL block); its `run=` id goes in the delegation record's `call_ref`.
 
 ## P1 — Delegation (CLI route)
 
@@ -351,8 +339,8 @@ the session path in the run index.
    the model resolution, approval or launch preparation is not complete before
    `issue`, do not issue: stop. No file-writing call is placed between `issue`
    and launch. The judge's tool restriction (read, grep, write) is in the
-   launch message only; the host does not enforce it. Split off the control
-   line as above; the rest of the child's text is the judge's reply; check it:
+   launch message only; the host does not enforce it. Split off the leading
+   `[subagent]` lines as above; the rest of the child's text is the judge's reply; check it:
 
    ```
    node <pi-scripts>/judge_gate.js check --stem <S> --reply "<the judge's reply, verbatim>"
@@ -399,11 +387,14 @@ run only as a refused call or in the child's own report, and otherwise the
 weight sits on the self-judged clause in the injected prompt, including its
 "unless a rule permits it" half. Do not carry over Claude Code intuitions.
 There is no pre-delegation permission check either: refusals are classified
-afterwards (the contract's host-result table). Route selection step 1 reads
+afterwards (the contract's host-result table). Route selection reads
 availability, not permission.
 
 ## Residual risks specific to this harness
 
+- Capabilities are not checked before the first call. A shortfall surfaces at
+  that call, after the plan was approved, and a host that does not enforce
+  recursion suppression or disabled skills lets the child recurse or load them.
 - `timeout` kills a legitimately slow turn exactly as hard as a hung one; there
   is no `STALL`-style middle ground. Size generously per mode.
 - Both recursion layers live on the same command line; a delegation written
@@ -421,7 +412,7 @@ availability, not permission.
   audited. One run of one survey turn; recovery, decision and parallel paths
   were not exercised live. Older builds (pi-extensions `ea1007a`, `fd9a789`;
   pi-studio `52a0444`) still compute a permission state that reads `unknown`
-  under any `tool_call` handler; Route selection step 1 reads them as stated
+  under any `tool_call` handler; Route selection reads them as stated
   there, and a run in such a session stops before delegating. Further
   published limits to carry into any claim: the
   launch-time payload guard holds only for providers honoring the before-send

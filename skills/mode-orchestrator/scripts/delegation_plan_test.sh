@@ -10,36 +10,7 @@ pass=0
 
 cat > "$tmp/mk.js" <<'EOF'
 "use strict";
-const crypto = require("crypto");
 const fs = require("fs");
-
-function canon(v) {
-  if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
-  if (v !== null && typeof v === "object") {
-    const keys = Object.keys(v).sort();
-    return "{" + keys.map((k) => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
-  }
-  return JSON.stringify(v);
-}
-function digest(snapshot) {
-  return crypto.createHash("sha256").update(Buffer.from(canon(snapshot), "utf8")).digest("hex");
-}
-function snapshotOf(turns, contingency) {
-  return {
-    contingency_policy_ref: contingency === undefined ? null : contingency,
-    turns: turns.map((t) => ({
-      key: t.key, kind: t.kind, step: t.step, parent: t.parent, inherits: t.inherits,
-      inputs: t.inputs, mode: t.mode, ...(t.role === undefined ? {} : { role: t.role }),
-      effort: t.effort, budget_refs: t.budget_refs,
-      selection: {
-        source: t.selection.source, request: t.selection.request, scope_ref: t.selection.scope_ref,
-        resolved_model: t.selection.resolved_model, granularity: t.selection.granularity,
-        thinking: t.selection.thinking,
-      },
-      dispatch_plan: t.dispatch_plan,
-    })),
-  };
-}
 
 const ZERO = "0".repeat(64);
 
@@ -92,9 +63,9 @@ function baseEvidence() {
   return {
     approvals: [
       {
-        record: "approval", key: "ap1", kind: "user-plan", target_digest: "",
+        record: "approval", key: "ap1", kind: "user-plan",
         event_ref: "user message: plan approved", parent_approval_ref: null,
-        scope: "all three steps", snapshot_keys: ["01", "02", "03"],
+        scope: "all three steps",
       },
     ],
     resolutions: [
@@ -155,10 +126,9 @@ function baseDelegations() {
 function buildBase() {
   const turns = baseTurns();
   const evidence = baseEvidence();
-  evidence.approvals[0].target_digest = digest(snapshotOf(turns));
   const ledger = [
     { record: "contract", version: "mo-delegation-v2" },
-    { record: "plan", id: "r0", replaces: null, after_turn: null, digest: evidence.approvals[0].target_digest, approval_ref: "ap1", contingency_policy_ref: null },
+    { record: "plan", id: "r0", replaces: null, after_turn: null, approval_ref: "ap1", contingency_policy_ref: null },
     ...turns,
     ...baseDelegations(),
   ];
@@ -262,9 +232,8 @@ function buildRebind() {
     dispatch_plan: deepCopy(findTurn(ledger, "03").dispatch_plan),
   };
   const newPlanTurns = [tailPlanned, rebindTurn];
-  const r1Digest = digest(snapshotOf(newPlanTurns));
   ledger.push({ record: "amendment", key: "amend-1", plan: "r1", replaces: "r0", after_turn: "04", parent: null, cause: "model-resolution", source_file: "amend-tail.md", source_sha256: "a".repeat(64), supersedes: ["03", "04a"], replacements: [{ key: "03b", amendment_item: "1" }, { key: "04b", amendment_item: "2" }] });
-  ledger.push({ record: "plan", id: "r1", replaces: "r0", after_turn: "04", digest: r1Digest, approval_ref: "ap2", contingency_policy_ref: null });
+  ledger.push({ record: "plan", id: "r1", replaces: "r0", after_turn: "04", approval_ref: "ap2", contingency_policy_ref: null });
   ledger.push(tailPlanned);
   ledger.push(rebindTurn);
   ledger.push({
@@ -284,16 +253,13 @@ function buildRebind() {
     thinking: { state: "undisclosed" }, grounds: "user-designated model reference",
   });
   evidence.approvals.push({
-    record: "approval", key: "ap2", kind: "user-plan", target_digest: r1Digest,
+    record: "approval", key: "ap2", kind: "user-plan",
     event_ref: "user message: rebind approved", parent_approval_ref: null,
-    scope: "replaced tail", snapshot_keys: ["03b", "04b"],
+    scope: "replaced tail",
   });
   ledger[1].after_turn = null;
   ledger[1].contingency_policy_ref = "cp1";
   evidence.dispatch = { turn: "04b", route: "native-subagent", args: { model: "opus" } };
-  ledger[1].digest = digest(snapshotOf([ledger[2], ledger[3], ledger[4], raising], "cp1"));
-  evidence.approvals[0].target_digest = ledger[1].digest;
-  evidence.approvals[0].snapshot_keys = ["01", "02", "03", "04"];
   evidence.approvals.push({
     record: "contingency", key: "cp1",
     allowed_kinds: ["recovery-debug", "recovery-reexecute", "decision-turn", "decision-rerun"],
@@ -307,11 +273,10 @@ function buildRebind() {
   });
   evidence.approvals.push({
     record: "approval", key: "da1", kind: "derived",
-    target_digest: digest(snapshotOf([staleTurn], "cp1")),
     event_ref: null, parent_approval_ref: "ap1",
     scope: "the 04a insertion", contingency_ref: "cp1",
   });
-  return { ledger, evidence, r1Digest };
+  return { ledger, evidence };
 }
 
 function findTurn(ledger, key) {
@@ -320,13 +285,6 @@ function findTurn(ledger, key) {
 
 function writeJsonl(name, records) {
   fs.writeFileSync(name, records.map((r) => JSON.stringify(r)).join("\n") + "\n");
-}
-
-function redigest(built) {
-  const turns = built.ledger.filter((r) => r.record === "turn" && r.plan === "r0");
-  const value = digest(snapshotOf(turns));
-  built.evidence.approvals[0].target_digest = value;
-  built.ledger.find((r) => r.record === "plan" && r.id === "r0").digest = value;
 }
 
 function emit(built, dispatch) {
@@ -436,25 +394,36 @@ const scenarios = {
     findRecord(built, "turn", "key", "04a").parent = null;
     emit(built);
   },
-  "digest-mismatch"() {
+  "recorded-digest-fields"() {
     const built = buildBase();
-    findRecord(built, "plan", "id", "r0").digest = ZERO;
-    emit(built);
-  },
-  "approval-digest"() {
-    const built = buildBase();
+    findRecord(built, "plan", "id", "r0").digest = "PENDING";
     built.evidence.approvals[0].target_digest = ZERO;
+    built.evidence.approvals[0].snapshot_keys = ["01"];
     emit(built);
   },
   "auto-alias"() {
     const built = buildBase();
     built.evidence.approvals[0].kind = "auto-invocation";
+    built.evidence.approvals[0].event_ref = "user invocation: /mode-orchestrator --auto plan.md";
     built.evidence.resolutions[0].match = "alias";
     emit(built);
   },
   "auto-exact-ok"() {
     const built = buildBase();
     built.evidence.approvals[0].kind = "auto-invocation";
+    built.evidence.approvals[0].event_ref = "user invocation: /mode-orchestrator --auto plan.md";
+    emit(built);
+  },
+  "auto-no-flag"() {
+    const built = buildBase();
+    built.evidence.approvals[0].kind = "auto-invocation";
+    built.evidence.approvals[0].event_ref = "user invocation: /mode-orchestrator plan.md";
+    emit(built);
+  },
+  "auto-other-flag"() {
+    const built = buildBase();
+    built.evidence.approvals[0].kind = "auto-invocation";
+    built.evidence.approvals[0].event_ref = "user invocation: /mode-orchestrator --auto-resume plan.md";
     emit(built);
   },
   "env-invalid"() {
@@ -471,8 +440,6 @@ const scenarios = {
     const built = buildRebind();
     built.ledger = built.ledger.filter((r) => !(r.record === "amendment" || r.record === "plan" && r.id === "r1" || r.record === "turn" && (r.key === "04b" || r.key === "03b") || r.record === "delegation" && r.id === "d6" || r.record === "attempt" && r.turn === "04b"));
     built.evidence.approvals = built.evidence.approvals.filter((a) => a.key === "ap1");
-    built.ledger[1].digest = digest(snapshotOf(built.ledger.filter((r) => r.record === "turn" && r.kind === "planned" && r.rebinds === null && r.amendment_ref === null), "cp1"));
-    built.evidence.approvals[0].target_digest = built.ledger[1].digest;
     built.ledger.push({
       record: "delegation", id: "d7", owner: "04a", owner_kind: "turn", plan: "r0",
       approval_ref: "ap1", resolution_ref: "res-04a", policy_ref: "rp1",
@@ -489,8 +456,6 @@ const scenarios = {
     const built = buildRebind();
     built.ledger = built.ledger.filter((r) => !(r.record === "amendment" || r.record === "plan" && r.id === "r1" || r.record === "turn" && (r.key === "04b" || r.key === "03b") || r.record === "delegation" && r.id === "d6" || r.record === "attempt" && r.turn === "04b"));
     built.evidence.approvals = built.evidence.approvals.filter((a) => a.key === "ap1");
-    built.ledger[1].digest = digest(snapshotOf(built.ledger.filter((r) => r.record === "turn" && r.kind === "planned" && r.rebinds === null && r.amendment_ref === null), "cp1"));
-    built.evidence.approvals[0].target_digest = built.ledger[1].digest;
     built.ledger.push({
       record: "turn", plan: "r0", key: "04b", kind: "decision-rerun",
       step: "re-run the forked step", parent: "04a", inherits: "04a", inputs: ["04a"],
@@ -571,14 +536,13 @@ const scenarios = {
       selection: deepCopy(findRecord(built, "turn", "key", "03").selection),
       dispatch_plan: { route: "native-subagent", args: { model: "sonnet" } },
     };
-    const r1Digest = digest(snapshotOf([replacement]));
     built.ledger.push({ record: "amendment", key: "amend-1", plan: "r1", replaces: "r0", after_turn: "03", parent: null, cause: "todolist", source_file: "amend-tail.md", source_sha256: "b".repeat(64), supersedes: ["03"], replacements: [{ key: "04", amendment_item: "1" }] });
-    built.ledger.push({ record: "plan", id: "r1", replaces: "r0", after_turn: "03", digest: r1Digest, approval_ref: "ap2", contingency_policy_ref: null });
+    built.ledger.push({ record: "plan", id: "r1", replaces: "r0", after_turn: "03", approval_ref: "ap2", contingency_policy_ref: null });
     built.ledger.push(replacement);
     built.evidence.approvals.push({
-      record: "approval", key: "ap2", kind: "user-plan", target_digest: r1Digest,
+      record: "approval", key: "ap2", kind: "user-plan",
       event_ref: "user message: revised tail approved", parent_approval_ref: null,
-      scope: "replaced tail", snapshot_keys: ["04"],
+      scope: "replaced tail",
     });
     built.evidence.resolutions.push({
       record: "resolution", key: "res-04", turn: "04", request: "(default profile)",
@@ -629,20 +593,17 @@ const scenarios = {
     const d1 = findRecord(built, "delegation", "id", "d1");
     d1.route = "pi-cli";
     d1.policy_ref = "perm-x";
-    redigest(built);
     emit(built);
   },
   "shell-route"() {
     const built = buildBase();
     findTurn(built.ledger, "01").dispatch_plan.route = "bash-shell";
     findRecord(built, "delegation", "id", "d1").route = "bash-shell";
-    redigest(built);
     emit(built);
   },
   "plan-cli-route"() {
     const built = buildBase();
     findTurn(built.ledger, "03").dispatch_plan.route = "pi-cli";
-    redigest(built);
     emit(built);
   },
   "policy-ref-env"() {
@@ -672,7 +633,6 @@ const scenarios = {
       { record: "route-policy", key: "rp-rec", route: "native", state: "allow", constraints: { nested: false, skills: "disabled" }, grounds: "recorded by an earlier build" },
       { record: "env-model-setting", key: "env-rec", state: "configured", per_effort: {}, grounds: "recorded by an earlier build" },
     ];
-    redigest(built);
     emit(built);
   },
   "legacy-run"() {
@@ -699,8 +659,6 @@ const scenarios = {
     const built = buildRebind();
     built.ledger = built.ledger.filter((r) => !(r.record === "amendment" || r.record === "plan" && r.id === "r1" || r.record === "turn" && (r.key === "04b" || r.key === "03b") || r.record === "delegation" && r.id === "d6" || r.record === "attempt" && r.turn === "04b"));
     built.evidence.approvals = built.evidence.approvals.filter((a) => a.key === "ap1");
-    built.ledger[1].digest = digest(snapshotOf(built.ledger.filter((r) => r.record === "turn" && r.kind === "planned" && r.rebinds === null && r.amendment_ref === null), "cp1"));
-    built.evidence.approvals[0].target_digest = built.ledger[1].digest;
     emit(built);
     fs.writeFileSync("dispatch-stale2.json", JSON.stringify({ turn: "04a", route: "native-subagent", args: { model: "sonnet" } }));
   },
@@ -712,8 +670,6 @@ const scenarios = {
   "insertion-unapproved"() {
     const built = buildRebind();
     built.ledger[1].contingency_policy_ref = null;
-    built.ledger[1].digest = digest(snapshotOf([findRecord(built, "turn", "key", "01"), findRecord(built, "turn", "key", "02"), findRecord(built, "turn", "key", "03"), findRecord(built, "turn", "key", "04")]));
-    built.evidence.approvals[0].target_digest = built.ledger[1].digest;
     built.evidence.approvals = built.evidence.approvals.filter((a) => a.record !== "contingency" && a.key !== "da1");
     findRecord(built, "delegation", "id", "d5").approval_ref = "ap1";
     emit(built);
@@ -723,9 +679,34 @@ const scenarios = {
     built.evidence.approvals.find((a) => a.record === "contingency").allowed_kinds = ["recovery-debug"];
     emit(built);
   },
-  "derived-digest"() {
+  "derived-other-policy"() {
     const built = buildRebind();
-    built.evidence.approvals.find((a) => a.key === "da1").target_digest = ZERO;
+    built.evidence.approvals.find((a) => a.key === "da1").contingency_ref = "cp9";
+    emit(built);
+  },
+  "host-ref-ok"() {
+    const built = buildBase();
+    findTurn(built.ledger, "01").dispatch_plan.args = { resolution_ref: "host-ref-1" };
+    findRecord(built, "delegation", "id", "d1").actual_selection_args = { resolution_ref: "host-ref-1" };
+    findTurn(built.ledger, "03").dispatch_plan.args = { resolution_ref: "host-ref-3" };
+    emit(built, { turn: "03", route: "native-subagent", args: { resolution_ref: "host-ref-3" } });
+  },
+  "host-ref-other"() {
+    const built = buildBase();
+    findTurn(built.ledger, "01").dispatch_plan.args = { resolution_ref: "host-ref-1" };
+    findRecord(built, "delegation", "id", "d1").actual_selection_args = { resolution_ref: "host-ref-9" };
+    findTurn(built.ledger, "03").dispatch_plan.args = { resolution_ref: "host-ref-3" };
+    emit(built, { turn: "03", route: "native-subagent", args: { resolution_ref: "host-ref-9" } });
+  },
+  "host-ref-unplanned"() {
+    const built = buildBase();
+    findRecord(built, "delegation", "id", "d1").actual_selection_args = { resolution_ref: "host-ref-1" };
+    emit(built, { turn: "03", route: "native-subagent", args: { resolution_ref: "host-ref-3" } });
+  },
+  "insertion-no-delegation"() {
+    const built = buildRebind();
+    built.ledger = built.ledger.filter((r) => !(r.record === "delegation" && r.id === "d5") && !(r.record === "attempt" && r.delegation_id === "d5"));
+    built.evidence.approvals = built.evidence.approvals.filter((a) => a.key !== "da1");
     emit(built);
   },
   "insertion-delegation"() {
@@ -751,10 +732,6 @@ const scenarios = {
   "role-absent"() {
     const built = buildBase();
     for (const r of built.ledger) if (r.record === "turn") delete r.role;
-    const turns = built.ledger.filter((r) => r.record === "turn");
-    const d = digest(snapshotOf(turns));
-    built.ledger[1].digest = d;
-    built.evidence.approvals[0].target_digest = d;
     emit(built);
   },
   "md-v2-index"() {
@@ -884,17 +861,20 @@ expect_violation "planned turn with a parent is rejected" "planned turn has null
 build "dynamic-orphan"
 expect_violation "dynamic turn without a parent is rejected" "dynamic turn needs its loop parent" validate --file ledger.jsonl "${EV[@]}"
 
-build "digest-mismatch"
-expect_violation "digest mismatch is rejected" "digest mismatch" validate --file ledger.jsonl "${EV[@]}"
-
-build "approval-digest"
-expect_violation "approval digest mismatch is rejected" "approval.target_digest must equal the plan digest" validate --file ledger.jsonl "${EV[@]}"
+build "recorded-digest-fields"
+expect_ok "digest fields of a recorded run are read and not inspected" validate --file ledger.jsonl "${EV[@]}"
 
 build "auto-alias"
 expect_violation "auto-invocation over a non-exact match is rejected" "auto-invocation needs exact resolution" validate --file ledger.jsonl "${EV[@]}"
 
 build "auto-exact-ok"
 expect_ok "auto-invocation over exact matches passes" validate --file ledger.jsonl "${EV[@]}"
+
+build "auto-no-flag"
+expect_violation "auto-invocation whose event_ref has no --auto is rejected" "must contain the invocation's --auto" validate --file ledger.jsonl "${EV[@]}"
+
+build "auto-other-flag"
+expect_violation "a longer flag does not count as --auto" "must contain the invocation's --auto" validate --file ledger.jsonl "${EV[@]}"
 
 build "env-invalid"
 expect_violation "skill default over an invalid environment state is rejected" "skill default requires environment state" validate --file ledger.jsonl "${EV[@]}"
@@ -996,8 +976,23 @@ expect_violation "unapproved dynamic insertion is rejected" "dynamic insertion r
 build "insertion-kind"
 expect_violation "insertion kind outside the contingency policy is rejected" "insertion kind not allowed" validate --file ledger.jsonl "${EV[@]}"
 
-build "derived-digest"
-expect_violation "derived approval with a wrong concrete digest is rejected" "no derived approval covers this insertion" audit --file ledger.jsonl "${EV[@]}"
+build "derived-other-policy"
+expect_violation "derived approval bound to another policy is rejected" "carries the covering derived approval" audit --file ledger.jsonl "${EV[@]}"
+
+build "host-ref-ok"
+expect_ok "a host reference that differs from the resolutions key passes audit" audit --file ledger.jsonl "${EV[@]}"
+expect_ok "a host reference that differs from the resolutions key passes dispatch-check" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+
+build "host-ref-other"
+expect_violation "an actual reference other than the planned one is rejected" "actual resolution_ref must equal the planned one" audit --file ledger.jsonl "${EV[@]}"
+expect_violation "a dispatch reference other than the planned one is rejected" "dispatch resolution_ref differs from the planned one" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+
+build "host-ref-unplanned"
+expect_ok "a reference is not compared when the plan carried none: audit" audit --file ledger.jsonl "${EV[@]}"
+expect_ok "a reference is not compared when the plan carried none: dispatch-check" dispatch-check --file ledger.jsonl --dispatch dispatch.json "${EV[@]}"
+
+build "insertion-no-delegation"
+expect_ok "an insertion that was never launched needs no derived approval" validate --file ledger.jsonl "${EV[@]}"
 
 build "insertion-delegation"
 expect_violation "insertion delegation without the covering approval is rejected" "carries the covering derived approval" audit --file ledger.jsonl "${EV[@]}"
@@ -1009,20 +1004,7 @@ build "md-v1-index"
 expect_refused "v1 contract inside an .md index is refused" "not a mo-delegation-v2 ledger" validate --file index.md "${EV[@]}"
 
 build "role-absent"
-expect_ok "a turn without role is digested without a role member" validate --file ledger.jsonl "${EV[@]}"
-
-build base
-BASE_DIGEST=$(cd "$tmp" && node -e 'process.stdout.write(require("fs").readFileSync("approvals.jsonl","utf8").split("\n").filter(Boolean).map(JSON.parse)[0].target_digest)')
-OUT=$(cd "$tmp" && node "$script" digest --file ledger.jsonl --plan r0)
-[[ "$OUT" == "DIGEST r0 $BASE_DIGEST keys=01,02,03" ]] || { printf 'FAIL digest equals the approved snapshot digest: %s vs %s\n' "$OUT" "$BASE_DIGEST" >&2; exit 1; }
-pass=$((pass + 1))
-expect_refused "digest refuses an unknown plan" "plan unresolved" digest --file ledger.jsonl --plan r9
-
-build "role-absent"
-OUT=$(cd "$tmp" && node "$script" digest --file ledger.jsonl --plan r0)
-WANT=$(cd "$tmp" && node -e 'process.stdout.write(require("fs").readFileSync("ledger.jsonl","utf8").split("\n").filter(Boolean).map(JSON.parse)[1].digest)')
-[[ "$OUT" == "DIGEST r0 $WANT keys=01,02,03" ]] || { printf 'FAIL digest omits an absent role like the validator: %s vs %s\n' "$OUT" "$WANT" >&2; exit 1; }
-pass=$((pass + 1))
+expect_ok "a turn without role validates" validate --file ledger.jsonl "${EV[@]}"
 
 build "md-v2-index"
 expect_ok "v2 ledger inside an .md index validates" validate --file index.md "${EV[@]}"
