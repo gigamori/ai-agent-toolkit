@@ -27,7 +27,7 @@ Imagine you are improving a customer portal over several chats.
 
 1. In the first chat, type `pj:customer-portal refresh the login screen`. Claude starts with the project's in-progress work and continues with you.
 2. Work with Claude normally. As work advances, task progress and the list of what remains stay current. When the chat ends, that session's work is recorded with its task.
-3. In a later chat, type `pj:customer-portal /progress audit`. taskflow classifies every task by its remaining work, so you can see which work is still pending and which may be ready to finish.
+3. In a later chat, type `/progress audit pj:customer-portal`. taskflow classifies every task by its remaining work, so you can see which work is still pending and which may be ready to finish.
 4. Continue the task in the chat you choose. Claude has the project and active-task context, so you do not need to reconstruct the work from old chats.
 5. When the work is truly complete, say `/progress approve login-screen`. Claude asks for your OK before marking it Done.
 

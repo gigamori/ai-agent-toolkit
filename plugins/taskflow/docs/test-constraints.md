@@ -76,6 +76,14 @@ no check fails when it drifts.
   from inside the test's own `ok()`/ `bad()` helper, which looks like the assertion
   logic crashed rather than a codec mismatch. Observed 2026-09-15 while adding
   `tests/test_session_init_bootstrap.py`'s harness-anchor assertion message.
+- Claude Code expands a slash command only when the prompt begins with `/`, so
+  `pj:X /progress sub` reaches the model as plain text and the skill body is not
+  injected. `UserPromptSubmit` receives the raw typed text, so a `pj:` token later in a
+  prompt such as `/taskflow:progress check pj:X` still reaches the hook inside its parse
+  window. That is why the board's progress launch prompt is command-first and carries
+  `pj:` last. Observed 2026-11-08 with one CLI 2.1.319 print-mode probe and one VS Code
+  2.1.233 transcript turn (small n). Not observed: whether the VS Code extension
+  executes a leading `/` prefilled from an `open?prompt=` URL when Enter is pressed.
 
 ## Sibling implementation — the Pi taskflow extension
 

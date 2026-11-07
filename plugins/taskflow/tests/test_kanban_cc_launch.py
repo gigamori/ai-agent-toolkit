@@ -12,6 +12,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import generate_kanban as gk  # noqa: E402
@@ -304,6 +305,19 @@ def test_prompt_hint_carries_prompt_body() -> None:
 
 
 
+def test_progress_url_prompt_leads_with_slash_command() -> None:
+    check(gk.PROGRESS_SUBS == ["check", "audit", "rebuild"],
+          f"PROGRESS_SUBS is the three picker entries, got {gk.PROGRESS_SUBS!r}")
+    for sub in gk.PROGRESS_SUBS:
+        expected = f"/taskflow:progress {sub} pj:demo-proj"
+        for serve in (False, True):
+            url = gk.progress_url("demo-proj", sub, "vscode", serve, "TOK")
+            got = parse_qs(urlsplit(url).query).get("prompt", [None])[0]
+            check(got == expected,
+                  f"progress_url(sub={sub}, serve={serve}): prompt starts with the slash "
+                  f"command and carries pj: last, expected {expected!r}, got {got!r}")
+
+
 SESSION = "0a1b2c3d-4e5f-6789-abcd-ef0123456789"
 
 
@@ -448,6 +462,7 @@ def main() -> int:
     test_session_hint_with_claude_cli()
     test_session_hint_without_claude_cli()
     test_prompt_hint_carries_prompt_body()
+    test_progress_url_prompt_leads_with_slash_command()
     test_open_no_cli_returns_error_page()
     test_open_ext_absent_returns_error_page()
     test_open_success_launches_editor()

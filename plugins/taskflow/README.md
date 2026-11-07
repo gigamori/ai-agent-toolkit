@@ -244,6 +244,8 @@ Put `pj:<project>` near the beginning of the prompt — it is recognized at the 
 
 - `-y` / `--yes` — skip the confirmation prompt and execute immediately
 
+To select the project in the same prompt, put `pj:<project>` after the intent (`/progress audit pj:customer-portal`), not before `/progress`: Claude Code runs a slash command only when the prompt starts with `/`. The hook reads the `pj:` token, and the command removes it before routing, so a project name is never read as an intent word.
+
 For destructive actions (`approve` / `start` / `unstart`), the main agent prints the resolved plan and asks via `AskUserQuestion` before any mutation. `-y` skips this when the target is already verified. When the router returns zero matches or ambiguous low-confidence candidates, it stops and lists candidates rather than guessing.
 
 ### /pj-rules — per-project rules

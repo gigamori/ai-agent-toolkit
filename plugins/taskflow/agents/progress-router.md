@@ -53,7 +53,7 @@ The main agent prepends a JSON context block:
 ```json
 {
   "project_root": "<absolute path to _projects/<project>/>",
-  "raw_input": "<user input after /progress, with -y / --yes flags stripped>",
+  "raw_input": "<user input after /progress, with -y / --yes flags and pj:<project> tokens stripped>",
   "session_id": "<the header's `sid`: the session UUID's last 12 hex digits, optional>"
 }
 ```

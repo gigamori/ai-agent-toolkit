@@ -243,6 +243,8 @@ cold のケースは机上の話ではない。参照 machine では、同一 ru
 
 - `-y` / `--yes` — 確認プロンプトをスキップして即実行
 
+同じプロンプトでプロジェクトも選ぶときは、`pj:<project>` を `/progress` の前ではなく意図の後ろに置く（`/progress audit pj:customer-portal`）。Claude Code はプロンプトが `/` で始まるときだけスラッシュコマンドを実行するためである。`pj:` トークンは hook が読み、コマンドは router に渡す前に取り除くので、プロジェクト名が意図の語として読まれることはない。
+
 destructive アクション（`approve` / `start` / `unstart`）では、メインエージェントが解決済 plan を表示し `AskUserQuestion` で確認を取ってから初めて mutation を実行する。`-y` で対象が確定済の場合はスキップ可。0 match / 低 confidence の複数 match の場合、router は候補を列挙して停止する（推測進行しない）。
 
 ### /pj-rules — プロジェクト固有ルール

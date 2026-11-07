@@ -27,8 +27,11 @@ first line). Omit it only when no project is assigned.
 
 1. Scan for the literal tokens `-y` and `--yes`. If found, set
    `skip_confirm = true` and remove them from the input.
-2. Trim whitespace. The remainder is `raw_input`.
-3. If `raw_input` is empty, reply:
+2. Remove every whitespace-delimited token that starts with `pj:` (for
+   example `pj:sync-tool`). It selects the project, which Step 2 resolves
+   from the `[Progress Session]` header; it is never part of the intent.
+3. Trim whitespace. The remainder is `raw_input`.
+4. If `raw_input` is empty, reply:
 
    ```
    Usage: /progress <intent> [-y]

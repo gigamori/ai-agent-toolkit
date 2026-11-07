@@ -567,7 +567,7 @@ PROGRESS_SUBS = ["check", "audit", "rebuild"]
 
 def progress_url(project: str, sub: str, scheme: str, serve: bool, open_token: str = "") -> str:
     from urllib.parse import quote
-    prompt = f"pj:{project} /progress {sub}"
+    prompt = f"/taskflow:progress {sub} pj:{project}"
     if serve:
         return f"http://localhost:{SERVE_PORT}/open?prompt={quote(prompt)}&t={open_token}"
     return f"{scheme}://anthropic.claude-code/open?prompt={quote(prompt)}"
