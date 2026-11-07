@@ -624,7 +624,7 @@ unguarded with a `note:`.
 ## CLI reference
 
 ```
-wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi]
+wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi|llm]
               [--as-child] [--defined-vars VARS_JSON]   # static validation (error = exit 1)
 wfrun run <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs]
           [--permission-mode acceptEdits] [--no-role-check]
@@ -653,7 +653,7 @@ wfrun viz <wf.xml> [--out FILE]                         # mermaid flowchart of t
   would fail; `wfrun run`/`resume` reject this at startup — copy bundled
   examples to a normal project directory before running them
 - The helper subcommands `interp` / `eval` / `ask` / `prompt` / `record` /
-  `decide` / `poll` / `stop` / `pids` / `judge` exist for LLM-orchestrated
+  `decide` / `models` / `poll` / `stop` / `judge` exist for LLM-orchestrated
   execution (run-llm); see `references/run-llm.md`. `dispatch` / `wait`
   run a step through the claude CLI instead and are not part of run-llm
 - `viz` renders branch diamonds, loop-back edges, and parallel fan-out for
@@ -689,7 +689,10 @@ warning `model-not-canonical`. If the catalog cannot be read the warning is
 `pi-model-unverified`, never a pass. Under `cc` no model name is checked at
 all: those runs stay inside the canonical vocabulary, which `model_map.json`
 binds to claude CLI names, so there is no catalog for a name to be missing
-from.
+from. Under `llm` (the value run-llm passes, never chosen by `auto`) no model
+name is checked either, and no CLI starts: run-llm resolves each model request
+through the host's native subagent facility instead (`wfrun models` lists the
+requests).
 
 ## Workflow design guidelines (for builders)
 

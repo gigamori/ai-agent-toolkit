@@ -184,6 +184,9 @@ matched against a catalog — there is no catalog for a name to be missing from,
 since `model_map.json` binds `cc` to claude CLI names directly — but a legacy
 `model=` still warns `model-legacy-name` there: that check is backend-agnostic
 on purpose, so the migration nudge is visible under the default backend too.
+Under `--backend llm`, the value `run-llm` passes, no model is matched against a
+catalog either and no CLI starts; `run-llm` resolves the models through the
+host's native subagent facility.
 
 **Approved candidates per layer (2026-08-17).** The split records which role
 each model was measured in — it is not a cost ranking, and fitness for one

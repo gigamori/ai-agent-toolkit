@@ -14,8 +14,8 @@
 - **[USER_GUIDE_ja.md](USER_GUIDE_ja.md)** — 非開発者の人間ユーザ向けの実践的な
   手順ガイド。英語版は [USER_GUIDE.md](USER_GUIDE.md)。
 - **[AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md)** — スキル編集者向けの保守義務
-  （英語のみ）: 3面（cc/pi/run-llm）整合性、mode-orchestrator との関係（Pi CLI の
-  起動契約と、両スキルがそろえている再投入ゲートを含む）、`modes/` 伝播の参照先。
+  （英語のみ）: 3面（cc/pi/run-llm）整合性、mode-orchestrator との関係（両スキルが
+  そろえている再投入ゲートを含む）、`modes/` 伝播の参照先。
 
 正典となる技術仕様はスキルの `references/spec.md` です。本 README はその要約であり、
 食い違う場合は spec が優先します。
@@ -58,8 +58,12 @@
 ランナーは標準ライブラリのみで動作します。`build` モードは CLI を起動しません —
 セッションの LLM 自身が XML を書き、`wfrun validate` で完結します（ただしロール
 収集は `.claude/agents` / `$CLAUDE_CONFIG_DIR`、`tools=` の語彙は Claude Code の
-ツール名を前提とします）。`run-cc` は Claude Code 向け、`run-llm` プロトコルは
-サブエージェント機能を持つ任意のエージェント基盤で動作します。
+ツール名を前提とします）。`run-cc` は Claude Code 向けです。`run-llm` が動くのは
+Claude Code と Pi だけで、委譲はすべてホストのネイティブなサブエージェント機能
+（Claude Code では Agent ツール、Pi では `subagent` ツール）を通り、ステップの
+実行のために `claude` や `pi` のプロセスを起動することはありません。Pi ではその
+ツールを、先にセットアップする拡張が提供します（[Pi setup](#pi-setup) を参照）。
+`run-llm` が今も起動する CLI は `wfrun ask` だけです。
 
 **複数の `claude` インストール（Windows）:** wfrun は `PATH` が返す値をそのまま
 起動するのではなく、実際に起動する `claude` 実行ファイルを自前で解決します。
@@ -69,6 +73,95 @@ npm の `.cmd`/`.bat` ランチャーをシェルなしで直接起動すると�
 環境変数は用意していません。複数の `claude` がインストールされている場合は
 **`PATH` 上で先に現れるものが優先されます**。どちらを使うかは `PATH` の並び順
 で選んでください。
+
+---
+
+## Pi setup
+
+これが必要なのは Pi 上の `run-llm` だけで、Claude Code には要りません。Pi では、
+`run-llm` はすべての委譲（ステップ、debug 診断、`<replan>` の builder、decider）を
+ネイティブな `subagent` ツール経由で行い、そのツールは Pi の subagent 拡張
+（`@gigamori/pi-subagent`）が提供します。このツールが無いセッション
+（`delegation_contract` ツールが無い）では実行できません。`run-llm` は run dir を
+作る前に停止し、ここを指すメッセージを返します。`--run-pi` と `--run-cc` に拡張は
+不要です。
+
+**入れるもの。** `pi-extensions` リポジトリの `subagent` パッケージと、その依存の
+`@gigamori/pi-child-session-core`。どちらも npm には公開されていない（2026-11-06 に
+確認）ので、ビルド済みのコピーを agent ディレクトリの `extensions/` に置きます。
+以下の `<agent dir>` は `~/.pi/agent`、`$PI_CODING_AGENT_DIR` が設定されていれば
+その値です。
+
+`pi-extensions` のクリーンなチェックアウトを、コミット
+`fix(child-session-core): Key top-level package copies by name` 以降でビルドします
+（`npm ci`、続いて `npm run build`）。これより古い core では、コピーが `local:dist`
+として登録され、すべての子セッションに引き継がれるので、子がさらに委譲できてしまい
+ます（スタブ provider で測定: 古い core ではモデル呼び出し 5 回、修正済みでは 3 回）。
+Pi Studio も、同梱する core に同じ修正が要ります。
+
+```bash
+SRC=<built pi-extensions checkout>
+X=<agent dir>/extensions
+D="$X/subagent"
+C="$D/node_modules/@gigamori/pi-child-session-core"
+rm -rf "$D"
+mkdir -p "$C"
+cp -r "$SRC/packages/child-session-core/dist" "$C/dist"
+cp "$SRC/packages/child-session-core/package.json" "$C/package.json"
+cp -r "$SRC/packages/subagent/dist" "$D/dist"
+cp "$SRC/packages/subagent/package.json" "$D/package.json"
+mkdir -p "$X/child-session"
+printf '{"explicitModels":"registry"}\n' > "$X/child-session/config.json"
+grep -c readDeclaringPackageName "$C/dist/catalog-cli.js"   # expect 2
+```
+
+そのあと Pi を再起動するか、起動中のセッションで `/reload` を実行します。Windows では
+上のリストを Git Bash で実行してください。
+
+- リストは `package.json` を最後にコピーします。インストールの途中で起動した Pi が
+  未完成のパッケージを見ないようにするためです。リンクではなくコピーなので、あとで
+  拡張を外すときに消えるのはコピーだけです。リストは `rm -rf "$D"` で始まるので、
+  再実行すると、古いコピーの中に 2 つ目の `dist/` を作らず、古いコピーを置き換えます。
+  消えるのはこのパッケージのコピーだけで `child-session/` は消えませんが、すぐ後の `printf` 行が
+  `child-session/config.json` を書き直すので、再実行すると追加した `profiles` は消えます。
+- `child-session/config.json` は `{"explicitModels":"registry"}` です。これが無いと
+  host は `model` の明示指定を拒否します（`resolve` が `blocked` を返し、
+  "Explicit model channel is not configured." と出る）。profile を持たない tier に
+  対して `run-llm` が出すのがこの要求です。`profiles` は置かないので、各 tier
+  （`basic`・`pro`・`ultra`）は `absent` になり、`run-llm` は `model_map.json` の
+  `llm` 表がその tier に与えるモデルを要求します。`profiles` を足す（書式は
+  `subagent` の README の "CLI configuration"）と、設定済みの tier は呼び出し単位の
+  `effort` profile として要求され、モデルは host の設定が選びます。このファイルは
+  child-session を使うすべての consumer で共有されます。
+- セットアップの確認は、Pi のセッションで `delegation_contract` を
+  `{"operation":"observe"}` で呼びます。`routes.native.state` が `available` になる
+  はずです。
+- `available` は経路があることを示すだけで、モデルが解決できることは示しません。
+  `resolve` には、`run-llm` が要求するモデルが host のカタログにあり、認証が通って
+  いることも必要です。同梱の `model_map.json` では、委譲が要求するモデルは
+  `haiku`、`sonnet`、`opus` です（その行が名指す tier `basic`、`pro`、`ultra` に
+  対応します）。Anthropic の認証も対応する provider 拡張も無い Pi では
+  `unavailable`（"No unique compatible binding in the host catalog snapshot."）が
+  返り、`run-llm` は run dir を作る前にそこで止まります。`/login` で Anthropic に
+  ログインするか、その provider を導入するか、`profiles` を設定してください。
+  `ask=` はこの確認の外です。workflow がそこに達すると、`wfrun ask` が Pi を
+  `--model haiku` で起動するので、Pi 自体で `haiku` が動く必要があり、`profiles`
+  では補えません。
+
+**導入後に変わること。**
+- 拡張はマシン全体に効きます。この agent ディレクトリを読む Pi プロセスはすべて
+  読み込みます。`run-pi` と mode-orchestrator の CLI 経路の `pi -p` の子も含みます。
+  `run-pi` は `--no-extensions` を渡さず（モデル名の解決に拡張が要るため）、
+  `--tools` は `tools=` を持つステップにだけ渡します。mode-orchestrator の起動は
+  どちらも渡しません。そのように起動した子は `subagent` ツールを持ちます。修正済みの
+  core では、その子の子には渡らないので、深さが増えるのは 1 段までです。これは
+  ソースの読解で、`pi -p` を実行して確かめたものではありません。
+- 修正済みの core を同梱した Pi Studio では、子セッションに `subagent` ツールが
+  ありませんでした（1 回の観測）。Pi Studio で `run-llm` が動くかは検証していません。
+
+外すには `rm -rf <agent dir>/extensions/subagent
+<agent dir>/extensions/child-session` を実行し（先に `child-session/` に自分で足した
+ファイルが無いか確認）、`/reload` します。セットアップは `settings.json` に触れません。
 
 ---
 
@@ -105,7 +198,7 @@ xml-wf/                        # スキル本体
 
 ```bash
 WFRUN="env PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts uv run python -m wfrun"
-$WFRUN {validate|run|resume|plan|viz|prompt|record|decide|poll|stop|pids|judge|dispatch|wait|interp|eval|ask} ...
+$WFRUN {validate|run|resume|plan|viz|prompt|record|decide|models|poll|stop|judge|dispatch|wait|interp|eval|ask} ...
 ```
 
 スキル経由では、4 つのモードを自然言語またはフラグから選択します。
@@ -115,7 +208,7 @@ $WFRUN {validate|run|resume|plan|viz|prompt|record|decide|poll|stop|pids|judge|d
 | `--build`、タスク説明、「ワークフロー化」 | **Build** | タスクを承認用のプラン表へ分解し、XML を生成・検証する。タスク自体は実行しない。 |
 | `--run-cc`、`.xml` パス、「実行」 | **Run（バッチ）** | 検証 → `wfrun run` で決定論的に実行。既定の実行モード。 |
 | `--resume`、run dir（`state.json` を含む） | **Resume** | 失敗した run を失敗地点から継続する。 |
-| `--run-llm`、「対話的に実行」 | **LLM オーケストレーション** | エージェントが `wfrun` ヘルパーサブコマンドとファイルベース交換を用い、人間の監督下でステップごとに進行する。このモードではステップの `effort=` は適用されない（Agent ツールも Pi の配送も effort を受け取らない）。 |
+| `--run-llm`、「対話的に実行」 | **LLM オーケストレーション** | エージェントが `wfrun` ヘルパーサブコマンドとファイルベース交換を用い、人間の監督下でステップごとに進行する。このモードではステップの `effort=` は適用されない（Agent ツールは effort を受け取らず、Pi の `subagent` 呼び出しの `effort` は tier の profile を選ぶもので、ステップの属性ではない）。Pi では subagent 拡張が要る（[Pi setup](#pi-setup) を参照）。 |
 
 ---
 
@@ -194,7 +287,7 @@ file path.</task>
 ## CLI リファレンス
 
 ```
-wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi]
+wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi|llm]
                         [--as-child] [--defined-vars VARS_JSON]
 wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi] [--inherit-model M]
 wfrun resume   <run_dir> [--base-dir D] [--permission-mode ...]
@@ -211,6 +304,10 @@ wfrun viz      <wf.xml> [--out FILE]    # 制御フローの mermaid フロー�
 （pi にコマンド単位のマッチ機構が無いため））は `references/run-pi.md` を参照。`resume` は
 run ディレクトリに記録された backend を使い再判定しないため、1つの run が2つの CLI に
 またがることはない。
+
+`validate --backend llm` は `run-llm` が渡す指定。XML 自体を検査するだけで CLI は
+起動せず、モデル名を catalog と照合することもない。`run-llm` はモデルを
+オーケストレータ自身の subagent 機能を通して解決するため。
 
 `--inherit-model` は、自前の model 指定を持たないステップ（`model=` 属性もロールの
 frontmatter 既定も無い）に使うモデルを与える。wfrun は独立したプロセスで動作し、
@@ -231,9 +328,9 @@ wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT] 
 wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE] [--answer FILE] [--debug-reply LINE] [--decider human|llm]
 wfrun poll   <handle.json> [--wait]     # done(0) / running(10) / deadline-exceeded(11)
 wfrun decide <wf.xml> <id> --result RESULT   # 未決の decision を llm decider に 1 回だけ委譲する
-wfrun stop   <handle.json> --facet cc|pi-cli [--task-stop stopped|completed|failed] [--observe 1..60]
-                                        # done(0) / confirmed(12) / unconfirmed(13)
-wfrun pids   <handle.json> PID [PID ...]     # Pi CLI: 起動時に試行のプロセスを記録する
+wfrun models <wf.xml>                   # 各委譲が出すモデル要求
+wfrun stop   <handle.json> --facet cc --task-stop stopped|completed|failed [--observe 1..60]
+                                        # Claude Code のみ: done(0) / confirmed(12) / unconfirmed(13)
 wfrun judge  <wf.xml> <id> --result RESULT   # 中断した試行の判定役を 1 回だけ発行する
 ```
 
@@ -246,13 +343,26 @@ Claude Code では、これを Agent 呼び出しの description にそのまま
 - transcript が見つからなければ、判定の次の行に `deny-check: NO-TRANSCRIPT: <理由>` が表示され、そのステップが clean として記録されることはない。
 - 調べた結果は `steps.log` に `deny_check` として残る。
 
-`run-llm` には選ぶべきレイヤも claude CLI の probe も無い。すべてのステップは
-オーケストレータ自身の委譲機能で実行するので、ほかに何が入っていても、
-オーケストレーションしているエージェント上で動く。Claude Code ではそれが Agent
-ツールである。Pi では、host が公開する `subagent` ツールが `references/run-llm.md` の
-確認を通ったときだけそれを使い、通らなければ `bash` から起動した新しい `pi -p`
-プロセスを使う。期限を過ぎたあとの停止・判定役・再投入の扱いは、同じ文書の
-"On abort" にある。
+`models` は、ワークフローの各委譲が出すモデル要求を制御の事実として出力する。
+`harness=cc|pi` の行（`CLAUDE_CODE_SESSION_ID` が設定されていて空でなければ `cc`）の
+後に、要求ごとに 1 行。`tier=`（名前が `basic`・`pro`・`ultra` を表すときだけ付く）、
+`model=`、`sites=`（step と `<replan>` の id。llm decider は `<id>:decider`）を持つ。
+`prompt` の dispatch 行と `decide` の行も同じ `tier=` と `model=` を出し、`decide` の
+行はさらに、その委譲に渡す `timeout=` を出す。
+
+`run-llm` には選ぶべきレイヤも CLI の probe も無い。ステップ・debug 診断・
+`<replan>` の builder・decider はすべて、オーケストレータ自身のネイティブな委譲機能で
+実行するので、ほかに何が入っていても、オーケストレーションしているエージェント上で
+動く。Claude Code ではそれが Agent ツールである。Pi では `subagent` ツールである。
+Preparation はまず、host がそれを公開していること（`delegation_contract`）と、
+`wfrun models` の全モデル要求が resolve できることを確かめ、そうでなければ run dir を
+作る前に停止する（[Pi setup](#pi-setup) を参照）。`claude -p` や `pi -p` のプロセスへ
+フォールバックすることはなく、`--run-cc` / `--run-pi` へ自動で移ることもない。`ask=` だけが
+例外で、`wfrun ask` は自分で CLI を起動し、委譲ではなく、委譲が使えない環境でも動く。
+Pi で中断したステップは記録されて run が止まる。`subagent` の子の停止を観測するものは
+無いので、確認された停止も判定役も再投入も無く、その run dir は再開できない。選択肢は
+`--run-pi`、`--run-cc`、新しい run である。Claude Code で期限を過ぎたあとの停止・判定役・
+再投入の扱いは、同じ文書の "On abort" にある。
 
 `dispatch` と `wait` は `run-llm` の一部ではなく、`references/run-llm.md` にも書かれて
 いない。ステップを委譲機能ではなく claude CLI で実行するコマンドで、`wfrun` 自身が

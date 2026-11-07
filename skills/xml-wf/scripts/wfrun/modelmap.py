@@ -64,6 +64,17 @@ def load_map(path: str | Path | None = None) -> dict[str, dict[str, str]]:
     return tables
 
 
+def tier_of(model: str | None, allow_legacy: bool = False) -> str | None:
+    """The tier (basic / pro / ultra) a model name stands for, or None for a
+    specific name. allow_legacy follows `resolve`: a pre-rename name counts as
+    its replacement only on the `model=` path."""
+    if not model:
+        return None
+    if allow_legacy:
+        model = LEGACY_ALIASES.get(model, model)
+    return model if model in CANONICAL_MODELS else None
+
+
 def resolve(model: str | None, runner: str,
             path: str | Path | None = None,
             allow_legacy: bool = False) -> str | None:

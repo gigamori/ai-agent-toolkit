@@ -214,6 +214,10 @@ so know them before relying on them.
     cannot tell a block from any other failed call.
   - wfrun does not pass `--no-extensions`, because model names resolve through
     one. Any extension the host loads therefore runs in every step.
+  - The pi subagent extension that run-llm needs on Pi ("Pi setup" in
+    `docs/skills/xml-wf/README.md`) is one such extension. Where it is
+    installed, a step with no `tools=` (so no `--tools` is passed) has the
+    `subagent` tool and can delegate. This is read from the source, not run.
   - None that blocks is installed by default. With one installed, a blocked
     call surfaces only through the step's own report.
 - **`tools=` is enforced, and its names are translated.** `Read`, `Write`,

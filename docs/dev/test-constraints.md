@@ -157,6 +157,17 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   `skills/mode-orchestrator/scripts/fixtures/` are carved from a real stream captured
   against pi 0.84.1 on 2026-08-13. Only long text and thinking bodies were trimmed and
   toolResults emptied; every key and nesting level is as measured.
+- A skill whose `SKILL.md` frontmatter is not valid YAML is dropped from Pi's skill list,
+  and the session runs without it. A bare double quote inside a double-quoted frontmatter
+  value ended the YAML scalar: Pi's own `parseFrontmatter` rejected `skills/xml-wf/SKILL.md`
+  with `Nested mappings are not allowed in compact mappings at line 4, column 16`; the
+  `pi -p --mode json` session's system prompt listed no `xml-wf` skill; the driver's stderr
+  was 0 bytes; and the same parser accepted the other 28 of the 29 `SKILL.md` files of the
+  tree. Calling `loadSkills` directly returned 0 skills with the warning in its
+  diagnostics, so the message exists in the API and did not reach stderr in that run. Observed
+  2026-11-07 in one end-to-end arm run (Windows 11, Node v24.22.1; Pi version not recorded),
+  by reading the session's system prompt and calling `parseFrontmatter` and `loadSkills`
+  from node on the tree's files.
 
 ## Git Bash on Windows — process ids, `node` and PowerShell
 

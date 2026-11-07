@@ -1,10 +1,9 @@
 """Per-attempt records and the re-dispatch gate of run-llm.
 
 run-llm hands every step to the orchestrator's own subagent facility -- the
-Agent tool on Claude Code, a fresh CLI process elsewhere -- so no wfrun
+Agent tool on Claude Code, the native `subagent` tool on Pi -- so no wfrun
 process owns an attempt's lifetime the way `dispatch`'s wrapper does. What
-code can still decide about an attempt is decided here, the same way for
-every facility:
+code can still decide about an attempt is decided here:
 
 - Files per attempt. Each attempt gets its own result file, its own copy of
   the prompt it ran, and a completion sentinel carrying its own key, so a
@@ -13,16 +12,11 @@ every facility:
 - The stop record (`observe_stop`, `wfrun stop`). After a stop request the
   attempt is observed for at most a minute. A result completing inside that
   window is adopted (`done`); after it, never. `confirmed` is written only on
-  what the facility lets code see:
-  - Claude Code: TaskStop reported the task stopped (or already ended), no
-    transcript of the subagent or of any agent it started grew during the
-    window, and none of them holds a call without a result, one that started
-    background work, or one refused or interrupted.
-  - Pi CLI: every process recorded at launch (`record_pids`, `wfrun pids`),
-    each as (PID, creation time), is gone. Processes outside that set --
-    descendants included -- are not observed.
-  Anything else is `unconfirmed`, and an unconfirmed attempt is never run
-  again.
+  what Claude Code lets code see: TaskStop reported the task stopped (or
+  already ended), no transcript of the subagent or of any agent it started
+  grew during the window, and none of them holds a call without a result,
+  one that started background work, or one refused or interrupted. Anything
+  else is `unconfirmed`, and an unconfirmed attempt is never run again.
 - The judge (`issue_judge`, `check_judge`; `wfrun judge`). Whether the work
   may run again from the start is judged by one fixed delegation that may
   read the evidence. Before it is delegated, code lists the evidence with
@@ -51,7 +45,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ccdeny, modes, procid, stepio
+from . import ccdeny, modes, stepio
 from .guardrails import JUDGE_DEADLINE_CLAUSE, JUDGE_NEXT_TIMEOUT_LINE, JUDGE_PROMPT
 
 # Observing a stop is bounded (user ruling 2026-10-01): a stop that is not
@@ -60,8 +54,7 @@ STOP_OBSERVE_MAX = 60
 STOP_POLL_INTERVAL = 1.0
 
 FACET_CC = "cc"
-FACET_PI_CLI = "pi-cli"
-FACETS = (FACET_CC, FACET_PI_CLI)
+FACETS = (FACET_CC,)
 
 # What the orchestrator's TaskStop call reported, passed in verbatim: the
 # task stopped; it had already ended (its completion notice arrived), which
@@ -75,9 +68,6 @@ TASK_STOP_RESULTS = (TASK_STOPPED, TASK_COMPLETED, TASK_FAILED)
 NOT_OBSERVED = {
     FACET_CC: ("processes that tool calls started and left running -- "
                "detached or not -- and every operation outside files"),
-    FACET_PI_CLI: ("every process outside the recorded set -- descendants of "
-                   "the recorded processes included, detached or not -- and "
-                   "every operation outside files"),
 }
 
 # The judge is a fixed delegation: one prompt (guardrails.JUDGE_PROMPT), one
@@ -137,15 +127,12 @@ def attempt_files(steps_dir: str | Path, step_id: str, cycle: int, seq: int,
     """Every file one run-llm attempt owns. All live in the step's own
     directory, next to the result path the orchestrator passed, so
     `decisions/` (derived from a result file's grandparent) stays where it
-    was. `session` is a directory: the Pi CLI session store of the attempt
-    (`--session-dir`), which the judge reads as its transcript."""
+    was."""
     stem = f"{step_id}_c{cycle:02d}_a{seq:02d}"
     steps_dir = Path(steps_dir)
     return {
         "result": steps_dir / f"{stem}_result{result_suffix}",
         "prompt": steps_dir / f"{stem}_prompt.md",
-        "session": steps_dir / f"{stem}_session",
-        "pids": steps_dir / f"{stem}_pids.json",
         "stop": steps_dir / f"{stem}_stop.json",
         "evidence": steps_dir / f"{stem}_evidence.json",
         "judge_prompt": steps_dir / f"{stem}_judge_prompt.md",
@@ -229,54 +216,6 @@ def load_stop(handle: dict) -> dict | None:
     return record
 
 
-def load_pids(handle: dict) -> dict | None:
-    """The processes recorded when this very attempt (its token) was
-    launched, or None."""
-    record = read_json(files_of(handle)["pids"])
-    if record is None or record.get("token") != handle.get("token"):
-        return None
-    processes = record.get("processes")
-    if not isinstance(processes, list) or not processes:
-        return None
-    return record
-
-
-def record_pids(handle: dict, pids: list[int]) -> dict | str:
-    """Record the processes a Pi CLI attempt was launched as -- each as (PID,
-    image name, creation time) -- once, while the attempt runs: the set a
-    Pi CLI stop is judged against. Refused, writing nothing, when the
-    attempt is past its launch or any PID cannot be identified as a running
-    process now."""
-    files = files_of(handle)
-    label = attempt_label(handle["cycle"], handle["attempt"])
-    if files["pids"].exists():
-        return (f"attempt {label} already has its processes recorded "
-                f"({files['pids']}); they are recorded once, at launch")
-    if files["stop"].exists():
-        return f"attempt {label} was already stopped; its launch is over"
-    entry = ledger_entry(Path(handle["result_path"]).parent, handle["step_id"],
-                         handle["cycle"], handle["attempt"])
-    if entry is not None:
-        return (f"attempt {label} is already recorded {entry.get('class')}; "
-                "its processes are recorded at launch")
-    processes = []
-    for pid in dict.fromkeys(pids):
-        found = procid.probe(pid)
-        if found.state != procid.STATE_RUNNING:
-            why = found.reason or "it is not running"
-            return f"process {pid}: {why} -- nothing recorded"
-        if found.created is None or found.image is None:
-            return (f"process {pid}: its image or creation time cannot be read "
-                    "-- nothing recorded")
-        processes.append({"pid": pid, "image": found.image,
-                          "created": found.created})
-    record = {"step_id": handle["step_id"], "cycle": handle["cycle"],
-              "attempt": handle["attempt"], "token": handle["token"],
-              "recorded_at": _now(), "processes": processes}
-    write_json(files["pids"], record)
-    return record
-
-
 def _transcripts(handle: dict) -> tuple[list[Path], str]:
     delegation = ccdeny.delegation_transcripts(handle)
     return list(delegation.transcripts), delegation.reason
@@ -327,38 +266,6 @@ def _observe_cc(handle: dict, task_stop: str | None, window: float
     return None, reasons, {"transcripts": [str(path) for path in final]}
 
 
-def _observe_pi_cli(handle: dict, window: float
-                    ) -> tuple[str | None, list[str], dict]:
-    """(`done` or None, reasons the stop is not confirmed, what was watched)
-    over the window. Ends as soon as every recorded process is gone, after
-    one more look at the result."""
-    record = load_pids(handle)
-    reasons: list[str] = []
-    processes = [] if record is None else record["processes"]
-    if record is None:
-        reasons.append("no process set was recorded when this attempt was "
-                       "launched")
-    running = list(processes)
-    end = _monotonic() + window
-    while not is_complete(handle):
-        running = [p for p in processes
-                   if procid.is_running(p["pid"], p["created"])]
-        if record is not None and not running:
-            break
-        remaining = end - _monotonic()
-        if remaining <= 0:
-            break
-        _sleep(min(STOP_POLL_INTERVAL, remaining))
-    if is_complete(handle):
-        return STOP_DONE, reasons, {}
-    if running:
-        reasons.append("still running at the end of the window: " + ", ".join(
-            f"{p['pid']} ({p['image']})" for p in running))
-    alive = {p["pid"] for p in running}
-    return None, reasons, {"processes": [{**p, "running": p["pid"] in alive}
-                                         for p in processes]}
-
-
 def observe_stop(handle: dict, facet: str, task_stop: str | None,
                  window: float) -> dict:
     """Observe one attempt after a stop request and write its stop record.
@@ -380,10 +287,9 @@ def observe_stop(handle: dict, facet: str, task_stop: str | None,
     cause = (CAUSE_DEADLINE
              if requested_at >= handle["dispatched_at"] + handle["timeout"]
              else CAUSE_ENDED)
-    if facet == FACET_CC:
-        verdict, reasons, watched = _observe_cc(handle, task_stop, window)
-    else:
-        verdict, reasons, watched = _observe_pi_cli(handle, window)
+    if facet != FACET_CC:
+        raise ValueError(f"no stop is observed for facet {facet!r}")
+    verdict, reasons, watched = _observe_cc(handle, task_stop, window)
     if verdict is None:
         verdict = STOP_UNCONFIRMED if reasons else STOP_CONFIRMED
 
@@ -418,16 +324,9 @@ def _iso(epoch: float) -> str:
 
 
 def _evidence_transcripts(handle: dict, stop: dict) -> list[Path] | str:
-    """The transcripts of the stopped attempt, by facet: Claude Code's
-    transcripts of the subagent and every agent it started; the Pi CLI's
-    session files in the attempt's own session directory."""
+    """The transcripts of the stopped attempt: Claude Code's transcripts of
+    the subagent and every agent it started."""
     label = attempt_label(handle["cycle"], handle["attempt"])
-    if stop.get("facet") == FACET_PI_CLI:
-        directory = files_of(handle)["session"]
-        found = sorted(directory.glob("*.jsonl")) if directory.is_dir() else []
-        return found or (f"attempt {label} left no session file under "
-                         f"{directory}, so a judge would have no transcript to "
-                         "read -- stop and report")
     found, missing = _transcripts(handle)
     return found or (f"attempt {label} has no transcript a judge could read "
                      f"({missing}) -- stop and report")
@@ -487,7 +386,7 @@ def issue_judge(handle: dict, stop: dict) -> dict | str:
 
     # The judge's handle has the shape `poll` reads, so the judge's deadline
     # can wake the orchestrator like a step's; it carries no cycle or attempt,
-    # so no attempt command (`stop`, `pids`) takes it for an attempt.
+    # so no attempt command (`stop`) takes it for an attempt.
     files["judge_prompt"].write_text(prompt, encoding="utf-8")
     write_json(files["judge_handle"], {
         "step_id": handle["step_id"], "token": token,

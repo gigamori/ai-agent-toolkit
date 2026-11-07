@@ -118,8 +118,9 @@ def lint(wf: model.Workflow, base_dir: str | Path = ".",
     and <param> are forbidden. defined_vars: names to treat as already defined
     (a child inherits the parent's live variable store).
 
-    backend: which facility the workflow is headed for ("cc" | "pi"). Only the
-    model-name checks read it — see `_lint_pi_models`."""
+    backend: which facility the workflow is headed for ("cc" | "pi" | "llm").
+    Only the model-name checks read it, and only "pi" matches names against a
+    catalog — see `_lint_pi_models`."""
     base_dir = Path(base_dir)
     findings: list[Finding] = []
     err = lambda code, msg: findings.append(Finding("error", code, msg))

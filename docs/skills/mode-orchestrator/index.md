@@ -8,7 +8,7 @@ execution spec is `SKILL.md` under `skills/mode-orchestrator/` (not here).
 | [USER_GUIDE.md](USER_GUIDE.md) | End users | How to use the skill: flags, modes, effort/model selection, explicit workflow-step binding, canonical index JSONL, failure loop, decision loop (`needs-decision` and `--decider`), turn watchdog and its thresholds, workflow specs, artifacts. |
 | [USER_GUIDE_ja.md](USER_GUIDE_ja.md) | End users (JA) | Japanese version of the user guide. |
 | [WORKFLOW_SPEC_AUTHORING.md](WORKFLOW_SPEC_AUTHORING.md) | Spec authors | How to author a `workflows/<name>.md` spec: required sections, optional turn-facing policy, explicit workflow-step binding, effort precedence, and adding a task type. |
-| [AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md) | Skill maintainers | Dual-harness (Claude Code / Pi) integrity obligations, execution-profile and external adaptive-audit gates, relationship to xml-wf (including the Pi CLI launch contract and the restart gate the two skills align), `modes/` propagation pointer, and how to actually pin the skill version when measuring a prompt change on Pi. |
+| [AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md) | Skill maintainers | Dual-harness (Claude Code / Pi) integrity obligations, execution-profile and external adaptive-audit gates, relationship to xml-wf (including the restart gate the two skills align), the Pi CLI launch contract (this skill's alone), `modes/` propagation pointer, and how to actually pin the skill version when measuring a prompt change on Pi. |
 
 Runtime files (read during execution) live inside the skill dir:
 `SKILL.md`, `modes/`, `workflows/` (the bundled `dev` and `research` specs),

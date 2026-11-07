@@ -3,7 +3,6 @@ import io
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import time
@@ -384,19 +383,6 @@ class TestLateCompletion(RunLlmCase):
         code, _, err = self.prompt("s1", "--new-cycle")
         self.assertEqual(code, 1)
         self.assertIn("wfrun stop", err)
-
-
-class TestPiStop(ClockCase):
-    def test_a_pi_stop_without_recorded_pids_is_unconfirmed(self):
-        self.prompt()
-        code, out, _ = self.stop("pi-cli")
-        self.assertEqual(code, 13, out)
-        self.assertTrue(out.startswith("unconfirmed:"), out)
-        self.record()
-        code, _, err = self.prompt("s1", "--new-cycle")
-        self.assertEqual(code, 1)
-        self.assertIn("unconfirmed", err)
-        self.assertEqual(self.judge()[0], 1)
 
 
 class TestPoll(RunLlmCase):
@@ -805,6 +791,42 @@ class TestReplanAttempts(RunLlmCase):
         self.assertIn("attempt=c02a01", out)
 
 
+class TestContinuationMax(RunLlmCase):
+    def setUp(self):
+        super().setUp()
+        child = self.run_dir / "replans" / "r1_c01_a01.xml"
+        child.parent.mkdir(parents=True)
+        child.write_text(CHILD_XML, encoding="utf-8")
+        self.child = str(child)
+
+    def log_steps(self, *ids):
+        Path(self.log).write_text("".join(
+            json.dumps({"step": i, "status": "success"}) + "\n"
+            for i in ids), encoding="utf-8")
+
+    def prompt_child(self):
+        return self.cli("prompt", self.child, "x", "--vars", self.vars,
+                        "--out", str(self.steps / "x_prompt.md"),
+                        "--result", str(self.steps / "x_result.md"))
+
+    def test_parent_steps_do_not_use_up_a_continuation_max(self):
+        self.log_steps("s1", "s1", "s2")
+        code, _, err = self.prompt_child()
+        self.assertEqual(code, 0, err)
+
+    def test_a_continuation_stops_at_its_own_max(self):
+        self.log_steps("s1", "x", "x")
+        code, _, err = self.prompt_child()
+        self.assertEqual(code, 1)
+        self.assertIn("workflow max=2", err)
+
+    def test_continuation_steps_count_toward_the_parent_max(self):
+        self.log_steps(*["x"] * 10)
+        code, _, err = self.prompt()
+        self.assertEqual(code, 1)
+        self.assertIn("workflow max=10", err)
+
+
 LLM_XML = XML.replace('max="10">', 'max="10" decider="llm">', 1)
 
 
@@ -846,25 +868,6 @@ class TestDeciderAttempts(RunLlmCase):
         code, _, err = self.decide()
         self.assertEqual(code, 2)
         self.assertIn("no open decision request", err)
-
-
-def session_dir_of(out):
-    match = re.search(r"session-dir=([^,)]+)", out)
-    return None if match is None else Path(match.group(1))
-
-
-class TestAttemptSession(RunLlmCase):
-    def test_each_attempt_names_its_own_session_dir(self):
-        code, out, err = self.prompt()
-        self.assertEqual(code, 0, err)
-        first = session_dir_of(out)
-        self.assertIsNotNone(first, out)
-        self.assertEqual(first.parent, self.steps)
-        self.finish("ERROR: boom")
-        self.record()
-        code, out, err = self.prompt()
-        self.assertEqual(code, 0, err)
-        self.assertNotEqual(session_dir_of(out), first)
 
 
 class TestCcStopObservation(CcCase):
@@ -1040,280 +1043,255 @@ class TestJudgeContract(CcCase):
         self.assertEqual(code, 2, err)
 
 
-def running(image, created):
-    from wfrun import procid
-    return procid.Probe(procid.STATE_RUNNING, image, created)
+def run_main(argv):
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(list(argv))
+    except SystemExit as exit_:
+        code = exit_.code
+    return code, out.getvalue().strip(), err.getvalue().strip()
 
 
-def gone():
-    from wfrun import procid
-    return procid.Probe(procid.STATE_GONE)
+def tier_of(out):
+    match = re.search(r"\btier=(\w+)", out)
+    return None if match is None else match.group(1)
 
 
-def unreadable():
-    from wfrun import procid
-    return procid.Probe(procid.STATE_UNKNOWN, reason="access denied")
+class TestNativeOnlySurface(ClockCase):
+    def test_pids_is_not_a_command(self):
+        self.prompt()
+        code, _, err = run_main(["pids", str(self.pointer()), "101"])
+        self.assertEqual(code, 2, "run-llm records no processes of a delegated attempt")
+        self.assertIn("invalid choice", err)
 
+    def test_the_pi_cli_facet_is_refused(self):
+        self.prompt()
+        code, _, err = run_main(["stop", str(self.pointer()), "--facet", "pi-cli",
+                                 "--observe", "1"])
+        self.assertEqual(code, 2, "a stop is observed for the cc facet only")
+        self.assertIn("invalid choice", err)
 
-LAUNCHED = {101: ("bash.exe", 5), 102: ("node.exe", 6)}
+    def test_the_cc_facet_is_still_observed(self):
+        self.prompt()
+        code, _, err = run_main(["stop", str(self.pointer()), "--facet", "cc",
+                                 "--task-stop", "stopped", "--observe", "1"])
+        self.assertEqual(code, 13, err)
 
-
-class PiCase(ClockCase):
-    def pids(self, *pids):
-        return self.cli("pids", str(self.pointer()), *(str(pid) for pid in pids))
-
-    def probing(self, table):
-        return mock.patch("wfrun.procid.probe",
-                          lambda pid: table[pid] if pid in table else gone())
-
-    def launched(self):
+    def test_the_dispatch_line_names_no_session_dir(self):
         code, out, err = self.prompt()
         self.assertEqual(code, 0, err)
-        with self.probing({pid: running(*identity)
-                           for pid, identity in LAUNCHED.items()}):
-            code, _, err = self.pids(*LAUNCHED)
+        self.assertIn("description=", out)
+        self.assertNotIn("session-dir", out)
+
+    def test_an_attempt_owns_no_session_or_pids_file(self):
+        from wfrun import llmgate
+        files = llmgate.attempt_files(self.steps, "s1", 1, 1)
+        self.assertEqual(sorted(set(files) & {"session", "pids"}), [])
+
+
+class TestPiCliStopRecordFromAnEarlierRun(RunLlmCase):
+    def test_it_is_not_judged(self):
+        self.prompt()
+        handle = self.handle()
+        session = self.steps / "s1_c01_a01_session"
+        session.mkdir()
+        (session / "2026-01-01T00-00-00-000Z_s.jsonl").write_text(
+            json.dumps({"type": "message",
+                        "timestamp": iso(handle["dispatched_at"] + 1)}) + "\n",
+            encoding="utf-8")
+        now = time.time()
+        (self.steps / "s1_c01_a01_stop.json").write_text(json.dumps({
+            "step_id": "s1", "cycle": 1, "attempt": 1, "token": handle["token"],
+            "facet": "pi-cli", "task_stop": None, "cause": "ended",
+            "requested_at": now, "window": 1, "observed_until": now,
+            "verdict": "confirmed", "reasons": [], "not_observed": "x",
+            "processes": []}), encoding="utf-8")
+        self.record()
+        self.assertEqual(self.ledger()[-1]["class"], "aborted")
+        code, _, err = self.judge()
+        self.assertEqual(code, 1, "a judge reads a cc transcript or none; a session "
+                                  "directory is not evidence any more")
+        self.assertEqual(list(self.steps.glob("*_evidence.json")), [], err)
+
+
+TIER_XML = """
+<workflow name="t" version="2" max="10">
+  <step id="a" model="sonnet" timeout="100"><role>W</role><task>x</task></step>
+  <step id="b" model="ultra" timeout="100"><role>W</role><task>x</task></step>
+  <step id="c" model="gpt-x" timeout="100"><role>W</role><task>x</task></step>
+  <step id="d" timeout="100"><role>W</role><task>x</task></step>
+</workflow>
+"""
+
+
+class TestDispatchLineTier(RunLlmCase):
+    def line(self, step_id):
+        Path(self.xml).write_text(TIER_XML, encoding="utf-8")
+        code, out, err = self.prompt(step_id)
         self.assertEqual(code, 0, err)
         return out
 
-    def stop_with(self, table, *extra):
-        with self.probing(table):
-            return self.stop("pi-cli", *extra)
+    def test_a_legacy_name_is_rebound_to_its_tier(self):
+        out = self.line("a")
+        self.assertEqual(tier_of(out), "pro", out)
+        self.assertIn("model=sonnet", out)
 
-    def stem(self):
-        handle = self.handle()
-        return f"s1_c{handle['cycle']:02d}_a{handle['attempt']:02d}"
+    def test_a_canonical_name_carries_its_tier(self):
+        out = self.line("b")
+        self.assertEqual(tier_of(out), "ultra", out)
+        self.assertIn("model=opus", out)
 
-    def stop_record(self):
-        return json.loads((self.steps / f"{self.stem()}_stop.json")
-                          .read_text(encoding="utf-8"))
+    def test_a_specific_name_has_no_tier(self):
+        out = self.line("c")
+        self.assertIsNone(tier_of(out), out)
+        self.assertIn("model=gpt-x", out)
 
-    def evidence(self):
-        return json.loads((self.steps / f"{self.stem()}_evidence.json")
-                          .read_text(encoding="utf-8"))
-
-    def session(self, out, *offsets):
-        directory = session_dir_of(out)
-        directory.mkdir(parents=True, exist_ok=True)
-        t0 = self.handle()["dispatched_at"]
-        path = directory / "2026-01-01T00-00-00-000Z_s.jsonl"
-        path.write_text("".join(
-            json.dumps({"type": "message", "timestamp": iso(t0 + offset)}) + "\n"
-            for offset in offsets), encoding="utf-8")
-        return path
-
-    def write_record(self, path, next_timeout=None):
-        manifest = self.evidence()
-        record = Path(manifest["judge"]["record_path"])
-        lines = ["verdict: allow", "method: restart"]
-        if next_timeout is not None:
-            lines.append(f"next-timeout: {next_timeout}")
-        lines += ["evidence:", f"- {path}#L1-L2: the attempt kept working",
-                  "limits: none", end_marker(manifest)]
-        record.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return record
+    def test_a_step_without_a_model_has_no_tier(self):
+        out = self.line("d")
+        self.assertIsNone(tier_of(out), out)
+        self.assertNotIn("model=", out)
 
 
-class TestPiProcesses(PiCase):
-    def test_gone_recorded_processes_confirm_the_stop(self):
-        self.launched()
-        code, out, _ = self.stop_with({})
-        self.assertEqual(code, 12, out)
-        record = self.stop_record()
-        self.assertEqual(sorted(p["pid"] for p in record["processes"]), [101, 102])
-        self.assertIn("descendants", record["not_observed"],
-                      "a Pi CLI stop speaks for the recorded processes only")
-
-    def test_a_result_completed_before_the_stop_is_adopted(self):
-        self.launched()
-        self.finish()
-        self.assertEqual(self.stop_with({})[:2], (0, "done"))
-        self.assertEqual(self.record()[0], 0)
-
-    def test_an_ok_reply_after_a_confirmed_stop_is_recorded_aborted(self):
-        self.launched()
-        self.assertEqual(self.stop_with({})[0], 12)
-        code, out, _ = self.record("s1", "--reply", "OK s1")
-        self.assertEqual(code, 3, "after a stop the attempt is settled by its stop, "
-                                  "not by a reply claiming OK")
-        self.assertTrue(out.startswith("aborted"), out)
-        self.assertEqual(self.ledger()[-1]["class"], "aborted")
-
-    def test_a_recorded_process_still_running_leaves_the_stop_unconfirmed(self):
-        self.launched()
-        code, out, _ = self.stop_with({102: running("node.exe", 6)})
-        self.assertEqual(code, 13, out)
-        self.assertIn("102", out)
-
-    def test_a_reused_pid_is_not_the_recorded_process(self):
-        self.launched()
-        code, out, _ = self.stop_with({101: running("bash.exe", 7),
-                                       102: running("svchost.exe", 99)})
-        self.assertEqual(code, 12, out)
-
-    def test_a_process_that_cannot_be_read_counts_as_running(self):
-        self.launched()
-        code, out, _ = self.stop_with({102: unreadable()})
-        self.assertEqual(code, 13, out)
-
-    def test_a_process_that_is_not_running_is_not_recorded(self):
+class TestDeciderLine(RunLlmCase):
+    def delegate(self, xml):
+        Path(self.xml).write_text(xml, encoding="utf-8")
         self.prompt()
-        with self.probing({102: running("node.exe", 6)}):
-            code, _, err = self.pids(101, 102)
-        self.assertEqual(code, 1, err)
-        self.assertIn("101", err)
-        code, out, _ = self.stop_with({})
-        self.assertEqual(code, 13, out)
-        self.assertIn("no process set", out)
-
-    def test_processes_are_recorded_once_per_attempt(self):
-        self.launched()
-        with self.probing({103: running("node.exe", 7)}):
-            code, _, err = self.pids(103)
-        self.assertEqual(code, 1, err)
-        self.assertIn("already", err)
-
-    def test_processes_are_recorded_while_the_attempt_runs(self):
-        self.prompt()
-        self.finish()
-        self.record()
-        with self.probing({103: running("node.exe", 7)}):
-            code, _, err = self.pids(103)
-        self.assertEqual(code, 1, err)
-
-
-class TestPiJudge(PiCase):
-    def test_the_attempts_session_is_its_transcript(self):
-        out = self.launched()
-        path = self.session(out, 1, 5)
-        self.assertEqual(self.stop_with({})[0], 12)
-        self.record()
-        code, _, err = self.judge()
+        self.finish(DECISION_BODY)
+        self.assertEqual(self.record()[0], 4)
+        code, out, err = self.cli("decide", self.xml, "s1", "--result", self.base())
         self.assertEqual(code, 0, err)
-        listed = {Path(entry["path"]): entry["kind"] for entry in self.evidence()["files"]}
-        self.assertEqual(listed.get(path.resolve()), "transcript")
+        return out
 
-    def test_an_attempt_without_a_session_is_not_judged(self):
-        self.launched()
-        self.assertEqual(self.stop_with({})[0], 12)
-        self.record()
-        code, _, err = self.judge()
-        self.assertEqual(code, 1)
-        self.assertIn("session", err)
+    def test_the_default_decider_model_carries_its_tier_and_the_step_timeout(self):
+        out = self.delegate(LLM_XML)
+        self.assertEqual(tier_of(out), "ultra", out)
+        self.assertIn("model=opus", out)
+        self.assertIn("timeout=100", out)
 
-    def test_a_longer_deadline_grounded_in_the_session_is_used(self):
-        out = self.launched()
-        path = self.session(out, 1, 5)
-        handle = self.handle()
-        late = handle["dispatched_at"] + handle["timeout"] + 1
-        with mock.patch("wfrun.llmgate._now", return_value=late):
-            self.assertEqual(self.stop_with({})[0], 12)
-        self.record()
-        self.assertEqual(self.judge()[0], 0)
-        record = self.write_record(path, next_timeout=200)
-        code, _, err = self.prompt("s1", "--redispatch", f"allow {record}")
+    def test_a_canonical_decider_model_carries_its_tier(self):
+        out = self.delegate(LLM_XML.replace(
+            'decider="llm">', 'decider="llm" decider-model="pro">', 1))
+        self.assertEqual(tier_of(out), "pro", out)
+        self.assertIn("model=sonnet", out)
+
+    def test_a_legacy_decider_model_is_a_specific_name(self):
+        out = self.delegate(LLM_XML.replace(
+            'decider="llm">', 'decider="llm" decider-model="sonnet">', 1))
+        self.assertIsNone(tier_of(out), "decider-model does not rebind a legacy name")
+        self.assertIn("model=sonnet", out)
+
+
+def model_rows(out):
+    lines = out.splitlines()
+    rows = {}
+    for line in lines[1:]:
+        fields = dict(part.split("=", 1) for part in line.split())
+        rows[(fields.get("tier"), fields["model"])] = fields["sites"].split(",")
+    return lines[0], rows
+
+
+class TestModels(RunLlmCase):
+    def models(self, xml):
+        Path(self.xml).write_text(xml, encoding="utf-8")
+        code, out, err = run_main(["models", self.xml])
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.handle()["timeout"], 200)
+        return model_rows(out)
+
+    def test_a_legacy_name_and_its_tier_name_share_one_row(self):
+        _, rows = self.models(
+            '<workflow name="t" version="2" max="10">'
+            '<step id="s1" model="sonnet"><task>x</task></step>'
+            '<step id="s2" model="pro"><task>x</task></step></workflow>')
+        self.assertEqual(rows, {("pro", "sonnet"): ["s1", "s2"]})
+
+    def test_a_specific_name_is_a_row_without_a_tier(self):
+        _, rows = self.models(
+            '<workflow name="t" version="2" max="10">'
+            '<step id="s1" model="gpt-x"><task>x</task></step></workflow>')
+        self.assertEqual(rows, {(None, "gpt-x"): ["s1"]})
+
+    def test_a_step_without_a_model_has_no_row(self):
+        _, rows = self.models(
+            '<workflow name="t" version="2" max="10">'
+            '<step id="s1"><task>x</task></step></workflow>')
+        self.assertEqual(rows, {})
+
+    def test_a_role_frontmatter_model_is_a_row(self):
+        agents = self.root / ".claude" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "native-only-role.md").write_text(
+            "---\nname: native-only-role\nmodel: gpt-x\n---\nBody\n",
+            encoding="utf-8")
+        _, rows = self.models(
+            '<workflow name="t" version="2" max="10">'
+            '<step id="s1" role="native-only-role"><task>x</task></step>'
+            '<step id="s2" role="native-only-role" model="ultra"><task>x</task></step>'
+            '</workflow>')
+        self.assertEqual(rows, {(None, "gpt-x"): ["s1"], ("ultra", "opus"): ["s2"]},
+                         "a step attribute outranks the role's model")
+
+    def test_a_replan_builder_is_a_row(self):
+        _, rows = self.models(
+            '<workflow name="t" version="2" max="10">'
+            '<replan id="r1" model="pro"><task>x</task></replan></workflow>')
+        self.assertEqual(rows, {("pro", "sonnet"): ["r1"]})
+
+    def test_an_llm_decider_is_a_row_per_step(self):
+        _, rows = self.models(
+            '<workflow name="t" version="2" max="10" decider="llm">'
+            '<step id="s1"><task>x</task></step>'
+            '<step id="s2" decider="human"><task>x</task></step></workflow>')
+        self.assertEqual(rows, {("ultra", "opus"): ["s1:decider"]})
+
+    def test_a_legacy_decider_model_is_a_specific_name(self):
+        _, rows = self.models(
+            '<workflow name="t" version="2" max="10" decider="llm" '
+            'decider-model="sonnet"><step id="s1"><task>x</task></step></workflow>')
+        self.assertEqual(rows, {(None, "sonnet"): ["s1:decider"]})
+
+    def test_a_human_decider_has_no_row(self):
+        _, rows = self.models(
+            '<workflow name="t" version="2" max="10">'
+            '<step id="s1"><task>x</task></step></workflow>')
+        self.assertEqual(rows, {})
+
+    def test_the_harness_is_pi_without_a_claude_code_session(self):
+        head, _ = self.models(XML)
+        self.assertEqual(head, "harness=pi")
+
+    def test_the_harness_is_cc_inside_a_claude_code_session(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": SESSION}):
+            head, _ = self.models(XML)
+        self.assertEqual(head, "harness=cc")
 
 
-SLEEPER = "import os, time; print(os.getpid(), flush=True); time.sleep(60)"
-
-TREE_ROOT = (
-    "import os, subprocess, sys, time; "
-    f"child = subprocess.Popen([sys.executable, '-c', {SLEEPER!r}], "
-    "stdin=subprocess.DEVNULL, stdout=subprocess.PIPE); "
-    "print(os.getpid(), child.pid, child.stdout.readline().decode().strip(), "
-    "flush=True); time.sleep(60)")
-
-LATE_CHILD_ROOT = (
-    "import os, subprocess, sys, time; "
-    "print(os.getpid(), flush=True); sys.stdin.readline(); "
-    f"child = subprocess.Popen([sys.executable, '-c', {SLEEPER!r}], "
-    "stdin=subprocess.DEVNULL, stdout=subprocess.PIPE); "
-    "print(child.pid, child.stdout.readline().decode().strip(), flush=True); "
-    "time.sleep(60)")
+VALIDATE_XML = (
+    '<workflow name="t" version="2" max="10">'
+    '<step id="s1" model="sonnet" timeout="100"><role>W</role><task>x</task></step>'
+    '</workflow>')
 
 
-@unittest.skipUnless(os.name == "nt", "the process probe reads the Windows API")
-class TestPiProcessTree(RunLlmCase):
-    def setUp(self):
-        super().setUp()
-        self.learned = []
+class TestValidateBackendLlm(RunLlmCase):
+    def validate(self, backend):
+        from wfrun import pi_cli
+        Path(self.xml).write_text(VALIDATE_XML, encoding="utf-8")
+        with mock.patch.object(pi_cli, "list_available_models",
+                               return_value=[("p", "sonnet")]) as catalog:
+            result = run_main(["validate", self.xml, "--backend", backend])
+        return result, catalog
 
-    def spawn(self, script):
-        root = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, text=True, encoding="utf-8")
-        self.addCleanup(self.reap, root)
-        return root
-
-    def learn(self, *pids):
-        from wfrun import procid
-        for pid in pids:
-            self.learned.append((pid, procid.probe(pid).created))
-
-    def reap(self, root):
-        if root.poll() is None:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(root.pid)],
-                           capture_output=True, check=False)
-        root.wait(timeout=10)
-        root.stdin.close()
-        root.stdout.close()
-        from wfrun import procid
-        for pid, created in self.learned:
-            if created is not None and procid.is_running(pid, created):
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                               capture_output=True, check=False)
-
-    def stop_pi(self, seconds):
-        return self.cli("stop", str(self.pointer()), "--facet", "pi-cli",
-                        "--observe", str(seconds))
-
-    def test_a_killed_tree_confirms_the_stop(self):
-        self.prompt()
-        root = self.spawn(TREE_ROOT)
-        shell, child, worker = (int(x) for x in root.stdout.readline().split())
-        self.learn(shell, child, worker)
-        code, _, err = self.cli("pids", str(self.pointer()), str(shell), str(worker))
+    def test_llm_reads_no_catalog(self):
+        (code, _, err), catalog = self.validate("llm")
         self.assertEqual(code, 0, err)
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(root.pid)],
-                       capture_output=True, check=False)
-        root.wait(timeout=10)
-        code, out, _ = self.stop_pi(5)
-        self.assertEqual(code, 12, out)
+        self.assertEqual(catalog.call_count, 0,
+                         "a native delegation resolves models itself; pi's catalog "
+                         "is not consulted")
 
-    def test_a_live_process_leaves_the_stop_unconfirmed(self):
-        self.prompt()
-        root = self.spawn(TREE_ROOT)
-        shell, child, worker = (int(x) for x in root.stdout.readline().split())
-        self.learn(shell, child, worker)
-        code, _, err = self.cli("pids", str(self.pointer()), str(shell), str(worker))
+    def test_pi_reads_the_catalog(self):
+        (code, _, err), catalog = self.validate("pi")
         self.assertEqual(code, 0, err)
-        code, out, _ = self.stop_pi(1)
-        self.assertEqual(code, 13, out)
-        self.assertIn(str(worker), out)
-
-    def test_a_process_outside_the_recorded_set_is_not_observed(self):
-        from wfrun import procid
-        self.prompt()
-        root = self.spawn(LATE_CHILD_ROOT)
-        shell = int(root.stdout.readline())
-        self.learn(shell)
-        code, _, err = self.cli("pids", str(self.pointer()), str(shell))
-        self.assertEqual(code, 0, err)
-        root.stdin.write("go\n")
-        root.stdin.flush()
-        child, worker = (int(x) for x in root.stdout.readline().split())
-        self.learn(child, worker)
-        subprocess.run(["taskkill", "/F", "/PID", str(shell)],
-                       capture_output=True, check=False)
-        root.wait(timeout=10)
-        code, out, _ = self.stop_pi(5)
-        self.assertEqual(code, 12, "the stop speaks for the recorded set only, so a "
-                                   "process started after the record is not seen")
-        self.assertTrue(procid.is_running(worker, dict(self.learned)[worker]),
-                        "the unrecorded process is still running")
-        record = json.loads(next(self.steps.glob("s1_c01_a01_stop.json"))
-                            .read_text(encoding="utf-8"))
-        self.assertIn("descendants", record["not_observed"])
+        self.assertEqual(catalog.call_count, 1)
 
 
 if __name__ == "__main__":

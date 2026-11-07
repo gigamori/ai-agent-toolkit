@@ -7,10 +7,14 @@ and step in between steps**. When deterministic guarantees matter, use
 that needs a ruling mid-task has to ask for one, which is the `DECISION:`
 channel below — that works in both modes.)
 
-This protocol is platform-independent: any agent with wfrun (Python) and a
-subagent facility (the Agent tool in Claude Code; on Pi a `subagent` tool or a
-fresh `pi -p` process; the equivalent subtask delegation elsewhere) can act as
-the orchestrator.
+This mode runs on Claude Code and on Pi, and every delegation it makes goes
+through the host's native subagent facility: the Agent tool on Claude Code, the
+`subagent` tool on Pi. It never starts a `claude` or `pi` process to run a step,
+a debug diagnosis, a `<replan>` builder or a decider. `--run-cc` and `--run-pi`
+are the modes that do, and this mode never moves to either by itself. The one
+CLI it still starts is `wfrun ask`, under "Evaluating control structures".
+Every platform other than Claude Code takes the Pi path, so one without Pi's
+`delegation_contract` tool stops at the first row of the gate in Preparation.
 
 ## Your role (read first — it conditions every decision below)
 
@@ -28,15 +32,75 @@ ok/error, and true/false**. All content flows through wfrun and files:
 
 ## Preparation (unconditionally, in this order)
 
-1. `$WFRUN validate <xml>` — on errors, stop and report (do not fix)
+1. `$WFRUN validate <xml> --backend llm` — on errors, stop and report (do not
+   fix). `--backend llm` checks the XML itself and starts no CLI: it does not
+   match model names against any catalog. On Pi, step 4 checks them against the
+   host
 2. `$WFRUN plan <xml>` — this output (control skeleton: ids, agents, branches,
    retry/on-error) is the only knowledge of the workflow you are allowed.
    **Do not read the XML itself**
-3. **Fix `<ws>` before anything changes directory.** `<ws>` is the absolute
+3. `$WFRUN models <xml>` — the model requests this workflow will make, as
+   control facts. On error, stop and report. Example output:
+
+   ```
+   harness=pi
+   tier=pro model=sonnet sites=s1,s2
+   model=gpt-x sites=s3
+   tier=ultra model=opus sites=s2:decider
+   ```
+
+   `harness=` is `cc` when `CLAUDE_CODE_SESSION_ID` is set and not empty, and
+   `pi` otherwise. Each further line is one request. `model=` is the name that
+   `prompt` and `decide` print on their lines (the same resolution). `tier=` is
+   present only when the name stands for `basic`, `pro` or `ultra`. `sites=`
+   lists the step and `<replan>` ids that make the request, and `<id>:decider`
+   for an llm decider. A step with no model has no line
+4. ⟦NATIVE-GATE⟧ **The native subagent gate.** With `harness=cc` there is no
+   gate: go on to step 5. With `harness=pi` every delegation of this run is a
+   `subagent` call, so confirm before anything is created that the host offers
+   it and can resolve every model of step 3. This step creates no file.
+
+   a. Call `delegation_contract` with `{"operation":"observe"}`. Quote the
+      `routes.native.state` it returns in your next output, then take the row
+      that fits:
+
+      | observe result | do |
+      |---|---|
+      | there is no `delegation_contract` tool | reply with the sentence below, verbatim, and STOP |
+      | `routes.native.state` is `unavailable` | quote its `reason` verbatim, give the same two options as the sentence below (set it up per "Pi setup"; `--run-pi` or `--run-cc`), and STOP |
+      | `routes.native.state` is `available` | keep the result's `settings` and go on to b |
+
+      > run-llm cannot run here: this session has no native subagent route (the
+      > `delegation_contract` tool is missing, so the subagent extension is not
+      > installed or predates it). Set it up as described in "Pi setup" in
+      > `docs/skills/xml-wf/README.md`, or run this workflow with `--run-pi` or
+      > `--run-cc`.
+
+   b. For each request line of step 3, call `delegation_contract` with
+      `{"operation":"resolve","agent":"general-purpose","request":<R>,"requiredEffort":<E>}`.
+      `<R>` comes from the line and from the `settings` of a:
+
+      | the line has | `settings[<tier>].state` | `<R>` |
+      |---|---|---|
+      | `tier=` | `configured` | `{"effort":"<tier>"}` |
+      | `tier=` | `absent` or `unset` | `{"model":"<the line's model=>"}` |
+      | `tier=` | `invalid` or `unobservable` | no call: stop and report that state |
+      | no `tier=` | any | `{"model":"<the line's model=>"}` |
+
+      `<E>` is the line's `tier=`, or `pro` for a line without one. It is only
+      recorded: it never selects a model. A `tier=` is wfrun's fact: never
+      derive a tier from a name, or a name from a tier
+   c. Every call returned `resolved`: keep each line's `resolutionRef` for the
+      whole run (it is bound to this session and its thinking level). Any other
+      state: report the line, the state and the reason, name the
+      `child-session/config.json` field involved (`explicitModels` for a
+      `model` request, `profiles` for an `effort` request), and STOP. Never
+      replace the request with another one
+5. **Fix `<ws>` before anything changes directory.** `<ws>` is the absolute
    path of the directory you were started in, even when that is a worktree —
    never one created later for this run. Every `<ws>` below means that path,
    wherever you work afterwards
-4. Create the run dir `<ws>/tmp/runs/<name>_<ts>-llm/`. Below, `<run>` is its
+6. Create the run dir `<ws>/tmp/runs/<name>_<ts>-llm/`. Below, `<run>` is its
    absolute path, and every run file is written under it. Keep the `-llm`
    suffix: the `vars.json` hook under "Enforcement boundaries" matches it. If
    that directory already exists, do not reuse it: take a fresh `<ts>`. Run
@@ -44,15 +108,15 @@ ok/error, and true/false**. All content flows through wfrun and files:
    first report and leave `.gitignore` alone. Write `<run>/vars.json` with the
    resolved `<param>` values (ask the user for missing required ones) — the
    single moment you write values
-5. Create an empty `<run>/steps.log`. Every `--log` below names exactly this
+7. Create an empty `<run>/steps.log`. Every `--log` below names exactly this
    file: `prompt` counts the workflow's `max` from it
 
-Every step runs through your own delegation facility (on Pi, "Delegating on
-Pi"), by the protocol below: the steps run on the agent you are orchestrating
-from, whatever else is installed. The model names on the dispatch line come from `model_map.json`'s
-`llm` table — the names your execution facility accepts. (`wfrun dispatch` /
-`wait`, which run a step through the claude CLI instead, are not part of this
-mode.)
+Every step runs through the host's native subagent facility — on Claude Code the
+Agent tool, on Pi the `subagent` call of "Delegating on Pi" — by the protocol
+below: the steps run on the agent you are orchestrating from, whatever else is
+installed. The model on the dispatch line comes from `model_map.json`'s `llm`
+table. (`wfrun dispatch` / `wait`, which run a step through the claude CLI
+instead, are not part of this mode.)
 
 ## Run dir and worktrees
 
@@ -105,34 +169,45 @@ is `<run>/steps.log`.
 ```bash
 # 1. Assemble (output = path + dispatch facts only; never look inside)
 #    The dispatch line shows resolved values: role=<name>|inline, mode=<name>,
-#    model=..., effort=..., tools=... — model is already runner-resolved through
-#    model_map.json ("model=X (mapped from Y)" when a mapping applied): pass
-#    the resolved name verbatim, never translate it yourself. A step still
-#    carrying a legacy name (haiku/sonnet/opus) is NOT rebound here -- it
-#    prints unresolved, since only the model= dispatch path aliases legacy
-#    names (model-legacy-name warns); migrate the step's model= instead.
+#    model=..., tier=..., effort=..., tools=... — model is already
+#    runner-resolved through model_map.json's `llm` table ("model=X (mapped from
+#    Y)" when a mapping applied). A legacy name (haiku/sonnet/opus) on a step's
+#    model= is first read as its tier (haiku as basic, sonnet as pro, opus as
+#    ultra; model-legacy-name warns) and then looked up, so it prints a
+#    resolved model= and a tier=. tier= is present only when the name stands
+#    for basic, pro or ultra after that reading. On Claude Code pass model=
+#    verbatim; on Pi "Delegating on Pi" says what the line's tier= and model=
+#    become. Either way never translate a name or a tier yourself.
 #    Then the attempt's own facts: attempt=cNNaNN, result=<this attempt's
-#    result file>, timeout=<seconds>, session-dir=<dir>, description=<d>.
+#    result file>, timeout=<seconds>, description=<d>.
 #    The prompt file already contains the full role and
-#    mode text (joined into one file: the Agent tool has no system-prompt
-#    input, unlike run-cc's --append-system-prompt), so any generic subagent
-#    will do; apply model from the dispatch line when delegating. effort=
-#    cannot be applied: the Agent tool has no effort input, and the Pi
-#    delivery below passes none
+#    mode text (joined into one file: neither delegation tool has a
+#    system-prompt input, unlike run-cc's --append-system-prompt), so any
+#    generic subagent will do. effort= is applied on neither harness: the
+#    Agent tool has no effort input, and the `effort` of the Pi `subagent` call
+#    is the tier profile of tier=, not this attribute
 $WFRUN prompt <xml> <id> --vars <run>/vars.json \
     --out <run>/steps/<id>_prompt.md --result <run>/steps/<id>_result.md
 #   [--fix "..."]          only as "On error" says
 #   [--new-cycle]          only as "Cycles" below says
 #   [--redispatch "..."]   only as "On abort" says
 
-# 2. Delegate (this fixed message is ALL you hand to the subagent; when the
-#    dispatch line shows tools=..., include the second sentence verbatim with
-#    that list — tool names are control facts, not task content)
-"Read <run>/steps/<id>_prompt.md and execute its instructions. Use only these
- tools: <tools from the dispatch line>. The response protocol is inside the
- file. Reply to me with a single line starting with OK <id> or ERROR: <gist>."
-#    On Claude Code, run the Agent call in the background and give it the
-#    dispatch line's description= value verbatim as its description. It is
+# 2. Delegate. One of these two fixed messages is ALL you hand to the
+#    subagent; the dispatch line picks which (tool names are control facts, not
+#    task content).
+#    The line shows tools=...:
+"Read <run>/steps/<id>_prompt.md and execute its instructions. Reading that
+ file and writing the result file it names are always allowed; for everything
+ else, use only these tools: <tools from the dispatch line>. The response
+ protocol is inside the file. Reply to me with a single line starting with
+ OK <id> or ERROR: <gist>."
+#    The line shows no tools= (every <replan> builder, any step without one):
+"Read <run>/steps/<id>_prompt.md and execute its instructions. The response
+ protocol is inside the file. Reply to me with a single line starting with
+ OK <id> or ERROR: <gist>."
+#    On Claude Code, run the Agent call in the background, with the dispatch
+#    line's model= when it shows one, and give it the dispatch line's
+#    description= value verbatim as its description. It is
 #    unique to this attempt, and wfrun finds the subagent's transcript by it
 #    (record, stop, judge, the restart gate); any other description leaves
 #    them unable to. In the same message, start the attempt's deadline watch
@@ -143,9 +218,9 @@ $WFRUN poll <run>/steps/<id>_handle.json --wait
 #    The subagent's completion notice is the normal wake: stop the watch
 #    there. If the watch ends first: done -> move 3 (pass --reply only if one
 #    has arrived); deadline-exceeded -> "On abort". A watch verdict that
-#    arrives after the attempt is recorded is stale: ignore it. On Pi there is no
-#    watch: the call blocks, and its timeout is the deadline ("Delegating on
-#    Pi")
+#    arrives after the attempt is recorded is stale: ignore it. On Pi make the
+#    `subagent` call of "Delegating on Pi" instead: there is no watch, the call
+#    blocks, and its `timeout` is the deadline
 
 # 3. Record (output = ok/error/aborted only; never look at the result body).
 #    Pass back exactly the one reply line the subagent gave you — it is a
@@ -188,7 +263,8 @@ $WFRUN poll <run>/steps/<id>_handle.json
 #                            this is a verdict, not a termination
 
 # 4. Report one line to the user ("<id>: ok/error/aborted", progress =
-#    steps.log lines / max), move on
+#    steps.log lines / max), move on. An aborted step on Pi does not move on:
+#    its line is the one in "An interrupted delegation"
 ```
 
 **Cycles (`<while>` / `<each>` re-visits).** The retry budget is per
@@ -207,153 +283,64 @@ step goes on only as "On abort" says.
 
 ### Delegating on Pi
 
-Move 2 assumes you have a subagent facility. Pi's built-in tool set is
-`read | bash | edit | write | grep | find | ls` and nothing else; a host may
-publish a `subagent` tool on top of it. The message is the same fixed one on
-either route: it carries only control facts, so it is harness-neutral. Only the
-delivery differs.
+On Pi every delegation of this run is one `subagent` call. The gate in
+Preparation has already shown that the route exists and that every model
+request resolves, so nothing here chooses a route or a model again: a refusal
+now is a stop.
 
-**Choose the route before the first delegation.** Two run-level checks decide
-whether the `subagent` tool may be used at all; then the table below decides
-each step, and a step that misses any row takes the CLI route. Decide before
-anything is dispatched: a mismatch found after real work was sent is not a safe
-fallback, and the same step is not sent again through the other route unless
-its first attempt's stop is confirmed.
+**The call.** Single mode:
 
-Once per run:
+- `agent: "general-purpose"` and `nested: false`. Leave `agentScope` out, as the
+  `resolve` calls did.
+- `task`: the delegation's fixed message.
+- top-level `timeout` (seconds): from the table below. Every delegation has one.
+- With a model: `expectedResolution` is the `resolutionRef` kept for the
+  request. The request is the line of `$WFRUN models` whose `sites=` holds this
+  delegation's id (`<id>:decider` for a decider; for a step of a `<replan>`
+  child, the line of the child's own `models`). Pass neither `model` nor
+  `effort`.
+- Without a model (the line shows no `model=`): pass no `expectedResolution`,
+  `model` or `effort`. The child follows the parent's or the agent's default.
 
-1. **Schema.** The published `subagent` tool's schema has a top-level `timeout`
-   (seconds). The tool's name alone is not this check.
-2. **Probe.** Call the tool once with a top-level `timeout` and a task that
-   touches nothing (reply with the word OK), naming an agent whose definition
-   grants no write or shell tool. The first line of the returned content starts
-   with `[subagent] outcome=` and the outcome is `completed`. A call without
-   `timeout` may legitimately lack that line, so an untimed probe shows nothing
-   either way. No such agent to name is a failed probe.
+The call carries no tool restriction and no working directory: the dispatch
+line's `tools=` is only the sentence in the message ("Enforcement boundaries").
 
-Either check failing, or the tool being absent or unreadable, puts the whole run
-on the CLI route. Both checks say only that a deadline and a result notice
-exist; the step still has to be served. Per step, one miss puts that step on the
-CLI route:
+**The reply.** The returned content begins with one or more `[subagent]` lines
+(`evidence=`, then `outcome=`, and others). Split off every leading
+`[subagent]` line: they are the tool's control lines, not the child's reply.
+Give the `run=` value in the step's report line (move 4). Only the child's one
+reply line goes to `record --reply`.
 
-| the step needs | the subagent route meets it only if |
-|---|---|
-| the dispatch line's model | the schema shows an explicit-model field; nothing else carries a model |
-| the dispatch line's `tools=` (when it shows one) | the host lists an agent definition whose frontmatter `tools:` is exactly that list; the schema shows no per-call tool restriction, and the sentence in the message is not one |
-| a child that cannot start another orchestrator | the tool's published description says its children load no skills |
-| an audit id for the attempt | the probe's control line carries `run=<session id>`; without it there is no id to record |
+"Normal" below is `outcome=completed` with no `unconfirmed_descendants`. Every
+call carries a `timeout`, so a call that ran has an `outcome=` line. A call
+without one was refused before it ran (a schema rejection, `stale:` or
+`blocked:`) and takes the "otherwise" column.
 
-`effort=` and a working directory are passed on neither route. A capability
-that the published schema or description does not show is unmet; do not fill it
-in from memory. Say which route you chose, and why, in your first report to the
-user, and again whenever a later step takes the other route. The subagent route
-has not been exercised on a live host.
+| delegation | `timeout` | model | normal | otherwise |
+|---|---|---|---|---|
+| step | the dispatch line's `timeout=` | the dispatch line's `tier=` / `model=` | move 3: `record` decides from the result file | `poll` once. `done` → `record` (with `--reply` if the child's reply line arrived). Anything else → "An interrupted delegation" below |
+| debug diagnosis | 600 | none | `record --debug-reply` | stop and report; never delegate it again |
+| `<replan>` builder | the dispatch line's `timeout=` | the dispatch line's `tier=` / `model=` | go on to `validate` | stop and report; do not `validate` |
+| decider | the `timeout=` of the `decide` line | the `decide` line's `tier=` / `model=` | `record --answer` | run the same `record --answer`; on `error(2)` take the human path ("On decision") |
 
-**The subagent route.** One `subagent` call per step, single mode (`agent` and
-`task`): `task` is the fixed message, the model is the dispatch line's resolved
-name, and the top-level `timeout` is the dispatch line's `timeout=`. The first
-line of the returned content is the tool's control line
-(`[subagent] outcome=...`), not the step's reply: split it off, give its `run=`
-id in the step's report line (move 4), and pass only the child's one reply line
-to `record --reply`. `outcome=completed` without `unconfirmed_descendants` is
-only a candidate: `record` still decides from the result file. Any other outcome
-(`stopped`, `stop_unconfirmed`, `error`, `not_started`), `completed` with
-`unconfirmed_descendants`, or no control line is no reply: poll once, and on
-anything but `done` go to "On abort".
+**An interrupted delegation.** A step's attempt that is neither normal nor
+`done` after the `poll` is recorded and the run stops:
 
-**The CLI route.** One blocking call per step from the `bash` tool.
+1. Record it: move 3's command without `--reply`. It ends `aborted(3)`.
+2. Report. For a refusal, give the refusal's own reason (no new
+   classification: `stale:` and `blocked:` are reported, not repaired; never
+   repeat the call without `expectedResolution`, and never pass a model of your
+   own). When the outcome is `stop_unconfirmed`, say that the child may still be
+   running and that wfrun cannot stop it.
+3. End the report with this line, and STOP. Fill in the two values (`none` for
+   one the call did not return) and copy the rest verbatim, however short a
+   report you were asked for. It replaces move 4's line:
 
-<!-- pi-cli-launch-contract:begin -->
-**Pi CLI launch contract.** The CLI route starts a fresh, non-interactive pi
-process from one `bash` call. These rules are common to every skill that does
-it; the options each skill adds follow the block.
+   > <id>: aborted run=<the run= value> outcome=<the outcome= value>. This run dir cannot be resumed; the options are `--run-pi`, `--run-cc`, or a new run.
 
-- **Entry.** `<pi-cli-entry>` is
-  `<npm prefix -g>/node_modules/@earendil-works/pi-coding-agent/dist/cli.js`.
-  Resolve it once per run with `npm prefix -g`; a failed command stops the run.
-  Never search for the file.
-- **Straight to node.** Launch `node <pi-cli-entry>`. Never `pi`, `pi.CMD`,
-  `pi.ps1` or any shell-resolved launcher: the cmd.exe layer of the npm shim
-  cuts the argument at its first newline, with exit 0 and no stderr.
-- **Non-interactive, message on argv.** `-p`, then the message as the positional
-  argument. Never `@<file>`: pi treats the include as content to reason about
-  and may refuse it as prompt injection.
-- **Stdin closed.** `< /dev/null`, always. pi reads stdin whenever it is not a
-  TTY (`readPipedStdin()`, no timeout): an open stdin hangs the child with empty
-  stdout and stderr, and a stdin that carries bytes is prepended to the prompt
-  with no separator.
-- **No skills.** `--no-skills`. Never `--skill`: a child that can load a skill
-  can start the next orchestrator.
-- **Transcript kept.** `--session-dir <session-dir>` keeps the child's session
-  on disk, out of the real session store. A skill's own text names any launch
-  that keeps none (`--no-session`).
-- **Model.** `--model <resolved name>` on every launch: pi has no inherited-model
-  path.
-- **Git Bash.** Put `MSYS_NO_PATHCONV=1` in front: a positional argument that
-  begins with a POSIX-looking path is otherwise rewritten. Never
-  `MSYS2_ARG_CONV_EXCL='*'`, which breaks node's own path. Write every path
-  handed to node in Windows form (`C:/...`). Assign the message to a shell
-  variable in its own statement first and pass `"$PROMPT"`: an inline
-  multi-line message dies at bash parse time.
-- **Deadline.** Pass the `bash` call's `timeout` (seconds) explicitly: the tool
-  has no default. When it passes, the tool kills the call's whole process tree.
-  That kill is the stop request; it does not confirm the stop.
-- **Record the processes.** Run the CLI in the background of the same call, take
-  its `$!`, translate that and the shell's own `$$` to Windows PIDs with
-  `/proc/<pid>/winpid`, and hand both to the skill's recorder before the call
-  waits for the CLI: a stop is confirmed only against the processes recorded
-  here. A recorder that fails must not stop the launch; that attempt then can
-  never confirm a stop. Keep the call several statements long: when the whole
-  call is one command, bash can replace itself with it, and `$$` then names
-  that command instead of the shell.
-<!-- pi-cli-launch-contract:end -->
-
-What this skill adds to the contract:
-
-- `--mode text`, and `--tools <the dispatch line's tools, in this CLI's own
-  names>` — **a real restriction, not advice.** Unlike the Agent tool, this CLI
-  enforces the list, so a read-only step can be made genuinely read-only.
-  Translate the dispatch line's names into the CLI's own (`Read` → `read`,
-  `Write` → `write`, …) and pass them as one comma-separated argument without
-  spaces: `tools=Read,Write` is `--tools read,write`. A space-separated list
-  grants only its first name. Keep the **untranslated** names in the message
-  text, which quotes the dispatch line verbatim.
-- `--session-dir <the dispatch line's session-dir>` keeps the attempt's
-  session, which is the transcript `wfrun judge` lists as evidence after an
-  abort. A line that shows no session-dir (a `<replan>` builder, a judge) is
-  delivered with `--no-session` instead.
-- `--model <the dispatch line's resolved name>`.
-- **The bash call's `timeout` is the dispatch line's `timeout=`.** That timeout
-  is the attempt's deadline: the kill of the CLI's process tree it sets off is
-  the stop request, and "On abort" goes on from there. Do not shorten
-  it: in testing, a 120 s ceiling cut off a child that had already written its
-  deliverable and its result file before it could reply.
-- The recorder is `$WFRUN pids <handle> <pid> <pid>`: it records the two
-  Windows PIDs as (PID, image, creation time) of the attempt, once, and refuses
-  when a PID is not a running process or the attempt already has a record or a
-  stop. It is what lets `wfrun stop --facet pi-cli` confirm a stop.
-- The recorder needs `/proc/<pid>/winpid`, which Git Bash provides on Windows.
-  Elsewhere it records nothing, no stop is confirmed, and an aborted step is
-  never restarted.
-- A judge has no recorder: its handle is not an attempt's, so `$WFRUN pids` and
-  `wfrun stop` refuse it. Launch it with the invocation shape below, without the
-  `$WFRUN pids` statement ("On abort", 5).
-
-Invocation shape (the call's stdout is the child's reply):
-
-<!-- pi-cli-launch-line -->
-```
-PROMPT='<the fixed message above, verbatim>'
-MSYS_NO_PATHCONV=1 node <pi-cli-entry> -p --mode text \
-   --tools <the dispatch line's tools in this CLI's own names, comma-separated> \
-   --no-skills --session-dir <the dispatch line's session-dir> \
-   --model <the dispatch line's resolved name> "$PROMPT" < /dev/null &
-child=$!
-$WFRUN pids <run>/steps/<id>_handle.json \
-   "$(cat /proc/$child/winpid)" "$(cat /proc/$$/winpid)" \
-   > /dev/null || echo "processes not recorded" >&2
-wait $child
-```
+A diagnosis or a builder stops as its row says, with the same report, and that
+report also ends with the line's last sentence. A decider goes on as its row
+says.
 
 **A reply cut off by the timeout is survivable, by design.** A missing reply is exactly what
 `poll` is for: it returned `done`, and `record` without `--reply` then produced
@@ -378,7 +365,10 @@ sequence. Do not delegate more than one step's subagent before that step's
   CLI, unset → the pi CLI) and logs which one ran under `"backend"` in each
   steps.log entry. When it ran against the pi CLI, `cost_usd` in that entry
   is always `0.0` — a `0.0` there means "not measured", not "measured zero";
-  only claude-CLI entries carry a real cost
+  only claude-CLI entries carry a real cost. `ask=` is the one exception to
+  this mode's native-only delegation: `wfrun ask` starts that CLI itself, is
+  not a delegation, and needs neither the Preparation gate's route nor a
+  `subagent` call, so it works where delegation does not
 - `while`/`each` : repeat the full 4-move protocol every iteration. Stop and
   report when the workflow's `max` is reached — count only steps.log's
   **step-execution** entries (the ones carrying a `"step"` field). `ask`
@@ -394,17 +384,25 @@ sequence. Do not delegate more than one step's subagent before that step's
    printed as `result=` (`<run>/replans/<id>_cNN_aNN.xml`); earlier ones stay.
    No sentinel or handle.json here — a replan's own XML well-formedness,
    checked next, already proves it is complete
-2. Delegate with the same fixed message (the builder role is inside the file)
+2. Delegate with the fixed message for a line with no `tools=`: a builder's
+   line never shows one (the builder role is inside the file),
+   by the delegation tool of your harness ("Delegating on Pi", the `<replan>`
+   builder row)
 3. Validate the generated continuation **programmatically**:
-   `$WFRUN validate <the result= file> --as-child --defined-vars <run>/vars.json`
+   `$WFRUN validate <the result= file> --as-child --backend llm --defined-vars <run>/vars.json`
    - errors → re-delegate from 1 with `--fix "<the validator error lines>"`;
      `prompt` admits that at most `retry` times, then refuses and names the
      on-error to follow. It refuses any re-delegation while the last
      attempt's file is missing or is not well-formed XML: whether that builder
      stopped is unknown then — stop and report
-4. `$WFRUN plan <the result= file>` — the child control skeleton; execute it
-   with this same protocol, counting its steps toward `max`, then continue
-   after the replan node. Generated continuations must never contain another
+4. `$WFRUN plan <the result= file>` — the child control skeleton. On Pi, then
+   run `$WFRUN models <the result= file>` and `resolve` each of its request
+   lines as in Preparation step 4b; if any is not `resolved`, create no
+   attempt of the child's steps: report it and STOP. Execute the skeleton with
+   this same protocol, then continue after the replan node. `prompt` holds the
+   child's steps to the child's own `max`, counting only those steps; they also
+   count toward the parent's `max`, which `prompt` checks at the parent's next
+   step. Generated continuations must never contain another
    `<replan>` (the validator enforces this)
 
 ## On error (authority you do NOT have)
@@ -414,7 +412,8 @@ When record returns `error`, run move 1 again for the same step, without
 next attempt while `retry` remains, and otherwise refuses with what `on-error`
 (shown by plan) leaves — `fail` = stop and report / `ignore` = move on (a
 later iteration of the same step then takes `--new-cycle`) / `debug` =
-delegate a diagnosis subagent, once, with: "You are the debug role defined in
+delegate a diagnosis subagent, once (on Pi, the "debug diagnosis" row of
+"Delegating on Pi"), with: "You are the debug role defined in
 .claude/agents/debug.md — read that file and adopt it. Then read
 <run>/steps/<id>_prompt.md and <result file>, diagnose, answer RETRY or FAIL,
 and if RETRY write fix instructions to <run>/steps/<id>_fix.md", where
@@ -463,9 +462,11 @@ attempt files, and printed both paths.
    - **`decider: llm` — delegate it, the same way you delegate a step.**
      First issue the delegation:
      `$WFRUN decide <xml> <id> --result <run>/steps/<id>_result.md` prints
-     `<request path> (decider, model=..., answer=<answer path>, description=...)`.
+     `<request path> (decider, model=..., [tier=...,] answer=<answer path>,
+     timeout=<seconds>, description=...)`.
      Spawn one subagent with that model — on Claude Code, with that
-     description — and pass it **paths only**: the request path and the
+     description; on Pi, as the "decider" row of "Delegating on Pi" says — and
+     pass it **paths only**: the request path and the
      answer path. You still do not read the request. `decide` delegates a
      request once; when it refuses instead (exit 1 or 2: the decider is not
      llm, the llm decider has spent its rulings here, or the request was
@@ -565,21 +566,29 @@ shown, and `prompt` checks every one before it writes anything:
 
 A deadline, a timed-out call, TaskStop's own answer and a subagent's own
 claim are none of these. When any of the four is missing, the step is not run
-again: stop and report. In order:
+again: stop and report.
+
+**On Pi the first of the four can never be shown.** Nothing observes the stop of
+a `subagent` child: there is no confirmed stop, no judge and no restart. An
+aborted attempt on Pi is recorded and the run stops; this run dir cannot be
+resumed, and the report ends with the line of "An interrupted delegation".
+If `prompt` is run anyway, its refusal names `wfrun stop` or `wfrun judge`: on
+Pi neither applies; stop and report.
+Steps 3, 5 and 6 below are Claude Code's. In order:
 
 1. **Check for completion.** The watch's `deadline-exceeded`, or `poll` after
    a call that ended without a valid reply, is this check. `done` → record
    it; nothing below applies
 2. **Request the stop, right after that check.** On Claude Code, TaskStop the
    step's Agent task — unless its completion notice already arrived, which
-   leaves nothing to stop. On Pi the call's timeout already requested it (the
-   CLI route's `bash` timeout, the subagent route's `timeout`), and a call that
-   returned before its deadline has ended
-3. **Observe the stop:**
+   leaves nothing to stop. On Pi the `subagent` call's `timeout` already
+   requested the stop, cooperatively, and a call that returned before its
+   deadline has ended
+3. **Observe the stop (Claude Code only; on Pi go on with 4 and do not run
+   `$WFRUN stop`).**
 
    ```bash
    $WFRUN stop <run>/steps/<id>_handle.json --facet cc --task-stop <stopped|completed|failed>
-   $WFRUN stop <run>/steps/<id>_handle.json --facet pi-cli
    #   --task-stop: what TaskStop reported -- stopped; completed (the
    #   completion notice had already arrived, so there was nothing to stop);
    #   failed (it errored or could not be called)
@@ -596,7 +605,7 @@ again: stop and report. In order:
    It watches for at most 60 seconds and writes the attempt's stop record,
    once: asking again prints the first verdict. A reply that arrives after
    the stop request changes nothing by itself; what counts is the result file
-   `stop` watches. On Claude Code it confirms only when TaskStop reported the
+   `stop` watches. It confirms only when TaskStop reported the
    task stopped or already ended, the transcripts of the subagent and of
    every agent it started are found, none of them grew during the window,
    and none of them holds a tool call without a result, one that started
@@ -604,18 +613,18 @@ again: stop and report. In order:
    interrupts a running call can leave it recorded as refused: the stop then
    stays unconfirmed, and `record` still records the attempt `aborted`, with
    the refusal check's verdict on a `deny-check:` line and in `steps.log`: a
-   stop is not a denial. On the Pi CLI it confirms only when every process
-   recorded at the attempt's launch is gone, which is why the launch line
-   records them. The `subagent` route has
-   no facet here: its stop is not confirmed, so record the attempt, then stop
-   and report. Neither facet looks at processes outside what it watches, nor
-   at anything done outside files; the stop record names what it did not
-   observe
+   stop is not a denial. It looks at neither processes outside what it
+   watches nor anything done outside files; the stop record names what it did
+   not observe. On Pi no facet exists for a `subagent` child: the call's
+   `outcome=stopped` says a cooperative stop was confirmed and
+   `outcome=stop_unconfirmed` says the child may still be running, but wfrun
+   checks neither, so record the attempt (4), then stop and report
 4. **Record** the attempt — move 3's command without `--reply`, whatever
-   reply arrived: the attempt is settled by its file and its stop, so
-   `aborted` (3) follows, and `record` reads no reply after a stop that ended
-   without a completion. A refusal it prints instead ends in what to do
-5. **Issue the judge** (a confirmed stop only):
+   reply arrived: the attempt is settled by its file and, on Claude Code, its
+   stop, so `aborted` (3) follows, and `record` reads no reply after a stop that
+   ended without a completion. A refusal it prints instead ends in what to do
+5. **Issue the judge** (Claude Code, a confirmed stop only; on Pi none is
+   issued):
 
    ```bash
    $WFRUN judge <xml> <id> --result <run>/steps/<id>_result.md
@@ -632,19 +641,14 @@ again: stop and report. In order:
    prompt. Delegate the judge like a step, with the printed model and tools
    and the fixed message "Read <judge prompt> and execute its instructions.
    Use only these tools: <tools from the judge line>. Reply to me with the
-   single line it asks for." On Claude Code, give the Agent call the printed
+   single line it asks for." Give the Agent call the printed
    description, run it in the background, and in the same message start
-   `$WFRUN poll <judge handle> --wait` as its deadline watch; on the Pi CLI,
-   use the invocation shape above with this message as `PROMPT`,
-   `--tools read,grep,write`, `--no-session` in place of `--session-dir`, the
-   printed model, the printed timeout as the `bash` call's `timeout`, and no
-   `$WFRUN pids` statement (a judge's handle is not an attempt's: a judge is
-   bounded by its timeout alone, never observed or restarted). A judge that
+   `$WFRUN poll <judge handle> --wait` as its deadline watch. A judge that
    has not replied by its deadline, or
    whose reply is not the one line `allow <record>` / `deny <record>`, is a
    refusal: TaskStop it if it still runs, then stop and report. A judge is
    never delegated twice
-6. **Restart, or stop.** `deny <record>` → stop and report. `allow <record>` →
+6. **Restart, or stop** (Claude Code). `deny <record>` → stop and report. `allow <record>` →
    move 1 again, adding `--redispatch "<the judge's reply, verbatim>"`.
    `prompt` admits it only when the record allows a restart from the start
    and nothing else, states its limits, cites at least one line range of a
@@ -681,20 +685,38 @@ forces it to reply at all before going silent — that is exactly the
 scenario the deadline watch and `poll`'s `deadline-exceeded` exist to catch
 from the outside. wfrun cannot terminate a still-running subagent: it has no
 kill authority in this mode. The stop is requested by you (TaskStop) or by
-the Pi call's timeout (CLI or `subagent` route), and `stop` only observes what
-each facet lets it see. And nothing here defends against you, the orchestrator, fabricating a
+the `timeout` of the Pi `subagent` call, which is a cooperative stop. `stop`
+observes only Claude Code transcripts; nothing observes a Pi child, so a
+`stop_unconfirmed` child may keep running. And nothing here defends against you, the orchestrator, fabricating a
 `--reply` value that does not match what the subagent actually said — pass it
 verbatim or omit it. The same holds for the judge: `prompt` checks its
 record's form, citations, checksums and timing, not who wrote it.
 
+**The native gate is prompt-level.** wfrun cannot see the host's tools, so
+nothing in code stops an orchestrator from skipping Preparation step 4 or
+delegating another way. What holds on Pi is the host's: a call pinned with
+`expectedResolution` is refused (`stale:` / `blocked:`) instead of running on
+another model.
+
+**`ask=` is not delegated.** `wfrun ask` starts the claude or pi CLI itself and
+runs whether or not a native route exists ("Evaluating control structures").
+It is the one place this mode starts a CLI, and its judgment lands only in the
+log.
+
 Three more of run-cc's structural guarantees degrade in this mode; know
 them, do not paper over them:
 
-- **`tools=` is advisory.** The Agent tool has no per-call tool restriction,
-  so the dispatch line's tools cannot be enforced on the subagent — the
-  "Use only these tools" sentence in the fixed message is a likelihood lever
-  only. Step `expect-file`/`schema` checks (`wfrun record`) still verify
-  outcomes deterministically. The judge's tool list is advisory there too;
+- **`tools=` is advisory, on Claude Code and on Pi.** The Agent tool has no
+  per-call tool restriction, and the Pi `subagent` call passes none, so the
+  dispatch line's tools cannot be enforced on the subagent — the
+  "use only these tools" sentence in the fixed message for a line with
+  `tools=` is a likelihood lever
+  only. That sentence exempts the two file operations this protocol needs of
+  every step, reading its prompt file and writing its result file, so a list
+  without `Read` or `Write` does not cover them. When enforcement is needed,
+  use `--run-pi` or `--run-cc`. Step
+  `expect-file`/`schema` checks (`wfrun record`) still verify
+  outcomes deterministically. The judge's tool list is advisory too;
   `prompt` refuses its record when any listed evidence file changed.
 - **The no-read firewall is prompt-level.** Nothing mechanically stops the
   orchestrator from Reading prompt/result files. A partial deterministic
@@ -748,12 +770,15 @@ them, do not paper over them:
 
 ---
 
-⟦STEP-GATE⟧ Immediately before issuing each delegation, verify three conditions —
+⟦STEP-GATE⟧ Immediately before issuing each delegation, verify four conditions —
 (1) your previous output quotes the path line printed by `wfrun prompt` (for a
     judge, by `wfrun judge`; for an llm decider, by `wfrun decide`)
-(2) the delegation message is the fixed text above, containing no summary or
-    paraphrase of task content
+(2) the delegation message is the fixed text above for that line, containing
+    no summary or paraphrase of task content
 (3) you have not Read the prompt, result, or vars.json for this step
+(4) on Pi: the call carries the `timeout` of its "Delegating on Pi" row, and,
+    when the line shows `model=`, `expectedResolution` is the `resolutionRef`
+    kept in Preparation 4c. None kept means the gate has not run: run it first.
 If any is missing, do not delegate — perform the missing move first.
 "Checking the prompt file's content", "summarizing results", and "batching
 multiple steps" are not diligence or efficiency; they are protocol violations.

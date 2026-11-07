@@ -16,8 +16,8 @@ when the skill runs.
   non-developer human users. See also [USER_GUIDE_ja.md](USER_GUIDE_ja.md).
 - **[AUTHORING_CONTRACT.md](AUTHORING_CONTRACT.md)** — maintenance obligations
   for skill editors: multi-facet (cc/pi/run-llm) integrity, relationship to
-  mode-orchestrator (including the Pi CLI launch contract and the restart gate
-  the two skills align), `modes/` propagation pointer.
+  mode-orchestrator (including the restart gate the two skills align),
+  `modes/` propagation pointer.
 
 The canonical technical spec is the skill's `references/spec.md`. This README
 summarizes it; the spec governs when they disagree.
@@ -62,8 +62,12 @@ recorded under `runs/`, and a run can resume from the point of failure).
 The runner uses the standard library only. `build` mode invokes no CLI — the
 session LLM authors the XML and finishes at `wfrun validate` — though its role
 discovery (`.claude/agents`, `$CLAUDE_CONFIG_DIR`) and `tools=` vocabulary
-target Claude Code. `run-cc` targets Claude Code; the `run-llm` protocol works
-on any agent platform with a subagent facility.
+target Claude Code. `run-cc` targets Claude Code. `run-llm` works on Claude Code
+and on Pi only: every delegation it makes goes through the host's native
+subagent facility (the Agent tool on Claude Code, the `subagent` tool on Pi) and
+it starts no `claude` or `pi` process to run a step. On Pi that tool comes from
+an extension you set up first (see [Pi setup](#pi-setup)). The one CLI `run-llm`
+still starts is `wfrun ask`.
 
 **Multiple `claude` installs (Windows):** wfrun resolves the actual `claude`
 executable itself rather than launching whatever `PATH` returns verbatim —
@@ -74,6 +78,98 @@ that shim's own `cmd.exe` layer mangles such argv. There is no dedicated
 environment variable for this: if more than one `claude` is installed,
 **the one that appears earlier on `PATH` wins**. Reorder `PATH` to choose
 between them.
+
+---
+
+## Pi setup
+
+Only `run-llm` on Pi needs this; Claude Code needs none of it. On Pi, `run-llm`
+makes every delegation (step, debug diagnosis, `<replan>` builder, decider)
+through the native `subagent` tool, which the Pi subagent extension
+(`@gigamori/pi-subagent`) provides. A session without that tool (no
+`delegation_contract` tool) cannot run it: `run-llm` stops before it creates a
+run dir and returns a message that points here. `--run-pi` and `--run-cc` need
+no extension.
+
+**What to install.** The `subagent` package of the `pi-extensions` repository,
+with its dependency `@gigamori/pi-child-session-core`. Neither is published to
+npm (checked 2026-11-06), so the extension goes in as a built copy under the
+agent directory's `extensions/`. `<agent dir>` below is `~/.pi/agent`, or
+`$PI_CODING_AGENT_DIR` when that is set.
+
+Build a clean checkout of `pi-extensions` (`npm ci`, then `npm run build`) at
+the commit `fix(child-session-core): Key top-level package copies by name` or
+later. With an older core the copy is registered as `local:dist` and is handed
+on to every child session, so a child can delegate again (measured with a stub
+provider: 5 model calls with the old core, 3 with the fixed one). Pi Studio
+needs the same fix in the core it bundles.
+
+```bash
+SRC=<built pi-extensions checkout>
+X=<agent dir>/extensions
+D="$X/subagent"
+C="$D/node_modules/@gigamori/pi-child-session-core"
+rm -rf "$D"
+mkdir -p "$C"
+cp -r "$SRC/packages/child-session-core/dist" "$C/dist"
+cp "$SRC/packages/child-session-core/package.json" "$C/package.json"
+cp -r "$SRC/packages/subagent/dist" "$D/dist"
+cp "$SRC/packages/subagent/package.json" "$D/package.json"
+mkdir -p "$X/child-session"
+printf '{"explicitModels":"registry"}\n' > "$X/child-session/config.json"
+grep -c readDeclaringPackageName "$C/dist/catalog-cli.js"   # expect 2
+```
+
+Then restart Pi, or run `/reload` in a running session. On Windows run the
+listing in Git Bash.
+
+- The listing copies `package.json` last, so a Pi that starts halfway through
+  the install does not see an unfinished package. It copies and does not link,
+  so removing the extension later deletes only the copy. The listing starts with
+  `rm -rf "$D"`, so running it again replaces an earlier copy instead of nesting
+  a second `dist/` inside the old one. That removes only this package's copy,
+  not `child-session/`; the `printf` line then rewrites `child-session/config.json`,
+  so a rerun drops any `profiles` you added to it.
+- `child-session/config.json` is `{"explicitModels":"registry"}`. Without it the
+  host refuses an explicit `model` request (`resolve` returns `blocked`:
+  "Explicit model channel is not configured."), which is the request `run-llm`
+  makes for a tier that has no profile. It sets no `profiles`, so each tier
+  (`basic`, `pro`, `ultra`) is `absent` and `run-llm` asks for the model that
+  `model_map.json`'s `llm` table gives for it. Adding `profiles` (syntax: the
+  `subagent` README, "CLI configuration") makes a configured tier a call-level
+  `effort` profile instead, and the host's setting then picks the model. The file
+  is shared by every child-session consumer.
+- To check the setup, call `delegation_contract` with
+  `{"operation":"observe"}` in a Pi session: `routes.native.state` should be
+  `available`.
+- `available` says that the route exists, not that a model resolves. `resolve`
+  also needs each model `run-llm` asks for in the host's catalog, with working
+  authentication: with `model_map.json` as shipped, a delegation asks for
+  `haiku`, `sonnet` or `opus` (the tiers `basic`, `pro`, `ultra` its lines
+  name). A Pi with neither an Anthropic credential nor a provider extension for
+  them returns `unavailable` ("No unique compatible binding in the host catalog
+  snapshot."), and `run-llm` stops there, before it creates a run dir. Log in to
+  Anthropic with `/login`, install such a provider, or set `profiles`. `ask=` is
+  outside this check: `wfrun ask` starts Pi with `--model haiku` when the
+  workflow reaches it, so it needs `haiku` to work in Pi itself, and `profiles`
+  do not cover it.
+
+**What else changes once it is installed.**
+- The extension is machine-wide: every Pi process that reads this agent
+  directory loads it. That includes the `pi -p` children of `run-pi` and of
+  mode-orchestrator's CLI route. `run-pi` does not pass `--no-extensions`
+  (model names resolve through extensions), and passes `--tools` only for a step
+  that has `tools=`; mode-orchestrator's launch passes neither. A child started
+  that way has the `subagent` tool. With the fixed core that child's own
+  children do not, so the depth grows by one level at most. This is read from
+  the source, not from a run of `pi -p`.
+- In a Pi Studio build that bundles the fixed core, a child session had no
+  `subagent` tool (observed once). That `run-llm` works in Pi Studio is not
+  verified.
+
+To remove it: `rm -rf <agent dir>/extensions/subagent
+<agent dir>/extensions/child-session` (look in `child-session/` first for
+files you added), then `/reload`. `settings.json` is not touched by the setup.
 
 ---
 
@@ -110,7 +206,7 @@ the skill's directory on Claude Code):
 
 ```bash
 WFRUN="env PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts uv run python -m wfrun"
-$WFRUN {validate|run|resume|plan|viz|prompt|record|decide|poll|stop|pids|judge|dispatch|wait|interp|eval|ask} ...
+$WFRUN {validate|run|resume|plan|viz|prompt|record|decide|models|poll|stop|judge|dispatch|wait|interp|eval|ask} ...
 ```
 
 Through the skill, the four modes are selected from natural language or flags:
@@ -120,7 +216,7 @@ Through the skill, the four modes are selected from natural language or flags:
 | `--build`, a task description, "ワークフロー化" | **Build** | Decompose the task into an approved plan table, then generate and validate the XML. Never executes the task. |
 | `--run-cc`, an `.xml` path, "run/execute" | **Run (batch)** | Validate → execute deterministically with `wfrun run`. The default execution mode. |
 | `--resume`, a run dir (holding `state.json`) | **Resume** | Continue a failed run from the point of failure. |
-| `--run-llm`, "run interactively" | **LLM orchestration** | The agent orchestrates step by step under human supervision, using `wfrun` helper subcommands and file-based exchange. A step's `effort=` is not applied in this mode: neither the Agent tool nor the Pi delivery takes one. |
+| `--run-llm`, "run interactively" | **LLM orchestration** | The agent orchestrates step by step under human supervision, using `wfrun` helper subcommands and file-based exchange. A step's `effort=` is not applied in this mode: the Agent tool takes none, and the `effort` of a Pi `subagent` call selects a tier profile, not the step's attribute. On Pi it needs the subagent extension (see [Pi setup](#pi-setup)). |
 
 ---
 
@@ -204,7 +300,7 @@ Prompt precedence within a step: **Mode > Rules > Task > Role** — or
 ## CLI reference
 
 ```
-wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi]
+wfrun validate <wf.xml> [--json] [--no-role-check] [--backend auto|cc|pi|llm]
                         [--as-child] [--defined-vars VARS_JSON]
 wfrun run      <wf.xml> [-p k=v ...] [--run-dir D] [--runs-root runs] [--permission-mode acceptEdits] [--backend auto|cc|pi] [--inherit-model M]
 wfrun resume   <run_dir> [--base-dir D] [--permission-mode ...]
@@ -223,6 +319,10 @@ mostly inert, translated `tools=` names, and argument specifiers such as
 `Bash(git:*)` widened to the whole tool because pi has no per-command
 matching). `resume` takes the backend recorded in the run dir and never
 re-detects, so one run never spans two CLIs.
+
+`validate --backend llm` is what `run-llm` passes. It checks the XML itself and
+starts no CLI: no model name is matched against a catalog, because `run-llm`
+resolves models through the orchestrator's own subagent facility.
 
 `--inherit-model` supplies the model for steps that declare none of their own
 (no `model=` attribute, no role-frontmatter default). wfrun runs as its own
@@ -245,9 +345,9 @@ wfrun prompt <wf.xml> <id> --vars V --out PROMPT [--result RESULT] [--fix TEXT] 
 wfrun record <wf.xml> <id> --result RESULT --vars V [--log LOG] [--reply LINE] [--answer FILE] [--debug-reply LINE] [--decider human|llm]
 wfrun poll   <handle.json> [--wait]     # done(0) / running(10) / deadline-exceeded(11)
 wfrun decide <wf.xml> <id> --result RESULT   # delegate an open decision to the llm decider, once
-wfrun stop   <handle.json> --facet cc|pi-cli [--task-stop stopped|completed|failed] [--observe 1..60]
-                                        # done(0) / confirmed(12) / unconfirmed(13)
-wfrun pids   <handle.json> PID [PID ...]     # Pi CLI: record an attempt's processes at launch
+wfrun models <wf.xml>                   # the model requests the delegations will make
+wfrun stop   <handle.json> --facet cc --task-stop stopped|completed|failed [--observe 1..60]
+                                        # Claude Code only: done(0) / confirmed(12) / unconfirmed(13)
 wfrun judge  <wf.xml> <id> --result RESULT   # issue the one judge of an aborted attempt
 ```
 
@@ -261,13 +361,29 @@ description:
 - If it cannot find the transcript, it still prints its verdict, followed by a second line `deny-check: NO-TRANSCRIPT: <reason>`, and never records the step as clean.
 - `steps.log` records the check's result as `deny_check`.
 
-`run-llm` has no layer to choose and no claude CLI probe: every step runs
-through the orchestrating agent's own delegation facility, so it runs on the
-agent that is orchestrating, whatever else is installed. On Claude Code that is
-the Agent tool. On Pi it is a `subagent` tool when the host publishes one that
-passes the checks in `references/run-llm.md`, and otherwise a fresh `pi -p`
-process started from `bash`. After a missed deadline, the same reference gives
-the stop, judge and restart handling ("On abort").
+`models` prints the model requests a workflow's delegations will make, as control
+facts: a `harness=cc|pi` line (`cc` when `CLAUDE_CODE_SESSION_ID` is set and not
+empty), then one line per request with `tier=` (present when the name stands
+for `basic`, `pro` or `ultra`), `model=` and `sites=` (the step and `<replan>`
+ids, and `<id>:decider` for an llm decider). `prompt`'s dispatch line and
+`decide`'s line print the same `tier=` and `model=`, and `decide`'s line also
+prints the `timeout=` to give its delegation.
+
+`run-llm` has no layer to choose and no CLI probe: every step, debug
+diagnosis, `<replan>` builder and decider runs through the orchestrating
+agent's native subagent facility, so it runs on the agent that is
+orchestrating, whatever else is installed. On Claude Code that is the Agent
+tool. On Pi it is the `subagent` tool: Preparation first checks that the host
+offers it (`delegation_contract`) and that every model request of `wfrun
+models` resolves, and otherwise stops before it creates a run dir (see [Pi
+setup](#pi-setup)). It never falls back to a `claude -p` or `pi -p` process and
+never moves to `--run-cc` / `--run-pi` by itself. `ask=` is the one exception:
+`wfrun ask` starts a CLI itself, is not a delegation, and works where
+delegation does not. On Pi an interrupted step is recorded and the run stops:
+nothing observes a `subagent` child's stop, so there is no confirmed stop, judge
+or restart, and the run dir cannot be resumed. The options are `--run-pi`,
+`--run-cc` or a new run. After a missed deadline on Claude Code, the same
+reference gives the stop, judge and restart handling ("On abort").
 
 `dispatch` and `wait` are not part of `run-llm`, and `references/run-llm.md`
 does not describe them. They run a step through the claude CLI instead of a

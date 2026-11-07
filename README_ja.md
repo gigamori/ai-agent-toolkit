@@ -60,7 +60,7 @@ Claude Code プラグインマーケットプレイス経由で配布してい�
 | [inspect-cc-log](skills/inspect-cc-log/) | CC | — | 過去の Claude Code セッションログを、事前構築した DuckDB ビュー（会話・引数付き tool 呼び出し・ファイル変更・fork・compaction・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
 | [compact-cc-log](skills/compact-cc-log/) | CC | — | 過去または実行中の Claude Code セッションを要約。title・`--session-id`・`--current`（実行中セッション。`scripts/transcript.py` が呼び出しターン自体を除外）でセッションを解決し、`compact-document` に委譲して圧縮 |
 | [inspect-pi-log](skills/inspect-pi-log/) | CC | — | 過去の Pi Coding Agent セッションログを、事前構築した DuckDB ビュー（会話・tool 呼び出し・ファイル変更・セッション系譜/bundle・compaction・in-file branch・セッション集計）に対する SQL で調査。セッション再構成、tool/subagent 呼び出し監査、ファイル変更履歴の追跡、subagent/skill-fork/handoff/fork ツリーの束ね出力を、自己完結クエリスクリプト 1 本で実行 |
-| [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。バッチ実行は `--backend`（harness から自動判定）で選ぶ2つの backend を持つ: run-cc は各ステップを独立した `claude -p` subagent として実行し、run-pi は claude を一切必要とせず pi CLI で実行する（pi では強制できない `schema=` と `on-error="debug"` は起動前に拒否）。run-llm プロトコルはホスト側エージェント自身の subagent 機能へ委譲する。本当に曖昧なフォークに当たったステップは黙って推測せず `DECISION:` 要求を発行する——run は人間の回答待ちで停止するか、`decider="llm"` なら裁定モデルがどちらの backend でも無人で解決する |
+| [xml-wf](skills/xml-wf/) | CC | [docs](docs/skills/xml-wf/) | タスクを単一責務のステップに分解した XML v2 ワークフローを構築・実行・再開。同梱の Python ランナー（`wfrun`）が LLM ではなく決定論的にオーケストレーションする。バッチ実行は `--backend`（harness から自動判定）で選ぶ2つの backend を持つ: run-cc は各ステップを独立した `claude -p` subagent として実行し、run-pi は claude を一切必要とせず pi CLI で実行する（pi では強制できない `schema=` と `on-error="debug"` は起動前に拒否）。run-llm プロトコルは、すべてのステップをホスト側エージェントのネイティブな subagent 機能（Claude Code では Agent ツール、Pi では文書の手順でセットアップする `subagent` 拡張）へ委譲し、そのために `claude` や `pi` のプロセスを起動しない。動くのは Claude Code と Pi だけ。本当に曖昧なフォークに当たったステップは黙って推測せず `DECISION:` 要求を発行する——run は人間の回答待ちで停止するか、`decider="llm"` なら裁定モデルがどちらの backend でも無人で解決する |
 | [officecli-isolate](skills/officecli-isolate/) | CC | [docs](docs/skills/officecli-isolate/) | officecli 公式のドキュメントスキル（`word` / `pptx` / `excel` とその scene layer）を child session で実行し、レイアウトの試行錯誤・スクリーンショット・CLI 出力を呼び出し側の context に一切入れない。入力の形で決まる 3 ケース——markdown / CSV からの新規作成、指示書による部分更新、styles・数式・theme・master を残したまま本文 / データ領域 / slide 範囲を差し替え——がそれぞれ専用の prompt template を持つ。child は呼び出し側が名指しした officecli スキルを 1 本だけ load し（推測はしない）、そのスキルの Delivery Gate を通し、固定ブロック（path・gate 結果・触った stable id・contact sheet の path）だけを返す。呼び出し側は gate コマンド 2 本を再実行するだけで、文書の中身は判定しない。`/officecli-isolate` の明示呼び出し限定で、自動起動しない |
 
 ### revert
@@ -134,7 +134,7 @@ ai-agent-toolkit/
 │       └── test-constraints.md skills/ のテストが依存する外界の事実
 ├── tests/                     どの plugin / skill にも属さないリポジトリ全体のチェック
 │   ├── lint_test_knowledge.py テスト前ゲート: コメント/docstring 禁止・到達不能参照禁止
-│   ├── lint_launch_contract.py lint: Pi CLI の起動契約が両スキルの文書で同一であること
+│   ├── lint_launch_contract.py lint: mode-orchestrator の Pi CLI 起動契約が共通要素をすべて持つこと
 │   └── .knowledge-allowlist   ゲート導入時に凍結した違反リスト
 ├── LICENSE
 ├── README.md

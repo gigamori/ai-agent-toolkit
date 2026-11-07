@@ -96,10 +96,11 @@ Outside this gate, and carrying no assurance from it: `plugins/llm-wiki/tests/` 
 `plugins/taskflow/tests/`, which have their own gates and their own constraints documents;
 `plugins/role-mode/`; and `tests/test_tracked_path_hygiene.py` at the repository root,
 which is a repo-wide lint rather than a skill's suite, and so is
-`tests/lint_launch_contract.py`, which checks that the Pi CLI launch contract is the same
-in `skills/mode-orchestrator/references/harness-pi.md` and
-`skills/xml-wf/references/run-llm.md` (`uv run --no-project python tests/lint_launch_contract.py`,
-then the same command with `--self-test`).
+`tests/lint_launch_contract.py`, which checks that the Pi CLI launch contract in
+`skills/mode-orchestrator/references/harness-pi.md` names every common element and that its
+launch line carries them in order (`uv run --no-project python tests/lint_launch_contract.py`,
+then the same command with `--self-test`). It scans that one document: xml-wf's
+`references/run-llm.md` carries no Pi CLI launch.
 
 The gate's own blind spots, printed on every run: a citation phrased without one of its
 citation verbs; a document name written bare, which a fixture spells exactly as a citation

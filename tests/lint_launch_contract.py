@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Lint: the Pi CLI launch contract is the same in both skills that use it.
+"""Lint: mode-orchestrator's Pi CLI launch contract carries every common element.
 
-mode-orchestrator (references/harness-pi.md) and xml-wf (references/run-llm.md)
-each launch a fresh `pi -p` process from one bash call. Two things must not
-drift apart, and no single file shows it when they do:
+mode-orchestrator (references/harness-pi.md) launches a fresh `pi -p` process
+from one bash call. This gate checks the one document that does:
 
-1. The shared contract text, kept word for word between the markers
-   CONTRACT_BEGIN and CONTRACT_END in both documents.
-2. The launch line each document actually tells its orchestrator to copy (the
-   fenced block right after LINE_MARKER): it must carry every common element,
-   in the order the contract needs. A byte-identical contract block cannot
-   show that one skill's real command dropped `< /dev/null`.
+1. The contract text, kept between the markers CONTRACT_BEGIN and
+   CONTRACT_END, names every common element of the launch.
+2. The launch line the document tells its orchestrator to copy (the fenced
+   block right after LINE_MARKER) carries every common element, in the order
+   the contract needs, and the attempt-specific prompt file with both preflight
+   guards before the launch. A contract block that names `< /dev/null` cannot
+   show that the real command dropped it.
 
 Run:   uv run --no-project python tests/lint_launch_contract.py
 Check: uv run --no-project python tests/lint_launch_contract.py --self-test
@@ -26,7 +26,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 DOCS = (
     "skills/mode-orchestrator/references/harness-pi.md",
-    "skills/xml-wf/references/run-llm.md",
 )
 
 CONTRACT_BEGIN = "<!-- pi-cli-launch-contract:begin -->"
@@ -51,11 +50,17 @@ CONTRACT_ELEMENTS = (
     ("processes recorded", r"/proc/<pid>/winpid"),
 )
 
-# (name, pattern) pairs every launch line must contain, listed in the order
-# they must appear: the message is in a variable before the CLI starts, the
+# (name, pattern) pairs the launch line must contain, listed in the order they
+# must appear: the message file is chosen and read before the CLI starts, the
 # processes are recorded after it is running and before the call waits for it.
 LINE_ELEMENTS = (
-    ("message assigned to a variable", r"^PROMPT="),
+    ("attempt message file selected", r'^PROMPT_FILE="<run-dir>/<turn-key>-<attempt>-prompt\.md"$'),
+    ("message read failure stops before launch",
+     r'^PROMPT=\$\(< "\$PROMPT_FILE"\) \|\| \{\n'
+     r'[^\n]*mode-orchestrator: prompt preflight failed:[^\n]*\n\s*exit 64\n\}'),
+    ("empty message stops before launch",
+     r'^\[\[ -n "\$PROMPT" \]\] \|\| \{\n'
+     r'[^\n]*mode-orchestrator: prompt preflight failed:[^\n]*\n\s*exit 64\n\}'),
     ("MSYS path conversion off", r"MSYS_NO_PATHCONV=1"),
     ("launch through node", r"node <pi-cli-entry>"),
     ("non-interactive", r"(?<![\w-])-p(?![\w-])"),
@@ -69,28 +74,12 @@ LINE_ELEMENTS = (
     ("call waits for the CLI", r"wait \$child"),
 )
 
-MO_PREFLIGHT_ELEMENTS = (
-    ("attempt message file selected", r'^PROMPT_FILE="<run-dir>/<turn-key>-<attempt>-prompt\.md"$'),
-    ("message read failure stops before launch",
-     r'^PROMPT=\$\(< "\$PROMPT_FILE"\) \|\| \{\n'
-     r'[^\n]*mode-orchestrator: prompt preflight failed:[^\n]*\n\s*exit 64\n\}'),
-    ("empty message stops before launch",
-     r'^\[\[ -n "\$PROMPT" \]\] \|\| \{\n'
-     r'[^\n]*mode-orchestrator: prompt preflight failed:[^\n]*\n\s*exit 64\n\}'),
-)
-
-
-def line_elements(name: str):
-    if name == DOCS[0]:
-        return MO_PREFLIGHT_ELEMENTS + LINE_ELEMENTS[1:]
-    return LINE_ELEMENTS
-
-
 NOT_SEEN = (
     "not seen by this gate: a launch line copied outside the marked blocks; "
-    "wording around the blocks; a skill's own options (--mode, --tools, "
-    "MODE_ORCH_DEPTH); prompt-file creation or overwrite safety; "
-    "shell execution and the real CLI."
+    "wording around the blocks, and wording inside the contract block beyond "
+    "the named elements (no second copy is compared); the skill's own options "
+    "(--mode, --tools, MODE_ORCH_DEPTH); prompt-file creation or overwrite "
+    "safety; shell execution and the real CLI."
 )
 
 
@@ -153,7 +142,6 @@ def out_of_order(text: str, elements) -> list[str]:
 
 def check_docs(texts: dict[str, str]) -> list[str]:
     failures: list[str] = []
-    blocks: dict[str, str] = {}
     for name, raw in texts.items():
         text = normalize(raw)
         block = contract_block(text)
@@ -161,20 +149,16 @@ def check_docs(texts: dict[str, str]) -> list[str]:
             failures.append(f"{name}: the contract block is missing, or its "
                             "markers do not occur exactly once each")
         else:
-            blocks[name] = block
             failures += [f"{name}: contract block lacks: {missing}"
                          for missing in missing_elements(block, CONTRACT_ELEMENTS)]
         lines = launch_lines(text)
         if not lines:
             failures.append(f"{name}: no launch line is marked")
-        elements = line_elements(name)
         for number, body in enumerate(lines, 1):
             failures += [f"{name}: launch line {number} lacks: {missing}"
-                         for missing in missing_elements(body, elements)]
+                         for missing in missing_elements(body, LINE_ELEMENTS)]
             failures += [f"{name}: launch line {number}: {problem}"
-                         for problem in out_of_order(body, elements)]
-    if len(set(blocks.values())) > 1:
-        failures.append("the contract blocks differ between: " + ", ".join(blocks))
+                         for problem in out_of_order(body, LINE_ELEMENTS)]
     return failures
 
 
@@ -187,23 +171,25 @@ def drop_first(text: str, pattern: str) -> str:
     return re.sub(pattern, "", text, count=1, flags=re.MULTILINE)
 
 
-def one_edge_edits(text: str, elements):
+def drop_all(text: str, pattern: str) -> str:
+    return re.sub(pattern, "", text, flags=re.MULTILINE)
+
+
+def one_edge_edits(text: str):
     """(label, edited text) pairs, each differing from `text` by one edge."""
     begin = text.index(CONTRACT_BEGIN)
     end = text.index(CONTRACT_END)
     for label, pattern in CONTRACT_ELEMENTS:
         yield (f"removing contract element '{label}'",
-               text[:begin] + drop_first(text[begin:end], pattern) + text[end:])
+               text[:begin] + drop_all(text[begin:end], pattern) + text[end:])
     start = text.index(LINE_MARKER)
-    for label, pattern in elements:
+    for label, pattern in LINE_ELEMENTS:
         yield (f"removing launch element '{label}'",
                text[:start] + drop_first(text[start:], pattern))
     waited = drop_first(text[start:], r"wait \$child")
     recorded = waited.index("child=$!")
     yield ("moving the wait before the processes are recorded",
            text[:start] + waited[:recorded] + "wait $child\n" + waited[recorded:])
-    yield ("changing one word of the contract block",
-           text.replace("Never `pi`", "Never `pix`", 1))
     yield ("removing the contract begin marker",
            text.replace(CONTRACT_BEGIN, "", 1))
     yield ("removing the line marker", text.replace(LINE_MARKER, "", 1))
@@ -211,7 +197,7 @@ def one_edge_edits(text: str, elements):
 
 def self_test(texts: dict[str, str]) -> list[str]:
     """One-edge controls. Each edit must make check_docs fail; the unedited
-    documents must pass first, or the controls prove nothing."""
+    document must pass first, or the controls prove nothing."""
     problems = [f"unedited documents fail: {f}" for f in check_docs(texts)]
     if len(texts) < len(DOCS):
         problems.append("a document is missing: the controls cannot run")
@@ -219,7 +205,7 @@ def self_test(texts: dict[str, str]) -> list[str]:
         return problems
     for target, raw in texts.items():
         text = normalize(raw)
-        for label, edited in one_edge_edits(text, line_elements(target)):
+        for label, edited in one_edge_edits(text):
             if edited == text or not check_docs({**texts, target: edited}):
                 problems.append(f"{target}: {label} was not detected")
     return problems
@@ -248,8 +234,8 @@ def main(argv: list[str]) -> int:
     if failures:
         print(f"{len(failures)} violation(s)")
         return EXIT_VIOLATION
-    print("gate holds: the contract text is shared and every launch line "
-          "carries the common elements.")
+    print("gate holds: the contract block names every common element and the "
+          "launch line carries them in order.")
     return EXIT_HOLDS
 
 

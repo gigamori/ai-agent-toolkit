@@ -1,7 +1,7 @@
 """wfrun CLI: validate / run / resume / plan / viz, plus the helpers an LLM
 orchestrator calls: interp / eval / ask (which keep interpolation, condition
 evaluation and ask judgment deterministic even when an LLM drives the control
-flow), run-llm's prompt / record / decide / poll / stop / pids / judge (a
+flow), run-llm's prompt / record / decide / models / poll / stop / judge (a
 step's prompt, and the records of its attempts and decisions), and dispatch /
 wait (the claude CLI path, not part of run-llm)."""
 from __future__ import annotations
@@ -581,6 +581,7 @@ def _detect_ask_backend() -> str:
 
 def _resolve_backend(explicit: str, quiet: bool = False) -> str:
     """`--backend {auto,cc,pi}` resolution shared by `run`, `ask` and `validate`
+    (`validate` also takes `llm`, which is returned as given)
     (tmp/runs/phase6-run-pi-design.md §3.1: "same determinant,
     same default" as `ask --backend`, _detect_ask_backend promoted to
     shared use). auto detects from CLAUDE_CODE_SESSION_ID; an explicit
@@ -758,6 +759,9 @@ def cmd_prompt(args) -> int:
         facts.append(f"model={resolved}"
                      + ("" if resolved == dispatch_model
                         else f" (mapped from {dispatch_model})"))
+        tier = modelmap.tier_of(dispatch_model, allow_legacy=True)
+        if tier:
+            facts.append(f"tier={tier}")
     if step.effort:
         facts.append(f"effort={step.effort}")
     if dispatch_tools and not is_replan:
@@ -768,7 +772,6 @@ def cmd_prompt(args) -> int:
         facts.append(f"result={attempt['output' if is_replan else 'result_path']}")
         facts.append(f"timeout={attempt['timeout']}")
         if not is_replan:
-            facts.append(f"session-dir={llmgate.files_of(attempt)['session']}")
             facts.append(f"description={attempt['delegation']}")
     print(f"{out} ({', '.join(facts)})")
     return 0
@@ -838,8 +841,10 @@ def _admit_step_attempt(wf, step: model.Step, args, now: float) -> dict | str:
     debug = _debug_pending(step, cycle, attempts, args.fix)
     if debug:
         return debug
+    continuation = Path(args.workflow).resolve().parent == (run_dir / "replans").resolve()
     refusal = _admission_refusal(wf, step, run_dir, cycle, attempts, args.fix,
-                                 decision_prefix=step.id)
+                                 decision_prefix=step.id,
+                                 continuation=continuation)
     if refusal:
         return refusal
     return llmgate.new_attempt(step.id, result_base, cycle, len(attempts) + 1,
@@ -1017,8 +1022,50 @@ def cmd_decide(args) -> int:
                         f"{secrets.token_hex(stepio.DELEGATION_TOKEN_BYTES)}"),
     }
     llmgate.write_json(record_path, record)
+    tier = modelmap.tier_of(decider_model)
     print(f"{record['request_path']} (decider, model={resolved}, "
-          f"answer={record['answer_path']}, description={record['description']})")
+          + (f"tier={tier}, " if tier else "")
+          + f"answer={record['answer_path']}, timeout={step.timeout}, "
+          f"description={record['description']})")
+    return 0
+
+
+def cmd_models(args) -> int:
+    """The model each run-llm delegation of a workflow asks for, one row per
+    request: `tier=` (when the name stands for a tier), `model=` (as the llm
+    table resolves it), `sites=` (step and replan ids, `<id>:decider` for an
+    llm decider). Resolved as `prompt` and `decide` resolve them, so a row is
+    the request their dispatch lines will make. A step without a model has no
+    row."""
+    from .agents import discover_agents
+    wf = parser.parse_file(args.workflow)
+    agents_cache = discover_agents(Path(args.workflow).resolve().parent)
+    rows: dict[tuple[str | None, str], list[str]] = {}
+
+    def add(tier: str | None, name: str, site: str) -> None:
+        rows.setdefault((tier, name), []).append(site)
+
+    try:
+        nodes = list(wf.iter_steps())
+        for node in nodes:
+            name, _ = stepio.dispatch_for(node, agents_cache)
+            if name:
+                add(modelmap.tier_of(name, allow_legacy=True),
+                    modelmap.resolve(name, "llm", allow_legacy=True), node.id)
+        for node in nodes:
+            if not isinstance(node, model.Step):
+                continue
+            decider, decider_model = model.resolve_decider(wf, node)
+            if decider == model.DECIDER_LLM:
+                add(modelmap.tier_of(decider_model),
+                    modelmap.resolve(decider_model, "llm"), f"{node.id}:decider")
+    except modelmap.ModelMapError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"harness={_detect_ask_backend()}")
+    for (tier, name), sites in rows.items():
+        print((f"tier={tier} " if tier else "")
+              + f"model={name} sites={','.join(sites)}")
     return 0
 
 
@@ -1239,12 +1286,8 @@ def cmd_stop(args) -> int:
         print(f"error: {args.handle} is not a run-llm attempt handle",
               file=sys.stderr)
         return 2
-    if args.facet == llmgate.FACET_CC and not args.task_stop:
+    if not args.task_stop:
         print("error: --facet cc needs --task-stop: what TaskStop reported",
-              file=sys.stderr)
-        return 2
-    if args.facet != llmgate.FACET_CC and args.task_stop:
-        print(f"error: --task-stop belongs to --facet {llmgate.FACET_CC} only",
               file=sys.stderr)
         return 2
     if not 0 < args.observe <= llmgate.STOP_OBSERVE_MAX:
@@ -1271,27 +1314,6 @@ def cmd_stop(args) -> int:
         print(f"unconfirmed: {'; '.join(record['reasons'])} -- record the "
               f"attempt, then stop and report (record: {where})")
     return STOP_EXIT_CODES[verdict]
-
-
-def cmd_pids(args) -> int:
-    """Record the processes a Pi CLI attempt was launched as, once, at
-    launch: the set its stop is later judged against."""
-    handle = _attempt_handle(args.handle)
-    if handle is None:
-        print(f"error: {args.handle} is not a run-llm attempt handle",
-              file=sys.stderr)
-        return 2
-    if any(pid <= 0 for pid in args.pids):
-        print("error: a PID is a positive integer", file=sys.stderr)
-        return 2
-    recorded = llmgate.record_pids(handle, args.pids)
-    if isinstance(recorded, str):
-        print(f"error: {recorded}", file=sys.stderr)
-        return 1
-    label = llmgate.attempt_label(handle["cycle"], handle["attempt"])
-    print(f"recorded {len(recorded['processes'])} process(es) of attempt {label}: "
-          + ", ".join(f"{p['pid']} ({p['image']})" for p in recorded["processes"]))
-    return 0
 
 
 def cmd_judge(args) -> int:
@@ -1539,13 +1561,15 @@ def _next_cycle(latest: int, attempts: list, force_new: bool) -> tuple[int, list
 
 def _admission_refusal(wf: model.Workflow, step: model.Step, run_dir: Path,
                        cycle: int, attempts: list, fix: str | None,
-                       decision_prefix: str | None = None) -> str | None:
+                       decision_prefix: str | None = None,
+                       continuation: bool = False) -> str | None:
     """Why run-cc's ladder and the run's budgets refuse the next attempt of
     `step` in `cycle` (its ledger so far is `attempts`), or None. Shared by
     `dispatch` and run-llm's `prompt --result`, so the two count one set of
     budgets one way. `decision_prefix` is the id prefix the caller files
     decision requests under (`dispatch`'s `<id>_cNN` by default; run-llm's
-    bare step id)."""
+    bare step id). A `continuation` is a <replan> child: its `max` caps its
+    own steps, and the parent's `max` counts them at the parent's next step."""
     # The one re-dispatch after an abort is a cycle-wide budget of its
     # own, judged before the total-attempt cap so a run already spent
     # on aborts is told to stop, not pointed at --new-cycle (a
@@ -1590,14 +1614,15 @@ def _admission_refusal(wf: model.Workflow, step: model.Step, run_dir: Path,
         return refusal
 
     log_path = run_dir / "steps.log"
-    executed = _count_step_executions(log_path)
+    executed = _count_step_executions(
+        log_path, {s.id for s in wf.iter_steps()} if continuation else None)
     if executed >= wf.max:
         return (f"workflow max={wf.max} step executions reached "
                 f"({executed} recorded in {log_path})")
     return None
 
 
-def _count_step_executions(log_path: Path) -> int:
+def _count_step_executions(log_path: Path, only: set[str] | None = None) -> int:
     """steps.log entries that are step executions, for the `wf.max` cap.
 
     Only entries carrying a "step" key count: `wfrun ask` writes its
@@ -1610,8 +1635,8 @@ def _count_step_executions(log_path: Path) -> int:
     fires once per step-node visit, outside the retry loop). That is
     deliberate: when an LLM drives the run there is no in-process step
     counter, so this log is the only runaway backstop, and every attempt is a
-    real model call (a subagent or a `pi -p` process under run-llm, a
-    `claude -p` wrapper under `dispatch`). Erring toward
+    real model call (a subagent under run-llm, a `claude -p` wrapper under
+    `dispatch`). Erring toward
     counting them keeps the cap's protective meaning.
     """
     count = 0
@@ -1625,7 +1650,8 @@ def _count_step_executions(log_path: Path) -> int:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(entry, dict) and "step" in entry:
+                if isinstance(entry, dict) and "step" in entry and (
+                        only is None or entry["step"] in only):
                     count += 1
     except OSError:
         return 0
@@ -2606,10 +2632,13 @@ def main(argv=None) -> int:
                             "(forbids <replan> and <param>)")
     p_val.add_argument("--defined-vars", metavar="VARS_JSON",
                        help="treat this vars file's keys as already defined")
-    p_val.add_argument("--backend", choices=("auto", "cc", "pi"), default="auto",
+    p_val.add_argument("--backend", choices=("auto", "cc", "pi", "llm"),
+                       default="auto",
                        help="which facility the workflow targets; only the "
                             "model-name checks read it (pi verifies names "
-                            "against `pi --list-models`, cc checks none)")
+                            "against `pi --list-models`; cc and llm check "
+                            "none: run-llm resolves models through the "
+                            "orchestrator's own subagent facility)")
     p_val.set_defaults(func=cmd_validate)
 
     p_run = sub.add_parser("run", help="validate then execute a workflow")
@@ -2649,6 +2678,12 @@ def main(argv=None) -> int:
     p_plan = sub.add_parser("plan", help="print the step tree without executing")
     p_plan.add_argument("workflow")
     p_plan.set_defaults(func=cmd_plan)
+
+    p_models = sub.add_parser(
+        "models", help="run-llm: the model each delegation of a workflow asks "
+                       "for, one row per request (control facts only)")
+    p_models.add_argument("workflow")
+    p_models.set_defaults(func=cmd_models)
 
     p_viz = sub.add_parser(
         "viz", help="render the control flow as a mermaid flowchart "
@@ -2777,9 +2812,9 @@ def main(argv=None) -> int:
                              "wrote it")
     p_stop.add_argument("--facet", required=True, choices=list(llmgate.FACETS),
                         help="how the attempt was delegated: the Claude Code "
-                             "Agent tool, or a Pi CLI process")
+                             "Agent tool")
     p_stop.add_argument("--task-stop", choices=list(llmgate.TASK_STOP_RESULTS),
-                        help="cc only: what TaskStop reported -- stopped; "
+                        help="what TaskStop reported -- stopped; "
                              "completed (the task had already ended); failed "
                              "(the call errored or could not be made)")
     p_stop.add_argument("--observe", type=int, default=llmgate.STOP_OBSERVE_MAX,
@@ -2787,17 +2822,6 @@ def main(argv=None) -> int:
                         help=f"observation window, 1 to "
                              f"{llmgate.STOP_OBSERVE_MAX} (default)")
     p_stop.set_defaults(func=cmd_stop)
-
-    p_pids = sub.add_parser(
-        "pids", help="run-llm, Pi CLI: record the processes an attempt was "
-                     "launched as (PID, image, creation time), once, at launch")
-    p_pids.add_argument("handle", metavar="HANDLE_FILE",
-                        help="the step's handle, as 'wfrun prompt --result' "
-                             "wrote it")
-    p_pids.add_argument("pids", nargs="+", type=int, metavar="PID",
-                        help="Windows PIDs: the launching shell and the CLI's "
-                             "own process")
-    p_pids.set_defaults(func=cmd_pids)
 
     p_judge = sub.add_parser(
         "judge", help="run-llm: issue the one judge of an aborted attempt whose "

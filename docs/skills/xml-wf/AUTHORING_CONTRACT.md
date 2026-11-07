@@ -4,7 +4,9 @@
 
 ## Multi-facet integrity
 
-xml-wf executes steps through three interchangeable facets, selected by mode/backend: **Run (batch)** (`--backend cc`, `references/run-cc.md`), **Run (batch, Pi)** (`--backend pi`, `references/run-pi.md`, driven by `scripts/wfrun/pi_cli.py`), and **LLM orchestration** (`--run-llm`, `references/run-llm.md`: layer B only, with every step running through the orchestrating agent's own delegation facility on any harness, including Pi with no subagent tool, where it is a `subagent` tool the host publishes if that qualifies and otherwise a `pi -p` process). `wfrun dispatch`/`wait` (layer A) remain in `scripts/wfrun/__main__.py` but are not part of this mode.
+xml-wf executes steps through three interchangeable facets, selected by mode/backend: **Run (batch)** (`--backend cc`, `references/run-cc.md`), **Run (batch, Pi)** (`--backend pi`, `references/run-pi.md`, driven by `scripts/wfrun/pi_cli.py`), and **LLM orchestration** (`--run-llm`, `references/run-llm.md`: layer B only, on Claude Code and on Pi only, with every step, debug diagnosis, `<replan>` builder and decider running through the orchestrating agent's own native subagent facility: the Agent tool on Claude Code, the `subagent` tool on Pi, never a `claude -p` or `pi -p` process). `wfrun ask` is the one CLI this mode starts. `wfrun dispatch`/`wait` (layer A) remain in `scripts/wfrun/__main__.py` but are not part of this mode.
+
+Pi's `run-llm` has a prerequisite the other facets do not: the subagent extension and its `child-session/config.json`, set up as README.md's "Pi setup" describes. The Preparation gate that checks for it (`references/run-llm.md`, step 4) is prompt-level: `wfrun` cannot see the host's tools, so nothing in code enforces it. A platform that is neither Claude Code nor Pi enters the Pi path and stops at the gate's first row. A change to `run-llm.md` or to `wfrun models` / `prompt` / `decide` (the `tier=`, `model=` and `timeout=` the Pi path reads) is judged on both facets, and the Claude Code path has no live test: it is checked against the code and the text only.
 
 The `pi` backend is not a thin mirror of `cc`: it refuses some attributes outright (`schema=`, for one, because it cannot enforce structured output) and rewrites others. `references/run-pi.md` enumerates every such divergence and is the source of truth for all of them — read it there, and when a divergence changes, change it there.
 
@@ -148,9 +150,10 @@ editor of any of it keeps four things true:
   `Popen.pid` is not the wrapper's
   ([`docs/dev/test-constraints.md`](../../dev/test-constraints.md)). The run
   lock and the marker's token decide, then the ledger and `exit.json`, and only
-  last the clock. This is layer A's rule. Layer B's Pi CLI stop (`wfrun pids`,
-  `wfrun stop --facet pi-cli`) does record PIDs, but as (PID, image, creation
-  time) identities (`procid.py`), and it counts any doubt as still running.
+  last the clock. This is layer A's rule. Layer B's stop observation (`wfrun
+  stop`, Claude Code only) records no PID: it reads the subagent's transcripts
+  and TaskStop's own answer.
+  Pi has no stop observation at all.
 - **Locks are taken state first, run second, never the reverse.** The wrapper
   retries for the run lock, within a bound, while holding the state lock, and
   nothing takes the state lock while holding the run lock. Observers only probe
@@ -223,15 +226,15 @@ xml-wf and `skills/mode-orchestrator/` are separate products that independently 
 
 When a change here alters step-execution semantics in a way that looks generally useful (e.g. how a stale completion signal is discarded, how the harness/model resolution works, retry/escalation policy), consider whether `skills/mode-orchestrator/` would benefit from the same idea and note it for its maintainer — a suggestion to evaluate, not an obligation to port.
 
-## Pi CLI launch contract (shared with mode-orchestrator)
+## Pi CLI launch contract (mode-orchestrator's alone) and the restart gate
 
-A further exception to "no shared file": the launch contract of a Pi CLI delegation. This skill's `references/run-llm.md` ("Delegating on Pi") and mode-orchestrator's `references/harness-pi.md` (P1) carry the same block between `<!-- pi-cli-launch-contract:begin -->` and `<!-- pi-cli-launch-contract:end -->`, and each marks its own launch command (the fenced block after `<!-- pi-cli-launch-line -->`). Two copies of one text drift unless someone checks.
+This skill no longer launches a Pi CLI process for a delegation (user ruling 2026-11-06: `run-llm` has no non-native delegation path). The launch contract of a Pi CLI delegation, which `references/run-llm.md` once shared with mode-orchestrator's `references/harness-pi.md`, now lives in `harness-pi.md` alone.
 
-- **Propagation, both directions.** An edit to the marked block here is made to the other copy in the same pass, and the other way round. Options outside the block stay each skill's own (here `--mode text`, `--tools`, `wfrun pids`; there `MODE_ORCH_DEPTH`, `--mode json`, the raw capture and `pi_reply.js`) and do not propagate.
-- **Run obligation.** After touching the launch text of either document, run `uv run --no-project python tests/lint_launch_contract.py` and then the same command with `--self-test`, from the checkout root. It fails when the two blocks differ, or when either skill's launch command lacks a common element (entry through node, `-p`, closed stdin, `--no-skills`, `--session-dir`, `MSYS_NO_PATHCONV=1`, the message through `"$PROMPT"`, the recorded PIDs) or has the elements out of order. It does not see a launch command outside the marked blocks, and it does not run the CLI. Exit 2 means it scanned nothing.
-- **The restart gate is aligned, not shared.** `wfrun stop`, `wfrun pids` and `wfrun judge` (`scripts/wfrun/llmgate.py`, `procid.py`, `ccdeny.py`, and `JUDGE_PROMPT` in `guardrails.py`) and mode-orchestrator's `scripts/stop_observe.js` and `scripts/judge_gate.js` implement one contract twice, on purpose: the same judge prompt body, record fields and reply grammar, the same `ultra` model class, `Read, Grep, Write` tools, 900-second deadline, one judge per attempt, every judge failure a refusal, and a 60-second window for observing a stop. The code, the tests and the files each one writes are independent, and they differ where the contract says nothing:
+- **Nothing to propagate.** The blocks between `<!-- pi-cli-launch-contract:begin -->` and `<!-- pi-cli-launch-contract:end -->` and the launch line after `<!-- pi-cli-launch-line -->` belong to mode-orchestrator; an edit to them follows mode-orchestrator's `AUTHORING_CONTRACT.md`. `run-llm.md` carries neither marker, and a Pi CLI launch written into it again would reopen the path the ruling closed, outside the reach of any lint.
+- **Run obligation for this skill.** None for `tests/lint_launch_contract.py`: it now scans `harness-pi.md` alone. The CLI this skill still starts, `wfrun ask`, goes through `pi_cli.py` (the batch facets' launcher), not through `run-llm.md`.
+- **The restart gate is aligned, not shared, and is Claude Code's here.** `wfrun stop` and `wfrun judge` (`scripts/wfrun/llmgate.py`, `ccdeny.py`, and `JUDGE_PROMPT` in `guardrails.py`) and mode-orchestrator's `scripts/stop_observe.js` and `scripts/judge_gate.js` implement one contract twice, on purpose: the same judge prompt body, record fields and reply grammar, the same `ultra` model class, `Read, Grep, Write` tools, 900-second deadline, one judge per attempt, every judge failure a refusal, and a 60-second window for observing a stop. The code, the tests and the files each one writes are independent, and they differ where the contract says nothing:
   - the stop's cause: here the clock (`requested_at >= dispatched_at + timeout`), there the caller's `--cause`;
-  - a Claude Code observation: here it runs to the end of the window unless the result completes, there it returns at once when the stop cannot be confirmed any more; a Pi CLI observation there can also run up to 20 seconds past the window, because a process probe begun before the window ends is not cut short;
+  - a Claude Code observation: here it runs to the end of the window unless the result completes, there it returns at once when the stop cannot be confirmed any more; a Pi CLI observation there (mode-orchestrator's own route; this skill has none) can also run up to 20 seconds past the window, because a process probe begun before the window ends is not cut short;
   - the verdict words: `done` / `confirmed` / `unconfirmed` (exit 0 / 12 / 13) here, `CONFIRMED` / `UNCONFIRMED` (exit 0 / 1) there;
   - the judge's end marker: `[[WFRUN-END step=<id> attempt=cNNaNN-judge-<token>]]` here, `[[MO-JUDGE-END <token>]]` there;
   - the evidence the judge may cite: here the attempt's prompt, result, stop record and transcripts, there its deliverable (if any), stop record and transcripts;

@@ -37,7 +37,8 @@ You need three things installed. You (or a developer) only check this once:
   the `schema` and `on-error="debug"` features below are unavailable and a
   workflow using them is refused before it starts (the skill's
   `references/run-pi.md` explains what to write instead). Everything else in
-  this guide applies to both
+  this guide applies to both, except that interactive mode (§9) on pi needs one
+  more setup step
 
 You do not need to type the runner command yourself. When you ask the skill to
 build or run a workflow, the agent runs the right commands for you — including
@@ -197,6 +198,13 @@ the task content or the results itself — those flow through files. This keeps 
 agent from second-guessing or shortcutting the workflow. It trades some of the
 automatic guarantees of normal Run mode for live oversight, so use it when you
 specifically want a human in the loop; otherwise normal **Run** is the default.
+
+On Claude Code, interactive mode needs nothing more. On pi it needs pi's subagent
+extension, which pi does not include. Without it the agent stops before it
+creates anything and tells you so; the setup is the "Pi setup" section of
+[README.md](README.md#pi-setup). On pi, a step that is interrupted (for example
+it runs past its `timeout`) stops the run, and that run cannot be resumed: start
+a new interactive run, or use normal Run mode.
 
 ---
 
