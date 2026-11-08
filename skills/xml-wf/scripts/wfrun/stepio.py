@@ -196,9 +196,12 @@ You are a continuation planner inside a running workflow. Based on the results
 so far, produce the workflow XML for what should happen next. You plan; you do
 not execute any of the work yourself.
 
-## Contract (a validator rejects violations; you would then be asked to fix them)
+## Contract (a validator rejects violations{retry_clause})
 - Output MUST be a single `<workflow name="..." version="2" max="N">` document
   with N <= {max_steps}.
+- Every `<step>` MUST hold its instructions in a non-empty `<task>` child:
+  `<step id="..."><task>...</task></step>`. Besides `<task>`, a step may
+  contain only an inline `<role>`.
 - A step MAY take a role: either role="<name>" using ONLY these named
   definitions: {roles} — or an inline <role> child you author yourself. Give
   one only when WHO does the work changes the outcome; when mode= already
@@ -226,7 +229,7 @@ not execute any of the work yourself.
 # prompt it is spliced into, rather than in executor.py: it is prompt text.
 # It is passed in rather than derived here because REPLAN_PROMPT has no
 # backend of its own -- `wfrun prompt` builds it for run-llm, where neither
-# attribute is refused, and that path must stay byte-identical.
+# attribute is refused, and that path must not carry it.
 REPLAN_PI_CONSTRAINT = ('The document MUST NOT use `schema=` or '
                         '`on-error="debug"` on any step (this execution '
                         'backend supports neither; write a value to a file '
@@ -423,9 +426,8 @@ def build_replan_prompt_parts(node, variables: dict,
 
     `constraint` is one extra contract bullet the caller knows about and this
     builder does not — today only the pi Executor's REPLAN_PI_CONSTRAINT
-    (design §10.2 point 3). Omitted, the prompt is byte-identical to what it
-    was before the parameter existed, which is what keeps the cc path and
-    `wfrun prompt` (run-llm) unchanged."""
+    (design §10.2 point 3). Omitted, the prompt carries no such bullet, which
+    is what the cc path and `wfrun prompt` (run-llm) send."""
     try:
         task = interpolate(node.task, variables)
     except InterpError as e:
@@ -437,10 +439,17 @@ def build_replan_prompt_parts(node, variables: dict,
     if node.outputs:
         outputs_clause = ("\n- The continuation MUST define these output "
                           f"variables: {', '.join(node.outputs)}")
+    if node.retry <= 0:
+        retry_clause = ", and you would not be asked to fix them"
+    else:
+        times = "once" if node.retry == 1 else f"{node.retry} times"
+        retry_clause = ("; you would then be asked to fix them, "
+                        f"at most {times} in all")
     role_body, _ = resolve_role(node, agents_cache)
     roles = ", ".join(sorted(agents_cache)) if agents_cache else "(none available)"
     user = REPLAN_PROMPT.format(
         max_steps=node.max_steps,
+        retry_clause=retry_clause,
         roles=roles,
         modes=", ".join(m for m in modes.available_modes()
                         if m not in modes.MODE_ALIASES),

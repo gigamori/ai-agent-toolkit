@@ -1095,8 +1095,8 @@ class Executor:
         """The extra contract bullet the builder prompt gets on this backend.
 
         None on cc (and on the run-llm path, which never comes through here),
-        so the prompt those see is byte-identical to the one they saw before
-        this parameter existed (design §10.2 point 3)."""
+        so the prompt those see carries no backend bullet (design §10.2
+        point 3)."""
         return stepio.REPLAN_PI_CONSTRAINT if self.backend == "pi" else None
 
     def _validate_continuation(self, node: model.Replan, res):

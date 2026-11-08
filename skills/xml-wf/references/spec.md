@@ -201,11 +201,17 @@ backend omits the flag entirely.
 | `on-error` | - | `fail` | `fail` / `ignore` (a failed replan leaves `outputs` unset). `debug` is not meaningful here |
 
 Semantics:
-- The builder runs with read-only tools (`Read,Glob,Grep`), receives the spec
-  path, the list of available named roles, the execution-mode vocabulary
-  (aliases excluded; with one-line usage guidance — continuation steps are
-  ordinary `<step>`s and may set `mode=`), and the variable table, and must
-  reply with a complete `<workflow>` document
+- The builder receives the spec path, the list of available named roles, the
+  execution-mode vocabulary (aliases excluded; with one-line usage guidance —
+  continuation steps are ordinary `<step>`s and may set `mode=`), and the
+  variable table, and produces a complete `<workflow>` document. How it runs
+  depends on the mode:
+  - batch (`run-cc`, `run-pi`): one call with read-only tools
+    (`Read,Glob,Grep`, which `run-pi` translates as it does any step's), and
+    the document is its reply
+  - `run-llm`: a native subagent with no tool restriction (that mode restricts
+    no subagent's tools: `references/run-llm.md`, "Enforcement boundaries"),
+    which writes the document to the result file its prompt names
 - The continuation is validated with the child ruleset: **no `<replan>`
   (recursion) and no `<param>` allowed**; named roles must exist (inline
   `<role>` bodies are always allowed); variables already defined count as

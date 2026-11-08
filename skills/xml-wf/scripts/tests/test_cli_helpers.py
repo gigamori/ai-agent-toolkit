@@ -11,6 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from wfrun import parser, stepio  # noqa: E402
 from wfrun.__main__ import main  # noqa: E402
 
 _NO_SESSION = mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""})
@@ -644,6 +645,35 @@ class TestModeHelpers(unittest.TestCase):
         from wfrun.stepio import unwrap_value
         self.assertEqual(unwrap_value(None, "[Mode: execute]\noutput/a.csv"),
                          "output/a.csv")
+
+
+class TestReplanBuilderPrompt(unittest.TestCase):
+    def prompt(self, retry_attr):
+        wf = parser.parse_string(
+            '<workflow name="t" version="2" max="10">'
+            f'<replan id="r1" max-steps="5"{retry_attr}><task>plan it</task></replan>'
+            '</workflow>')
+        return stepio.build_replan_prompt(next(wf.iter_steps()), {}, {})
+
+    def test_builder_prompt_at_retry_0_promises_no_fix(self):
+        for retry_attr in ("", ' retry="0"'):
+            with self.subTest(retry_attr=retry_attr):
+                text = self.prompt(retry_attr)
+                self.assertNotIn(
+                    "you would then be asked to fix them", text,
+                    "retry=0 never re-asks the builder, so the prompt must not say it will")
+                self.assertIn("you would not be asked to fix them", text)
+
+    def test_builder_prompt_states_the_retry_bound(self):
+        text = self.prompt(' retry="2"')
+        self.assertIn("you would then be asked to fix them, at most 2 times in all", text)
+        self.assertNotIn("you would not be asked to fix them", text)
+        self.assertIn("at most once in all", self.prompt(' retry="1"'))
+
+    def test_builder_prompt_requires_a_task_child(self):
+        text = self.prompt("")
+        self.assertIn("non-empty `<task>` child", text,
+                      "a step without a `<task>` child fails validation")
 
 
 if __name__ == "__main__":

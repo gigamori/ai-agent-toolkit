@@ -60,19 +60,28 @@ ok/error, and true/false**. All content flows through wfrun and files:
    `subagent` call, so confirm before anything is created that the host offers
    it and can resolve every model of step 3. This step creates no file.
 
+   Every stop in this step replies with one of its quotes: fill in the
+   `<...>` values and copy the rest verbatim, however short a report you were
+   asked for.
+
    a. Call `delegation_contract` with `{"operation":"observe"}`. Quote the
       `routes.native.state` it returns in your next output, then take the row
       that fits:
 
       | observe result | do |
       |---|---|
-      | there is no `delegation_contract` tool | reply with the sentence below, verbatim, and STOP |
-      | `routes.native.state` is `unavailable` | quote its `reason` verbatim, give the same two options as the sentence below (set it up per "Pi setup"; `--run-pi` or `--run-cc`), and STOP |
+      | there is no `delegation_contract` tool | reply with the first quote below and STOP |
+      | `routes.native.state` is `unavailable` | reply with the second quote below, its `reason` filled in, and STOP |
       | `routes.native.state` is `available` | keep the result's `settings` and go on to b |
 
       > run-llm cannot run here: this session has no native subagent route (the
       > `delegation_contract` tool is missing, so the subagent extension is not
       > installed or predates it). Set it up as described in "Pi setup" in
+      > `docs/skills/xml-wf/README.md`, or run this workflow with `--run-pi` or
+      > `--run-cc`.
+
+      > run-llm cannot run here: the native subagent route is unavailable
+      > ("<its reason>"). Set it up as described in "Pi setup" in
       > `docs/skills/xml-wf/README.md`, or run this workflow with `--run-pi` or
       > `--run-cc`.
 
@@ -84,18 +93,24 @@ ok/error, and true/false**. All content flows through wfrun and files:
       |---|---|---|
       | `tier=` | `configured` | `{"effort":"<tier>"}` |
       | `tier=` | `absent` or `unset` | `{"model":"<the line's model=>"}` |
-      | `tier=` | `invalid` or `unobservable` | no call: stop and report that state |
+      | `tier=` | `invalid` or `unobservable` | no call: the line fails (c) |
       | no `tier=` | any | `{"model":"<the line's model=>"}` |
 
       `<E>` is the line's `tier=`, or `pro` for a line without one. It is only
       recorded: it never selects a model. A `tier=` is wfrun's fact: never
       derive a tier from a name, or a name from a tier
-   c. Every call returned `resolved`: keep each line's `resolutionRef` for the
-      whole run (it is bound to this session and its thinking level). Any other
-      state: report the line, the state and the reason, name the
-      `child-session/config.json` field involved (`explicitModels` for a
-      `model` request, `profiles` for an `effort` request), and STOP. Never
-      replace the request with another one
+   c. Every line's call returned `resolved`: keep each line's `resolutionRef`
+      for the whole run (it is bound to this session and its thinking level).
+      Otherwise, once b has gone through every line, reply with this line for
+      each line that failed, and STOP. Never replace the request with another
+      one:
+
+      > run-llm cannot run here: `<the models line>` is <state> ("<reason>"). See `<field>` in `child-session/config.json` and "Pi setup" in `docs/skills/xml-wf/README.md`, or run this workflow with `--run-pi` or `--run-cc`.
+
+      `<state>` and `<reason>` are the result's; for a line with no call,
+      `<state>` is `settings[<tier>].state` and `<reason>` is that entry's
+      reason if it has one, otherwise `none`. `<field>` is `explicitModels` for
+      a `model` request, `profiles` otherwise
 5. **Fix `<ws>` before anything changes directory.** `<ws>` is the absolute
    path of the directory you were started in, even when that is a worktree —
    never one created later for this run. Every `<ws>` below means that path,
@@ -110,6 +125,19 @@ ok/error, and true/false**. All content flows through wfrun and files:
    single moment you write values
 7. Create an empty `<run>/steps.log`. Every `--log` below names exactly this
    file: `prompt` counts the workflow's `max` from it
+
+**From here on, every stop ends with one line.** Every "stop and report" and
+every STOP below ends your report with this line, however short a report you
+were asked for: fill in the two values and copy the rest verbatim.
+
+> <id>: stopped (<cause>). This run dir cannot be resumed; the options are `--run-pi`, `--run-cc`, or a new run.
+
+`<id>` is the step or `<replan>` you were handling. `<cause>` is what you
+stopped on, verbatim: the first line of a wfrun command's output, or a
+`resolve` result's `state`; `none` when there was no output. An interrupted
+delegation on Pi — a step's, a diagnosis's or a builder's — ends with its own
+line instead ("Delegating on Pi"), and the human
+presentation of "On decision" is no stop: it waits for the answer.
 
 Every step runs through the host's native subagent facility — on Claude Code the
 Agent tool, on Pi the `subagent` call of "Delegating on Pi" — by the protocol
@@ -338,9 +366,9 @@ without one was refused before it ran (a schema rejection, `stale:` or
 
    > <id>: aborted run=<the run= value> outcome=<the outcome= value>. This run dir cannot be resumed; the options are `--run-pi`, `--run-cc`, or a new run.
 
-A diagnosis or a builder stops as its row says, with the same report, and that
-report also ends with the line's last sentence. A decider goes on as its row
-says.
+A diagnosis or a builder stops as its row says, with the report of step 2
+above, and that report ends with the same line, `<id>` being the step
+diagnosed or the `<replan>`. A decider goes on as its row says.
 
 **A reply cut off by the timeout is survivable, by design.** A missing reply is exactly what
 `poll` is for: it returned `done`, and `record` without `--reply` then produced

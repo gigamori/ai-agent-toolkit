@@ -168,6 +168,16 @@ dead deletes it. Nothing links back to it and no check fails when it drifts.
   2026-11-07 in one end-to-end arm run (Windows 11, Node v24.22.1; Pi version not recorded),
   by reading the session's system prompt and calling `parseFrontmatter` and `loadSkills`
   from node on the tree's files.
+- Pi's `read` tool returns at most 2,000 lines or 51,200 bytes (`50 * 1024`) of a file per
+  call, whichever it reaches first. Past that point the result is cut and ends with a
+  `Use offset=N to continue.` notice; the rest arrives only if the reader follows it. The
+  bytes are the file as stored, so a CRLF checkout counts each line ending as two. A file
+  the orchestrator or a builder reads once (`SKILL.md`, `references/run-llm.md`,
+  `references/spec.md`) is therefore cut for a reader that does not follow the notice.
+  Observed 2026-11-08 in the installed `@earendil-works/pi-coding-agent` 1.1.0
+  (`dist/core/tools/truncate.js`: `DEFAULT_MAX_LINES`, `DEFAULT_MAX_BYTES`; `dist/core/tools/read.js`
+  appends the notice), and on 2026-11-07 in one end-to-end arm whose orchestrator read the
+  47,551-byte CRLF `run-llm.md` in one call and received it byte for byte, without a notice.
 
 ## Git Bash on Windows — process ids, `node` and PowerShell
 
