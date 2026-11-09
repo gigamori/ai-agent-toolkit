@@ -1,7 +1,7 @@
 {
   "name": "rule-inject",
   "description": "Enforce external rule file reading via PreToolUse deny, driven by CLAUDE.md <rules when=\"...\" src=\"...\"/> tags",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "gigamori"
   }
