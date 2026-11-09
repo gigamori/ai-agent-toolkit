@@ -123,6 +123,25 @@ function baseDelegations() {
   ];
 }
 
+function buildHumanDecisionTurn(kind, fields) {
+  const built = buildRebind();
+  const raising = findRecord(built, "turn", "key", "02");
+  const resolution = built.evidence.resolutions.find((r) => r.key === raising.selection.resolution_ref);
+  built.evidence.resolutions.push({ ...deepCopy(resolution), key: "res-02b", turn: "02b" });
+  built.ledger.push({ record: "decision", key: "02a", parent: "02", decider: "human", file: "02a-decision.md" });
+  built.ledger.push({
+    record: "turn", plan: "r0", key: "02b", kind,
+    step: "re-run the step with the human answer", parent: "02a", inherits: "02", inputs: ["02", "02a"],
+    mode: raising.mode, role: raising.role, effort: raising.effort, effort_source: "inherited",
+    budget_refs: { recovery_owner: "02", decision_owner: "02", restart_owner: "02b" },
+    rebinds: null, amendment_ref: null,
+    selection: { ...deepCopy(raising.selection), resolution_ref: "res-02b" },
+    dispatch_plan: deepCopy(raising.dispatch_plan),
+    ...fields,
+  });
+  return built;
+}
+
 function buildBase() {
   const turns = baseTurns();
   const evidence = baseEvidence();
@@ -383,6 +402,24 @@ const scenarios = {
       built.ledger.push(branch);
     }
     emit(built);
+  },
+  "decision-rerun-human-parent"() {
+    emit(buildHumanDecisionTurn("decision-rerun", {}));
+  },
+  "decision-parent-reexecute"() {
+    emit(buildHumanDecisionTurn("recovery-reexecute", {}));
+  },
+  "decision-parent-wrong-kind"() {
+    emit(buildHumanDecisionTurn("recovery-debug", { inputs: ["02"] }));
+  },
+  "decision-input-planned"() {
+    const built = buildBase();
+    built.ledger.push({ record: "decision", key: "02a", parent: "02", decider: "human", file: "02a-decision.md" });
+    findRecord(built, "turn", "key", "03").inputs.push("02a");
+    emit(built);
+  },
+  "decision-rerun-inherits-decision"() {
+    emit(buildHumanDecisionTurn("decision-rerun", { inherits: "02a" }));
   },
   "planned-parent"() {
     const built = buildBase();
@@ -854,6 +891,23 @@ expect_violation "rebind cycle is rejected" "rebinds chain is cyclic" audit --fi
 
 build "rebind-branch"
 expect_violation "branching rebinds are rejected" "branching successors rebind one target" audit --file ledger.jsonl "${EV[@]}"
+
+build "decision-rerun-human-parent"
+expect_ok "decision-rerun may name the human decision record as parent and input" validate --file ledger.jsonl "${EV[@]}"
+expect_ok "audit accepts a decision-rerun under a human decision record" audit --file ledger.jsonl "${EV[@]}"
+
+build "decision-parent-reexecute"
+expect_ok "recovery-reexecute may name the human decision record as parent and input" validate --file ledger.jsonl "${EV[@]}"
+expect_ok "audit accepts a recovery-reexecute under a human decision record" audit --file ledger.jsonl "${EV[@]}"
+
+build "decision-parent-wrong-kind"
+expect_violation "a recovery-debug may not have a decision record as parent" "parent reference unresolved: 02a" validate --file ledger.jsonl "${EV[@]}"
+
+build "decision-input-planned"
+expect_ok "a planned turn may list a decision record in inputs" validate --file ledger.jsonl "${EV[@]}"
+
+build "decision-rerun-inherits-decision"
+expect_violation "inherits stays a turn reference on a decision-rerun" "inherits reference unresolved: 02a" validate --file ledger.jsonl "${EV[@]}"
 
 build "planned-parent"
 expect_violation "planned turn with a parent is rejected" "planned turn has null parent" validate --file ledger.jsonl "${EV[@]}"

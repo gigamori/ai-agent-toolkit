@@ -459,7 +459,7 @@ class Checker {
         if (!EFFORT_SOURCES.includes(entry.effort_source)) {
           this.violation(where, `effort_source not in ${EFFORT_SOURCES.join("|")}`);
         }
-        if (!Array.isArray(entry.inputs)) this.violation(where, "inputs must be an array of turn keys");
+        if (!Array.isArray(entry.inputs)) this.violation(where, "inputs must be an array of record keys");
         if (isObject(entry.selection)) this.checkSelection(entry.selection, where);
         this.checkDispatchPlan(entry.dispatch_plan, where);
         this.checkBudgetRefs(entry.budget_refs, where);
@@ -522,15 +522,16 @@ class Checker {
       if (ledger.get(entry.plan) === null || ledger.get(entry.plan).record !== "plan") {
         this.violation(where, `plan reference unresolved: ${entry.plan}`);
       }
-      for (const field of ["parent", "inherits"]) {
+      const parentRecords = ["decision-rerun", "recovery-reexecute"].includes(entry.kind) ? ["turn", "decision"] : ["turn"];
+      for (const [field, accepted] of [["parent", parentRecords], ["inherits", ["turn"]]]) {
         const value = entry[field];
-        if (value !== null && (ledger.get(value) === null || ledger.get(value).record !== "turn")) {
+        if (value !== null && (ledger.get(value) === null || !accepted.includes(ledger.get(value).record))) {
           this.violation(where, `${field} reference unresolved: ${value}`);
         }
       }
       if (Array.isArray(entry.inputs)) {
         for (const input of entry.inputs) {
-          if (ledger.get(input) === null || ledger.get(input).record !== "turn") {
+          if (ledger.get(input) === null || !["turn", "decision"].includes(ledger.get(input).record)) {
             this.violation(where, `inputs reference unresolved: ${input}`);
           }
         }

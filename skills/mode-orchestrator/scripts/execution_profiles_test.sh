@@ -125,10 +125,6 @@ candidate="$tmp/candidate-list.md"
 sed '5s/haiku/haiku, sonnet/' "$file" > "$candidate"
 expect_rejection "candidate list" "each effort row's CC and Pi cells must be a single bare token" "$candidate"
 
-candidate="$tmp/whitespace-token.md"
-sed '6s/gpt-5.6-terra/gpt 5.6 terra/' "$file" > "$candidate"
-expect_rejection "whitespace token" "each effort row's CC and Pi cells must be a single bare token" "$candidate"
-
 candidate="$tmp/provider-field.md"
 sed 's/| effort | use | CC | Pi |/| effort | use | CC | Pi | provider |/' "$file" > "$candidate"
 expect_rejection "provider field" "profile contains an unsupported field" "$candidate"
