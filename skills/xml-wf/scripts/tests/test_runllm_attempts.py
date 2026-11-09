@@ -799,6 +799,14 @@ class TestContinuationMax(RunLlmCase):
         child.write_text(CHILD_XML, encoding="utf-8")
         self.child = str(child)
 
+    def place(self, log_base):
+        entry = {"node_id": "r1", "cycle": 1, "attempt": 1,
+                 "output": self.child, "dispatched_at": 0, "timeout": 100,
+                 "caps": {"parent_max": 10, "max_steps": 5,
+                          "log_base": log_base}}
+        (self.run_dir / "replans" / "r1_replan.json").write_text(
+            json.dumps([entry]), encoding="utf-8")
+
     def log_steps(self, *ids):
         Path(self.log).write_text("".join(
             json.dumps({"step": i, "status": "success"}) + "\n"
@@ -811,20 +819,192 @@ class TestContinuationMax(RunLlmCase):
 
     def test_parent_steps_do_not_use_up_a_continuation_max(self):
         self.log_steps("s1", "s1", "s2")
+        self.place(3)
         code, _, err = self.prompt_child()
         self.assertEqual(code, 0, err)
 
     def test_a_continuation_stops_at_its_own_max(self):
         self.log_steps("s1", "x", "x")
+        self.place(1)
         code, _, err = self.prompt_child()
         self.assertEqual(code, 1)
-        self.assertIn("workflow max=2", err)
+        self.assertIn("continuation step cap (2)", err)
 
     def test_continuation_steps_count_toward_the_parent_max(self):
         self.log_steps(*["x"] * 10)
         code, _, err = self.prompt()
         self.assertEqual(code, 1)
         self.assertIn("workflow max=10", err)
+
+
+PARENT_XML = (
+    '<workflow name="t" version="2" max="{max}">'
+    '<step id="s1" retry="1" timeout="100"><role>W</role><task>write it</task></step>'
+    '<step id="s2" timeout="100"><role>W</role><task>try it</task></step>'
+    '<replan id="r1" max-steps="{max_steps}" retry="1">'
+    '<role>W</role><task>plan it</task></replan>'
+    '</workflow>')
+
+
+def child_xml(max_, *ids):
+    steps = "".join(f'<step id="{i}"><task>t</task></step>' for i in ids)
+    return f'<workflow name="c" version="2" max="{max_}">{steps}</workflow>'
+
+
+class ReplanFixtures:
+    def parent(self, max_, max_steps):
+        Path(self.xml).write_text(
+            PARENT_XML.format(max=max_, max_steps=max_steps), encoding="utf-8")
+
+    def log_steps(self, *ids):
+        with open(self.log, "a", encoding="utf-8") as f:
+            for i in ids:
+                f.write(json.dumps({"step": i, "status": "success"}) + "\n")
+
+    def delegate(self, result=None):
+        result = result or str(self.run_dir / "replans" / "r1.xml")
+        code, _, err = self.cli("prompt", self.xml, "r1", "--vars", self.vars,
+                                "--out", str(self.steps / "r1_prompt.md"),
+                                "--result", result)
+        self.assertEqual(code, 0, err)
+        entries = json.loads((self.run_dir / "replans" / "r1_replan.json")
+                             .read_text(encoding="utf-8"))
+        return Path(entries[-1]["output"])
+
+    def child(self, text, result=None):
+        output = self.delegate(result)
+        if not output.is_absolute():
+            output = self.root / output
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text, encoding="utf-8")
+        return str(output)
+
+    def prompt_child(self, child, step_id="x"):
+        return self.cli("prompt", child, step_id, "--vars", self.vars,
+                        "--out", str(self.steps / f"{step_id}_prompt.md"),
+                        "--result", self.base(step_id))
+
+    def validate_child(self, child):
+        return self.cli("validate", child, "--as-child", "--backend", "llm",
+                        "--defined-vars", self.vars)
+
+
+class TestReplanCaps(ReplanFixtures, RunLlmCase):
+    def test_a_continuation_max_above_max_steps_fails_validation(self):
+        self.parent(10, 2)
+        within = self.child(child_xml(2, "x"))
+        code, out, err = self.validate_child(within)
+        self.assertEqual(code, 0, f"control: max equal to max-steps is allowed: {out} {err}")
+        beyond = self.child(child_xml(50, "x"))
+        code, out, err = self.validate_child(beyond)
+        self.assertEqual(code, 1, "max above the replan's max-steps must be an error")
+        self.assertIn("exceeds the allowed max-steps=2", out)
+
+    def test_continuation_steps_stop_at_the_parent_max(self):
+        self.parent(3, 5)
+        self.log_steps("s1", "s2")
+        child = self.child(child_xml(5, "x"))
+        self.log_steps("x")
+        code, _, err = self.prompt_child(child)
+        self.assertEqual(code, 1, "the parent's max counts the whole run, child steps included")
+        self.assertIn("workflow max=3", err)
+
+    def test_a_child_below_every_cap_is_admitted(self):
+        self.parent(3, 5)
+        self.log_steps("s1", "s2")
+        child = self.child(child_xml(5, "x"))
+        code, _, err = self.prompt_child(child)
+        self.assertEqual(code, 0, err)
+
+    def test_a_continuation_stops_at_max_steps_below_its_own_max(self):
+        self.parent(10, 2)
+        child = self.child(child_xml(5, "x"))
+        self.log_steps("x", "x")
+        code, _, err = self.prompt_child(child)
+        self.assertEqual(code, 1, "max-steps caps the child even when validate was skipped")
+        self.assertIn("continuation step cap (2)", err)
+
+    def test_a_continuation_stops_at_its_own_max_with_the_step_cap_wording(self):
+        self.parent(10, 5)
+        child = self.child(child_xml(2, "x"))
+        self.log_steps("x", "x")
+        code, _, err = self.prompt_child(child)
+        self.assertEqual(code, 1, err)
+        self.assertIn("continuation step cap (2)", err)
+
+    def test_a_second_visit_counts_from_its_own_start(self):
+        self.parent(10, 5)
+        first = self.child(child_xml(2, "x"))
+        self.log_steps("x", "x")
+        second = self.child(child_xml(2, "x"))
+        self.assertNotEqual(first, second)
+        code, _, err = self.prompt_child(second)
+        self.assertEqual(code, 0, "steps of an earlier visit's child must not count: " + err)
+
+    def test_a_child_step_id_shared_with_the_parent_counts_from_the_child_start(self):
+        self.parent(10, 5)
+        self.log_steps("s1", "s1")
+        child = self.child(child_xml(2, "s1"))
+        code, _, err = self.prompt_child(child, "s1")
+        self.assertEqual(code, 0, "the parent's rows of the same id must not count: " + err)
+
+    def test_a_continuation_no_replan_attempt_wrote_is_refused(self):
+        child = self.run_dir / "replans" / "r1_c01_a01.xml"
+        child.parent.mkdir(parents=True)
+        child.write_text(child_xml(5, "x"), encoding="utf-8")
+        code, _, err = self.prompt_child(str(child))
+        self.assertEqual(code, 1, "a file under replans/ with no ledger entry is not a continuation")
+        self.assertIn("no <replan> attempt of this run wrote", err)
+
+    def test_the_builder_is_not_delegated_at_the_parent_max(self):
+        self.parent(3, 5)
+        self.log_steps("s1", "s2", "s1")
+        code, _, err = self.cli("prompt", self.xml, "r1", "--vars", self.vars,
+                                "--out", str(self.steps / "r1_prompt.md"),
+                                "--result", str(self.run_dir / "replans" / "r1.xml"))
+        self.assertEqual(code, 1, "a builder run at the parent max would be wasted")
+        self.assertIn("workflow max=3", err)
+        self.assertFalse((self.run_dir / "replans" / "r1_replan.json").exists(),
+                         "a refusal writes nothing")
+
+    def test_the_caps_are_found_whatever_form_result_was_given_in(self):
+        self.parent(10, 2)
+        previous = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
+        child = self.child(child_xml(50, "x"), result="run/replans/r1.xml")
+        os.chdir(previous)
+        code, out, err = self.validate_child(child)
+        self.assertEqual(code, 1, "the ledger is found by file name, not by cwd or path form")
+        self.assertIn("exceeds the allowed max-steps=2", out)
+
+    def test_a_continuation_may_not_hold_a_replan(self):
+        self.parent(10, 5)
+        nested = ('<workflow name="c" version="2" max="3">'
+                  '<step id="x"><task>t</task></step>'
+                  '<replan id="r2" max-steps="2"><role>W</role><task>plan it</task></replan>'
+                  '</workflow>')
+        child = self.child(nested)
+        code, _, err = self.cli("prompt", child, "r2", "--vars", self.vars,
+                                "--out", str(self.steps / "r2_prompt.md"),
+                                "--result", str(self.run_dir / "replans" / "r2.xml"))
+        self.assertEqual(code, 1, "a child's <replan> would escape the parent's max")
+        self.assertFalse((self.run_dir / "replans" / "r2_replan.json").exists(),
+                         "a refusal writes nothing")
+
+
+class TestReplanCapsJudge(ReplanFixtures, CcCase):
+    def test_a_judge_counts_a_child_from_its_own_start(self):
+        self.parent(10, 5)
+        self.log_steps("s2", "s2", "s2")
+        self.xml = self.child(
+            '<workflow name="c" version="2" max="2">'
+            '<step id="s1" timeout="100"><role>W</role><task>write it</task></step>'
+            '</workflow>')
+        _, stop, record = self.aborted_and_stopped()
+        self.assertEqual((stop[0], record[0]), (12, 3), (stop, record))
+        code, _, err = self.judge()
+        self.assertEqual(code, 0, "the parent's rows must not use up the child's max: " + err)
 
 
 LLM_XML = XML.replace('max="10">', 'max="10" decider="llm">', 1)

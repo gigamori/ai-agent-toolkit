@@ -576,14 +576,20 @@ def _well_formed(path: str | Path | None) -> bool:
 
 
 def admit_replan(node, result_base: str | Path, fix: str | None,
-                 now: float) -> dict | str:
+                 now: float, parent_max: int, log_base: int) -> dict | str:
     """The next builder attempt of a <replan>, or why it is refused.
 
     A replan has no sentinel: its output being well-formed XML is what says
     the builder finished. So an earlier attempt whose output is missing or
     not well-formed may still be running, and the builder is not delegated
     again. A finished attempt is followed either by a fix of it (`--fix`,
-    within `retry`) or, without one, by the node's next visit."""
+    within `retry`) or, without one, by the node's next visit.
+
+    The entry carries `caps`: the parent's `max` and this node's `max-steps`
+    as the parent's XML states them now, and `log_base`, the steps.log
+    executions recorded when the builder was delegated (the builder writes
+    none, and a run-llm run is sequential, so that is where the child's own
+    steps start). A child's `prompt` reads them back (`continuation_caps`)."""
     entries = [e for e in stepio.load_attempts(
         replan_ledger_path(result_base, node.id)) if isinstance(e, dict)]
     if not entries:
@@ -612,7 +618,28 @@ def admit_replan(node, result_base: str | Path, fix: str | None,
     output = base.with_name(f"{base.stem}_c{cycle:02d}_a{seq:02d}{base.suffix}")
     return {"node_id": node.id, "cycle": cycle, "attempt": seq,
             "output": str(output), "dispatched_at": now,
-            "timeout": node.timeout}
+            "timeout": node.timeout,
+            "caps": {"parent_max": parent_max, "max_steps": node.max_steps,
+                     "log_base": log_base}}
+
+
+def continuation_caps(workflow_path: str | Path) -> dict | None:
+    """The `caps` of the <replan> attempt that wrote `workflow_path`, or None
+    when no ledger beside it names that file as an output or the entry holds
+    no integer caps. Matched by file name: the ledger sits in the output's
+    directory, and `--result` may have been given relative."""
+    path = Path(workflow_path)
+    for ledger in sorted(path.parent.glob("*_replan.json")):
+        for e in stepio.load_attempts(ledger):
+            if not isinstance(e, dict) or Path(str(e.get("output"))).name != path.name:
+                continue
+            caps = e.get("caps")
+            if isinstance(caps, dict) and all(
+                    isinstance(caps.get(k), int)
+                    for k in ("parent_max", "max_steps", "log_base")):
+                return caps
+            return None
+    return None
 
 
 def record_replan(result_base: str | Path, entry: dict) -> None:

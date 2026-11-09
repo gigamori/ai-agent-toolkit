@@ -52,6 +52,18 @@ def cmd_validate(args) -> int:
                              check_roles=not args.no_role_check,
                              as_child=args.as_child, defined_vars=defined,
                              backend=_resolve_backend(args.backend, quiet=True))
+    if args.as_child:
+        caps = llmgate.continuation_caps(args.workflow)
+        if caps is None:
+            findings.append(lint_mod.Finding(
+                "warn", "continuation-caps",
+                "no <replan> attempt of a run recorded caps for this file, "
+                "so max is not compared with max-steps"))
+        elif wf.max > caps["max_steps"]:
+            findings.append(lint_mod.Finding(
+                "error", "continuation-max",
+                f"workflow max={wf.max} exceeds the allowed "
+                f"max-steps={caps['max_steps']}"))
     if args.json:
         print(json.dumps({
             "errors": [str(f) for f in findings if f.level == "error"],
@@ -698,8 +710,10 @@ def cmd_prompt(args) -> int:
     attempt = None
     if args.result:
         now = time.time()
-        attempt = (llmgate.admit_replan(step, args.result, args.fix, now)
-                   if is_replan else _admit_step_attempt(wf, step, args, now))
+        if is_replan:
+            attempt = _admit_replan_attempt(wf, step, args, now)
+        else:
+            attempt = _admit_step_attempt(wf, step, args, now)
         if isinstance(attempt, str):
             print(f"error: {attempt}", file=sys.stderr)
             return 1
@@ -777,6 +791,38 @@ def cmd_prompt(args) -> int:
     return 0
 
 
+def _admit_replan_attempt(wf, step: model.Replan, args, now: float) -> dict | str:
+    """The next builder attempt of `step`, or why none may start. A builder
+    is not delegated from inside a continuation (a <replan> there would take
+    its `max` for the parent's), nor once the run has spent the parent's
+    `max`: its child could not run a step. The attempt records the caps the
+    child's steps are held to."""
+    result_base = Path(args.result)
+    run_dir = result_base.parent.parent
+    if Path(args.workflow).resolve().parent == (run_dir / "replans").resolve():
+        return (f"replan '{step.id}': {args.workflow} is a replan continuation, "
+                "and a continuation holds no <replan> -- stop and report")
+    log_path = run_dir / "steps.log"
+    executed = _count_step_executions(log_path)
+    if executed >= wf.max:
+        return (f"workflow max={wf.max} step executions reached "
+                f"({executed} recorded in {log_path}) -- stop and report")
+    return llmgate.admit_replan(step, result_base, args.fix, now,
+                                wf.max, executed)
+
+
+def _continuation_caps(workflow: str, run_dir: Path) -> dict | None | str:
+    """None when `workflow` is not a replan continuation of this run, else
+    the caps of the <replan> attempt that wrote it, or why there are none."""
+    if Path(workflow).resolve().parent != (run_dir / "replans").resolve():
+        return None
+    caps = llmgate.continuation_caps(workflow)
+    if caps is None:
+        return (f"{workflow}: no <replan> attempt of this run wrote this "
+                "continuation -- stop and report")
+    return caps
+
+
 def _admit_step_attempt(wf, step: model.Step, args, now: float) -> dict | str:
     """The handle of the next run-llm attempt at `step`, or why none may
     start. Writes nothing, except a ledger flag when the gate finds that a
@@ -841,10 +887,11 @@ def _admit_step_attempt(wf, step: model.Step, args, now: float) -> dict | str:
     debug = _debug_pending(step, cycle, attempts, args.fix)
     if debug:
         return debug
-    continuation = Path(args.workflow).resolve().parent == (run_dir / "replans").resolve()
+    caps = _continuation_caps(args.workflow, run_dir)
+    if isinstance(caps, str):
+        return caps
     refusal = _admission_refusal(wf, step, run_dir, cycle, attempts, args.fix,
-                                 decision_prefix=step.id,
-                                 continuation=continuation)
+                                 decision_prefix=step.id, caps=caps)
     if refusal:
         return refusal
     return llmgate.new_attempt(step.id, result_base, cycle, len(attempts) + 1,
@@ -1336,7 +1383,7 @@ def cmd_judge(args) -> int:
     except modelmap.ModelMapError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    refusal = _judge_refusal(wf, step, handle)
+    refusal = _judge_refusal(wf, step, handle, args.workflow)
     if refusal is None:
         issued = llmgate.issue_judge(handle, llmgate.load_stop(handle))
         refusal = issued if isinstance(issued, str) else None
@@ -1351,8 +1398,8 @@ def cmd_judge(args) -> int:
     return 0
 
 
-def _judge_refusal(wf: model.Workflow, step: model.Step, handle: dict
-                   ) -> str | None:
+def _judge_refusal(wf: model.Workflow, step: model.Step, handle: dict,
+                   workflow: str) -> str | None:
     """Why no judge may be spent on `handle`'s attempt: it is not an aborted
     attempt with a confirmed stop and a still-incomplete result, a tool call
     of it was refused, its transcript cannot be found, or the restart a judge
@@ -1393,8 +1440,12 @@ def _judge_refusal(wf: model.Workflow, step: model.Step, handle: dict
                 "settle it with record --answer, which says whether to re-run")
     attempts = stepio.load_attempts(
         stepio.attempt_ledger_path(steps_dir, step.id, handle["cycle"]))
+    caps = _continuation_caps(workflow, steps_dir.parent)
+    if isinstance(caps, str):
+        return caps
     return _admission_refusal(wf, step, steps_dir.parent, handle["cycle"],
-                              attempts, None, decision_prefix=step.id)
+                              attempts, None, decision_prefix=step.id,
+                              caps=caps)
 
 
 # ===== claude CLI path, not part of run-llm (reliability-spec.md §5): dispatch
@@ -1562,14 +1613,16 @@ def _next_cycle(latest: int, attempts: list, force_new: bool) -> tuple[int, list
 def _admission_refusal(wf: model.Workflow, step: model.Step, run_dir: Path,
                        cycle: int, attempts: list, fix: str | None,
                        decision_prefix: str | None = None,
-                       continuation: bool = False) -> str | None:
+                       caps: dict | None = None) -> str | None:
     """Why run-cc's ladder and the run's budgets refuse the next attempt of
     `step` in `cycle` (its ledger so far is `attempts`), or None. Shared by
     `dispatch` and run-llm's `prompt --result`, so the two count one set of
     budgets one way. `decision_prefix` is the id prefix the caller files
     decision requests under (`dispatch`'s `<id>_cNN` by default; run-llm's
-    bare step id). A `continuation` is a <replan> child: its `max` caps its
-    own steps, and the parent's `max` counts them at the parent's next step."""
+    bare step id). `caps` is given for a <replan> child (`llmgate.admit_replan`
+    wrote it): the whole run stays within the parent's `max`, and the child's
+    own steps, counted from `log_base`, within the smaller of its `max` and
+    the replan's `max-steps`."""
     # The one re-dispatch after an abort is a cycle-wide budget of its
     # own, judged before the total-attempt cap so a run already spent
     # on aborts is told to stop, not pointed at --new-cycle (a
@@ -1614,15 +1667,26 @@ def _admission_refusal(wf: model.Workflow, step: model.Step, run_dir: Path,
         return refusal
 
     log_path = run_dir / "steps.log"
-    executed = _count_step_executions(
-        log_path, {s.id for s in wf.iter_steps()} if continuation else None)
+    executed = _count_step_executions(log_path)
+    if caps is not None:
+        if executed >= caps["parent_max"]:
+            return (f"workflow max={caps['parent_max']} step executions "
+                    f"reached ({executed} recorded in {log_path}) -- stop "
+                    "and report")
+        child_cap = min(wf.max, caps["max_steps"])
+        own = executed - caps["log_base"]
+        if own >= child_cap:
+            return (f"replan continuation step cap ({child_cap}) reached at "
+                    f"'{step.id}' ({own} recorded since it started) -- stop "
+                    "and report")
+        return None
     if executed >= wf.max:
         return (f"workflow max={wf.max} step executions reached "
                 f"({executed} recorded in {log_path})")
     return None
 
 
-def _count_step_executions(log_path: Path, only: set[str] | None = None) -> int:
+def _count_step_executions(log_path: Path) -> int:
     """steps.log entries that are step executions, for the `wf.max` cap.
 
     Only entries carrying a "step" key count: `wfrun ask` writes its
@@ -1650,8 +1714,7 @@ def _count_step_executions(log_path: Path, only: set[str] | None = None) -> int:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(entry, dict) and "step" in entry and (
-                        only is None or entry["step"] in only):
+                if isinstance(entry, dict) and "step" in entry:
                     count += 1
     except OSError:
         return 0

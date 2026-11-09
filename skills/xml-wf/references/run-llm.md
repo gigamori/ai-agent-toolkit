@@ -427,11 +427,11 @@ sequence. Do not delegate more than one step's subagent before that step's
    run `$WFRUN models <the result= file>` and `resolve` each of its request
    lines as in Preparation step 4b; if any is not `resolved`, create no
    attempt of the child's steps: report it and STOP. Execute the skeleton with
-   this same protocol, then continue after the replan node. `prompt` holds the
-   child's steps to the child's own `max`, counting only those steps; they also
-   count toward the parent's `max`, which `prompt` checks at the parent's next
-   step. Generated continuations must never contain another
-   `<replan>` (the validator enforces this)
+   this same protocol, then continue after the replan node. `prompt` refuses a
+   child step past the child's `max` or this replan's `max-steps` (counting the
+   child's steps) or the parent's `max` (counting the whole run), and any file
+   no `<replan>` attempt of this run wrote. Generated continuations must never
+   contain another `<replan>` (the validator enforces this)
 
 ## On error (authority you do NOT have)
 
